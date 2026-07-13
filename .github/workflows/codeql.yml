@@ -1,0 +1,42 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "23 4 * * 1"
+
+permissions:
+  contents: read
+  security-events: write
+
+env:
+  PNPM_VERSION: 10.32.1
+  RUST_VERSION: 1.93.0
+
+jobs:
+  analyze:
+    name: Analyze JavaScript and Rust
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript,rust
+          build-mode: manual
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - run: corepack pnpm install --frozen-lockfile
+      - run: corepack pnpm build
+      - run: cargo +${{ env.RUST_VERSION }} build --manifest-path src-tauri/Cargo.toml
+      - uses: github/codeql-action/analyze@v3
