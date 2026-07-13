@@ -15,7 +15,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PNPM_VERSION: 10.32.1
   RUST_VERSION: 1.93.0
 
 jobs:
@@ -25,8 +24,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with:
-          version: ${{ env.PNPM_VERSION }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -57,8 +54,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with:
-          version: ${{ env.PNPM_VERSION }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
