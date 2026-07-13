@@ -30,32 +30,29 @@ impl SubxtRuntimeAdapter {
 		document: &ScenarioDocument,
 		run_id: &str,
 	) -> Result<(), String> {
-		self.client
-			.blocks()
-			.at_latest()
+		let at_block = self
+			.client
+			.at_current_block()
 			.await
 			.map_err(|error| format!("could not read latest block before arm: {error}"))?;
-		let storage = self.client.storage().at_latest().await.map_err(|error| {
-			format!("could not open system account storage before arm: {error}")
-		})?;
+		let storage = at_block.storage();
 		for index in 0..required_signer_count(document) {
 			let signer = derive_signer(document, index, run_id)?;
 			let account = signer.public_key().to_account_id();
-			let account_storage = dynamic::storage(
-				"System",
-				"Account",
-				vec![dynamic::Value::from_bytes(
-					<subxt::utils::AccountId32 as AsRef<[u8]>>::as_ref(&account),
-				)],
-			);
+			let account_storage = dynamic::storage::<_, dynamic::Value>("System", "Account");
 			storage
-				.fetch(&account_storage)
+				.try_fetch(
+					account_storage,
+					vec![dynamic::Value::from_bytes(
+						<subxt::utils::AccountId32 as AsRef<[u8]>>::as_ref(&account),
+					)],
+				)
 				.await
 				.map_err(|error| {
 					format!("could not read signer {index} balance before arm: {error}")
 				})?
 				.ok_or_else(|| format!("signer {index} has no on-chain balance record"))?;
-			self.client.tx().account_nonce(&account).await.map_err(|error| {
+			at_block.tx().account_nonce(&account).await.map_err(|error| {
 				format!("could not read signer {index} nonce before arm: {error}")
 			})?;
 		}
@@ -96,21 +93,23 @@ impl SubxtRuntimeAdapter {
 				.collect::<Result<Vec<_>, _>>()?;
 			let call =
 				dynamic::tx("Utility", "batch_all", vec![dynamic::Value::unnamed_composite(calls)]);
-			let finalize =
-				async {
-					self.client
-						.tx()
-						.sign_and_submit_then_watch_default(&call, &funder)
-						.await
-						.map_err(|error| {
-							format!("could not submit funding batch {first_index}..={last_index}: {error}")
-						})?
-						.wait_for_finalized_success()
-						.await
-						.map_err(|error| {
-							format!("funding batch {first_index}..={last_index} did not finalize successfully: {error}")
-						})
-				};
+			let finalize = async {
+				let mut tx = self.client.tx().await.map_err(|error| {
+					format!("could not prepare funding batch {first_index}..={last_index}: {error}")
+				})?;
+				tx.sign_and_submit_then_watch_default(&call, &funder)
+					.await
+					.map_err(|error| {
+						format!(
+							"could not submit funding batch {first_index}..={last_index}: {error}"
+						)
+					})?
+					.wait_for_finalized_success()
+					.await
+					.map_err(|error| {
+						format!("funding batch {first_index}..={last_index} did not finalize successfully: {error}")
+					})
+			};
 			tokio::time::timeout(Duration::from_millis(funding.finality_timeout_ms), finalize)
 				.await
 				.map_err(|_| {
@@ -137,49 +136,65 @@ impl SubxtRuntimeAdapter {
 		let wait = async {
 			match sampler.completion {
 				CompletionBoundary::Submitted => {
-					self.client.tx().sign_and_submit_default(&call, &signer).await.map(|hash| {
-						Submission {
+					let mut tx = self.client.tx().await.map_err(|error| error.to_string())?;
+					tx.sign_and_submit_default(&call, &signer)
+						.await
+						.map_err(|error| error.to_string())
+						.map(|hash| Submission {
 							message: format!("submitted {hash:#x}"),
 							extrinsic_hash: Some(format!("{hash:#x}")),
 							block_hash: None,
-						}
-					})
+						})
 				},
 				CompletionBoundary::InBlock => {
-					let mut progress =
-						self.client.tx().sign_and_submit_then_watch_default(&call, &signer).await?;
+					let mut tx = self.client.tx().await.map_err(|error| error.to_string())?;
+					let mut progress = tx
+						.sign_and_submit_then_watch_default(&call, &signer)
+						.await
+						.map_err(|error| error.to_string())?;
 					loop {
-						match progress.next().await.ok_or_else(|| {
-							subxt::Error::Other("transaction subscription closed".into())
-						})?? {
-							subxt::tx::TxStatus::InBestBlock(block) => {
+						match progress
+							.next()
+							.await
+							.ok_or_else(|| "transaction subscription closed".to_string())?
+							.map_err(|error| error.to_string())?
+						{
+							subxt::tx::TransactionStatus::InBestBlock(block) => {
 								let extrinsic_hash = format!("{:#x}", block.extrinsic_hash());
 								let block_hash = format!("{:#x}", block.block_hash());
-								break block.wait_for_success().await.map(|_| Submission {
-									message: "included in block".into(),
-									extrinsic_hash: Some(extrinsic_hash),
-									block_hash: Some(block_hash),
-								});
+								break block
+									.wait_for_success()
+									.await
+									.map_err(|error| error.to_string())
+									.map(|_| Submission {
+										message: "included in block".into(),
+										extrinsic_hash: Some(extrinsic_hash),
+										block_hash: Some(block_hash),
+									});
 							},
-							subxt::tx::TxStatus::Error { message }
-							| subxt::tx::TxStatus::Invalid { message }
-							| subxt::tx::TxStatus::Dropped { message } => {
-								break Err(subxt::Error::Other(message.into()))
-							},
+							subxt::tx::TransactionStatus::Error { message }
+							| subxt::tx::TransactionStatus::Invalid { message }
+							| subxt::tx::TransactionStatus::Dropped { message } => break Err(message),
 							_ => {},
 						}
 					}
 				},
 				CompletionBoundary::Finalized => {
-					let progress =
-						self.client.tx().sign_and_submit_then_watch_default(&call, &signer).await?;
-					let block = progress.wait_for_finalized().await?;
+					let mut tx = self.client.tx().await.map_err(|error| error.to_string())?;
+					let progress = tx
+						.sign_and_submit_then_watch_default(&call, &signer)
+						.await
+						.map_err(|error| error.to_string())?;
+					let block =
+						progress.wait_for_finalized().await.map_err(|error| error.to_string())?;
 					let extrinsic_hash = format!("{:#x}", block.extrinsic_hash());
 					let block_hash = format!("{:#x}", block.block_hash());
-					block.wait_for_success().await.map(|_| Submission {
-						message: "finalized".into(),
-						extrinsic_hash: Some(extrinsic_hash),
-						block_hash: Some(block_hash),
+					block.wait_for_success().await.map_err(|error| error.to_string()).map(|_| {
+						Submission {
+							message: "finalized".into(),
+							extrinsic_hash: Some(extrinsic_hash),
+							block_hash: Some(block_hash),
+						}
 					})
 				},
 			}
@@ -206,7 +221,7 @@ fn base_signer(document: &ScenarioDocument) -> Result<Keypair, String> {
 fn funding_transfer_call(
 	recipient: &subxt::utils::AccountId32,
 	amount: u128,
-) -> Result<DynamicPayload, String> {
+) -> Result<DynamicPayload<subxt::ext::scale_value::Composite<()>>, String> {
 	Ok(dynamic::tx(
 		"Balances",
 		"transfer_keep_alive",
