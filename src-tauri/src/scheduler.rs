@@ -1,4 +1,4 @@
-use rand::{rngs::StdRng, Rng, SeedableRng};
+use rand::{rngs::StdRng, RngExt, SeedableRng};
 use rand_distr::{Distribution, Exp};
 
 use crate::scenario::ArrivalModel;
@@ -11,7 +11,7 @@ pub fn offsets(users: u32, arrival: &ArrivalModel, seed: u64) -> Result<Vec<u64>
 	let mut rng = StdRng::seed_from_u64(seed);
 	let mut offsets = match arrival {
 		ArrivalModel::Burst { window_ms } => {
-			(0..users).map(|_| rng.gen_range(0..=*window_ms)).collect()
+			(0..users).map(|_| rng.random_range(0..=*window_ms)).collect()
 		},
 		ArrivalModel::Ramp { duration_ms } if users == 1 => vec![0],
 		ArrivalModel::Ramp { duration_ms } => (0..users)
