@@ -12,4 +12,4 @@ jobs:
     name: Review dependency changes
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/dependency-review-action@v4
+      - uses: actions/dependency-review-action@v5
