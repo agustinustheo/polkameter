@@ -1,5 +1,7 @@
 mod artifacts;
+mod jmx;
 mod preflight;
+mod remote;
 mod report;
 mod runner;
 mod scenario;
@@ -8,9 +10,11 @@ mod subxt_adapter;
 mod telemetry;
 
 use serde::{Deserialize, Serialize};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
-use scenario::{ArrivalModel as NativeArrivalModel, ValidationIssue};
+use scenario::{ArrivalModel as NativeArrivalModel, ScenarioDocument, ValidationIssue};
+
+const SIGNER_KEYRING_SERVICE: &str = "io.github.agustinustheo.polkameter";
 
 struct TauriRunEventSink(tauri::AppHandle);
 
@@ -196,12 +200,83 @@ fn create_artifact_preview(
 }
 
 #[tauri::command]
+fn export_jmx(document: ScenarioDocument) -> String {
+	jmx::export(&document)
+}
+
+#[tauri::command]
+fn save_jmx(document: ScenarioDocument, path: String) -> Result<(), String> {
+	if let Some(parent) = std::path::Path::new(&path).parent() {
+		std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+	}
+	std::fs::write(path, jmx::export(&document)).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn import_jmx(xml: String) -> Result<jmx::JmxImportReport, String> {
+	jmx::import(&xml)
+}
+
+#[tauri::command]
+async fn start_remote_run(
+	target: remote::RemoteRunnerTarget,
+	document: ScenarioDocument,
+	run_id: String,
+) -> Result<runner::RunStatus, String> {
+	remote::start(&target, document, run_id).await
+}
+
+#[tauri::command]
+async fn get_remote_run_status(
+	target: remote::RemoteRunnerTarget,
+	run_id: String,
+) -> Result<runner::RunStatus, String> {
+	remote::status(&target, &run_id).await
+}
+
+#[tauri::command]
+async fn stop_remote_run(
+	target: remote::RemoteRunnerTarget,
+	run_id: String,
+) -> Result<runner::RunStatus, String> {
+	remote::stop(&target, &run_id).await
+}
+
+#[tauri::command]
+async fn read_remote_run_report(
+	target: remote::RemoteRunnerTarget,
+	run_id: String,
+) -> Result<report::DashboardReport, String> {
+	remote::read_remote_report(&target, &run_id).await
+}
+
+#[tauri::command]
 async fn preflight_scenario(
-	document: scenario::ScenarioDocument,
+	mut document: ScenarioDocument,
 	run_id: Option<String>,
 ) -> Result<preflight::PreflightReport, String> {
+	resolve_signer_profile(&mut document)?;
 	let run_id = run_id.unwrap_or_else(artifacts::new_run_id);
 	preflight::preflight(&document, &run_id).await
+}
+
+#[tauri::command]
+fn store_signer_profile(profile: String, suri: String) -> Result<(), String> {
+	validate_signer_profile(&profile)?;
+	if suri.trim().is_empty() {
+		return Err("signer SURI must not be empty".into());
+	}
+	keyring_entry(&profile)?.set_password(&suri).map_err(|error| {
+		format!("could not save signer profile in the OS credential store: {error}")
+	})
+}
+
+#[tauri::command]
+fn remove_signer_profile(profile: String) -> Result<(), String> {
+	validate_signer_profile(&profile)?;
+	keyring_entry(&profile)?.delete_credential().map_err(|error| {
+		format!("could not remove signer profile from the OS credential store: {error}")
+	})
 }
 
 #[tauri::command]
@@ -229,12 +304,13 @@ fn read_run_report(artifact_dir: String) -> Result<report::DashboardReport, Stri
 
 #[tauri::command]
 async fn start_run(
-	document: scenario::ScenarioDocument,
+	mut document: ScenarioDocument,
 	output_root: String,
 	run_id: String,
 	app: tauri::AppHandle,
 	state: tauri::State<'_, std::sync::Arc<runner::RunnerState>>,
 ) -> Result<runner::RunStatus, String> {
+	resolve_signer_profile(&mut document)?;
 	runner::start(
 		document,
 		output_root,
@@ -243,6 +319,59 @@ async fn start_run(
 		state.inner().clone(),
 	)
 	.await
+}
+
+fn keyring_entry(profile: &str) -> Result<keyring::Entry, String> {
+	keyring::Entry::new(SIGNER_KEYRING_SERVICE, profile)
+		.map_err(|error| format!("could not initialize the OS credential entry: {error}"))
+}
+
+fn validate_signer_profile(profile: &str) -> Result<(), String> {
+	if profile.trim().is_empty() {
+		return Err("signer profile must not be empty".into());
+	}
+	if profile.len() > 128
+		|| !profile.chars().all(|character| {
+			character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+		}) {
+		return Err(
+			"signer profile may contain only ASCII letters, digits, hyphens, underscores, and periods"
+				.into(),
+		);
+	}
+	Ok(())
+}
+
+pub(crate) fn resolve_signer_profile(document: &mut ScenarioDocument) -> Result<(), String> {
+	#[cfg(debug_assertions)]
+	if let Ok(suri) = std::env::var("POLKAMETER_DEBUG_SURI") {
+		if suri.trim().is_empty() {
+			return Err("POLKAMETER_DEBUG_SURI must not be empty".into());
+		}
+		if document.signer_source.funding.is_some() && !suri.trim_start().starts_with("//") {
+			return Err(
+				"development funding requires POLKAMETER_DEBUG_SURI to begin with //".into()
+			);
+		}
+		document.signer_source.base_suri = suri;
+		return Ok(());
+	}
+	validate_signer_profile(&document.signer_source.profile)?;
+	let suri = keyring_entry(&document.signer_source.profile)?
+		.get_password()
+		.map_err(|error| {
+			format!("could not load signer profile '{}': {error}", document.signer_source.profile)
+		})?;
+	if suri.trim().is_empty() {
+		return Err("stored signer SURI must not be empty".into());
+	}
+	if document.signer_source.funding.is_some() && !suri.trim_start().starts_with("//") {
+		return Err(
+			"development funding requires a stored development SURI beginning with //".into()
+		);
+	}
+	document.signer_source.base_suri = suri;
+	Ok(())
 }
 
 #[tauri::command]
@@ -267,14 +396,32 @@ fn is_json_object_or_array(value: &str) -> bool {
 }
 
 pub fn run() {
-	tauri::Builder::default()
+	tauri::Builder::<tauri::Wry>::default()
 		.manage(std::sync::Arc::new(runner::RunnerState::default()))
+		.setup(|app: &mut tauri::App<tauri::Wry>| {
+			let Some(window) = app.get_webview_window("main") else {
+				return Ok(());
+			};
+			// Keep first launch on macOS's primary coordinate space. Display-relative
+			// centering can resurrect a stale virtual-desktop location after monitor changes.
+			window.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(40, 40)))?;
+			Ok(())
+		})
 		.invoke_handler(tauri::generate_handler![
 			validate_scenario,
 			validate_native_scenario,
 			preview_schedule,
 			create_artifact_preview,
+			export_jmx,
+			save_jmx,
+			import_jmx,
+			start_remote_run,
+			get_remote_run_status,
+			stop_remote_run,
+			read_remote_run_report,
 			preflight_scenario,
+			store_signer_profile,
+			remove_signer_profile,
 			save_scenario,
 			load_scenario,
 			read_run_report,
@@ -286,9 +433,16 @@ pub fn run() {
 		.expect("error while running Polkameter");
 }
 
+pub async fn serve_agent_from_env() -> Result<(), String> {
+	remote::serve_from_env().await
+}
+
 #[cfg(test)]
 mod tests {
-	use super::{preview_schedule, ArrivalModel};
+	use super::{
+		preview_schedule, remove_signer_profile, resolve_signer_profile, store_signer_profile,
+		validate_signer_profile, ArrivalModel,
+	};
 
 	#[test]
 	fn burst_preview_is_seeded_and_bounded() {
@@ -304,5 +458,30 @@ mod tests {
 			serde_json::from_str::<ArrivalModel>(r#"{"kind":"poisson","ratePerSecond":20}"#)
 				.expect("frontend arrival model");
 		assert!(matches!(arrival, ArrivalModel::Poisson { rate_per_second: 20.0 }));
+	}
+
+	#[test]
+	fn signer_profile_names_are_constrained_before_reaching_the_os_store() {
+		assert!(validate_signer_profile("local-dev.1").is_ok());
+		assert!(validate_signer_profile("").is_err());
+		assert!(validate_signer_profile("contains space").is_err());
+	}
+
+	#[test]
+	#[ignore = "requires an operating-system credential manager"]
+	fn signer_profile_round_trips_through_the_os_credential_manager() {
+		let profile = format!("polkameter-test-{}", std::process::id());
+		let mut document = crate::artifacts::test_scenario();
+		document.signer_source.profile = profile.clone();
+		document.signer_source.base_suri.clear();
+		let _ = remove_signer_profile(profile.clone());
+		let result = (|| -> Result<String, String> {
+			store_signer_profile(profile.clone(), "//Alice".into())?;
+			resolve_signer_profile(&mut document)?;
+			Ok(document.signer_source.base_suri.clone())
+		})();
+		let cleanup = remove_signer_profile(profile);
+		assert_eq!(result.expect("profile resolved"), "//Alice");
+		cleanup.expect("profile removed");
 	}
 }
