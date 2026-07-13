@@ -12,9 +12,6 @@ permissions:
   contents: read
   security-events: write
 
-env:
-  RUST_VERSION: 1.93.0
-
 jobs:
   javascript-typescript:
     name: Analyze JavaScript and TypeScript
@@ -35,9 +32,5 @@ jobs:
       - uses: github/codeql-action/init@v4
         with:
           languages: rust
-          build-mode: manual
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-      - run: cargo +${{ env.RUST_VERSION }} build --manifest-path src-tauri/Cargo.toml
+          build-mode: none
       - uses: github/codeql-action/analyze@v4
