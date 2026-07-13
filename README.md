@@ -1,33 +1,43 @@
-# Polkameter
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.png">
+  <img src="docs/logo-light.png" alt="Polkameter" width="380">
+</picture>
 
-Polkameter is a Tauri desktop workbench for designing generic Polkadot SDK transaction stress scenarios. Its interaction model is inspired by JMeter: compose a test plan, configure virtual users and an arrival model then preflight and run the plan against a local chain.
+Polkameter is a Tauri desktop workbench for stress-testing Polkadot SDK chains, modeled on JMeter: compose a test plan with thread groups and samplers, pick an arrival model, preflight against a live chain, then arm and run. The Rust core owns scheduling, signing, submission and artifacts; the TypeScript frontend is only an editor and monitor.
 
-## Current capabilities
+## Run
 
-The Rust execution core owns a versioned native scenario model, deterministic seeded Burst, Ramp and Poisson schedules, per-group concurrency plus a plan-wide concurrency ceiling, graceful cancellation and JTL-compatible results. The local Subxt runtime adapter owns chain connection, signer derivation, readiness checks and transaction watching; Tauri only exposes commands and forwards run events. The current adapter uses the standard `PolkadotConfig` transaction profile.
+```sh
+corepack pnpm install
+corepack pnpm tauri dev
+```
 
-Before arming a run, Polkameter creates a run ID, connects to the configured WebSocket RPC, reads live runtime metadata, lists pallet calls, shows selected call fields and asks Subxt to SCALE encode every dynamic transaction. The runner derives development signers in memory from that same run ID, submits transactions and records submitted, in-block or finalized outcomes.
+Checks without opening the desktop app:
 
-Each run writes a portable, redacted artifact directory:
+```sh
+corepack pnpm test                                   # frontend unit tests
+corepack pnpm build                                  # tsc + vite build
+cargo test --manifest-path src-tauri/Cargo.toml      # Rust core tests
+```
 
-- `scenario.polkameter.json` and `resolved-plan.json`
-- `config.json` and `command.txt`
-- `samples.jtl`, `events.jsonl` and `telemetry.jsonl`
-- `summary.md`
-- `plots/throughput.svg`, `latency-percentiles.svg` and `failure-breakdown.svg`
-- `plots/cpu-memory.svg`, `blocks-pending.svg` and `node-resources.svg`
+A run needs a chain to target. For local work start a fresh dev node:
 
-Saved plans and artifacts contain only a `signerProfile` alias, never a SURI. The desktop app writes a SURI to the native operating-system credential vault and resolves that alias inside Rust immediately before preflight or arm/run; the renderer does not reload it when a plan is reopened. Each thread group receives a disjoint signer range; non-base virtual users derive under a run-specific root, so neither groups nor runs collide. Transaction groups run concurrently, while a shared plan-wide limit prevents their combined pressure from exceeding the configured ceiling. Preflight shows the exact root and accounts that the following arm/run operation will use. Before arming, every virtual signer required by the plan must have a `System.Account` record; unfunded users fail before any submissions are scheduled.
+```sh
+polkadot --dev --tmp --rpc-port 9944 --prometheus-port 9615 --rpc-methods Unsafe --rpc-cors all
+```
 
-The optional `Fund derived users` helper is deliberately limited to loopback `ws://` endpoints and development SURIs beginning with `//`. It prepares a fresh local dev chain through bounded `Utility.batch_all` calls (default: 50 recipients per finalized batch); it cannot be used as a remote-chain funding mechanism.
+## How a run works
 
-An optional `Node Prometheus` endpoint records node metrics separately from the Polkameter process and RPC health. When exposed, standard `process_resident_memory_bytes` and `process_cpu_seconds_total` produce node host RSS/CPU data; Substrate's `substrate_ready_transactions_number` is also collected when present. Missing metrics are represented as absent data, not zero, so a node that exports only transaction-pool telemetry remains visible without inventing host-resource values.
+1. Preflight connects to the WebSocket RPC, reads live runtime metadata and SCALE encodes every dynamic call. A failed encoding blocks arming.
+2. Signers derive deterministically from the run ID; each thread group gets a disjoint range. Every virtual signer must have a `System.Account` record before submission starts.
+3. Groups run concurrently under per-group concurrency plus a plan-wide ceiling. Arrival models (seeded Burst, Ramp, Poisson) are deterministic. Stop halts scheduling and drains active watches within the configured deadline.
+4. Samples record submitted, in-block or finalized outcomes.
 
-## Scenario Shape
+Each run writes a portable, redacted artifact directory: `scenario.polkameter.json`, `resolved-plan.json`, `config.json`, `command.txt`, `samples.jtl`, `events.jsonl`, `telemetry.jsonl`, `summary.md` and SVG plots (throughput, latency percentiles, failure breakdown, node resources).
 
-A native scenario has test-plan metadata and run limits, one or more thread groups and ordered setup, transaction and teardown samplers. Each sampler has its own pallet, call, JSON arguments, completion boundary, mortality period, finality timeout and optional maximum-elapsed assertion. Collector selection is also saved with the plan.
+## Scenarios
 
-Dynamic values can use these explicit markers when a plain JSON value is ambiguous:
+A scenario is test-plan metadata, run limits, thread groups and ordered setup/transaction/teardown samplers, each with its own pallet, call, JSON arguments, completion boundary, mortality period and timeouts. Where plain JSON is ambiguous, use explicit markers:
 
 ```json
 {
@@ -39,62 +49,29 @@ Dynamic values can use these explicit markers when a plain JSON value is ambiguo
 }
 ```
 
-The decimal string is converted to an unsigned SCALE integer. `$variant` and `$bytes` represent enum and byte values without relying on pallet-specific code generation.
+`$variant` and `$bytes` represent enum and byte values; decimal strings become unsigned SCALE integers. No pallet-specific code generation is required.
 
-The desktop header and native application icon use the monochrome Polkadot mark, paired with a
-black, white and stone workbench palette.
+## Signers and funding
 
-The execution path is:
+Saved plans and artifacts contain only a `signerProfile` alias, never a SURI. The desktop stores the SURI in the operating-system credential vault and Rust resolves it just before preflight or run. The optional `Fund derived users` helper only accepts loopback `ws://` endpoints and development SURIs starting with `//`; it funds run-derived accounts through bounded `Utility.batch_all` calls and cannot fund remote chains.
 
-1. Chain connection and runtime metadata preflight.
-2. Deterministic signer-pool preparation.
-3. Dynamic pallet/call encoding and bounded submission.
-4. Submitted, in-block or finalised sample collection. Transaction samplers support a bounded loop count per virtual user; setup and teardown remain single-run phases. A Stop request halts scheduling and grants active watches only the configured shutdown-drain deadline.
-5. JTL-compatible samples, event logs, telemetry and real SVG plots.
-6. Structural JMX import and export for test-plan, thread-group and collector interchange. The
-   desktop's `Inspect JMX` control reports imported JMeter structure and unsupported sampler
-   types without executing them. Exported `.jmx` files remain companions to the authoritative
-   `.polkameter.json` file because generic JMeter samplers do not carry a Polkadot pallet, call
-   and SCALE-encoding contract.
+## Telemetry and JMX
 
-## Run locally
+An optional `Node Prometheus` endpoint collects node RSS/CPU and `substrate_ready_transactions_number` alongside run telemetry; missing metrics are recorded as absent, not zero. Scenarios export to structural `.jmx` companions and `Inspect JMX` reports imported JMeter structure without executing non-Substrate samplers. The `.polkameter.json` file stays authoritative because JMX carries no pallet or SCALE contract.
 
-```sh
-corepack pnpm install
-corepack pnpm tauri dev
-```
+## Acceptance test
 
-Run the frontend and Rust checks without opening the desktop app:
-
-```sh
-corepack pnpm build
-cargo test --manifest-path src-tauri/Cargo.toml
-```
-
-## Fresh-chain Acceptance
-
-The ignored integration test proves the full generic path from a fresh local node: save and reopen a redacted native scenario, preflight its dynamic call, fund five run-derived development accounts across two transaction groups, arm asynchronously, stream status/sample events and validate the resulting artifacts. The fixture asks for five aggregate users while the plan-wide concurrency ceiling is two. It requires a fresh local dev chain at `ws://127.0.0.1:9944`:
-
-```sh
-polkadot --dev --tmp --rpc-port 9944 --prometheus-port 9615 --rpc-methods Unsafe --rpc-cors all
-```
-
-In another terminal:
+An ignored integration test proves the full path against a fresh dev node (save/reopen, preflight, fund five accounts across two groups, run, validate artifacts):
 
 ```sh
 POLKAMETER_E2E_RPC=ws://127.0.0.1:9944 \
-	POLKAMETER_E2E_PROMETHEUS=http://127.0.0.1:9615/metrics \
-  POLKAMETER_E2E_OUTPUT_ROOT="$(pwd)/src-tauri/target/polkameter-e2e" \
-  cargo +1.93.0 test --manifest-path src-tauri/Cargo.toml \
+POLKAMETER_E2E_PROMETHEUS=http://127.0.0.1:9615/metrics \
+POLKAMETER_E2E_OUTPUT_ROOT="$(pwd)/src-tauri/target/polkameter-e2e" \
+cargo +1.93.0 test --manifest-path src-tauri/Cargo.toml \
   fresh_dev_chain_run_writes_validated_artifacts -- --ignored --nocapture
 ```
 
-The retained run directory contains the full artifact contract and can be opened from the desktop's run-report control after a desktop run.
-
-The same fixture is the generic high-scale acceptance command. It continues to start from an
-empty chain, funds run-specific accounts through finalized batches, and runs both transaction
-groups concurrently. For the 1,000-user burst proof, use one request per user and let the
-plan-wide limit admit all 1,000 submissions:
+For the 1,000-user burst proof (one request per user, plan-wide limit admitting all submissions):
 
 ```sh
 POLKAMETER_E2E_RPC=ws://127.0.0.1:9944 \
@@ -110,24 +87,20 @@ cargo +1.93.0 test --manifest-path src-tauri/Cargo.toml \
   fresh_dev_chain_run_writes_validated_artifacts -- --ignored --nocapture
 ```
 
-The 1,000-user configuration has 1,000 scheduled transaction samples across two concurrent
-groups. It is deliberately a burst, not a ramp: both groups use the scenario's seeded one
-millisecond burst arrival window.
+Both need a fresh local dev chain at `ws://127.0.0.1:9944` (command above).
 
 ## Remote agent
 
-The same binary can run an authenticated remote agent:
+The same binary runs an authenticated headless agent:
 
-```bash
+```sh
 POLKAMETER_AGENT_TOKEN="replace-with-a-long-random-token" \
 POLKAMETER_AGENT_OUTPUT_ROOT="target/polkameter-agent-runs" \
 polkameter agent
 ```
 
-The agent binds to `127.0.0.1:9901` by default. Keep that default and use an SSH tunnel from the desktop, or place a TLS terminator in front of the agent. The desktop accepts `http://` only for loopback endpoints and otherwise requires `https://`.
+It binds to `127.0.0.1:9901`; keep that and tunnel over SSH, or put TLS in front (the desktop requires `https://` for non-loopback endpoints). Requests carry only a redacted scenario and run ID; the agent resolves its signer from its own credential store (or `POLKAMETER_AGENT_SURI` injected by a host secret manager) and keeps its own artifacts. Desktop-side runner URL and token are session-only fields.
 
-The remote request contains a redacted scenario and a run ID only. The remote host resolves the configured signer profile from its own operating-system credential store, performs metadata preflight locally, and retains its own artifacts. For headless deployment, inject `POLKAMETER_AGENT_SURI` into the agent process through its host secret manager; it is used only on the agent and never accepted over HTTP. The remote runner URL and bearer token are session-only desktop fields; they are not stored in a `.polkameter.json` scenario or browser storage.
+## Boundary
 
-## Current Boundary
-
-This is deliberately chain-generic. DIM2-specific game setup, funding, phase transitions and result assertions belong in adapters or scenario extensions rather than the core test-plan model. The runner currently supports the standard Polkadot transaction profile, native credential-vault signer profiles, optional node Prometheus telemetry and structural JMX import/export. JMX import reports thread groups and collectors for inspection; it never executes a non-Substrate JMeter sampler. External workers and domain adapters remain future work.
+Deliberately chain-generic: the standard `PolkadotConfig` transaction profile, credential-vault signer profiles, optional Prometheus telemetry and structural JMX interchange. Domain-specific setup, funding and assertions belong in adapters or scenario extensions, not the core plan model.
