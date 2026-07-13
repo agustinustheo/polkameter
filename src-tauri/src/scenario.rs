@@ -53,12 +53,52 @@ impl ScenarioDocument {
 				"must be at least 1000 ms",
 			));
 		}
+		if self.test_plan.limits.max_concurrent_samples == 0 {
+			issues.push(ValidationIssue::new(
+				"testPlan.limits.maxConcurrentSamples",
+				"must be at least one",
+			));
+		}
 		if !(self.chain.endpoint.starts_with("ws://") || self.chain.endpoint.starts_with("wss://"))
 		{
 			issues.push(ValidationIssue::new("chain.endpoint", "must use ws:// or wss://"));
 		}
-		if self.signer_source.base_suri.trim().is_empty() {
-			issues.push(ValidationIssue::new("signerSource.baseSuri", "must not be empty"));
+		if let Some(endpoint) = &self.chain.prometheus_endpoint {
+			if !(endpoint.starts_with("http://") || endpoint.starts_with("https://")) {
+				issues.push(ValidationIssue::new(
+					"chain.prometheusEndpoint",
+					"must use http:// or https://",
+				));
+			}
+		}
+		if self.signer_source.profile.trim().is_empty() {
+			issues.push(ValidationIssue::new("signerSource.profile", "must not be empty"));
+		}
+		if let Some(funding) = &self.signer_source.funding {
+			if !is_loopback_endpoint(&self.chain.endpoint) {
+				issues.push(ValidationIssue::new(
+					"signerSource.funding",
+					"development funding is limited to a loopback ws:// endpoint",
+				));
+			}
+			if funding.amount.parse::<u128>().ok().filter(|amount| *amount > 0).is_none() {
+				issues.push(ValidationIssue::new(
+					"signerSource.funding.amount",
+					"must be a positive decimal balance",
+				));
+			}
+			if funding.finality_timeout_ms < 1_000 {
+				issues.push(ValidationIssue::new(
+					"signerSource.funding.finalityTimeoutMs",
+					"must be at least 1000 ms",
+				));
+			}
+			if funding.batch_size == 0 || funding.batch_size > 100 {
+				issues.push(ValidationIssue::new(
+					"signerSource.funding.batchSize",
+					"must be between one and 100",
+				));
+			}
 		}
 		if self.thread_groups.is_empty() {
 			issues.push(ValidationIssue::new("threadGroups", "must contain at least one group"));
@@ -77,6 +117,12 @@ impl ScenarioDocument {
 				issues.push(ValidationIssue::new(
 					format!("{prefix}.concurrency"),
 					"must be between one and the virtual-user count",
+				));
+			}
+			if group.iterations == 0 {
+				issues.push(ValidationIssue::new(
+					format!("{prefix}.iterations"),
+					"must be at least one",
 				));
 			}
 			if let Err(message) = group.arrival.validate() {
@@ -131,6 +177,12 @@ impl ScenarioDocument {
 	}
 }
 
+fn is_loopback_endpoint(endpoint: &str) -> bool {
+	endpoint.starts_with("ws://127.0.0.1:")
+		|| endpoint.starts_with("ws://localhost:")
+		|| endpoint.starts_with("ws://[::1]:")
+}
+
 pub fn signer_derivation_root(document: &ScenarioDocument, run_id: &str) -> String {
 	format!("{}//run-{run_id}", document.signer_source.derivation_path)
 }
@@ -174,18 +226,30 @@ pub struct TestPlan {
 pub struct RunLimits {
 	pub whole_run_timeout_ms: u64,
 	pub shutdown_drain_timeout_ms: u64,
+	#[serde(default = "default_max_concurrent_samples")]
+	pub max_concurrent_samples: u32,
 }
 
 impl Default for RunLimits {
 	fn default() -> Self {
-		Self { whole_run_timeout_ms: 900_000, shutdown_drain_timeout_ms: 300_000 }
+		Self {
+			whole_run_timeout_ms: 900_000,
+			shutdown_drain_timeout_ms: 300_000,
+			max_concurrent_samples: default_max_concurrent_samples(),
+		}
 	}
+}
+
+fn default_max_concurrent_samples() -> u32 {
+	1_000
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChainTarget {
 	pub endpoint: String,
+	#[serde(default)]
+	pub prometheus_endpoint: Option<String>,
 	#[serde(default = "default_transaction_profile")]
 	pub transaction_profile: TransactionProfile,
 }
@@ -204,9 +268,36 @@ pub enum TransactionProfile {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DevSignerSource {
+	#[serde(default = "default_signer_profile")]
+	pub profile: String,
+	#[serde(default)]
 	pub base_suri: String,
 	#[serde(default = "default_derivation_path")]
 	pub derivation_path: String,
+	#[serde(default)]
+	pub funding: Option<DevelopmentFunding>,
+}
+
+fn default_signer_profile() -> String {
+	"local-dev".into()
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DevelopmentFunding {
+	pub amount: String,
+	#[serde(default = "default_funding_finality_timeout_ms")]
+	pub finality_timeout_ms: u64,
+	#[serde(default = "default_funding_batch_size")]
+	pub batch_size: u32,
+}
+
+fn default_funding_finality_timeout_ms() -> u64 {
+	60_000
+}
+
+fn default_funding_batch_size() -> u32 {
+	50
 }
 
 fn default_derivation_path() -> String {
@@ -219,8 +310,14 @@ pub struct ThreadGroup {
 	pub name: String,
 	pub users: u32,
 	pub concurrency: u32,
+	#[serde(default = "default_iterations")]
+	pub iterations: u32,
 	pub arrival: ArrivalModel,
 	pub samplers: Vec<TransactionSampler>,
+}
+
+fn default_iterations() -> u32 {
+	1
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -248,7 +345,7 @@ impl ArrivalModel {
 	}
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SamplerPhase {
 	Setup,
@@ -325,7 +422,16 @@ impl ResolvedPlan {
 		let scheduled_samples = scenario
 			.thread_groups
 			.iter()
-			.map(|group| u64::from(group.users) * group.samplers.len() as u64)
+			.map(|group| {
+				group.samplers.iter().fold(0_u64, |total, sampler| {
+					total
+						+ if matches!(sampler.phase, SamplerPhase::Transaction) {
+							u64::from(group.users) * u64::from(group.iterations)
+						} else {
+							1
+						}
+				})
+			})
 			.sum();
 		let run_id = run_id.into();
 		Self {
@@ -354,16 +460,20 @@ mod tests {
 			},
 			chain: ChainTarget {
 				endpoint: "ws://127.0.0.1:9944".into(),
+				prometheus_endpoint: None,
 				transaction_profile: TransactionProfile::Polkadot,
 			},
 			signer_source: DevSignerSource {
+				profile: "local-dev".into(),
 				base_suri: "//Alice".into(),
 				derivation_path: "//polkameter".into(),
+				funding: None,
 			},
 			thread_groups: vec![ThreadGroup {
 				name: "Users".into(),
 				users: 10,
 				concurrency: 5,
+				iterations: 1,
 				arrival: ArrivalModel::Burst { window_ms: 1_000 },
 				samplers: vec![TransactionSampler {
 					phase: SamplerPhase::Transaction,
@@ -419,8 +529,57 @@ mod tests {
 		let mut document = scenario();
 		document.test_plan.limits.whole_run_timeout_ms = 1;
 		document.test_plan.limits.shutdown_drain_timeout_ms = 1;
+		document.test_plan.limits.max_concurrent_samples = 0;
 		let fields = document.validate().into_iter().map(|issue| issue.field).collect::<Vec<_>>();
 		assert!(fields.contains(&"testPlan.limits.wholeRunTimeoutMs".into()));
 		assert!(fields.contains(&"testPlan.limits.shutdownDrainTimeoutMs".into()));
+		assert!(fields.contains(&"testPlan.limits.maxConcurrentSamples".into()));
+	}
+
+	#[test]
+	fn iterations_repeat_only_transaction_samples_in_the_resolved_plan() {
+		let mut document = scenario();
+		document.thread_groups[0].users = 3;
+		document.thread_groups[0].iterations = 4;
+		document.thread_groups[0].samplers.insert(
+			0,
+			TransactionSampler {
+				phase: SamplerPhase::Setup,
+				label: "prepare".into(),
+				pallet: "System".into(),
+				call: "remark".into(),
+				arguments: serde_json::json!({ "remark": { "$bytes": "0x00" } }),
+				completion: CompletionBoundary::Submitted,
+				mortality_period: 4,
+				finality_timeout_ms: 1_000,
+				assertions: vec![Assertion::Success],
+			},
+		);
+		assert_eq!(ResolvedPlan::from_scenario(&document, "looped").scheduled_samples, 13);
+	}
+
+	#[test]
+	fn development_funding_is_restricted_to_local_development_signers() {
+		let mut document = scenario();
+		document.signer_source.funding = Some(DevelopmentFunding {
+			amount: "1000".into(),
+			finality_timeout_ms: 1_000,
+			batch_size: 50,
+		});
+		assert!(document.validate().is_empty());
+
+		document.chain.endpoint = "wss://rpc.example.invalid".into();
+		assert!(document.validate().iter().any(|issue| issue.field == "signerSource.funding"));
+
+		document.chain.endpoint = "ws://127.0.0.1:9944".into();
+		document.signer_source.base_suri =
+			"bottom drive obey lake curtain smoke basket hold race lonely fit walk".into();
+		assert!(document.validate().is_empty());
+
+		document.signer_source.funding.as_mut().expect("funding configured").batch_size = 101;
+		assert!(document
+			.validate()
+			.iter()
+			.any(|issue| issue.field == "signerSource.funding.batchSize"));
 	}
 }

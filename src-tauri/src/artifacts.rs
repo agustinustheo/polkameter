@@ -67,6 +67,10 @@ pub struct TelemetryRecord {
 	pub finalized_block: Option<u64>,
 	pub pending_extrinsics: Option<u64>,
 	pub rpc_error: Option<String>,
+	pub node_cpu_seconds_total: Option<f64>,
+	pub node_rss_kib: Option<u64>,
+	pub node_ready_transactions: Option<u64>,
+	pub prometheus_error: Option<String>,
 }
 
 pub struct ArtifactWriter {
@@ -157,16 +161,20 @@ pub(crate) fn test_scenario() -> ScenarioDocument {
 		},
 		chain: ChainTarget {
 			endpoint: "ws://127.0.0.1:9944".into(),
+			prometheus_endpoint: None,
 			transaction_profile: TransactionProfile::Polkadot,
 		},
 		signer_source: DevSignerSource {
+			profile: "local-dev".into(),
 			base_suri: "//Alice".into(),
 			derivation_path: "//polkameter".into(),
+			funding: None,
 		},
 		thread_groups: vec![ThreadGroup {
 			name: "users".into(),
 			users: 1,
 			concurrency: 1,
+			iterations: 1,
 			arrival: ArrivalModel::Burst { window_ms: 1 },
 			samplers: vec![TransactionSampler {
 				phase: SamplerPhase::Transaction,

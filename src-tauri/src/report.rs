@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, fs, path::Path};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::artifacts::{SampleRecord, TelemetryRecord};
 
@@ -8,14 +8,14 @@ pub struct Report {
 	pub summary: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DashboardReport {
 	pub summary: String,
 	pub plots: Vec<DashboardPlot>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DashboardPlot {
 	pub name: String,
@@ -37,6 +37,8 @@ pub fn write(run_dir: &Path) -> Result<Report, String> {
 		.map_err(|error| error.to_string())?;
 	fs::write(plots.join("blocks-pending.svg"), blocks_svg(&telemetry))
 		.map_err(|error| error.to_string())?;
+	fs::write(plots.join("node-resources.svg"), node_resources_svg(&telemetry))
+		.map_err(|error| error.to_string())?;
 	Ok(Report { summary: summary_markdown(&samples, &telemetry) })
 }
 
@@ -56,9 +58,14 @@ pub fn validate(run_dir: &Path) -> Result<(), String> {
 			return Err(format!("missing artifact {}", path.display()));
 		}
 	}
-	for name in
-		["throughput", "latency-percentiles", "failure-breakdown", "cpu-memory", "blocks-pending"]
-	{
+	for name in [
+		"throughput",
+		"latency-percentiles",
+		"failure-breakdown",
+		"cpu-memory",
+		"blocks-pending",
+		"node-resources",
+	] {
 		let path = run_dir.join("plots").join(format!("{name}.svg"));
 		if fs::metadata(&path).map_err(|error| error.to_string())?.len() < 80 {
 			return Err(format!("missing or empty plot {}", path.display()));
@@ -92,15 +99,21 @@ pub fn read_dashboard(run_dir: &Path) -> Result<DashboardReport, String> {
 	validate(run_dir)?;
 	let summary =
 		fs::read_to_string(run_dir.join("summary.md")).map_err(|error| error.to_string())?;
-	let plots =
-		["throughput", "latency-percentiles", "failure-breakdown", "cpu-memory", "blocks-pending"]
-			.into_iter()
-			.map(|name| {
-				let svg = fs::read_to_string(run_dir.join("plots").join(format!("{name}.svg")))
-					.map_err(|error| error.to_string())?;
-				Ok(DashboardPlot { name: name.into(), svg })
-			})
-			.collect::<Result<Vec<_>, String>>()?;
+	let plots = [
+		"throughput",
+		"latency-percentiles",
+		"failure-breakdown",
+		"cpu-memory",
+		"blocks-pending",
+		"node-resources",
+	]
+	.into_iter()
+	.map(|name| {
+		let svg = fs::read_to_string(run_dir.join("plots").join(format!("{name}.svg")))
+			.map_err(|error| error.to_string())?;
+		Ok(DashboardPlot { name: name.into(), svg })
+	})
+	.collect::<Result<Vec<_>, String>>()?;
 	Ok(DashboardReport { summary, plots })
 }
 
@@ -139,6 +152,16 @@ fn summary_markdown(samples: &[SampleRecord], telemetry: &[TelemetryRecord]) -> 
 		.filter_map(|record| record.pending_extrinsics)
 		.max()
 		.unwrap_or_default();
+	let max_node_rss = telemetry.iter().filter_map(|record| record.node_rss_kib).max();
+	let max_node_ready = telemetry.iter().filter_map(|record| record.node_ready_transactions).max();
+	let max_node_cpu = telemetry
+		.windows(2)
+		.filter_map(|records| {
+			let elapsed = records[1].elapsed_ms.saturating_sub(records[0].elapsed_ms);
+			let cpu = records[1].node_cpu_seconds_total? - records[0].node_cpu_seconds_total?;
+			(elapsed > 0 && cpu >= 0.0).then_some(cpu * 100_000.0 / elapsed as f64)
+		})
+		.fold(0.0, f64::max);
 	let final_best = telemetry
 		.last()
 		.and_then(|record| record.best_block)
@@ -147,7 +170,16 @@ fn summary_markdown(samples: &[SampleRecord], telemetry: &[TelemetryRecord]) -> 
 		.last()
 		.and_then(|record| record.finalized_block)
 		.map_or_else(|| "n/a".into(), |block| block.to_string());
-	format!("# Polkameter Run\n\n| Metric | Result |\n|---|---:|\n| Samples | {total} |\n| Successful | {success} |\n| Failed | {failed} |\n| Timed out | {timed_out} |\n| Max sample elapsed | {elapsed} ms |\n| Latency p50 | {} ms |\n| Latency p95 | {} ms |\n| Latency p99 | {} ms |\n| Max CPU | {max_cpu:.1}% |\n| Max RSS | {max_rss} KiB |\n| Max pending extrinsics | {max_pending} |\n| Final best block | {final_best} |\n| Final finalized block | {final_finalized} |\n", percentile(&latencies, 50), percentile(&latencies, 95), percentile(&latencies, 99))
+	let mut node_rows = String::new();
+	if let Some(rss) = max_node_rss {
+		node_rows.push_str(&format!(
+			"| Node max RSS | {rss} KiB |\n| Node max CPU | {max_node_cpu:.1}% |\n"
+		));
+	}
+	if let Some(ready) = max_node_ready {
+		node_rows.push_str(&format!("| Node max ready transactions | {ready} |\n"));
+	}
+	format!("# Polkameter Run\n\n| Metric | Result |\n|---|---:|\n| Samples | {total} |\n| Successful | {success} |\n| Failed | {failed} |\n| Timed out | {timed_out} |\n| Max sample elapsed | {elapsed} ms |\n| Latency p50 | {} ms |\n| Latency p95 | {} ms |\n| Latency p99 | {} ms |\n| Max CPU | {max_cpu:.1}% |\n| Max RSS | {max_rss} KiB |\n| Max pending extrinsics | {max_pending} |\n{node_rows}| Final best block | {final_best} |\n| Final finalized block | {final_finalized} |\n", percentile(&latencies, 50), percentile(&latencies, 95), percentile(&latencies, 99))
 }
 
 fn percentile(values: &[u64], percentile: usize) -> u64 {
@@ -217,6 +249,30 @@ fn blocks_svg(telemetry: &[TelemetryRecord]) -> String {
 		})
 		.collect();
 	chart("Blocks and pending extrinsics", "pending extrinsics", points, "#ce8f38")
+}
+
+fn node_resources_svg(telemetry: &[TelemetryRecord]) -> String {
+	let first = telemetry.first().map(|record| record.elapsed_ms).unwrap_or_default();
+	let rss_points: Vec<_> = telemetry
+		.iter()
+		.filter_map(|record| {
+			record
+				.node_rss_kib
+				.map(|rss| (record.elapsed_ms.saturating_sub(first) / 1_000, rss))
+		})
+		.collect();
+	if !rss_points.is_empty() {
+		return chart("Node resources", "node RSS KiB", rss_points, "#b65b89");
+	}
+	let ready_points: Vec<_> = telemetry
+		.iter()
+		.filter_map(|record| {
+			record
+				.node_ready_transactions
+				.map(|ready| (record.elapsed_ms.saturating_sub(first) / 1_000, ready))
+		})
+		.collect();
+	chart("Node resources", "node ready transactions", ready_points, "#b65b89")
 }
 
 fn chart(title: &str, unit: &str, points: Vec<(u64, u64)>, color: &str) -> String {
@@ -292,7 +348,7 @@ mod tests {
 		let report = write(&writer.directory).expect("report written");
 		writer.write_summary(&report.summary).expect("summary written");
 		let dashboard = read_dashboard(&writer.directory).expect("dashboard readable");
-		assert_eq!(dashboard.plots.len(), 5);
+		assert_eq!(dashboard.plots.len(), 6);
 		assert!(dashboard.summary.contains("Samples | 0"));
 		let _ = fs::remove_dir_all(directory);
 	}

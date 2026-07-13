@@ -3,15 +3,18 @@ use std::{
 	time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use futures::stream::{self, StreamExt};
-use serde::Serialize;
-use tokio::sync::{watch, Mutex};
+use futures::{
+	future,
+	stream::{self, StreamExt},
+};
+use serde::{Deserialize, Serialize};
+use tokio::sync::{watch, Mutex, Semaphore};
 
 use crate::{
 	artifacts::{new_run_id, ArtifactWriter, EventRecord, SampleRecord},
 	scenario::{
-		signer_offset, CompletionBoundary, SamplerPhase, ScenarioDocument, TransactionProfile,
-		TransactionSampler,
+		signer_offset, CompletionBoundary, SamplerPhase, ScenarioDocument, ThreadGroup,
+		TransactionProfile, TransactionSampler,
 	},
 	scheduler,
 	subxt_adapter::{Submission, SubxtRuntimeAdapter},
@@ -23,7 +26,7 @@ pub struct RunnerState {
 	status: Mutex<RunStatus>,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunStatus {
 	pub state: String,
@@ -106,6 +109,97 @@ pub async fn start(
 	Ok(status)
 }
 
+async fn run_group_phase(
+	runtime: Arc<SubxtRuntimeAdapter>,
+	document: ScenarioDocument,
+	group: ThreadGroup,
+	group_position: usize,
+	phase: SamplerPhase,
+	run_id: String,
+	cancel: watch::Receiver<bool>,
+	deadline: tokio::time::Instant,
+	global_sample_gate: Option<Arc<Semaphore>>,
+) -> Result<Vec<TaskResult>, String> {
+	let samplers = group
+		.samplers
+		.iter()
+		.filter(|sampler| same_phase(&sampler.phase, &phase))
+		.cloned()
+		.collect::<Vec<_>>();
+	if samplers.is_empty() {
+		return Ok(Vec::new());
+	}
+	let signer_offset = signer_offset(&document, group_position);
+	let scheduled_users = if matches!(phase, SamplerPhase::Transaction) {
+		scheduler::offsets(group.users, &group.arrival, document.test_plan.seed)?
+			.into_iter()
+			.enumerate()
+			.map(|(index, offset)| (index as u32, offset))
+			.collect::<Vec<_>>()
+	} else {
+		vec![(0, 0)]
+	};
+	let phase_concurrency =
+		if matches!(phase, SamplerPhase::Transaction) { group.concurrency as usize } else { 1 };
+	let iterations = if matches!(phase, SamplerPhase::Transaction) { group.iterations } else { 1 };
+	Ok(stream::iter(scheduled_users)
+		.map(|(index, offset_ms)| {
+			let runtime = runtime.clone();
+			let document = document.clone();
+			let group_name = group.name.clone();
+			let samplers = samplers.clone();
+			let cancel = cancel.clone();
+			let run_id = run_id.clone();
+			let global_sample_gate = global_sample_gate.clone();
+			let iterations = iterations;
+			async move {
+				let signer_index = signer_offset + index;
+				let cancelled = tokio::select! {
+					cancelled = wait_or_cancel(Duration::from_millis(offset_ms), cancel.clone()) => cancelled,
+					_ = tokio::time::sleep_until(deadline) => return TaskResult::run_timeout(signer_index, group_name),
+				};
+				if cancelled {
+					return TaskResult::cancelled(signer_index, group_name);
+				}
+				let _permit = if let Some(gate) = global_sample_gate {
+					let mut permit_cancel = cancel.clone();
+					Some(tokio::select! {
+						permit = gate.acquire_owned() => match permit {
+							Ok(permit) => permit,
+							Err(_) => return TaskResult::run_timeout(signer_index, group_name),
+						},
+						_ = permit_cancel.changed() => return TaskResult::cancelled(signer_index, group_name),
+						_ = tokio::time::sleep_until(deadline) => return TaskResult::run_timeout(signer_index, group_name),
+					})
+				} else {
+					None
+				};
+				match tokio::time::timeout(
+					deadline.saturating_duration_since(tokio::time::Instant::now()),
+					execute_user(
+						&runtime,
+						&document,
+						&group_name,
+						signer_index,
+						&samplers,
+						iterations,
+						&run_id,
+						cancel,
+						Duration::from_millis(document.test_plan.limits.shutdown_drain_timeout_ms),
+					),
+				)
+				.await
+				{
+					Ok(result) => result,
+					Err(_) => TaskResult::run_timeout(signer_index, group_name),
+				}
+			}
+		})
+		.buffer_unordered(phase_concurrency)
+		.collect::<Vec<_>>()
+		.await)
+}
+
 #[allow(dead_code)]
 pub async fn run_headless(
 	document: ScenarioDocument,
@@ -165,6 +259,9 @@ async fn execute(
 		Ok(runtime) => Arc::new(runtime),
 		Err(error) => return failed_artifact(writer, &counts, error),
 	};
+	if let Err(error) = runtime.fund_derived_signers(&document, &run_id).await {
+		return failed_artifact(writer, &counts, error);
+	}
 	if let Err(error) = runtime.ensure_ready(&document, &run_id).await {
 		return failed_artifact(writer, &counts, error);
 	}
@@ -180,80 +277,56 @@ async fn execute(
 	let telemetry = crate::telemetry::spawn(
 		&writer.directory,
 		document.chain.endpoint.clone(),
+		document.chain.prometheus_endpoint.clone(),
 		started,
 		state.clone(),
 	)?;
+	let global_sample_gate =
+		Arc::new(Semaphore::new(document.test_plan.limits.max_concurrent_samples as usize));
 
 	for phase in [SamplerPhase::Setup, SamplerPhase::Transaction, SamplerPhase::Teardown] {
-		for (group_position, group) in document.thread_groups.iter().enumerate() {
-			let signer_offset = signer_offset(&document, group_position);
-			let samplers = group
-				.samplers
-				.iter()
-				.filter(|sampler| same_phase(&sampler.phase, &phase))
-				.cloned()
-				.collect::<Vec<_>>();
-			if samplers.is_empty() {
-				continue;
+		let group_results = if matches!(phase, SamplerPhase::Transaction) {
+			future::try_join_all(document.thread_groups.iter().cloned().enumerate().map(
+				|(group_position, group)| {
+					run_group_phase(
+						runtime.clone(),
+						document.clone(),
+						group,
+						group_position,
+						phase,
+						run_id.clone(),
+						cancel.clone(),
+						deadline,
+						Some(global_sample_gate.clone()),
+					)
+				},
+			))
+			.await?
+		} else {
+			let mut results = Vec::new();
+			for (group_position, group) in document.thread_groups.iter().cloned().enumerate() {
+				results.push(
+					run_group_phase(
+						runtime.clone(),
+						document.clone(),
+						group,
+						group_position,
+						phase,
+						run_id.clone(),
+						cancel.clone(),
+						deadline,
+						None,
+					)
+					.await?,
+				);
+				if *cancel.borrow() {
+					break;
+				}
 			}
-			let scheduled_users = if matches!(&phase, SamplerPhase::Transaction) {
-				scheduler::offsets(group.users, &group.arrival, document.test_plan.seed)?
-					.into_iter()
-					.enumerate()
-					.map(|(index, offset)| (index as u32, offset))
-					.collect::<Vec<_>>()
-			} else {
-				vec![(0, 0)]
-			};
-			let phase_concurrency = if matches!(&phase, SamplerPhase::Transaction) {
-				group.concurrency as usize
-			} else {
-				1
-			};
-			let phase_result = stream::iter(scheduled_users)
-				.map(|(index, offset_ms)| {
-					let runtime = runtime.clone();
-					let document = document.clone();
-					let group_name = group.name.clone();
-					let samplers = samplers.clone();
-					let cancel = cancel.clone();
-					let deadline = deadline;
-					let run_id = run_id.clone();
-					async move {
-						let signer_index = signer_offset + index;
-						let cancelled = tokio::select! {
-							cancelled = wait_or_cancel(Duration::from_millis(offset_ms), cancel.clone()) => cancelled,
-							_ = tokio::time::sleep_until(deadline) => return TaskResult::run_timeout(signer_index, group_name),
-						};
-						if cancelled {
-							return TaskResult::cancelled(signer_index, group_name);
-						}
-						match tokio::time::timeout(
-								deadline.saturating_duration_since(tokio::time::Instant::now()),
-								execute_user(
-									&runtime,
-									&document,
-									&group_name,
-									signer_index,
-									&samplers,
-									&run_id,
-									cancel,
-									Duration::from_millis(
-										document.test_plan.limits.shutdown_drain_timeout_ms,
-									),
-								),
-						)
-						.await
-						{
-							Ok(result) => result,
-							Err(_) => TaskResult::run_timeout(signer_index, group_name),
-						}
-					}
-				})
-				.buffer_unordered(phase_concurrency)
-				.collect::<Vec<_>>()
-				.await;
-			for task in phase_result {
+			results
+		};
+		for group_result in group_results {
+			for task in group_result {
 				for result in task.samples {
 					if let Err(error) = record_result(
 						&mut writer,
@@ -269,9 +342,6 @@ async fn execute(
 						return failed_artifact(writer, &counts, error);
 					}
 				}
-			}
-			if *cancel.borrow() {
-				break;
 			}
 		}
 		if *cancel.borrow() {
@@ -343,34 +413,39 @@ async fn execute_user(
 	group_name: &str,
 	index: u32,
 	samplers: &[TransactionSampler],
+	iterations: u32,
 	run_id: &str,
 	cancel: watch::Receiver<bool>,
 	shutdown_drain_timeout: Duration,
 ) -> TaskResult {
 	let mut samples = Vec::new();
-	for sampler in samplers {
-		if *cancel.borrow() {
-			samples.push(TaskSample::aborted(group_name, index, sampler));
-			break;
-		}
-		let start = now_ms();
-		let submission = runtime.submit(document, index, run_id, sampler);
-		tokio::pin!(submission);
-		let mut cancellation = cancel.clone();
-		let result = tokio::select! {
-			result = &mut submission => Some(result),
-			_ = cancellation.changed() => tokio::time::timeout(shutdown_drain_timeout, &mut submission).await.ok(),
-		};
-		let end = now_ms();
-		samples.push(match result {
-			None => TaskSample::aborted_after_stop(group_name, index, sampler, start, end),
-			Some(Ok(submission)) => {
-				assertion_result(group_name, index, sampler, start, end, submission)
-			},
-			Some(Err(error)) => TaskSample::failure(group_name, index, sampler, start, end, error),
-		});
-		if *cancel.borrow() {
-			break;
+	for _ in 0..iterations {
+		for sampler in samplers {
+			if *cancel.borrow() {
+				samples.push(TaskSample::aborted(group_name, index, sampler));
+				return TaskResult { samples };
+			}
+			let start = now_ms();
+			let submission = runtime.submit(document, index, run_id, sampler);
+			tokio::pin!(submission);
+			let mut cancellation = cancel.clone();
+			let result = tokio::select! {
+				result = &mut submission => Some(result),
+				_ = cancellation.changed() => tokio::time::timeout(shutdown_drain_timeout, &mut submission).await.ok(),
+			};
+			let end = now_ms();
+			samples.push(match result {
+				None => TaskSample::aborted_after_stop(group_name, index, sampler, start, end),
+				Some(Ok(submission)) => {
+					assertion_result(group_name, index, sampler, start, end, submission)
+				},
+				Some(Err(error)) => {
+					TaskSample::failure(group_name, index, sampler, start, end, error)
+				},
+			});
+			if *cancel.borrow() {
+				return TaskResult { samples };
+			}
 		}
 	}
 	TaskResult { samples }
@@ -668,6 +743,15 @@ fn abort_sampler() -> TransactionSampler {
 mod tests {
 	use super::*;
 
+	#[derive(Default)]
+	struct RecordingSink(std::sync::Mutex<Vec<RunEvent>>);
+
+	impl RunEventSink for RecordingSink {
+		fn emit(&self, event: RunEvent) {
+			self.0.lock().expect("event sink lock").push(event);
+		}
+	}
+
 	#[tokio::test]
 	async fn scheduled_wait_stops_when_cancellation_arrives() {
 		let (stop, receiver) = watch::channel(false);
@@ -720,6 +804,14 @@ mod tests {
 	#[tokio::test]
 	#[ignore = "requires a fresh local Polkadot dev node at POLKAMETER_E2E_RPC"]
 	async fn fresh_dev_chain_run_writes_validated_artifacts() {
+		let total_users = e2e_u32("POLKAMETER_E2E_USERS", 5);
+		assert!(total_users >= 2, "POLKAMETER_E2E_USERS must be at least two");
+		let iterations = e2e_u32("POLKAMETER_E2E_ITERATIONS", 2);
+		let requested_concurrency = e2e_u32("POLKAMETER_E2E_CONCURRENCY", 2);
+		let max_concurrent_samples = e2e_u32("POLKAMETER_E2E_MAX_CONCURRENT_SAMPLES", 2);
+		let funding_batch_size = e2e_u32("POLKAMETER_E2E_FUNDING_BATCH_SIZE", 2);
+		assert!(funding_batch_size <= 100, "POLKAMETER_E2E_FUNDING_BATCH_SIZE must not exceed 100");
+		let test_timeout_secs = e2e_u64("POLKAMETER_E2E_TEST_TIMEOUT_SECS", 240);
 		let endpoint =
 			std::env::var("POLKAMETER_E2E_RPC").unwrap_or_else(|_| "ws://127.0.0.1:9944".into());
 		let retained_output = std::env::var_os("POLKAMETER_E2E_OUTPUT_ROOT");
@@ -729,16 +821,38 @@ mod tests {
 		);
 		let mut document = crate::artifacts::test_scenario();
 		document.chain.endpoint = endpoint;
-		document.signer_source.derivation_path.clear();
-		let sampler = &mut document.thread_groups[0].samplers[0];
-		sampler.arguments = serde_json::json!({
+		document.chain.prometheus_endpoint = Some(
+			std::env::var("POLKAMETER_E2E_PROMETHEUS")
+				.unwrap_or_else(|_| "http://127.0.0.1:9615/metrics".into()),
+		);
+		document.signer_source.funding = Some(crate::scenario::DevelopmentFunding {
+			amount: "10000000000000".into(),
+			finality_timeout_ms: 30_000,
+			batch_size: funding_batch_size,
+		});
+		let primary_users = total_users.div_ceil(2);
+		let secondary_users = total_users - primary_users;
+		document.thread_groups[0].users = primary_users;
+		document.thread_groups[0].concurrency = requested_concurrency.min(primary_users);
+		document.thread_groups[0].iterations = iterations;
+		document.test_plan.limits.max_concurrent_samples = max_concurrent_samples;
+		let mut second_group = document.thread_groups[0].clone();
+		second_group.name = "secondary users".into();
+		second_group.users = secondary_users;
+		second_group.concurrency = requested_concurrency.min(secondary_users);
+		document.thread_groups.push(second_group);
+		let arguments = serde_json::json!({
 			"dest": {
 				"$variant": "Id",
 				"value": { "$bytes": "0x8eaf04151687736326c9fea17e25fc5287613693c912909cb226aa4794f26a48" }
 			},
 			"value": "1000000000000"
 		});
-		sampler.finality_timeout_ms = 30_000;
+		for group in &mut document.thread_groups {
+			let sampler = &mut group.samplers[0];
+			sampler.arguments = arguments.clone();
+			sampler.finality_timeout_ms = 30_000;
+		}
 		std::fs::create_dir_all(&root).expect("output directory created");
 		let saved = root.join("fresh-dev.polkameter.json");
 		std::fs::write(
@@ -758,14 +872,53 @@ mod tests {
 		let preflight = crate::preflight::preflight(&reopened, &run_id)
 			.await
 			.expect("metadata preflight");
-		assert!(preflight.selected_calls.iter().all(|call| call.encodable));
+		assert!(
+			preflight.selected_calls.iter().all(|call| call.encodable),
+			"metadata preflight rejected the fixture call: {:#?}",
+			preflight.selected_calls
+		);
 
-		let status = run_headless_with_run_id(reopened, root.display().to_string(), run_id)
-			.await
-			.expect("run succeeds");
-		assert_eq!(status.state, "completed");
-		assert_eq!(status.failed_samples, 0);
-		let run_dir = std::path::PathBuf::from(status.artifact_dir.expect("artifact directory"));
+		let state = std::sync::Arc::new(RunnerState::default());
+		let sink = std::sync::Arc::new(RecordingSink::default());
+		let arming =
+			start(reopened, root.display().to_string(), run_id, sink.clone(), state.clone())
+				.await
+				.expect("run arms");
+		assert_eq!(arming.state, "arming");
+		let final_status = tokio::time::timeout(Duration::from_secs(test_timeout_secs), async {
+			loop {
+				let current = status(state.clone()).await;
+				if matches!(
+					current.state.as_str(),
+					"completed" | "completed_with_failures" | "failed"
+				) {
+					return current;
+				}
+				tokio::time::sleep(Duration::from_millis(100)).await;
+			}
+		})
+		.await
+		.expect("run completes before the test deadline");
+		assert_eq!(final_status.state, "completed");
+		assert_eq!(final_status.failed_samples, 0);
+		assert_eq!(final_status.successful_samples, u64::from(total_users) * u64::from(iterations));
+		let telemetry = std::fs::read_to_string(
+			final_status.artifact_dir.as_ref().expect("artifact directory").to_owned()
+				+ "/telemetry.jsonl",
+		)
+		.expect("telemetry readable");
+		assert!(
+			telemetry.contains("\"node_ready_transactions\":0"),
+			"Prometheus node telemetry was not recorded"
+		);
+		assert!(sink
+			.0
+			.lock()
+			.expect("event sink lock")
+			.iter()
+			.any(|event| matches!(event, RunEvent::Sample(sample) if sample.success)));
+		let run_dir =
+			std::path::PathBuf::from(final_status.artifact_dir.expect("artifact directory"));
 		crate::report::validate(&run_dir).expect("artifact bundle validates");
 		let samples =
 			std::fs::read_to_string(run_dir.join("samples.jtl")).expect("samples readable");
@@ -773,5 +926,23 @@ mod tests {
 		if retained_output.is_none() {
 			let _ = std::fs::remove_dir_all(root);
 		}
+	}
+
+	fn e2e_u32(name: &str, default: u32) -> u32 {
+		std::env::var(name).ok().map_or(default, |value| {
+			let parsed =
+				value.parse().unwrap_or_else(|_| panic!("{name} must be a positive integer"));
+			assert!(parsed > 0, "{name} must be a positive integer");
+			parsed
+		})
+	}
+
+	fn e2e_u64(name: &str, default: u64) -> u64 {
+		std::env::var(name).ok().map_or(default, |value| {
+			let parsed =
+				value.parse().unwrap_or_else(|_| panic!("{name} must be a positive integer"));
+			assert!(parsed > 0, "{name} must be a positive integer");
+			parsed
+		})
 	}
 }

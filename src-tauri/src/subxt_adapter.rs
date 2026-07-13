@@ -1,6 +1,6 @@
 use std::{str::FromStr, time::Duration};
 
-use subxt::{dynamic, OnlineClient, PolkadotConfig};
+use subxt::{dynamic, tx::DynamicPayload, OnlineClient, PolkadotConfig};
 use subxt_signer::{sr25519::Keypair, SecretUri};
 
 use crate::scenario::{
@@ -60,6 +60,68 @@ impl SubxtRuntimeAdapter {
 			})?;
 		}
 		Ok(())
+	}
+
+	pub async fn fund_derived_signers(
+		&self,
+		document: &ScenarioDocument,
+		run_id: &str,
+	) -> Result<u32, String> {
+		let Some(funding) = &document.signer_source.funding else {
+			return Ok(0);
+		};
+		let amount = funding
+			.amount
+			.parse::<u128>()
+			.map_err(|error| format!("invalid funding amount: {error}"))?;
+		let funder = base_signer(document)?;
+		let recipients = (0..required_signer_count(document))
+			.filter(|index| {
+				signer_suri(document, *index, run_id) != document.signer_source.base_suri
+			})
+			.map(|index| {
+				derive_signer(document, index, run_id)
+					.map(|signer| (index, signer.public_key().to_account_id()))
+			})
+			.collect::<Result<Vec<_>, _>>()?;
+		let mut funded = 0;
+		for batch in recipients.chunks(funding.batch_size as usize) {
+			let first_index = batch.first().map(|(index, _)| *index).unwrap_or_default();
+			let last_index = batch.last().map(|(index, _)| *index).unwrap_or_default();
+			let calls = batch
+				.iter()
+				.map(|(_, recipient)| {
+					funding_transfer_call(recipient, amount).map(|call| call.into_value())
+				})
+				.collect::<Result<Vec<_>, _>>()?;
+			let call =
+				dynamic::tx("Utility", "batch_all", vec![dynamic::Value::unnamed_composite(calls)]);
+			let finalize =
+				async {
+					self.client
+						.tx()
+						.sign_and_submit_then_watch_default(&call, &funder)
+						.await
+						.map_err(|error| {
+							format!("could not submit funding batch {first_index}..={last_index}: {error}")
+						})?
+						.wait_for_finalized_success()
+						.await
+						.map_err(|error| {
+							format!("funding batch {first_index}..={last_index} did not finalize successfully: {error}")
+						})
+				};
+			tokio::time::timeout(Duration::from_millis(funding.finality_timeout_ms), finalize)
+				.await
+				.map_err(|_| {
+					format!(
+						"funding batch {first_index}..={last_index} exceeded the {} ms finality deadline",
+						funding.finality_timeout_ms
+					)
+				})??;
+			funded += batch.len() as u32;
+		}
+		Ok(funded)
 	}
 
 	pub async fn submit(
@@ -133,4 +195,29 @@ fn derive_signer(document: &ScenarioDocument, index: u32, run_id: &str) -> Resul
 	let uri = SecretUri::from_str(&signer_suri(document, index, run_id))
 		.map_err(|error| format!("invalid signer SURI: {error}"))?;
 	Keypair::from_uri(&uri).map_err(|error| format!("could not derive signer: {error}"))
+}
+
+fn base_signer(document: &ScenarioDocument) -> Result<Keypair, String> {
+	let uri = SecretUri::from_str(&document.signer_source.base_suri)
+		.map_err(|error| format!("invalid base signer SURI: {error}"))?;
+	Keypair::from_uri(&uri).map_err(|error| format!("could not derive base signer: {error}"))
+}
+
+fn funding_transfer_call(
+	recipient: &subxt::utils::AccountId32,
+	amount: u128,
+) -> Result<DynamicPayload, String> {
+	Ok(dynamic::tx(
+		"Balances",
+		"transfer_keep_alive",
+		crate::preflight::arguments_to_composite_for_runner(&serde_json::json!({
+			"dest": {
+				"$variant": "Id",
+				"value": {
+					"$bytes": format!("0x{}", hex::encode(<subxt::utils::AccountId32 as AsRef<[u8]>>::as_ref(recipient)))
+				}
+			},
+			"value": amount.to_string()
+		}))?,
+	))
 }
