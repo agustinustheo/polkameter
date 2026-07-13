@@ -4,7 +4,7 @@ use serde::Serialize;
 use subxt::{
 	dynamic::{self, Value},
 	ext::scale_value::{Composite, ValueDef},
-	OnlineClient, PolkadotConfig,
+	OnlineClient, OnlineClientAtBlock, PolkadotConfig,
 };
 use subxt_signer::{sr25519::Keypair, SecretUri};
 
@@ -83,7 +83,11 @@ pub async fn preflight(
 	let client = OnlineClient::<PolkadotConfig>::from_insecure_url(&document.chain.endpoint)
 		.await
 		.map_err(|error| format!("could not connect to {}: {error}", document.chain.endpoint))?;
-	let metadata = client.metadata();
+	let at_block = client
+		.at_current_block()
+		.await
+		.map_err(|error| format!("could not read the current block for preflight: {error}"))?;
+	let metadata = at_block.metadata();
 	let pallets = metadata
 		.pallets()
 		.map(|pallet| PalletSchema {
@@ -99,12 +103,11 @@ pub async fn preflight(
 	let mut selected_calls = Vec::new();
 	for group in &document.thread_groups {
 		for sampler in &group.samplers {
-			selected_calls.push(validate_sampler(&client, &group.name, sampler));
+			selected_calls.push(validate_sampler(&at_block, &group.name, sampler));
 		}
 	}
 
 	let derived_accounts = derive_accounts(document, run_id, 8)?;
-	let runtime_version = client.runtime_version();
 	let metadata_hash = format!("0x{}", hex::encode(metadata.hasher().hash()));
 	let genesis_hash = format!("{:#x}", client.genesis_hash());
 	let resolved_sample_count = document
@@ -118,8 +121,8 @@ pub async fn preflight(
 		signer_derivation_root: signer_derivation_root(document, run_id),
 		endpoint: document.chain.endpoint.clone(),
 		genesis_hash,
-		spec_version: runtime_version.spec_version,
-		transaction_version: runtime_version.transaction_version,
+		spec_version: at_block.spec_version(),
+		transaction_version: at_block.transaction_version(),
 		metadata_hash,
 		pallets,
 		selected_calls,
@@ -137,7 +140,7 @@ pub async fn preflight(
 }
 
 fn validate_sampler(
-	client: &OnlineClient<PolkadotConfig>,
+	client: &OnlineClientAtBlock<PolkadotConfig>,
 	group_name: &str,
 	sampler: &TransactionSampler,
 ) -> CallValidation {
