@@ -73,8 +73,11 @@ pub fn import(xml: &str) -> Result<JmxImportReport, String> {
 			},
 			Event::Text(text) => {
 				if let (Some(group), Some(property)) = (current.as_mut(), property.as_deref()) {
-					let value =
-						text.unescape().map_err(|error| error.to_string())?.parse::<u64>().ok();
+					let decoded = text.decode().map_err(|error| error.to_string())?;
+					let value = quick_xml::escape::unescape(&decoded)
+						.map_err(|error| error.to_string())?
+						.parse::<u64>()
+						.ok();
 					match property {
 						"ThreadGroup.num_threads" => {
 							group.users = value.unwrap_or(1).try_into().unwrap_or(u32::MAX)
