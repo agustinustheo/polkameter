@@ -15,8 +15,8 @@ importers:
         specifier: ^1.6.0
         version: 1.6.0
       lucide:
-        specifier: ^0.468.0
-        version: 0.468.0
+        specifier: ^1.24.0
+        version: 1.24.0
     devDependencies:
       '@tauri-apps/cli':
         specifier: ^2.11.0
@@ -517,8 +517,8 @@ packages:
   loupe@3.2.1:
     resolution: {integrity: sha512-CdzqowRJCeLU72bHvWqwRBBlLcMEtIvGrlvef74kMnV2AolS9Y8xUv1I0U/MNAWMhBlKIoyuEgoJ0t/bbwHbLQ==}
 
-  lucide@0.468.0:
-    resolution: {integrity: sha512-UFbgwji/ZnAV7iTTE4jujyTV7J95AILKyATDUrqOJrMcUGfXvGjw3c1mcuHZUX2oJfkrAGU9KoxkrLQk2jjtiA==}
+  lucide@1.24.0:
+    resolution: {integrity: sha512-oMAaeuNDc5VCnBb3IjwKYGRT56tqanUm1fyDFT5Tl8hWSZND59gztgjvXje08jKLPVAq0gHJcwZUE8GCQxzBeg==}
 
   magic-string@0.30.21:
     resolution: {integrity: sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ==}
@@ -1006,7 +1006,7 @@ snapshots:
 
   loupe@3.2.1: {}
 
-  lucide@0.468.0: {}
+  lucide@1.24.0: {}
 
   magic-string@0.30.21:
     dependencies:
