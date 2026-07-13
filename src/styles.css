@@ -186,6 +186,11 @@ body { min-width: 0; overflow: hidden; }
 .metric { min-width: 0; }
 .editor-scroll { flex: 1 1 auto; min-height: 0; }
 
+/* The whole top bar is a window drag region. Tauri only starts a drag when the element under
+   the cursor carries data-tauri-drag-region, so lockup children must not capture the pointer. */
+.product-lockup * { pointer-events: none; }
+.state-pill { pointer-events: none; }
+
 /* Hover states per surface: dark hovers belong to the topbar, light panels get stone hovers. */
 .icon-button:hover { background: transparent; border-color: transparent; }
 .topbar .icon-button:hover { background: #292524; border-color: #57534e; }

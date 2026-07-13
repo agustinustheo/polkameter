@@ -191,7 +191,7 @@ function render(): void {
 
   document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
     <main class="shell">
-      <header class="topbar">
+      <header class="topbar" data-tauri-drag-region>
         <div class="product-lockup" data-tauri-drag-region>
           <div class="product-mark"><img src="${polkameterMark}" alt="Polkameter"/></div>
           <div>
