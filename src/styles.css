@@ -41,7 +41,7 @@ button { cursor: pointer; }
 .topbar { background: #0f0f0f; color: #f5f5f4; border-bottom-color: #000; }
 .product-lockup { gap: 11px; }
 .product-mark { width: 24px; height: 24px; display: grid; place-items: center; background: transparent; border-radius: 0; }
-.product-mark img { display: block; width: 24px; height: 24px; object-fit: cover; }
+.product-mark img { display: block; width: 24px; height: 24px; object-fit: contain; }
 .product-name { font-family: ui-serif, Georgia, Cambria, "Times New Roman", serif; font-size: 18px; font-weight: 700; line-height: 18px; }
 .product-subtitle { color: #d6d3d1; }
 .state-pill { border-color: #57534e; color: #f5f5f4; }
@@ -176,6 +176,49 @@ body { min-width: 0; overflow: hidden; }
 .form-section { scroll-margin-top: 16px; }
 .form-grid.two { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
 .split-section { grid-template-columns: minmax(0, 1fr) minmax(230px, 310px); }
+/* Frozen panes: the shell never scrolls; each rail and the editor scrolls independently. */
+.workspace { min-height: 0; }
+.plan-panel, .editor-panel, .monitor-panel { min-height: 0; }
+.plan-panel { overflow: hidden; }
+.plan-tree { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.monitor-panel { overflow-y: auto; overflow-x: hidden; }
+.metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.metric { min-width: 0; }
+.editor-scroll { flex: 1 1 auto; min-height: 0; }
+
+/* Hover states per surface: dark hovers belong to the topbar, light panels get stone hovers. */
+.icon-button:hover { background: transparent; border-color: transparent; }
+.topbar .icon-button:hover { background: #292524; border-color: #57534e; }
+.panel-heading .icon-button:hover { color: #171717; background: #e7e5e4; border-color: #d6d3d1; }
+.plan-actions .command-button:hover { background: #e7e5e4; border-color: #78716c; }
+.segment:not(.selected):hover { color: #171717; background: #e7e5e4; }
+.collector-list label:hover, .phase-chip:hover { border-color: #78716c; }
+.arrival-choice.selected:hover { border-color: #171717; }
+.tree-row.context { color: #171717; background: #d6d3d1; font-weight: 750; }
+.tree-row.context:hover { background: #c9c5c2; }
+.tree-row.context em { color: #171717; background: #fafaf9; }
+.tree-row.active:hover { background: #292524; }
+
+/* Execution path reflects the actual run: done steps fill, the active step pulses. */
+.execution-path li.done .step-icon { color: #f5f5f4; background: #171717; border-color: #171717; }
+.execution-path li.active .step-icon { color: #171717; border-color: #171717; animation: step-pulse 1.4s ease-in-out infinite; }
+@keyframes step-pulse { 0%, 100% { box-shadow: 0 0 0 0 #17171733; } 50% { box-shadow: 0 0 0 5px #17171714; } }
+.live-dot.running::before { background: #171717; animation: step-pulse 1.4s ease-in-out infinite; border-radius: 50%; }
+
+/* Guided tour popover follows the monochrome workbench palette. */
+.polkameter-tour.driver-popover { border: 1px solid #a8a29e; border-radius: 4px; color: #171717; background: #fafaf9; box-shadow: 0 10px 24px #17171726; }
+.polkameter-tour .driver-popover-title { color: #171717; font: inherit; font-size: 14px; font-weight: 750; }
+.polkameter-tour .driver-popover-description { color: #44403c; font: inherit; font-size: 12px; line-height: 17px; }
+.polkameter-tour .driver-popover-progress-text { color: #78716c; font-size: 11px; }
+.polkameter-tour .driver-popover-footer button { border: 1px solid #57534e; border-radius: 4px; padding: 4px 10px; color: #f5f5f4; background: #171717; text-shadow: none; font: inherit; font-size: 12px; font-weight: 700; }
+.polkameter-tour .driver-popover-footer button:hover { color: #171717; background: #e7e5e4; }
+.polkameter-tour .driver-popover-close-btn { color: #78716c; border: 0; background: transparent; }
+.polkameter-tour .driver-popover-close-btn:hover { color: #171717; background: transparent; }
+.polkameter-tour .driver-popover-arrow-side-left.driver-popover-arrow { border-left-color: #fafaf9; }
+.polkameter-tour .driver-popover-arrow-side-right.driver-popover-arrow { border-right-color: #fafaf9; }
+.polkameter-tour .driver-popover-arrow-side-top.driver-popover-arrow { border-top-color: #fafaf9; }
+.polkameter-tour .driver-popover-arrow-side-bottom.driver-popover-arrow { border-bottom-color: #fafaf9; }
+
 @media (max-width: 1040px) {
   .topbar { height: auto; min-height: 64px; align-items: flex-start; gap: 10px; padding: 12px 14px 12px 72px; }
   .topbar-actions { flex-wrap: wrap; justify-content: flex-end; }

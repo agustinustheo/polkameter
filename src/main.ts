@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   ChevronDown,
   CircleDot,
+  CircleHelp,
   ClipboardList,
   Cpu,
   createIcons,
@@ -15,6 +16,10 @@ import {
   FolderOpen,
   Gauge,
   GitBranch,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
   Play,
   RotateCcw,
   Save,
@@ -29,7 +34,8 @@ import type { ArrivalModel, Collector, DashboardReport, JmxImportReport, NativeS
 import { buildNativeScenario, removeSampler, removeThreadGroup, type EditablePhase, type EditableSampler, type EditableThreadGroup } from "./scenario-plan";
 import { decideRunIntent, preflightView } from "./run-state";
 import { appendLiveSample, liveMetrics, type LiveSample } from "./live-results";
-import polkadotMark from "./assets/polkadot-mark.jpg";
+import { maybeStartTour, refreshActiveTour, startTour } from "./tour";
+import polkameterMark from "./assets/polkameter-mark.png";
 import "./styles.css";
 
 const initialScenario: Scenario = {
@@ -82,6 +88,10 @@ let planPanelCollapsed = false;
 let monitorPanelCollapsed = false;
 let planPanelWidth = 240;
 let monitorPanelWidth = 320;
+let toastMessage = "";
+let toastVisible = false;
+let toastTimer: number | undefined;
+let remotePollFailures = 0;
 
 const PANEL_WIDTHS = {
   collapsed: 52,
@@ -161,15 +171,29 @@ function numericValue(value: string): number {
 }
 
 function render(): void {
+  const savedScrollTop = document.querySelector<HTMLElement>(".editor-scroll")?.scrollTop ?? 0;
+  const focused = document.activeElement;
+  const focusedId = focused instanceof HTMLElement ? focused.id : "";
+  const selection = focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement
+    ? { start: focused.selectionStart, end: focused.selectionEnd }
+    : undefined;
   const previewDuration = lastPreview ? formatDuration(lastPreview.durationMs) : "Not calculated";
   const resultState = lastValidation ? (lastValidation.valid ? "Ready" : "Needs attention") : "Draft";
   const resultClass = lastValidation?.valid ? "success" : lastValidation ? "warning" : "neutral";
+  const runActive = ["running", "arming", "stopping"].includes(runStatus.state);
+  const runFinished = ["completed", "completed_with_failures", "stopped", "failed"].includes(runStatus.state);
+  const monitorState = runStatus.state === "draft" ? (lastPreflight ? "Armed" : "Preview") : runStatus.state.replaceAll("_", " ");
+  const stepClass = (done: boolean, active: boolean) => (active ? "active" : done ? "done" : "");
+  const connectStep = stepClass(Boolean(lastPreflight) || runActive || runFinished, false);
+  const prepareStep = stepClass(runActive || runFinished, runStatus.state === "arming");
+  const sampleStep = stepClass(runFinished, runStatus.state === "running");
+  const collectStep = stepClass(runFinished, runStatus.state === "stopping");
 
   document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
     <main class="shell">
       <header class="topbar">
         <div class="product-lockup" data-tauri-drag-region>
-          <div class="product-mark"><img src="${polkadotMark}" alt="Polkadot"/></div>
+          <div class="product-mark"><img src="${polkameterMark}" alt="Polkameter"/></div>
           <div>
             <div class="product-name">Polkameter</div>
             <div class="product-subtitle">Polkadot SDK load workbench</div>
@@ -177,6 +201,7 @@ function render(): void {
         </div>
         <div class="topbar-actions">
           <span class="state-pill ${resultClass}"><span></span>${resultState}</span>
+          <button class="icon-button" id="tour-button" title="Guided tour"><i data-lucide="circle-help"></i></button>
           <button class="icon-button" id="reset-button" title="Reset scenario"><i data-lucide="rotate-ccw"></i></button>
           <button class="command-button quiet" id="load-button"><i data-lucide="folder-open"></i> Load scenario</button>
           <button class="command-button quiet" id="save-button"><i data-lucide="save"></i> Save scenario</button>
@@ -184,7 +209,7 @@ function render(): void {
 		  <button class="command-button quiet" id="import-jmx-button"><i data-lucide="folder-open"></i> Inspect JMX</button>
 		  <input id="import-jmx-file" type="file" accept=".jmx,application/xml,text/xml" hidden/>
           <button class="command-button quiet" id="preflight-button"><i data-lucide="cable"></i> Preflight chain</button>
-          <button class="command-button primary" id="run-button"><i data-lucide="${runStatus.state === "running" ? "square" : "play"}"></i> ${runStatus.state === "running" ? "Stop run" : "Arm and run"}</button>
+          <button class="command-button primary" id="run-button"><i data-lucide="${runActive ? "square" : "play"}"></i> ${runActive ? "Stop run" : "Arm and run"}</button>
         </div>
       </header>
 
@@ -194,7 +219,7 @@ function render(): void {
           <nav class="plan-tree" aria-label="Test plan">
             <button class="tree-row root ${activePlanNode === "plan" ? "active" : ""}" data-plan-node="plan"><i data-lucide="clipboard-list"></i><span>${escapeHtml(scenario.name)}</span></button>
             <button class="tree-row indent ${activePlanNode === "connection" ? "active" : ""}" data-plan-node="connection"><i data-lucide="cable"></i><span>Chain connection</span><em>1</em></button>
-            ${threadGroups.map((group) => `<button class="tree-row indent ${group.id === activeThreadGroupId ? "active" : ""}" data-thread-group="${group.id}"><i data-lucide="users"></i><span>${escapeHtml(group.name)}</span><em>${group.virtualUsers}</em></button>${group.samplers.map((sampler, index) => `<button class="tree-row indent-two phase-row ${group.id === activeThreadGroupId && index === activeSamplerIndex ? "active" : ""}" data-sampler-index="${index}"><i data-lucide="${sampler.phase === "setup" ? "wrench" : sampler.phase === "teardown" ? "flag" : "braces"}"></i><span>${escapeHtml(sampler.label)}</span><em>${sampler.phase === "transaction" ? group.concurrency : "1"}</em></button>`).join("")}`).join("")}
+            ${threadGroups.map((group) => `<button class="tree-row indent ${group.id === activeThreadGroupId ? "context" : ""}" data-thread-group="${group.id}"><i data-lucide="users"></i><span>${escapeHtml(group.name)}</span><em>${group.virtualUsers}</em></button>${group.samplers.map((sampler, index) => `<button class="tree-row indent-two phase-row ${group.id === activeThreadGroupId && index === activeSamplerIndex ? "active" : ""}" data-sampler-group="${group.id}" data-sampler-index="${index}"><i data-lucide="${sampler.phase === "setup" ? "wrench" : sampler.phase === "teardown" ? "flag" : "braces"}"></i><span>${escapeHtml(sampler.label)}</span><em>${sampler.phase === "transaction" ? group.concurrency : "1"}</em></button>`).join("")}`).join("")}
             <button class="tree-row indent ${activePlanNode === "assertions" ? "active" : ""}" data-plan-node="assertions"><i data-lucide="shield-check"></i><span>Assertions</span><em>1</em></button>
             <button class="tree-row indent ${activePlanNode === "collector" ? "active" : ""}" data-plan-node="collector"><i data-lucide="activity"></i><span>Collectors</span><em>5</em></button>
           </nav>
@@ -275,7 +300,7 @@ function render(): void {
               <div class="collector-list">${(["jtl", "events_jsonl", "telemetry_jsonl", "summary", "svg_plots"] as Collector[]).map((collector) => `<label><input type="checkbox" data-collector="${collector}" ${collectors.includes(collector) ? "checked" : ""}/><span>${collector.replaceAll("_", " ")}</span></label>`).join("")}</div>
             </section>
 
-            <section class="form-section">
+            <section class="form-section" id="arrival-section">
               <div class="section-title"><i data-lucide="timer"></i><div><h2>Arrival model</h2><p>Shape when virtual users reach the sampler.</p></div></div>
               <div class="arrival-layout">
                 <div class="segmented vertical" id="arrival-control">
@@ -294,18 +319,18 @@ function render(): void {
               </div>
             </section>
 
-            <section class="form-section result-section">
+            <section class="form-section result-section" id="preflight-section">
               <div class="section-title"><i data-lucide="cpu"></i><div><h2>Preflight</h2><p>Validation and schedule preview run in the Rust backend.</p></div></div>
               ${resultPanel()}
             </section>
-            ${liveResultsPanel()}
+            <div id="live-slot">${liveResultsPanel()}</div>
             ${reportPanel()}
           </div>
         </section>
         <div class="panel-resizer monitor-resizer ${monitorPanelCollapsed ? "disabled" : ""}" data-resize-panel="monitor" title="Resize run monitor"></div>
 
         <aside class="monitor-panel ${monitorPanelCollapsed ? "collapsed" : ""}">
-          <div class="panel-heading"><span>Run monitor</span><div class="panel-controls"><span class="live-dot">Preview</span><button class="icon-button" id="toggle-monitor-panel" title="${monitorPanelCollapsed ? "Expand run monitor" : "Collapse run monitor"}"><i data-lucide="${monitorPanelCollapsed ? "panel-right-open" : "panel-right-close"}"></i></button></div></div>
+          <div class="panel-heading"><span>Run monitor</span><div class="panel-controls"><span class="live-dot ${runActive ? "running" : ""}">${escapeHtml(monitorState)}</span><button class="icon-button" id="toggle-monitor-panel" title="${monitorPanelCollapsed ? "Expand run monitor" : "Collapse run monitor"}"><i data-lucide="${monitorPanelCollapsed ? "panel-right-open" : "panel-right-close"}"></i></button></div></div>
           <div class="metric-grid">
             ${metric("Planned samples", String(plannedSamples()), "all groups", "boxes")}
             ${metric("Parallel sends", String(parallelSends()), "max", "gauge")}
@@ -315,25 +340,47 @@ function render(): void {
           <section class="monitor-section">
             <div class="monitor-title"><span>Execution path</span><i data-lucide="circle-dot"></i></div>
             <ol class="execution-path">
-              <li><span class="step-icon"><i data-lucide="cable"></i></span><div><strong>Connect</strong><small>RPC endpoint is structurally validated</small></div></li>
-              <li><span class="step-icon"><i data-lucide="users"></i></span><div><strong>Prepare</strong><small>${scenario.virtualUsers} deterministic virtual users</small></div></li>
-              <li><span class="step-icon"><i data-lucide="play"></i></span><div><strong>Sample</strong><small>${arrivalKind()} at up to ${scenario.concurrency} parallel submissions</small></div></li>
-              <li><span class="step-icon"><i data-lucide="activity"></i></span><div><strong>Collect</strong><small>${runStatus.completedSamples} completed, ${runStatus.failedSamples} failed</small></div></li>
+              <li class="${connectStep}"><span class="step-icon"><i data-lucide="cable"></i></span><div><strong>Connect</strong><small>${lastPreflight ? `Runtime ${lastPreflight.specVersion} preflighted` : "Preflight validates the RPC and encodes calls"}</small></div></li>
+              <li class="${prepareStep}"><span class="step-icon"><i data-lucide="users"></i></span><div><strong>Prepare</strong><small>${scenario.virtualUsers} deterministic virtual users</small></div></li>
+              <li class="${sampleStep}"><span class="step-icon"><i data-lucide="play"></i></span><div><strong>Sample</strong><small>${arrivalKind()} at up to ${scenario.concurrency} parallel submissions</small></div></li>
+              <li class="${collectStep}"><span class="step-icon"><i data-lucide="activity"></i></span><div><strong>Collect</strong><small id="collect-progress">${runStatus.completedSamples} completed, ${runStatus.failedSamples} failed</small></div></li>
             </ol>
           </section>
           <section class="monitor-section note">
-            <div class="monitor-title"><span>Current boundary</span><i data-lucide="shield-check"></i></div>
-            <p>${escapeHtml(runStatus.message ?? "Preflight the chain, then explicitly arm the scenario.")}</p>
+            <div class="monitor-title"><span>Status</span><i data-lucide="shield-check"></i></div>
+            <p>${escapeHtml(runStatus.message ?? (lastPreflight ? "Preflight succeeded. Arm and run submits the plan." : "Arm and run preflights the chain first, then submits the plan."))}</p>
           </section>
           ${runStatus.artifactDir ? `<button class="command-button quiet report-button" id="open-report-button"><i data-lucide="activity"></i> Open run report</button>` : ""}
         </aside>
       </div>
-      <div class="toast" id="toast" role="status"></div>
+      <div class="toast ${toastVisible ? "visible" : ""}" id="toast" role="status">${escapeHtml(toastMessage)}</div>
     </main>
   `;
 
   bindEvents();
   refreshIcons();
+  restoreEditorState(savedScrollTop, focusedId, selection);
+  refreshActiveTour();
+}
+
+function restoreEditorState(scrollTop: number, focusedId: string, selection: { start: number | null; end: number | null } | undefined): void {
+  const editorScroll = document.querySelector<HTMLElement>(".editor-scroll");
+  if (editorScroll) {
+    editorScroll.style.scrollBehavior = "auto";
+    editorScroll.scrollTop = scrollTop;
+    editorScroll.style.scrollBehavior = "";
+  }
+  if (!focusedId) return;
+  const element = document.getElementById(focusedId);
+  if (!element) return;
+  element.focus({ preventScroll: true });
+  if (selection && selection.start !== null && selection.end !== null && (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement)) {
+    try {
+      element.setSelectionRange(selection.start, selection.end);
+    } catch {
+      // Number inputs reject setSelectionRange.
+    }
+  }
 }
 
 function textField(label: string, field: string, value: string): string {
@@ -363,6 +410,13 @@ function arrivalFields(): string {
 
 function arrivalBars(): string {
   const count = 24;
+  if (lastPreview && lastPreview.offsetsMs.length > 0) {
+    const span = Math.max(1, lastPreview.durationMs);
+    const bins = new Array<number>(count).fill(0);
+    for (const offset of lastPreview.offsetsMs) bins[Math.min(count - 1, Math.floor((offset / span) * count))] += 1;
+    const peak = Math.max(...bins, 1);
+    return bins.map((bin) => `<span style="height:${bin === 0 ? 2 : Math.max(6, Math.round((bin / peak) * 100))}%"></span>`).join("");
+  }
   const values = Array.from({ length: count }, (_, index) => {
     if (arrivalKind() === "burst") return 72 + (index % 3) * 8;
     if (arrivalKind() === "ramp") return 18 + index * 3;
@@ -414,6 +468,18 @@ function liveResultsPanel(): string {
   </section>`;
 }
 
+function renderLiveSections(): void {
+  const slot = document.querySelector<HTMLElement>("#live-slot");
+  if (!slot) {
+    render();
+    return;
+  }
+  slot.innerHTML = liveResultsPanel();
+  const collectProgress = document.querySelector<HTMLElement>("#collect-progress");
+  if (collectProgress) collectProgress.textContent = `${runStatus.completedSamples} completed, ${runStatus.failedSamples} failed`;
+  refreshIcons();
+}
+
 function metric(label: string, value: string, detail: string, icon: string): string {
   return `<div class="metric"><i data-lucide="${icon}"></i><span>${label}</span><strong>${escapeHtml(value)}</strong><small>${detail}</small></div>`;
 }
@@ -424,6 +490,7 @@ function bindEvents(): void {
     const input = document.querySelector<HTMLInputElement | HTMLTextAreaElement>(`#${field}`);
     input?.addEventListener("input", () => {
       scenario[field] = input.value;
+      if (field === "pallet" || field === "call" || field === "argumentsJson") syncActiveThreadGroup();
       markDraftChanged();
     });
   }
@@ -518,6 +585,7 @@ function bindEvents(): void {
       render();
     });
   }
+  document.querySelector<HTMLButtonElement>("#tour-button")?.addEventListener("click", () => startTour());
   document.querySelector<HTMLButtonElement>("#preflight-button")?.addEventListener("click", () => void runPreflight());
   document.querySelector<HTMLButtonElement>("#run-button")?.addEventListener("click", () => void armOrStopRun());
   document.querySelector<HTMLButtonElement>("#reset-button")?.addEventListener("click", () => {
@@ -593,7 +661,10 @@ function bindEvents(): void {
     element.addEventListener("click", (event) => {
       if ((event.target as HTMLElement).closest("[data-remove-phase]")) return;
       activePlanNode = undefined;
-      syncActiveThreadGroup(); activeSamplerIndex = Number(element.dataset.samplerIndex); loadActiveSampler(); render();
+      const samplerGroup = element.dataset.samplerGroup;
+      if (samplerGroup && samplerGroup !== activeThreadGroupId) selectThreadGroup(samplerGroup);
+      else syncActiveThreadGroup();
+      activeSamplerIndex = Number(element.dataset.samplerIndex); loadActiveSampler(); render();
       window.requestAnimationFrame(() => scrollToEditorSection("users-section"));
     });
   });
@@ -616,7 +687,16 @@ function bindEvents(): void {
     lastPreflight = undefined;
     render();
   });
+  document.removeEventListener("pointerdown", dismissPlanMenu, true);
+  if (planMenuOpen) document.addEventListener("pointerdown", dismissPlanMenu, true);
   bindPanelResizers();
+}
+
+function dismissPlanMenu(event: PointerEvent): void {
+  const target = event.target as HTMLElement | null;
+  if (target?.closest(".panel-menu") || target?.closest("#plan-menu-button")) return;
+  planMenuOpen = false;
+  render();
 }
 
 function scrollToPlanSection(node: PlanNode): void {
@@ -625,7 +705,11 @@ function scrollToPlanSection(node: PlanNode): void {
 }
 
 function scrollToEditorSection(id: string): void {
-  document.querySelector<HTMLElement>(`#${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const editorScroll = document.querySelector<HTMLElement>(".editor-scroll");
+  const section = document.getElementById(id);
+  if (!editorScroll || !section) return;
+  const top = section.getBoundingClientRect().top - editorScroll.getBoundingClientRect().top + editorScroll.scrollTop;
+  editorScroll.scrollTo({ top: Math.max(0, top - 8), behavior: "smooth" });
 }
 
 function bindPanelResizers(): void {
@@ -684,7 +768,10 @@ function nativeScenario(): NativeScenarioDocument {
 async function runPreflight(): Promise<void> {
   preflightError = undefined;
   await previewScenario();
-  if (!lastValidation?.valid) return;
+  if (!lastValidation?.valid) {
+    scrollToEditorSection("preflight-section");
+    return;
+  }
   try {
     lastPreflight = await invoke<PreflightReport>("preflight_scenario", { document: nativeScenario() });
     preflightRunId = lastPreflight.runId;
@@ -696,6 +783,7 @@ async function runPreflight(): Promise<void> {
     render();
     showToast(`Preflight failed: ${preflightError}`);
   }
+  scrollToEditorSection("preflight-section");
 }
 
 async function armOrStopRun(): Promise<void> {
@@ -715,23 +803,28 @@ async function armOrStopRun(): Promise<void> {
 			});
 			runReport = undefined;
 			liveSamples = [];
+			remotePollFailures = 0;
 			void pollRemoteRun();
 		}
 		render();
 		return;
 	}
-    const intent = decideRunIntent(runStatus.state, lastPreflight);
+    let intent = decideRunIntent(runStatus.state, lastPreflight);
     if (intent === "stop") {
       runStatus = await invoke<RunStatus>("stop_run");
-    } else if (intent === "blocked") {
-      showToast("Run a successful live chain preflight before arming");
-      return;
-	    } else {
-	      if (!preflightRunId) throw new Error("preflight did not return an arming run ID");
-		  activeRemoteTarget = undefined;
+    } else {
+      if (intent === "blocked") {
+        showToast("Preflighting the chain before arming");
+        await runPreflight();
+        intent = decideRunIntent(runStatus.state, lastPreflight);
+        if (intent !== "arm") return;
+      }
+      if (!preflightRunId) throw new Error("preflight did not return an arming run ID");
+      activeRemoteTarget = undefined;
       runStatus = await invoke<RunStatus>("start_run", { document: nativeScenario(), outputRoot: "target/polkameter-runs", runId: preflightRunId });
       runReport = undefined;
       liveSamples = [];
+      showToast("Run armed");
     }
     render();
   } catch (error) {
@@ -759,6 +852,7 @@ async function pollRemoteRun(): Promise<void> {
 			target: activeRemoteTarget,
 			runId: runStatus.runId
 		});
+		remotePollFailures = 0;
 		render();
 		if (["completed", "completed_with_failures", "stopped", "failed"].includes(runStatus.state)) {
 			void loadRunReport();
@@ -766,7 +860,12 @@ async function pollRemoteRun(): Promise<void> {
 		}
 		window.setTimeout(() => void pollRemoteRun(), 1000);
 	} catch (error) {
-		showToast(`Remote run status unavailable: ${String(error)}`);
+		remotePollFailures += 1;
+		if (remotePollFailures >= 5) {
+			showToast(`Remote run status unavailable: ${String(error)}`);
+			return;
+		}
+		window.setTimeout(() => void pollRemoteRun(), 2000);
 	}
 }
 
@@ -908,15 +1007,24 @@ function escapeHtml(value: string): string {
 }
 
 function showToast(message: string): void {
-  const toast = document.querySelector<HTMLDivElement>("#toast")!;
-  toast.textContent = message;
-  toast.classList.add("visible");
-  window.setTimeout(() => toast.classList.remove("visible"), 2400);
+  toastMessage = message;
+  toastVisible = true;
+  if (toastTimer !== undefined) window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => {
+    toastVisible = false;
+    toastTimer = undefined;
+    document.querySelector<HTMLDivElement>("#toast")?.classList.remove("visible");
+  }, 2400);
+  const toast = document.querySelector<HTMLDivElement>("#toast");
+  if (toast) {
+    toast.textContent = message;
+    toast.classList.add("visible");
+  }
 }
 
 function refreshIcons(): void {
   const iconMap = {
-    Activity, Boxes, Braces, Cable, CheckCircle2, ChevronDown, CircleDot, ClipboardList, Cpu, Flag, FolderOpen, Gauge, GitBranch, Play, RotateCcw, Save, ShieldCheck, Square, Timer, Users, Wrench, XCircle
+    Activity, Boxes, Braces, Cable, CheckCircle2, ChevronDown, CircleDot, CircleHelp, ClipboardList, Cpu, Flag, FolderOpen, Gauge, GitBranch, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Play, RotateCcw, Save, ShieldCheck, Square, Timer, Users, Wrench, XCircle
   };
   createIcons({
     icons: iconMap,
@@ -935,6 +1043,7 @@ if (savedScenario) {
 }
 
 render();
+maybeStartTour();
 
 void listen<RunStatus>("run-status", (event) => {
   runStatus = event.payload;
@@ -950,7 +1059,7 @@ void listen<SampleBatch>("sample-batch", (event) => {
     liveRenderQueued = true;
     window.setTimeout(() => {
       liveRenderQueued = false;
-      render();
+      renderLiveSections();
     }, 150);
   }
 });
