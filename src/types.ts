@@ -5,13 +5,20 @@ export type ArrivalModel =
 
 export interface Scenario {
   name: string;
-  endpoint: string;
+	endpoint: string;
+	prometheusEndpoint: string;
   pallet: string;
   call: string;
   argumentsJson: string;
+	signerProfile: string;
   signerSource: string;
-  virtualUsers: number;
-  concurrency: number;
+	  fundDerivedUsers: boolean;
+	  fundingAmount: string;
+	  fundingFinalityTimeoutMs: number;
+	  fundingBatchSize: number;
+	virtualUsers: number;
+	concurrency: number;
+	iterations: number;
   arrival: ArrivalModel;
   completion: "submitted" | "in_block" | "finalized";
   mortalityPeriod: number;
@@ -19,6 +26,7 @@ export interface Scenario {
   maxElapsedMs: number;
   wholeRunTimeoutMs: number;
   shutdownDrainTimeoutMs: number;
+	maxConcurrentSamples: number;
 }
 
 export interface ValidationIssue {
@@ -44,14 +52,19 @@ export interface NativeScenarioDocument {
     name: string;
     description: string;
     seed: number;
-    limits: { wholeRunTimeoutMs: number; shutdownDrainTimeoutMs: number };
+	  limits: { wholeRunTimeoutMs: number; shutdownDrainTimeoutMs: number; maxConcurrentSamples: number };
   };
-  chain: { endpoint: string; transactionProfile: "polkadot" };
-  signerSource: { baseSuri: string; derivationPath: string };
+	chain: { endpoint: string; prometheusEndpoint?: string; transactionProfile: "polkadot" };
+	  signerSource: {
+	    profile: string;
+	    derivationPath: string;
+	    funding?: { amount: string; finalityTimeoutMs: number; batchSize: number };
+	  };
   threadGroups: Array<{
     name: string;
-    users: number;
-    concurrency: number;
+	    users: number;
+	    concurrency: number;
+	    iterations: number;
     arrival: ArrivalModel;
     samplers: Array<{
       phase: "setup" | "transaction" | "teardown";
@@ -94,6 +107,22 @@ export interface RunStatus {
   failedSamples: number;
   timedOutSamples: number;
   message?: string;
+}
+
+export interface RemoteRunnerTarget {
+  endpoint: string;
+  bearerToken: string;
+}
+
+export interface JmxImportReport {
+  threadGroups: Array<{
+    name: string;
+    users: number;
+    rampSeconds: number;
+    loops?: number;
+  }>;
+  collectors: string[];
+  diagnostics: string[];
 }
 
 export interface DashboardReport {

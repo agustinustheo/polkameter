@@ -18,8 +18,9 @@ export interface EditableSampler {
 export interface EditableThreadGroup {
   id: string;
   name: string;
-  virtualUsers: number;
-  concurrency: number;
+	virtualUsers: number;
+	concurrency: number;
+	iterations: number;
   arrival: Scenario["arrival"];
   samplers: EditableSampler[];
 }
@@ -31,14 +32,25 @@ export function buildNativeScenario(scenario: Scenario, groups: EditableThreadGr
       name: scenario.name,
       description: "Created in Polkameter",
       seed: 1,
-      limits: { wholeRunTimeoutMs: scenario.wholeRunTimeoutMs, shutdownDrainTimeoutMs: scenario.shutdownDrainTimeoutMs }
+	  limits: {
+		wholeRunTimeoutMs: scenario.wholeRunTimeoutMs,
+		shutdownDrainTimeoutMs: scenario.shutdownDrainTimeoutMs,
+		maxConcurrentSamples: scenario.maxConcurrentSamples
+	  }
     },
-    chain: { endpoint: scenario.endpoint, transactionProfile: "polkadot" },
-    signerSource: { baseSuri: scenario.signerSource, derivationPath: "" },
+	    chain: { endpoint: scenario.endpoint, transactionProfile: "polkadot", ...(scenario.prometheusEndpoint.trim() ? { prometheusEndpoint: scenario.prometheusEndpoint.trim() } : {}) },
+	    signerSource: {
+	      profile: scenario.signerProfile,
+	      derivationPath: "",
+	      ...(scenario.fundDerivedUsers
+	        ? { funding: { amount: scenario.fundingAmount, finalityTimeoutMs: scenario.fundingFinalityTimeoutMs, batchSize: scenario.fundingBatchSize } }
+	        : {})
+	    },
     threadGroups: groups.map((group) => ({
       name: group.name,
-      users: group.virtualUsers,
-      concurrency: group.concurrency,
+		users: group.virtualUsers,
+		concurrency: group.concurrency,
+		iterations: group.iterations,
       arrival: group.arrival,
       samplers: group.samplers.map((sampler) => ({
         phase: sampler.phase,
