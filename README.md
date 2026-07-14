@@ -14,7 +14,7 @@
 
 <img width="1428" height="917" alt="Polkameter Dashboard" src="https://github.com/user-attachments/assets/fad26abd-92fc-49a8-9fa2-ee3773b30703" />
 
-Polkameter is a Tauri desktop workbench for stress-testing Polkadot SDK chains, modeled on JMeter: compose a test plan with thread groups and samplers, pick an arrival model, preflight against a live chain, then arm and run. The Rust core owns scheduling, signing, submission and artifacts; the TypeScript frontend is only an editor and monitor.
+Polkameter is a stress-testing workbench for Polkadot SDK chains, modeled on JMeter: compose a test plan with thread groups and samplers, pick an arrival model, preflight against a live chain, then arm and run. Like JMeter, it runs both ways — a Tauri desktop app for composing and monitoring, and a headless `polkameter` CLI for CI and remote stress machines. The Rust core owns scheduling, signing, submission and artifacts; the TypeScript frontend is only an editor and monitor, and the CLI drives the same core without a window.
 
 ## Run
 
@@ -34,6 +34,16 @@ cargo test --manifest-path src-tauri/Cargo.toml      # Rust core tests
 ## Command line
 
 The release includes a headless `polkameter` command alongside the desktop app. It uses the same scenario format, Subxt runner, telemetry, artifacts and reports as the UI, but it never opens a window.
+
+| Command | Purpose |
+|---|---|
+| `polkameter validate <scenario>` | Parse and structurally validate a scenario without connecting to a chain. |
+| `polkameter preflight <scenario>` | Validate live metadata, SCALE encoding and signer readiness without submitting transactions. |
+| `polkameter run <scenario> --output <dir>` | Preflight, then execute locally; `--remote <url>` executes through an authenticated remote agent instead. |
+| `polkameter report <artifact-dir>` | Read and validate a portable artifact directory and print its report. |
+| `polkameter agent serve` | Start the authenticated, loopback-only remote runner agent. |
+
+`validate`, `preflight`, `run` and `report` accept `--format human` (default) or `--format json`. `preflight` and `run` resolve the signer with `--signer-profile <name>` (OS credential vault) or `--signer-env <VAR>` (environment variable holding the SURI); `polkameter <command> --help` lists the remaining flags.
 
 ```sh
 # Validate a portable, redacted scenario without touching a chain.
