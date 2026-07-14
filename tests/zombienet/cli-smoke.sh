@@ -41,6 +41,10 @@ find_binary() {
 ZOMBIENET_BIN="$(find_binary "${POLKAMETER_ZOMBIENET_BIN:-}" zombienet zombie-cli)"
 POLKADOT_BIN="$(find_binary "${POLKAMETER_POLKADOT_BIN:-}" polkadot)"
 POLKADOT_BIN_DIR="$(cd "$(dirname "$POLKADOT_BIN")" && pwd)"
+if ! command -v jq >/dev/null 2>&1; then
+	echo "missing required executable: jq" >&2
+	exit 1
+fi
 for worker in polkadot-prepare-worker polkadot-execute-worker; do
 	if [ ! -x "$POLKADOT_BIN_DIR/$worker" ]; then
 		echo "missing $worker beside $POLKADOT_BIN; run tests/zombienet/install-binaries.sh" >&2
@@ -122,6 +126,41 @@ wait_for_relay() {
 	return 1
 }
 
+assert_jsonl_contract() {
+	local path="$1"
+	jq --slurp --exit-status '
+		length > 0
+		and all(.[]; (.version == 1 and (.event | type == "string")))
+		and .[-1].event == "artifact-written"
+	' "$path" >/dev/null
+}
+
+echo "Checking CLI failure exit codes"
+if "$CLI" validate "$LOG_DIR/missing-scenario.polkameter.json" --format json \
+	>"$LOG_DIR/missing-scenario.json" 2>&1; then
+	echo "missing scenario unexpectedly validated" >&2
+	exit 1
+else
+	exit_code=$?
+fi
+if [ "$exit_code" -ne 2 ]; then
+	echo "missing scenario exited $exit_code; expected 2" >&2
+	exit 1
+fi
+if (
+	unset POLKAMETER_MISSING_SURI
+	"$CLI" preflight "$SCENARIO" --signer-env POLKAMETER_MISSING_SURI --format json
+) >"$LOG_DIR/missing-signer.json" 2>&1; then
+	echo "preflight unexpectedly accepted a missing signer environment variable" >&2
+	exit 1
+else
+	exit_code=$?
+fi
+if [ "$exit_code" -ne 3 ]; then
+	echo "missing signer exited $exit_code; expected 3" >&2
+	exit 1
+fi
+
 wait_for_relay
 
 echo "Validating the portable scenario"
@@ -137,6 +176,7 @@ LOCAL_OUTPUT="$OUTPUT_ROOT/local"
 POLKAMETER_SURI='//Alice' \
 	"$CLI" run "$SCENARIO" --signer-env POLKAMETER_SURI --output "$LOCAL_OUTPUT" --format json \
 	>"$LOG_DIR/local-run.json"
+assert_jsonl_contract "$LOG_DIR/local-run.json"
 LOCAL_ARTIFACT="$(find "$LOCAL_OUTPUT" -mindepth 1 -maxdepth 1 -type d -print -quit)"
 test -n "$LOCAL_ARTIFACT"
 "$CLI" report "$LOCAL_ARTIFACT" --format json >"$LOG_DIR/local-report.json"
@@ -169,6 +209,7 @@ echo "Running and reporting through the remote agent"
 POLKAMETER_REMOTE_TOKEN='zombienet-cli-smoke-token' \
 	"$CLI" run "$SCENARIO" --remote "http://127.0.0.1:$AGENT_PORT" \
 	--remote-token-env POLKAMETER_REMOTE_TOKEN --format json >"$LOG_DIR/remote-run.json"
+assert_jsonl_contract "$LOG_DIR/remote-run.json"
 REMOTE_ARTIFACT="$(find "$OUTPUT_ROOT/remote" -mindepth 1 -maxdepth 1 -type d -print -quit)"
 test -n "$REMOTE_ARTIFACT"
 "$CLI" report "$REMOTE_ARTIFACT" --format json >"$LOG_DIR/remote-report.json"
