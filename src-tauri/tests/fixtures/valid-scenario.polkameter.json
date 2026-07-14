@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "testPlan": {
+    "name": "CLI validation fixture",
+    "description": "A redacted, chain-generic CLI validation fixture.",
+    "seed": 1,
+    "limits": {
+      "wholeRunTimeoutMs": 900000,
+      "shutdownDrainTimeoutMs": 300000,
+      "maxConcurrentSamples": 1
+    }
+  },
+  "chain": {
+    "endpoint": "ws://127.0.0.1:9944",
+    "transactionProfile": "polkadot"
+  },
+  "signerSource": {
+    "profile": "local-dev",
+    "baseSuri": "[redacted]",
+    "derivationPath": "//polkameter"
+  },
+  "threadGroups": [
+    {
+      "name": "users",
+      "users": 1,
+      "concurrency": 1,
+      "iterations": 1,
+      "arrival": { "kind": "burst", "windowMs": 1 },
+      "samplers": [
+        {
+          "phase": "transaction",
+          "label": "transfer",
+          "pallet": "Balances",
+          "call": "transfer_keep_alive",
+          "arguments": {},
+          "completion": "finalized",
+          "mortalityPeriod": 4,
+          "finalityTimeoutMs": 300000,
+          "assertions": []
+        }
+      ]
+    }
+  ],
+  "collectors": ["jtl"]
+}

@@ -41,6 +41,9 @@ jobs:
       - run: corepack pnpm build
       - run: cargo +${{ env.RUST_VERSION }} fmt --manifest-path src-tauri/Cargo.toml -- --check
       - run: cargo +${{ env.RUST_VERSION }} test --manifest-path src-tauri/Cargo.toml
+      - run: cargo +${{ env.RUST_VERSION }} run --manifest-path src-tauri/Cargo.toml --bin polkameter -- --help
+      - run: cargo +${{ env.RUST_VERSION }} run --manifest-path src-tauri/Cargo.toml --bin polkameter -- validate src-tauri/tests/fixtures/valid-scenario.polkameter.json --format json
+      - run: cargo +${{ env.RUST_VERSION }} run --manifest-path src-tauri/Cargo.toml --bin polkameter -- report src-tauri/tests/fixtures/report --format json
 
   desktop-build:
     name: Desktop build (${{ matrix.name }})

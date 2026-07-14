@@ -31,6 +31,50 @@ corepack pnpm build                                  # tsc + vite build
 cargo test --manifest-path src-tauri/Cargo.toml      # Rust core tests
 ```
 
+## Command line
+
+The release includes a headless `polkameter` command alongside the desktop app. It uses the same scenario format, Subxt runner, telemetry, artifacts and reports as the UI, but it never opens a window.
+
+```sh
+# Validate a portable, redacted scenario without touching a chain.
+polkameter validate scenario.polkameter.json
+
+# Resolve a signer profile from the OS credential vault and preflight live metadata.
+polkameter preflight scenario.polkameter.json --signer-profile local-dev
+
+# Run locally. Progress is human-readable on stderr; artifacts are written below target/runs.
+polkameter run scenario.polkameter.json \
+  --signer-profile local-dev \
+  --output target/runs
+
+# Use a named environment variable in CI; neither scenarios nor command arguments contain a SURI.
+POLKAMETER_SURI='//Alice' \
+  polkameter run scenario.polkameter.json \
+  --signer-env POLKAMETER_SURI \
+  --output target/runs \
+  --format json
+
+# Validate an existing artifact bundle and print its report.
+polkameter report target/runs/run-123 --format json
+```
+
+`run` preflights before arming. Successful local runs write the same portable artifact contract as the UI. Its exit status is `0` for success, `2` for invalid input, `3` for signer or preflight failures, `4` for completed runs with failed/timed-out samples, and `130` after `Ctrl-C` requests a graceful drain.
+
+For a remote worker, start the agent on the stress machine. It binds only to loopback, so expose it with SSH forwarding or TLS termination. The agent resolves its own signer profile or `POLKAMETER_AGENT_SURI`; callers only transmit a redacted scenario.
+
+```sh
+POLKAMETER_AGENT_TOKEN='long-random-token' \
+  polkameter agent serve --output-root target/polkameter-agent-runs
+
+POLKAMETER_REMOTE_TOKEN='long-random-token' \
+  polkameter run scenario.polkameter.json \
+  --remote http://127.0.0.1:9901 \
+  --remote-token-env POLKAMETER_REMOTE_TOKEN \
+  --format json
+```
+
+Remote artifacts remain on the agent under its configured output root; the CLI confirms the remote report only after the agent validates the artifact contract.
+
 A run needs a chain to target. For local work start a fresh dev node:
 
 ```sh
@@ -99,18 +143,6 @@ cargo +1.93.0 test --manifest-path src-tauri/Cargo.toml \
 ```
 
 Both need a fresh local dev chain at `ws://127.0.0.1:9944` (command above).
-
-## Remote agent
-
-The same binary runs an authenticated headless agent:
-
-```sh
-POLKAMETER_AGENT_TOKEN="replace-with-a-long-random-token" \
-POLKAMETER_AGENT_OUTPUT_ROOT="target/polkameter-agent-runs" \
-polkameter agent
-```
-
-It binds to `127.0.0.1:9901`; keep that and tunnel over SSH, or put TLS in front (the desktop requires `https://` for non-loopback endpoints). Requests carry only a redacted scenario and run ID; the agent resolves its signer from its own credential store (or `POLKAMETER_AGENT_SURI` injected by a host secret manager) and keeps its own artifacts. Desktop-side runner URL and token are session-only fields.
 
 ## Boundary
 
