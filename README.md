@@ -42,7 +42,7 @@ polkameter validate scenario.polkameter.json
 # Resolve a signer profile from the OS credential vault and preflight live metadata.
 polkameter preflight scenario.polkameter.json --signer-profile local-dev
 
-# Run locally. Progress is human-readable on stderr; artifacts are written below target/runs.
+# Run locally. Human progress is written to stderr; the final artifact location and report summary are written to stdout.
 polkameter run scenario.polkameter.json \
   --signer-profile local-dev \
   --output target/runs
@@ -59,6 +59,8 @@ polkameter report target/runs/run-123 --format json
 ```
 
 `run` preflights before arming. Successful local runs write the same portable artifact contract as the UI. Its exit status is `0` for success, `2` for invalid input, `3` for signer or preflight failures, `4` for completed runs with failed/timed-out samples, and `130` after `Ctrl-C` requests a graceful drain.
+
+Human `validate`, `preflight`, and `report` results write to stdout. With `run`, stdout is reserved for the final artifact location and report summary while progress and individual sample failures are written to stderr. `--format json` always writes the existing JSONL event stream to stdout.
 
 For a remote worker, start the agent on the stress machine. It binds only to loopback, so expose it with SSH forwarding or TLS termination. The agent resolves its own signer profile or `POLKAMETER_AGENT_SURI`; callers only transmit a redacted scenario.
 
