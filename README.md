@@ -14,7 +14,9 @@
 
 <img width="1428" height="917" alt="Polkameter Dashboard" src="https://github.com/user-attachments/assets/fad26abd-92fc-49a8-9fa2-ee3773b30703" />
 
-Polkameter is a stress-testing workbench for Polkadot SDK chains, modeled on JMeter: compose a test plan with thread groups and samplers, pick an arrival model, preflight against a live chain, then arm and run. Like JMeter, it runs both ways — a Tauri desktop app for composing and monitoring, and a headless `polkameter` CLI for CI and remote stress machines. The Rust core owns scheduling, signing, submission and artifacts; the TypeScript frontend is only an editor and monitor, and the CLI drives the same core without a window.
+Polkameter is a stress-testing workbench for Polkadot SDK chains, modeled on JMeter: compose a test plan with thread groups and samplers, pick an arrival model, preflight against a live chain, then arm and run.
+
+Like JMeter, it runs both ways: a Tauri desktop app for composing and monitoring, and a headless `polkameter` CLI for CI and remote stress machines. The Rust core owns scheduling, signing, submission and artifacts; the TypeScript frontend is only an editor and monitor, and the CLI drives the same core without a window.
 
 ## Run
 
