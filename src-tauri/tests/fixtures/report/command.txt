@@ -1,1 +1,1 @@
-Polkameter fixture run
+polkameter run scenario.polkameter.json --output . --signer-env POLKAMETER_SURI --format json

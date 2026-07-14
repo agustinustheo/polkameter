@@ -1,1 +1,4 @@
-
+{"ts":"2026-07-14T03:00:00Z","label":"balances.transfer_keep_alive","account":"Alice","sampler_phase":"transaction","scheduled_ms":0,"submit_ms":0,"completed_ms":120,"extrinsic_hash":"0x01","block_hash":"0x11","outcome":"finalized","message":"Finalized"}
+{"ts":"2026-07-14T03:00:01Z","label":"balances.transfer_keep_alive","account":"Alice","sampler_phase":"transaction","scheduled_ms":1000,"submit_ms":1000,"completed_ms":1180,"extrinsic_hash":"0x02","block_hash":"0x12","outcome":"finalized","message":"Finalized"}
+{"ts":"2026-07-14T03:00:02Z","label":"balances.transfer_keep_alive","account":"Alice","sampler_phase":"transaction","scheduled_ms":2000,"submit_ms":2000,"completed_ms":2240,"extrinsic_hash":"0x03","block_hash":null,"outcome":"failed","message":"InsufficientBalance"}
+{"ts":"2026-07-14T03:00:03Z","label":"balances.transfer_keep_alive","account":"Alice","sampler_phase":"transaction","scheduled_ms":3000,"submit_ms":3000,"completed_ms":3300,"extrinsic_hash":"0x04","block_hash":"0x13","outcome":"finalized","message":"Finalized"}

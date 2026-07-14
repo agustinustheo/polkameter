@@ -293,7 +293,12 @@ fn chart(title: &str, unit: &str, points: Vec<(u64, u64)>, color: &str) -> Strin
 		})
 		.collect::<Vec<_>>()
 		.join(" ");
-	format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"960\" height=\"320\" viewBox=\"0 0 960 320\"><rect width=\"960\" height=\"320\" fill=\"#f8fafb\"/><text x=\"32\" y=\"38\" fill=\"#263744\" font-family=\"sans-serif\" font-size=\"20\" font-weight=\"700\">{title}</text><text x=\"32\" y=\"62\" fill=\"#667784\" font-family=\"sans-serif\" font-size=\"12\">{unit}</text><path d=\"M {left} 80 V {bottom} H 918\" fill=\"none\" stroke=\"#cdd8de\"/><path d=\"{path}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"3\"/><text x=\"32\" y=\"274\" fill=\"#667784\" font-family=\"sans-serif\" font-size=\"11\">0</text><text x=\"32\" y=\"94\" fill=\"#667784\" font-family=\"sans-serif\" font-size=\"11\">{max_y:.0}</text></svg>")
+	let data = if points.is_empty() {
+		"<text x=\"488\" y=\"180\" text-anchor=\"middle\" fill=\"#667784\" font-family=\"sans-serif\" font-size=\"14\">No data collected</text>".into()
+	} else {
+		format!("<path d=\"{path}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"3\"/>")
+	};
+	format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"960\" height=\"320\" viewBox=\"0 0 960 320\"><rect width=\"960\" height=\"320\" fill=\"#f8fafb\"/><text x=\"32\" y=\"38\" fill=\"#263744\" font-family=\"sans-serif\" font-size=\"20\" font-weight=\"700\">{title}</text><text x=\"32\" y=\"62\" fill=\"#667784\" font-family=\"sans-serif\" font-size=\"12\">{unit}</text><path d=\"M {left} 80 V {bottom} H 918\" fill=\"none\" stroke=\"#cdd8de\"/>{data}<text x=\"32\" y=\"274\" fill=\"#667784\" font-family=\"sans-serif\" font-size=\"11\">0</text><text x=\"32\" y=\"94\" fill=\"#667784\" font-family=\"sans-serif\" font-size=\"11\">{max_y:.0}</text></svg>")
 }
 
 #[cfg(test)]
@@ -308,6 +313,11 @@ mod tests {
 	#[test]
 	fn chart_contains_real_data_path() {
 		assert!(chart("Test", "units", vec![(0, 1), (1, 3)], "#000").contains("L"));
+	}
+
+	#[test]
+	fn chart_explains_when_no_data_was_collected() {
+		assert!(chart("Test", "units", Vec::new(), "#000").contains("No data collected"));
 	}
 
 	#[test]
@@ -351,6 +361,56 @@ mod tests {
 		let dashboard = read_dashboard(&writer.directory).expect("dashboard readable");
 		assert_eq!(dashboard.plots.len(), 6);
 		assert!(dashboard.summary.contains("Samples | 0"));
+		let _ = fs::remove_dir_all(directory);
+	}
+
+	#[test]
+	fn report_fixture_contains_rendered_chart_data() {
+		let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/report/plots");
+		for name in [
+			"throughput",
+			"latency-percentiles",
+			"failure-breakdown",
+			"cpu-memory",
+			"blocks-pending",
+			"node-resources",
+		] {
+			let svg =
+				fs::read_to_string(fixture.join(format!("{name}.svg"))).expect("fixture plot read");
+			assert!(svg.matches("<path").count() >= 2, "{name} fixture is missing chart data");
+		}
+	}
+
+	#[test]
+	fn report_fixture_matches_the_production_renderer() {
+		let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/report");
+		let directory =
+			std::env::temp_dir().join(format!("polkameter-report-fixture-{}", std::process::id()));
+		let _ = fs::remove_dir_all(&directory);
+		fs::create_dir_all(&directory).expect("directory created");
+		for name in ["samples.jtl", "telemetry.jsonl"] {
+			fs::copy(fixture_root.join(name), directory.join(name)).expect("fixture input copied");
+		}
+		write(&directory).expect("report rendered");
+		for name in [
+			"throughput",
+			"latency-percentiles",
+			"failure-breakdown",
+			"cpu-memory",
+			"blocks-pending",
+			"node-resources",
+		] {
+			let generated = fs::read_to_string(directory.join("plots").join(format!("{name}.svg")))
+				.expect("generated plot read");
+			let fixture =
+				fs::read_to_string(fixture_root.join("plots").join(format!("{name}.svg")))
+					.expect("fixture plot read");
+			assert_eq!(
+				generated.trim_end(),
+				fixture.trim_end(),
+				"{name} fixture diverged from the production renderer"
+			);
+		}
 		let _ = fs::remove_dir_all(directory);
 	}
 }
