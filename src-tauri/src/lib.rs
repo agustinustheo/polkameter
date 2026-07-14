@@ -194,7 +194,7 @@ fn create_artifact_preview(
 		output_root,
 		&document,
 		&run_id,
-		"Polkameter artifact preview created through the desktop application\n",
+		artifacts::RunOrigin::Desktop,
 	)?;
 	writer.flush()?;
 	let report = report::write(&writer.directory)?;
@@ -230,7 +230,7 @@ async fn start_remote_run(
 	document: ScenarioDocument,
 	run_id: String,
 ) -> Result<runner::RunStatus, String> {
-	application::start_remote_run(&target, document, run_id).await
+	remote::start(&target, document, run_id).await
 }
 
 #[tauri::command]
@@ -238,7 +238,7 @@ async fn get_remote_run_status(
 	target: remote::RemoteRunnerTarget,
 	run_id: String,
 ) -> Result<runner::RunStatus, String> {
-	application::remote_run_status(&target, &run_id).await
+	remote::status(&target, &run_id).await
 }
 
 #[tauri::command]
@@ -246,7 +246,7 @@ async fn stop_remote_run(
 	target: remote::RemoteRunnerTarget,
 	run_id: String,
 ) -> Result<runner::RunStatus, String> {
-	application::stop_remote_run(&target, &run_id).await
+	remote::stop(&target, &run_id).await
 }
 
 #[tauri::command]
@@ -254,7 +254,7 @@ async fn read_remote_run_report(
 	target: remote::RemoteRunnerTarget,
 	run_id: String,
 ) -> Result<report::DashboardReport, String> {
-	application::read_remote_run_report(&target, &run_id).await
+	remote::read_remote_report(&target, &run_id).await
 }
 
 #[tauri::command]
@@ -264,7 +264,7 @@ async fn preflight_scenario(
 ) -> Result<preflight::PreflightReport, String> {
 	application::resolve_signer_source(&mut document, None, None)?;
 	let run_id = run_id.unwrap_or_else(artifacts::new_run_id);
-	application::preflight_scenario(&document, &run_id).await
+	preflight::preflight(&document, &run_id).await
 }
 
 #[tauri::command]
@@ -303,7 +303,7 @@ fn load_scenario(path: String) -> Result<scenario::ScenarioDocument, String> {
 
 #[tauri::command]
 fn read_run_report(artifact_dir: String) -> Result<report::DashboardReport, String> {
-	application::read_run_report(artifact_dir)
+	report::read_dashboard(std::path::Path::new(&artifact_dir))
 }
 
 #[tauri::command]
@@ -315,13 +315,13 @@ async fn start_run(
 	state: tauri::State<'_, std::sync::Arc<runner::RunnerState>>,
 ) -> Result<runner::RunStatus, String> {
 	application::resolve_signer_source(&mut document, None, None)?;
-	application::start_local_run(
+	runner::start_with_command(
 		document,
 		output_root,
 		run_id,
 		std::sync::Arc::new(TauriRunEventSink(app)),
 		state.inner().clone(),
-		"Polkameter run started through the desktop application\n",
+		artifacts::RunOrigin::Desktop,
 	)
 	.await
 }
@@ -383,14 +383,14 @@ pub(crate) fn resolve_signer_profile(document: &mut ScenarioDocument) -> Result<
 async fn stop_run(
 	state: tauri::State<'_, std::sync::Arc<runner::RunnerState>>,
 ) -> Result<runner::RunStatus, String> {
-	application::stop_local_run(state.inner().clone()).await
+	runner::stop(state.inner().clone()).await
 }
 
 #[tauri::command]
 async fn get_run_status(
 	state: tauri::State<'_, std::sync::Arc<runner::RunnerState>>,
 ) -> Result<runner::RunStatus, String> {
-	Ok(application::run_status(state.inner().clone()).await)
+	Ok(runner::status(state.inner().clone()).await)
 }
 
 fn is_json_object_or_array(value: &str) -> bool {

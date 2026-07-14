@@ -8,7 +8,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{preflight, report, runner, scenario::ScenarioDocument};
+use crate::{artifacts::RunOrigin, preflight, report, runner, scenario::ScenarioDocument};
 
 pub const PROTOCOL_VERSION: u32 = 1;
 
@@ -224,7 +224,7 @@ async fn start_run(
 		request.run_id,
 		Arc::new(NoopEventSink),
 		state.runner,
-		"Polkameter run started through the remote agent\n",
+		RunOrigin::Agent,
 	)
 	.await
 	.map_err(bad_request)?;

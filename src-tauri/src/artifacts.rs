@@ -79,12 +79,29 @@ pub struct ArtifactWriter {
 	events: fs::File,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum RunOrigin {
+	Desktop,
+	Cli,
+	Agent,
+}
+
+impl RunOrigin {
+	fn provenance_line(self) -> &'static str {
+		match self {
+			Self::Desktop => "Polkameter run started through the desktop application\n",
+			Self::Cli => "Polkameter run started through the command-line interface\n",
+			Self::Agent => "Polkameter run started through the remote agent\n",
+		}
+	}
+}
+
 impl ArtifactWriter {
 	pub fn create(
 		output_root: impl AsRef<Path>,
 		scenario: &ScenarioDocument,
 		run_id: &str,
-		command: &str,
+		origin: RunOrigin,
 	) -> Result<Self, String> {
 		let directory = output_root.as_ref().join(run_id);
 		fs::create_dir_all(directory.join("plots")).map_err(|error| error.to_string())?;
@@ -92,7 +109,8 @@ impl ArtifactWriter {
 		let resolved_plan = ResolvedPlan::from_scenario(scenario, run_id);
 		write_json(directory.join("resolved-plan.json"), &resolved_plan)?;
 		write_json(directory.join("config.json"), &resolved_plan)?;
-		fs::write(directory.join("command.txt"), command).map_err(|error| error.to_string())?;
+		fs::write(directory.join("command.txt"), origin.provenance_line())
+			.map_err(|error| error.to_string())?;
 
 		let samples_path = directory.join("samples.jtl");
 		let samples = csv::Writer::from_path(&samples_path).map_err(|error| error.to_string())?;
@@ -198,7 +216,7 @@ mod tests {
 	#[test]
 	fn writer_creates_portable_artifacts_without_secrets() {
 		let root = std::env::temp_dir().join(format!("polkameter-artifact-test-{}", new_run_id()));
-		let mut writer = ArtifactWriter::create(&root, &test_scenario(), "proof", "test\n")
+		let mut writer = ArtifactWriter::create(&root, &test_scenario(), "proof", RunOrigin::Cli)
 			.expect("writer created");
 		writer.write_summary("# Run\n").expect("summary written");
 		writer.flush().expect("artifacts flushed");
@@ -211,5 +229,21 @@ mod tests {
 		assert!(writer.directory.join("samples.jtl").is_file());
 		assert!(writer.directory.join("config.json").is_file());
 		let _ = fs::remove_dir_all(root);
+	}
+
+	#[test]
+	fn run_origins_keep_the_existing_provenance_lines() {
+		assert_eq!(
+			RunOrigin::Desktop.provenance_line(),
+			"Polkameter run started through the desktop application\n"
+		);
+		assert_eq!(
+			RunOrigin::Cli.provenance_line(),
+			"Polkameter run started through the command-line interface\n"
+		);
+		assert_eq!(
+			RunOrigin::Agent.provenance_line(),
+			"Polkameter run started through the remote agent\n"
+		);
 	}
 }

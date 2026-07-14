@@ -1,11 +1,20 @@
-use std::{io::Write, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+	io::Write,
+	path::PathBuf,
+	sync::Arc,
+	time::{Duration, Instant},
+};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde_json::{json, Value};
 
 use crate::{
-	application::{self, RemoteRunnerTarget, RunEvent, RunEventSink, RunStatus, RunnerState},
-	artifacts,
+	application,
+	artifacts::{self, RunOrigin},
+	preflight,
+	remote::{self, RemoteRunnerTarget},
+	report,
+	runner::{self, RunEvent, RunEventSink, RunStatus, RunnerState},
 };
 
 const EVENT_VERSION: u32 = 1;
@@ -175,14 +184,8 @@ fn validate(path: PathBuf, format: OutputFormat) -> Result<i32, CliError> {
 	let document = application::load_scenario_document(path).map_err(CliError::Invalid)?;
 	let issues = document.validate();
 	let samples = estimated_samples(&document);
-	let payload = json!({
-		"version": EVENT_VERSION,
-		"event": "validation",
-		"valid": issues.is_empty(),
-		"issues": issues,
-		"estimatedSamples": samples,
-	});
-	write_output(
+	let payload = validation_payload(&issues, samples);
+	write_result(
 		format,
 		&payload,
 		if issues.is_empty() {
@@ -206,12 +209,10 @@ async fn preflight(
 	let mut document = application::load_scenario_document(path).map_err(CliError::Invalid)?;
 	resolve_signer(&mut document, &signer)?;
 	let run_id = artifacts::new_run_id();
-	let report = application::preflight_scenario(&document, &run_id)
-		.await
-		.map_err(CliError::Preflight)?;
-	write_output(
+	let report = preflight::preflight(&document, &run_id).await.map_err(CliError::Preflight)?;
+	write_result(
 		format,
-		&json!({ "version": EVENT_VERSION, "event": "preflight", "report": report }),
+		&preflight_payload(&report),
 		format!(
 			"Preflight passed for {} (spec {}, {} resolved samples).",
 			document.chain.endpoint, report.spec_version, report.resolved_sample_count
@@ -246,24 +247,22 @@ async fn run(
 	let output = output.expect("clap requires --output when --remote is absent");
 	resolve_signer(&mut document, &signer)?;
 	let run_id = artifacts::new_run_id();
-	let preflight = application::preflight_scenario(&document, &run_id)
-		.await
-		.map_err(CliError::Preflight)?;
-	write_output(
+	let preflight = preflight::preflight(&document, &run_id).await.map_err(CliError::Preflight)?;
+	write_progress(
 		format,
-		&json!({ "version": EVENT_VERSION, "event": "preflight", "report": preflight }),
+		&preflight_payload(&preflight),
 		"Preflight passed; arming local run.".into(),
 	);
 
 	let state = Arc::new(RunnerState::default());
 	let sink = Arc::new(ConsoleEventSink { format, run_id: run_id.clone() });
-	application::start_local_run(
+	runner::start_with_command(
 		document,
 		output.display().to_string(),
 		run_id,
 		sink,
 		state.clone(),
-		"Polkameter run started through the command-line interface\n",
+		RunOrigin::Cli,
 	)
 	.await
 	.map_err(CliError::Runtime)?;
@@ -276,39 +275,37 @@ async fn run_remote(
 	format: OutputFormat,
 ) -> Result<i32, CliError> {
 	let run_id = artifacts::new_run_id();
-	let preflight = application::preflight_remote_run(&target, document.clone(), run_id.clone())
+	let preflight = remote::preflight(&target, document.clone(), run_id.clone())
 		.await
 		.map_err(CliError::Preflight)?;
-	write_output(
+	write_progress(
 		format,
-		&json!({ "version": EVENT_VERSION, "event": "preflight", "report": preflight }),
+		&preflight_payload(&preflight),
 		"Remote preflight passed; arming remote run.".into(),
 	);
-	application::start_remote_run(&target, document, run_id.clone())
+	remote::start(&target, document, run_id.clone())
 		.await
 		.map_err(CliError::Runtime)?;
 	let mut interrupt = Box::pin(tokio::signal::ctrl_c());
+	let mut progress = HumanProgressReporter::default();
 	let mut stopping = false;
 	loop {
-		let status = application::remote_run_status(&target, &run_id)
-			.await
-			.map_err(CliError::Runtime)?;
-		write_status(format, &status);
+		let status = remote::status(&target, &run_id).await.map_err(CliError::Runtime)?;
+		write_status(format, &status, &mut progress);
 		if is_finished(&status) {
-			let report = application::read_remote_run_report(&target, &run_id)
-				.await
-				.map_err(CliError::Runtime)?;
-			write_output(
+			let report =
+				remote::read_remote_report(&target, &run_id).await.map_err(CliError::Runtime)?;
+			write_result(
 				format,
 				&json!({ "version": EVENT_VERSION, "event": "artifact-written", "runId": run_id, "artifactDir": status.artifact_dir, "summary": report.summary }),
-				"Remote artifacts validated by the agent.".into(),
+				final_artifact_output(status.artifact_dir.as_deref(), &report.summary, true),
 			);
 			return exit_for_status(status, stopping);
 		}
 		tokio::select! {
 			result = &mut interrupt, if !stopping => {
 				result.map_err(|error| CliError::Runtime(format!("could not receive Ctrl-C: {error}")))?;
-				application::stop_remote_run(&target, &run_id).await.map_err(CliError::Runtime)?;
+				remote::stop(&target, &run_id).await.map_err(CliError::Runtime)?;
 				stopping = true;
 			}
 			_ = tokio::time::sleep(Duration::from_millis(250)) => {}
@@ -319,16 +316,20 @@ async fn run_remote(
 async fn finish_local_run(state: Arc<RunnerState>, format: OutputFormat) -> Result<i32, CliError> {
 	let mut interrupt = Box::pin(tokio::signal::ctrl_c());
 	let mut stopping = false;
+	let mut progress = HumanProgressReporter::default();
 	loop {
-		let status = application::run_status(state.clone()).await;
+		let status = runner::status(state.clone()).await;
+		if format == OutputFormat::Human {
+			write_human_status(&status, &mut progress);
+		}
 		if is_finished(&status) {
 			if let Some(artifact_dir) = &status.artifact_dir {
-				let report =
-					application::read_run_report(artifact_dir).map_err(CliError::Runtime)?;
-				write_output(
+				let report = report::read_dashboard(std::path::Path::new(artifact_dir))
+					.map_err(CliError::Runtime)?;
+				write_result(
 					format,
 					&json!({ "version": EVENT_VERSION, "event": "artifact-written", "runId": status.run_id, "artifactDir": artifact_dir, "summary": report.summary }),
-					format!("Artifacts validated: {artifact_dir}"),
+					final_artifact_output(Some(artifact_dir), &report.summary, false),
 				);
 			}
 			return exit_for_status(status, stopping);
@@ -336,7 +337,7 @@ async fn finish_local_run(state: Arc<RunnerState>, format: OutputFormat) -> Resu
 		tokio::select! {
 			result = &mut interrupt, if !stopping => {
 				result.map_err(|error| CliError::Runtime(format!("could not receive Ctrl-C: {error}")))?;
-				application::stop_local_run(state.clone()).await.map_err(CliError::Runtime)?;
+				runner::stop(state.clone()).await.map_err(CliError::Runtime)?;
 				stopping = true;
 			}
 			_ = tokio::time::sleep(Duration::from_millis(250)) => {}
@@ -345,8 +346,8 @@ async fn finish_local_run(state: Arc<RunnerState>, format: OutputFormat) -> Resu
 }
 
 fn report(path: PathBuf, format: OutputFormat) -> Result<i32, CliError> {
-	let report = application::read_run_report(&path).map_err(CliError::Runtime)?;
-	write_output(
+	let report = report::read_dashboard(&path).map_err(CliError::Runtime)?;
+	write_result(
 		format,
 		&json!({ "version": EVENT_VERSION, "event": "report", "artifactDir": path, "summary": report.summary, "plots": report.plots.iter().map(|plot| &plot.name).collect::<Vec<_>>() }),
 		report.summary,
@@ -357,16 +358,12 @@ fn report(path: PathBuf, format: OutputFormat) -> Result<i32, CliError> {
 async fn agent(command: AgentCommand) -> Result<i32, CliError> {
 	match command {
 		AgentCommand::Serve { bind, token_env, output_root } => {
-			application::validate_environment_variable_name(&token_env)
-				.map_err(CliError::Invalid)?;
 			let token = std::env::var(&token_env).map_err(|_| {
 				CliError::Invalid(format!(
 					"agent token environment variable {token_env} is not set"
 				))
 			})?;
-			application::serve_agent(&bind, token, output_root)
-				.await
-				.map_err(CliError::Runtime)?;
+			remote::serve(&bind, token, output_root).await.map_err(CliError::Runtime)?;
 			Ok(0)
 		},
 	}
@@ -390,7 +387,6 @@ fn remote_target(
 ) -> Result<RemoteRunnerTarget, CliError> {
 	let token_env = token_env
 		.ok_or_else(|| CliError::Invalid("--remote-token-env is required with --remote".into()))?;
-	application::validate_environment_variable_name(&token_env).map_err(CliError::Invalid)?;
 	let bearer_token = std::env::var(&token_env).map_err(|_| {
 		CliError::Invalid(format!("remote token environment variable {token_env} is not set"))
 	})?;
@@ -405,6 +401,20 @@ fn estimated_samples(document: &crate::scenario::ScenarioDocument) -> u64 {
 		.iter()
 		.map(|group| u64::from(group.users) * group.samplers.len() as u64)
 		.sum()
+}
+
+fn validation_payload(issues: &[crate::scenario::ValidationIssue], samples: u64) -> Value {
+	json!({
+		"version": EVENT_VERSION,
+		"event": "validation",
+		"valid": issues.is_empty(),
+		"issues": issues,
+		"estimatedSamples": samples,
+	})
+}
+
+fn preflight_payload(report: &crate::preflight::PreflightReport) -> Value {
+	json!({ "version": EVENT_VERSION, "event": "preflight", "report": report })
 }
 
 fn issue_lines(issues: &[crate::scenario::ValidationIssue]) -> String {
@@ -431,25 +441,120 @@ fn exit_for_status(status: RunStatus, interrupted: bool) -> Result<i32, CliError
 	}
 }
 
-fn write_output(format: OutputFormat, json_value: &Value, human: String) {
-	match format {
-		OutputFormat::Human => eprintln!("{human}"),
-		OutputFormat::Json => write_json_line(json_value),
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OutputKind {
+	Result,
+	Progress,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OutputDestination {
+	Stdout,
+	Stderr,
+}
+
+fn output_destination(format: OutputFormat, kind: OutputKind) -> OutputDestination {
+	match (format, kind) {
+		(OutputFormat::Json, _) | (OutputFormat::Human, OutputKind::Result) => {
+			OutputDestination::Stdout
+		},
+		(OutputFormat::Human, OutputKind::Progress) => OutputDestination::Stderr,
 	}
 }
 
-fn write_status(format: OutputFormat, status: &RunStatus) {
-	write_output(
-		format,
-		&json!({ "version": EVENT_VERSION, "event": "run-status", "runId": status.run_id, "status": status }),
-		format!(
-			"Run {}: {} ({}/{} successful)",
-			status.run_id.as_deref().unwrap_or("unknown"),
-			status.state,
-			status.successful_samples,
-			status.completed_samples
+fn write_result(format: OutputFormat, json_value: &Value, human: String) {
+	write_output(format, OutputKind::Result, json_value, human);
+}
+
+fn write_progress(format: OutputFormat, json_value: &Value, human: String) {
+	write_output(format, OutputKind::Progress, json_value, human);
+}
+
+fn write_output(format: OutputFormat, kind: OutputKind, json_value: &Value, human: String) {
+	if format == OutputFormat::Json {
+		write_json_line(json_value);
+		return;
+	}
+	match output_destination(format, kind) {
+		OutputDestination::Stdout => println!("{human}"),
+		OutputDestination::Stderr => eprintln!("{human}"),
+	}
+}
+
+fn write_status(format: OutputFormat, status: &RunStatus, progress: &mut HumanProgressReporter) {
+	match format {
+		OutputFormat::Json => write_json_line(
+			&json!({ "version": EVENT_VERSION, "event": "run-status", "runId": status.run_id, "status": status }),
 		),
+		OutputFormat::Human => write_human_status(status, progress),
+	}
+}
+
+fn write_human_status(status: &RunStatus, progress: &mut HumanProgressReporter) {
+	if progress.should_emit(status) {
+		eprintln!("{}", human_status_line(status));
+	}
+}
+
+fn human_status_line(status: &RunStatus) -> String {
+	let mut details = format!(
+		"{} successful / {} completed",
+		status.successful_samples, status.completed_samples
 	);
+	if status.failed_samples > 0 {
+		details.push_str(&format!(", {} failed", status.failed_samples));
+	}
+	if status.timed_out_samples > 0 {
+		details.push_str(&format!(", {} timed out", status.timed_out_samples));
+	}
+	format!("Run {}: {} ({details})", status.run_id.as_deref().unwrap_or("unknown"), status.state,)
+}
+
+fn final_artifact_output(artifact_dir: Option<&str>, summary: &str, remote: bool) -> String {
+	let location = artifact_dir.unwrap_or("the remote agent");
+	let prefix = if remote { "Remote artifacts validated" } else { "Artifacts validated" };
+	format!("{prefix}: {location}\n\n{summary}")
+}
+
+fn sample_failure_line(run_id: &str, sample: &crate::runner::SampleBatch) -> String {
+	format!(
+		"Run {run_id}: sample failed: {} ({}): {}",
+		sample.label, sample.response_code, sample.response_message
+	)
+}
+
+fn run_event_payload(run_id: &str, event: RunEvent) -> Value {
+	let value = serde_json::to_value(event).unwrap_or_else(
+		|error| json!({ "kind": "serialization_error", "message": error.to_string() }),
+	);
+	let event_name = if value.get("kind") == Some(&Value::String("status".into())) {
+		"run-status"
+	} else if value.get("success") == Some(&Value::Bool(false)) {
+		"sample-failure"
+	} else {
+		"sample"
+	};
+	json!({ "version": EVENT_VERSION, "event": event_name, "runId": run_id, "data": value })
+}
+
+#[derive(Default)]
+struct HumanProgressReporter {
+	last_state: Option<String>,
+	last_emitted: Option<Instant>,
+}
+
+impl HumanProgressReporter {
+	fn should_emit(&mut self, status: &RunStatus) -> bool {
+		let state_changed = self.last_state.as_deref() != Some(status.state.as_str());
+		let due = self.last_emitted.is_none_or(|last| last.elapsed() >= Duration::from_secs(1));
+		if state_changed || due {
+			self.last_state = Some(status.state.clone());
+			self.last_emitted = Some(Instant::now());
+			true
+		} else {
+			false
+		}
+	}
 }
 
 fn write_json_line(value: &Value) {
@@ -466,21 +571,15 @@ struct ConsoleEventSink {
 
 impl RunEventSink for ConsoleEventSink {
 	fn emit(&self, event: RunEvent) {
-		let value = serde_json::to_value(event).unwrap_or_else(
-			|error| json!({ "kind": "serialization_error", "message": error.to_string() }),
-		);
-		let event_name = if value.get("kind") == Some(&Value::String("status".into())) {
-			"run-status"
-		} else if value.get("success") == Some(&Value::Bool(false)) {
-			"sample-failure"
-		} else {
-			"sample"
-		};
-		write_output(
-			self.format,
-			&json!({ "version": EVENT_VERSION, "event": event_name, "runId": self.run_id, "data": value }),
-			format!("Run {}: {event_name}", self.run_id),
-		);
+		if self.format == OutputFormat::Human {
+			if let RunEvent::Sample(sample) = event {
+				if !sample.success {
+					eprintln!("{}", sample_failure_line(&self.run_id, &sample));
+				}
+			}
+			return;
+		}
+		write_json_line(&run_event_payload(&self.run_id, event));
 	}
 }
 
@@ -489,12 +588,45 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn command_line_parses_the_supported_workflows() {
+	fn command_line_enforces_run_argument_constraints() {
 		assert!(Cli::try_parse_from(["polkameter", "validate", "scenario.json"]).is_ok());
 		assert!(
 			Cli::try_parse_from(["polkameter", "run", "scenario.json", "--output", "runs"]).is_ok()
 		);
 		assert!(Cli::try_parse_from(["polkameter", "agent", "serve"]).is_ok());
+		assert!(Cli::try_parse_from(["polkameter", "run", "scenario.json"]).is_err());
+		assert!(Cli::try_parse_from([
+			"polkameter",
+			"run",
+			"scenario.json",
+			"--output",
+			"runs",
+			"--signer-profile",
+			"local-dev",
+			"--signer-env",
+			"POLKAMETER_SURI",
+		])
+		.is_err());
+		assert!(Cli::try_parse_from([
+			"polkameter",
+			"run",
+			"scenario.json",
+			"--output",
+			"runs",
+			"--remote-token-env",
+			"POLKAMETER_REMOTE_TOKEN",
+		])
+		.is_err());
+		assert!(Cli::try_parse_from([
+			"polkameter",
+			"run",
+			"scenario.json",
+			"--remote",
+			"http://127.0.0.1:9901",
+			"--remote-token-env",
+			"POLKAMETER_REMOTE_TOKEN",
+		])
+		.is_ok());
 	}
 
 	#[test]
@@ -521,8 +653,97 @@ mod tests {
 	}
 
 	#[test]
-	fn json_events_do_not_include_signer_material() {
-		let payload = json!({ "version": EVENT_VERSION, "event": "run-status", "runId": "run-1" });
-		assert!(!payload.to_string().contains("//Alice"));
+	fn cli_json_payloads_redact_configured_signer_material() {
+		let document = crate::artifacts::test_scenario();
+		assert_eq!(document.signer_source.base_suri, "//Alice");
+		let validation = validation_payload(&document.validate(), estimated_samples(&document));
+		let preflight = preflight_payload(&crate::preflight::PreflightReport {
+			run_id: "run-1".into(),
+			signer_derivation_root: "//polkameter//run-run-1".into(),
+			endpoint: document.chain.endpoint.clone(),
+			genesis_hash: "0x01".into(),
+			spec_version: 1,
+			transaction_version: 1,
+			metadata_hash: "0x02".into(),
+			pallets: vec![],
+			selected_calls: vec![],
+			derived_accounts: vec![],
+			readiness: crate::preflight::Readiness {
+				signer_source: "resolved in memory".into(),
+				balance_and_nonce: "ready".into(),
+				transaction_profile: "Polkadot".into(),
+			},
+			resolved_sample_count: estimated_samples(&document),
+		});
+		let event = run_event_payload(
+			"run-1",
+			RunEvent::Sample(crate::runner::SampleBatch {
+				label: "balances.transfer_keep_alive".into(),
+				success: true,
+				elapsed_ms: 12,
+				response_code: "0".into(),
+				response_message: "Finalized".into(),
+				completed_samples: 1,
+			}),
+		);
+		let remote_request = serde_json::to_value(crate::remote::RemoteRunRequest {
+			protocol_version: crate::remote::PROTOCOL_VERSION,
+			run_id: "run-1".into(),
+			document: document.redacted_clone(),
+		})
+		.expect("remote request serializes");
+		for payload in [validation, preflight, event, remote_request.clone()] {
+			assert!(!payload.to_string().contains("//Alice"));
+		}
+		assert!(remote_request.to_string().contains("[redacted]"));
+	}
+
+	#[test]
+	fn human_results_and_progress_use_separate_streams() {
+		assert_eq!(
+			output_destination(OutputFormat::Human, OutputKind::Result),
+			OutputDestination::Stdout
+		);
+		assert_eq!(
+			output_destination(OutputFormat::Human, OutputKind::Progress),
+			OutputDestination::Stderr
+		);
+		assert_eq!(
+			output_destination(OutputFormat::Json, OutputKind::Result),
+			OutputDestination::Stdout
+		);
+		assert_eq!(
+			output_destination(OutputFormat::Json, OutputKind::Progress),
+			OutputDestination::Stdout
+		);
+	}
+
+	#[test]
+	fn human_progress_is_throttled_but_state_changes_are_reported() {
+		let mut reporter = HumanProgressReporter::default();
+		let mut status = RunStatus { state: "running".into(), ..RunStatus::default() };
+		assert!(reporter.should_emit(&status));
+		assert!(!reporter.should_emit(&status));
+		status.state = "completed".into();
+		assert!(reporter.should_emit(&status));
+	}
+
+	#[test]
+	fn human_sample_failure_names_the_sampler_and_error_without_changing_json() {
+		let sample = crate::runner::SampleBatch {
+			label: "balances.transfer_keep_alive".into(),
+			success: false,
+			elapsed_ms: 120,
+			response_code: "DISPATCH_ERROR".into(),
+			response_message: "InsufficientBalance".into(),
+			completed_samples: 3,
+		};
+		assert_eq!(
+			sample_failure_line("run-1", &sample),
+			"Run run-1: sample failed: balances.transfer_keep_alive (DISPATCH_ERROR): InsufficientBalance"
+		);
+		assert!(!serde_json::to_string(&sample)
+			.expect("sample serializes")
+			.contains("responseMessage"));
 	}
 }

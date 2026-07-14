@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{watch, Mutex, Semaphore};
 
 use crate::{
-	artifacts::{new_run_id, ArtifactWriter, EventRecord, SampleRecord},
+	artifacts::{new_run_id, ArtifactWriter, EventRecord, RunOrigin, SampleRecord},
 	scenario::{
 		signer_offset, CompletionBoundary, SamplerPhase, ScenarioDocument, ThreadGroup,
 		TransactionProfile, TransactionSampler,
@@ -42,11 +42,13 @@ pub struct RunStatus {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SampleBatch {
-	label: String,
-	success: bool,
-	elapsed_ms: u64,
-	response_code: String,
-	completed_samples: u64,
+	pub(crate) label: String,
+	pub(crate) success: bool,
+	pub(crate) elapsed_ms: u64,
+	pub(crate) response_code: String,
+	#[serde(skip)]
+	pub(crate) response_message: String,
+	pub(crate) completed_samples: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -60,15 +62,13 @@ pub trait RunEventSink: Send + Sync {
 	fn emit(&self, event: RunEvent);
 }
 
-const HEADLESS_COMMAND: &str = "Polkameter run started through a headless runner\n";
-
 pub async fn start_with_command(
 	document: ScenarioDocument,
 	output_root: String,
 	run_id: String,
 	sink: Arc<dyn RunEventSink>,
 	state: Arc<RunnerState>,
-	command: impl Into<String>,
+	origin: RunOrigin,
 ) -> Result<RunStatus, String> {
 	if !document.validate().is_empty() {
 		return Err("scenario must pass structural validation before it can be armed".into());
@@ -80,8 +80,7 @@ pub async fn start_with_command(
 	if current.state == "running" || current.state == "arming" {
 		return Err("a run is already active".into());
 	}
-	let command = command.into();
-	let writer = ArtifactWriter::create(&output_root, &document, &run_id, &command)?;
+	let writer = ArtifactWriter::create(&output_root, &document, &run_id, origin)?;
 	let (cancel, cancel_rx) = watch::channel(false);
 	*state.cancel.lock().await = Some(cancel);
 	*current = RunStatus {
@@ -231,7 +230,7 @@ pub async fn run_headless_with_run_id(
 	if !matches!(document.chain.transaction_profile, TransactionProfile::Polkadot) {
 		return Err("this build can execute the standard Polkadot transaction profile only".into());
 	}
-	let writer = ArtifactWriter::create(output_root, &document, &run_id, HEADLESS_COMMAND)?;
+	let writer = ArtifactWriter::create(output_root, &document, &run_id, RunOrigin::Cli)?;
 	let (_cancel, cancel_rx) = watch::channel(false);
 	execute(document, writer, run_id, None, Arc::new(RunnerState::default()), cancel_rx).await
 }
@@ -513,6 +512,7 @@ async fn record_result(
 			success: result.success,
 			elapsed_ms: result.end_ms.saturating_sub(result.start_ms),
 			response_code: result.response_code,
+			response_message: result.message,
 			completed_samples: counts.completed_samples,
 		}));
 	}
@@ -890,7 +890,7 @@ mod tests {
 			run_id,
 			sink.clone(),
 			state.clone(),
-			"Polkameter integration test\n",
+			RunOrigin::Cli,
 		)
 		.await
 		.expect("run arms");

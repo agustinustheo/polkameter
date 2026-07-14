@@ -1,12 +1,6 @@
-use std::{path::Path, sync::Arc};
+use std::path::Path;
 
-pub use crate::{
-	preflight::PreflightReport,
-	remote::RemoteRunnerTarget,
-	report::DashboardReport,
-	runner::{RunEvent, RunEventSink, RunStatus, RunnerState},
-	scenario::ScenarioDocument,
-};
+use crate::scenario::ScenarioDocument;
 
 pub fn load_scenario_document(path: impl AsRef<Path>) -> Result<ScenarioDocument, String> {
 	let encoded = std::fs::read(path).map_err(|error| error.to_string())?;
@@ -36,7 +30,6 @@ pub fn resolve_signer_source(
 		document.signer_source.profile = profile.into();
 	}
 	if let Some(variable) = signer_env {
-		validate_environment_variable_name(variable)?;
 		let suri = std::env::var(variable)
 			.map_err(|_| format!("signer environment variable {variable} is not set"))?;
 		validate_resolved_suri(document, &suri, variable)?;
@@ -44,94 +37,6 @@ pub fn resolve_signer_source(
 		return Ok(());
 	}
 	crate::resolve_signer_profile(document)
-}
-
-pub async fn preflight_scenario(
-	document: &ScenarioDocument,
-	run_id: &str,
-) -> Result<PreflightReport, String> {
-	crate::preflight::preflight(document, run_id).await
-}
-
-pub async fn start_local_run(
-	document: ScenarioDocument,
-	output_root: String,
-	run_id: String,
-	sink: Arc<dyn RunEventSink>,
-	state: Arc<RunnerState>,
-	command: &str,
-) -> Result<RunStatus, String> {
-	crate::runner::start_with_command(document, output_root, run_id, sink, state, command).await
-}
-
-pub async fn run_status(state: Arc<RunnerState>) -> RunStatus {
-	crate::runner::status(state).await
-}
-
-pub async fn stop_local_run(state: Arc<RunnerState>) -> Result<RunStatus, String> {
-	crate::runner::stop(state).await
-}
-
-pub fn read_run_report(path: impl AsRef<Path>) -> Result<DashboardReport, String> {
-	crate::report::read_dashboard(path.as_ref())
-}
-
-pub async fn start_remote_run(
-	target: &RemoteRunnerTarget,
-	document: ScenarioDocument,
-	run_id: String,
-) -> Result<RunStatus, String> {
-	crate::remote::start(target, document, run_id).await
-}
-
-pub async fn preflight_remote_run(
-	target: &RemoteRunnerTarget,
-	document: ScenarioDocument,
-	run_id: String,
-) -> Result<PreflightReport, String> {
-	crate::remote::preflight(target, document, run_id).await
-}
-
-pub async fn remote_run_status(
-	target: &RemoteRunnerTarget,
-	run_id: &str,
-) -> Result<RunStatus, String> {
-	crate::remote::status(target, run_id).await
-}
-
-pub async fn stop_remote_run(
-	target: &RemoteRunnerTarget,
-	run_id: &str,
-) -> Result<RunStatus, String> {
-	crate::remote::stop(target, run_id).await
-}
-
-pub async fn read_remote_run_report(
-	target: &RemoteRunnerTarget,
-	run_id: &str,
-) -> Result<DashboardReport, String> {
-	crate::remote::read_remote_report(target, run_id).await
-}
-
-pub async fn serve_agent(
-	bind: &str,
-	bearer_token: String,
-	output_root: String,
-) -> Result<(), String> {
-	crate::remote::serve(bind, bearer_token, output_root).await
-}
-
-pub fn validate_environment_variable_name(value: &str) -> Result<(), String> {
-	if value.is_empty()
-		|| value.len() > 128
-		|| !value.chars().enumerate().all(|(index, character)| {
-			character == '_'
-				|| character.is_ascii_alphabetic()
-				|| (index > 0 && character.is_ascii_digit())
-		}) {
-		return Err("environment variable names may contain ASCII letters, digits, and underscores, and may not begin with a digit".into());
-	}
-	Ok(())
 }
 
 fn validate_resolved_suri(
@@ -155,13 +60,6 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn signer_environment_variable_names_are_constrained() {
-		assert!(validate_environment_variable_name("POLKAMETER_SURI").is_ok());
-		assert!(validate_environment_variable_name("1SURI").is_err());
-		assert!(validate_environment_variable_name("SURI-NAME").is_err());
-	}
-
-	#[test]
 	fn stored_scenarios_reject_literal_signer_material() {
 		let path = std::env::temp_dir()
 			.join(format!("polkameter-scenario-secret-test-{}.json", std::process::id()));
@@ -171,5 +69,18 @@ mod tests {
 			.expect("scenario writes");
 		assert!(load_scenario_document(&path).is_err());
 		let _ = std::fs::remove_file(path);
+	}
+
+	#[test]
+	fn resolved_signers_must_be_nonempty_and_support_development_funding() {
+		let mut document = crate::artifacts::test_scenario();
+		assert!(validate_resolved_suri(&document, "", "POLKAMETER_SURI").is_err());
+		document.signer_source.funding = Some(crate::scenario::DevelopmentFunding {
+			amount: "1000000000".into(),
+			finality_timeout_ms: 60_000,
+			batch_size: 50,
+		});
+		assert!(validate_resolved_suri(&document, "seed phrase", "POLKAMETER_SURI").is_err());
+		assert!(validate_resolved_suri(&document, "//Alice", "POLKAMETER_SURI").is_ok());
 	}
 }

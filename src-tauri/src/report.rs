@@ -352,9 +352,13 @@ mod tests {
 			std::env::temp_dir().join(format!("polkameter-dashboard-test-{}", std::process::id()));
 		let _ = fs::remove_dir_all(&directory);
 		let scenario = crate::artifacts::test_scenario();
-		let mut writer =
-			crate::artifacts::ArtifactWriter::create(&directory, &scenario, "proof", "test\n")
-				.expect("artifact bundle created");
+		let mut writer = crate::artifacts::ArtifactWriter::create(
+			&directory,
+			&scenario,
+			"proof",
+			crate::artifacts::RunOrigin::Cli,
+		)
+		.expect("artifact bundle created");
 		writer.flush().expect("collectors flushed");
 		let report = write(&writer.directory).expect("report written");
 		writer.write_summary(&report.summary).expect("summary written");
