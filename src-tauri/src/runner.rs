@@ -60,12 +60,15 @@ pub trait RunEventSink: Send + Sync {
 	fn emit(&self, event: RunEvent);
 }
 
-pub async fn start(
+const HEADLESS_COMMAND: &str = "Polkameter run started through a headless runner\n";
+
+pub async fn start_with_command(
 	document: ScenarioDocument,
 	output_root: String,
 	run_id: String,
 	sink: Arc<dyn RunEventSink>,
 	state: Arc<RunnerState>,
+	command: impl Into<String>,
 ) -> Result<RunStatus, String> {
 	if !document.validate().is_empty() {
 		return Err("scenario must pass structural validation before it can be armed".into());
@@ -77,7 +80,8 @@ pub async fn start(
 	if current.state == "running" || current.state == "arming" {
 		return Err("a run is already active".into());
 	}
-	let writer = ArtifactWriter::create(&output_root, &document, &run_id)?;
+	let command = command.into();
+	let writer = ArtifactWriter::create(&output_root, &document, &run_id, &command)?;
 	let (cancel, cancel_rx) = watch::channel(false);
 	*state.cancel.lock().await = Some(cancel);
 	*current = RunStatus {
@@ -227,7 +231,7 @@ pub async fn run_headless_with_run_id(
 	if !matches!(document.chain.transaction_profile, TransactionProfile::Polkadot) {
 		return Err("this build can execute the standard Polkadot transaction profile only".into());
 	}
-	let writer = ArtifactWriter::create(output_root, &document, &run_id)?;
+	let writer = ArtifactWriter::create(output_root, &document, &run_id, HEADLESS_COMMAND)?;
 	let (_cancel, cancel_rx) = watch::channel(false);
 	execute(document, writer, run_id, None, Arc::new(RunnerState::default()), cancel_rx).await
 }
@@ -880,10 +884,16 @@ mod tests {
 
 		let state = std::sync::Arc::new(RunnerState::default());
 		let sink = std::sync::Arc::new(RecordingSink::default());
-		let arming =
-			start(reopened, root.display().to_string(), run_id, sink.clone(), state.clone())
-				.await
-				.expect("run arms");
+		let arming = start_with_command(
+			reopened,
+			root.display().to_string(),
+			run_id,
+			sink.clone(),
+			state.clone(),
+			"Polkameter integration test\n",
+		)
+		.await
+		.expect("run arms");
 		assert_eq!(arming.state, "arming");
 		let final_status = tokio::time::timeout(Duration::from_secs(test_timeout_secs), async {
 			loop {

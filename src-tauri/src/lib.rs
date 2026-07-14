@@ -1,4 +1,6 @@
+mod application;
 mod artifacts;
+pub mod cli;
 mod jmx;
 mod preflight;
 mod remote;
@@ -188,7 +190,12 @@ fn create_artifact_preview(
 		return Err(format!("scenario is invalid: {}", issues[0].message));
 	}
 	let run_id = artifacts::new_run_id();
-	let mut writer = artifacts::ArtifactWriter::create(output_root, &document, &run_id)?;
+	let mut writer = artifacts::ArtifactWriter::create(
+		output_root,
+		&document,
+		&run_id,
+		"Polkameter artifact preview created through the desktop application\n",
+	)?;
 	writer.flush()?;
 	let report = report::write(&writer.directory)?;
 	writer.write_summary(&format!(
@@ -223,7 +230,7 @@ async fn start_remote_run(
 	document: ScenarioDocument,
 	run_id: String,
 ) -> Result<runner::RunStatus, String> {
-	remote::start(&target, document, run_id).await
+	application::start_remote_run(&target, document, run_id).await
 }
 
 #[tauri::command]
@@ -231,7 +238,7 @@ async fn get_remote_run_status(
 	target: remote::RemoteRunnerTarget,
 	run_id: String,
 ) -> Result<runner::RunStatus, String> {
-	remote::status(&target, &run_id).await
+	application::remote_run_status(&target, &run_id).await
 }
 
 #[tauri::command]
@@ -239,7 +246,7 @@ async fn stop_remote_run(
 	target: remote::RemoteRunnerTarget,
 	run_id: String,
 ) -> Result<runner::RunStatus, String> {
-	remote::stop(&target, &run_id).await
+	application::stop_remote_run(&target, &run_id).await
 }
 
 #[tauri::command]
@@ -247,7 +254,7 @@ async fn read_remote_run_report(
 	target: remote::RemoteRunnerTarget,
 	run_id: String,
 ) -> Result<report::DashboardReport, String> {
-	remote::read_remote_report(&target, &run_id).await
+	application::read_remote_run_report(&target, &run_id).await
 }
 
 #[tauri::command]
@@ -255,9 +262,9 @@ async fn preflight_scenario(
 	mut document: ScenarioDocument,
 	run_id: Option<String>,
 ) -> Result<preflight::PreflightReport, String> {
-	resolve_signer_profile(&mut document)?;
+	application::resolve_signer_source(&mut document, None, None)?;
 	let run_id = run_id.unwrap_or_else(artifacts::new_run_id);
-	preflight::preflight(&document, &run_id).await
+	application::preflight_scenario(&document, &run_id).await
 }
 
 #[tauri::command]
@@ -291,15 +298,12 @@ fn save_scenario(document: scenario::ScenarioDocument, path: String) -> Result<(
 
 #[tauri::command]
 fn load_scenario(path: String) -> Result<scenario::ScenarioDocument, String> {
-	let encoded = std::fs::read(path).map_err(|error| error.to_string())?;
-	let document = serde_json::from_slice::<scenario::ScenarioDocument>(&encoded)
-		.map_err(|error| error.to_string())?;
-	document.migrate()
+	application::load_scenario_document(path)
 }
 
 #[tauri::command]
 fn read_run_report(artifact_dir: String) -> Result<report::DashboardReport, String> {
-	report::read_dashboard(std::path::Path::new(&artifact_dir))
+	application::read_run_report(artifact_dir)
 }
 
 #[tauri::command]
@@ -310,13 +314,14 @@ async fn start_run(
 	app: tauri::AppHandle,
 	state: tauri::State<'_, std::sync::Arc<runner::RunnerState>>,
 ) -> Result<runner::RunStatus, String> {
-	resolve_signer_profile(&mut document)?;
-	runner::start(
+	application::resolve_signer_source(&mut document, None, None)?;
+	application::start_local_run(
 		document,
 		output_root,
 		run_id,
 		std::sync::Arc::new(TauriRunEventSink(app)),
 		state.inner().clone(),
+		"Polkameter run started through the desktop application\n",
 	)
 	.await
 }
@@ -378,14 +383,14 @@ pub(crate) fn resolve_signer_profile(document: &mut ScenarioDocument) -> Result<
 async fn stop_run(
 	state: tauri::State<'_, std::sync::Arc<runner::RunnerState>>,
 ) -> Result<runner::RunStatus, String> {
-	runner::stop(state.inner().clone()).await
+	application::stop_local_run(state.inner().clone()).await
 }
 
 #[tauri::command]
 async fn get_run_status(
 	state: tauri::State<'_, std::sync::Arc<runner::RunnerState>>,
 ) -> Result<runner::RunStatus, String> {
-	Ok(runner::status(state.inner().clone()).await)
+	Ok(application::run_status(state.inner().clone()).await)
 }
 
 fn is_json_object_or_array(value: &str) -> bool {
@@ -431,10 +436,6 @@ pub fn run() {
 		])
 		.run(tauri::generate_context!())
 		.expect("error while running Polkameter");
-}
-
-pub async fn serve_agent_from_env() -> Result<(), String> {
-	remote::serve_from_env().await
 }
 
 #[cfg(test)]

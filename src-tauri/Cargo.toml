@@ -5,10 +5,19 @@ description = "A JMeter-inspired Polkadot SDK stress testing workbench"
 edition = "2021"
 rust-version = "1.93"
 license = "Apache-2.0"
+autobins = false
 
 [lib]
 name = "polkameter_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "polkameter"
+path = "src/cli_main.rs"
+
+[[bin]]
+name = "polkameter-desktop"
+path = "src/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "2.6.3", features = [] }
@@ -16,6 +25,7 @@ tauri-build = { version = "2.6.3", features = [] }
 [dependencies]
 anyhow = "1"
 axum = "0.8"
+clap = { version = "4", features = ["derive"] }
 csv = "1"
 futures = "0.3"
 hex = "0.4"
@@ -30,6 +40,6 @@ subxt = { version = "0.50.2", default-features = false, features = ["jsonrpsee",
 subxt-signer = { version = "0.50.2", features = ["sr25519", "subxt"] }
 tauri = { version = "2.11.5", features = [] }
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 
 [workspace]

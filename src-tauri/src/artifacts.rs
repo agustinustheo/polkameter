@@ -84,6 +84,7 @@ impl ArtifactWriter {
 		output_root: impl AsRef<Path>,
 		scenario: &ScenarioDocument,
 		run_id: &str,
+		command: &str,
 	) -> Result<Self, String> {
 		let directory = output_root.as_ref().join(run_id);
 		fs::create_dir_all(directory.join("plots")).map_err(|error| error.to_string())?;
@@ -91,11 +92,7 @@ impl ArtifactWriter {
 		let resolved_plan = ResolvedPlan::from_scenario(scenario, run_id);
 		write_json(directory.join("resolved-plan.json"), &resolved_plan)?;
 		write_json(directory.join("config.json"), &resolved_plan)?;
-		fs::write(
-			directory.join("command.txt"),
-			"Polkameter run started through the desktop application\n",
-		)
-		.map_err(|error| error.to_string())?;
+		fs::write(directory.join("command.txt"), command).map_err(|error| error.to_string())?;
 
 		let samples_path = directory.join("samples.jtl");
 		let samples = csv::Writer::from_path(&samples_path).map_err(|error| error.to_string())?;
@@ -201,8 +198,8 @@ mod tests {
 	#[test]
 	fn writer_creates_portable_artifacts_without_secrets() {
 		let root = std::env::temp_dir().join(format!("polkameter-artifact-test-{}", new_run_id()));
-		let mut writer =
-			ArtifactWriter::create(&root, &test_scenario(), "proof").expect("writer created");
+		let mut writer = ArtifactWriter::create(&root, &test_scenario(), "proof", "test\n")
+			.expect("writer created");
 		writer.write_summary("# Run\n").expect("summary written");
 		writer.flush().expect("artifacts flushed");
 		let plan =

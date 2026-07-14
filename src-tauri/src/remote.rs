@@ -8,7 +8,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{report, runner, scenario::ScenarioDocument};
+use crate::{preflight, report, runner, scenario::ScenarioDocument};
 
 pub const PROTOCOL_VERSION: u32 = 1;
 
@@ -79,15 +79,6 @@ struct AgentState {
 	runner: Arc<runner::RunnerState>,
 }
 
-pub async fn serve_from_env() -> Result<(), String> {
-	let bind = std::env::var("POLKAMETER_AGENT_BIND").unwrap_or_else(|_| "127.0.0.1:9901".into());
-	let token = std::env::var("POLKAMETER_AGENT_TOKEN")
-		.map_err(|_| "POLKAMETER_AGENT_TOKEN must be set before starting an agent".to_string())?;
-	let output_root = std::env::var("POLKAMETER_AGENT_OUTPUT_ROOT")
-		.unwrap_or_else(|_| "target/polkameter-agent-runs".into());
-	serve(&bind, token, output_root).await
-}
-
 pub async fn serve(bind: &str, bearer_token: String, output_root: String) -> Result<(), String> {
 	if bearer_token.trim().is_empty() {
 		return Err("agent bearer token must not be empty".into());
@@ -104,6 +95,7 @@ pub async fn serve(bind: &str, bearer_token: String, output_root: String) -> Res
 		AgentState { bearer_token, output_root, runner: Arc::new(runner::RunnerState::default()) };
 	let app = Router::new()
 		.route("/v1/health", get(health))
+		.route("/v1/preflight", post(preflight_run))
 		.route("/v1/runs", post(start_run))
 		.route("/v1/runs/{run_id}", get(run_status))
 		.route("/v1/runs/{run_id}/stop", post(stop_run))
@@ -130,6 +122,27 @@ pub async fn start(
 	};
 	let response = reqwest::Client::new()
 		.post(format!("{}/v1/runs", target.endpoint.trim_end_matches('/')))
+		.bearer_auth(&target.bearer_token)
+		.json(&request)
+		.send()
+		.await
+		.map_err(|error| format!("could not reach remote runner: {error}"))?;
+	decode_response(response).await
+}
+
+pub async fn preflight(
+	target: &RemoteRunnerTarget,
+	document: ScenarioDocument,
+	run_id: String,
+) -> Result<preflight::PreflightReport, String> {
+	target.validate()?;
+	let request = RemoteRunRequest {
+		protocol_version: PROTOCOL_VERSION,
+		run_id,
+		document: document.redacted_clone(),
+	};
+	let response = reqwest::Client::new()
+		.post(format!("{}/v1/preflight", target.endpoint.trim_end_matches('/')))
 		.bearer_auth(&target.bearer_token)
 		.json(&request)
 		.send()
@@ -181,6 +194,21 @@ async fn health() -> Json<AgentHealth> {
 	Json(AgentHealth { protocol_version: PROTOCOL_VERSION, status: "ready" })
 }
 
+async fn preflight_run(
+	State(state): State<AgentState>,
+	headers: HeaderMap,
+	Json(request): Json<RemoteRunRequest>,
+) -> AgentResult<Json<preflight::PreflightReport>> {
+	authorize(&headers, &state)?;
+	request.validate().map_err(bad_request)?;
+	let mut document = request.document;
+	resolve_agent_signer(&mut document).map_err(bad_request)?;
+	preflight::preflight(&document, &request.run_id)
+		.await
+		.map(Json)
+		.map_err(bad_request)
+}
+
 async fn start_run(
 	State(state): State<AgentState>,
 	headers: HeaderMap,
@@ -190,12 +218,13 @@ async fn start_run(
 	request.validate().map_err(bad_request)?;
 	let mut document = request.document;
 	resolve_agent_signer(&mut document).map_err(bad_request)?;
-	let status = runner::start(
+	let status = runner::start_with_command(
 		document,
 		state.output_root,
 		request.run_id,
 		Arc::new(NoopEventSink),
 		state.runner,
+		"Polkameter run started through the remote agent\n",
 	)
 	.await
 	.map_err(bad_request)?;

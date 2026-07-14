@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use subxt::{
 	dynamic::{self, Value},
 	ext::scale_value::{Composite, ValueDef},
@@ -10,7 +10,7 @@ use subxt_signer::{sr25519::Keypair, SecretUri};
 
 use crate::scenario::{signer_derivation_root, signer_suri, ScenarioDocument, TransactionSampler};
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreflightReport {
 	pub run_id: String,
@@ -27,14 +27,14 @@ pub struct PreflightReport {
 	pub resolved_sample_count: u64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PalletSchema {
 	pub name: String,
 	pub calls: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CallValidation {
 	pub group: String,
@@ -47,7 +47,7 @@ pub struct CallValidation {
 	pub error: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArgumentField {
 	pub name: Option<String>,
@@ -56,14 +56,14 @@ pub struct ArgumentField {
 	pub docs: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DerivedAccount {
 	pub index: u32,
 	pub address: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Readiness {
 	pub signer_source: String,
