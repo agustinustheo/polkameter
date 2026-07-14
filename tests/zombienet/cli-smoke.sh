@@ -140,8 +140,8 @@ POLKAMETER_SURI='//Alice' \
 LOCAL_ARTIFACT="$(find "$LOCAL_OUTPUT" -mindepth 1 -maxdepth 1 -type d -print -quit)"
 test -n "$LOCAL_ARTIFACT"
 "$CLI" report "$LOCAL_ARTIFACT" --format json >"$LOG_DIR/local-report.json"
-rg -q ',true,' "$LOCAL_ARTIFACT/samples.jtl"
-rg -q '| Failed | 0 |' "$LOCAL_ARTIFACT/summary.md"
+grep -q ',true,' "$LOCAL_ARTIFACT/samples.jtl"
+grep -q '| Failed | 0 |' "$LOCAL_ARTIFACT/summary.md"
 
 echo "Starting the loopback remote agent"
 POLKAMETER_AGENT_TOKEN='zombienet-cli-smoke-token' \
@@ -152,7 +152,7 @@ AGENT_PID=$!
 
 for attempt in $(seq 1 30); do
 	if curl --silent --show-error --fail --max-time 2 "http://127.0.0.1:$AGENT_PORT/v1/health" \
-		| rg -q '"status":"ready"'; then
+		| grep -q '"status":"ready"'; then
 		break
 	fi
 	if ! kill -0 "$AGENT_PID" 2>/dev/null; then
@@ -163,7 +163,7 @@ for attempt in $(seq 1 30); do
 	sleep 1
 done
 curl --silent --show-error --fail --max-time 2 "http://127.0.0.1:$AGENT_PORT/v1/health" \
-	| rg -q '"status":"ready"'
+	| grep -q '"status":"ready"'
 
 echo "Running and reporting through the remote agent"
 POLKAMETER_REMOTE_TOKEN='zombienet-cli-smoke-token' \
@@ -172,7 +172,7 @@ POLKAMETER_REMOTE_TOKEN='zombienet-cli-smoke-token' \
 REMOTE_ARTIFACT="$(find "$OUTPUT_ROOT/remote" -mindepth 1 -maxdepth 1 -type d -print -quit)"
 test -n "$REMOTE_ARTIFACT"
 "$CLI" report "$REMOTE_ARTIFACT" --format json >"$LOG_DIR/remote-report.json"
-rg -q ',true,' "$REMOTE_ARTIFACT/samples.jtl"
-rg -q '| Failed | 0 |' "$REMOTE_ARTIFACT/summary.md"
+grep -q ',true,' "$REMOTE_ARTIFACT/samples.jtl"
+grep -q '| Failed | 0 |' "$REMOTE_ARTIFACT/summary.md"
 
 echo "Zombienet CLI smoke test passed. Artifacts: $OUTPUT_ROOT"
