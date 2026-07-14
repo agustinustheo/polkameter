@@ -45,6 +45,36 @@ jobs:
       - run: cargo +${{ env.RUST_VERSION }} run --manifest-path src-tauri/Cargo.toml --bin polkameter -- validate src-tauri/tests/fixtures/valid-scenario.polkameter.json --format json
       - run: cargo +${{ env.RUST_VERSION }} run --manifest-path src-tauri/Cargo.toml --bin polkameter -- report src-tauri/tests/fixtures/report --format json
 
+  zombienet-cli-smoke:
+    name: Zombienet CLI smoke
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - name: Install Linux test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - name: Install pinned Zombienet binaries
+        run: tests/zombienet/install-binaries.sh
+      - name: Run fresh Zombienet CLI smoke test
+        env:
+          POLKAMETER_ZOMBIENET_BIN: target/zombienet-tools/bin/zombie-cli
+          POLKAMETER_POLKADOT_BIN: target/zombienet-tools/bin/polkadot
+          POLKAMETER_ZOMBIENET_KEEP_ARTIFACTS: "1"
+        run: tests/zombienet/cli-smoke.sh
+      - name: Upload Zombienet CLI smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zombienet-cli-smoke
+          path: target/zombienet-cli-smoke
+          if-no-files-found: ignore
+          retention-days: 7
+
   desktop-build:
     name: Desktop build (${{ matrix.name }})
     strategy:

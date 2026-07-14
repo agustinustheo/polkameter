@@ -144,6 +144,22 @@ cargo +1.93.0 test --manifest-path src-tauri/Cargo.toml \
 
 Both need a fresh local dev chain at `ws://127.0.0.1:9944` (command above).
 
+## Fresh Zombienet CLI smoke test
+
+The command-line integration test owns a fresh native Zombienet relay rather than connecting to a populated snapshot or an already-running node. It validates the scenario, preflights the live chain, runs and reports locally, then repeats the preflight/run/report path through a loopback remote agent. The generated artifacts include JTL, events, telemetry, summary, and all SVG plots.
+
+The installer downloads checksummed Polkadot and Zombienet binaries into `target/` for Linux x86_64 and Apple Silicon. The smoke script refuses to start when its dedicated RPC (`19144`), Prometheus (`19161`), or agent (`19901`) port is already occupied.
+
+```sh
+TOOLS_DIR="$(tests/zombienet/install-binaries.sh)"
+POLKAMETER_ZOMBIENET_BIN="$TOOLS_DIR/zombie-cli" \
+POLKAMETER_POLKADOT_BIN="$TOOLS_DIR/polkadot" \
+POLKAMETER_ZOMBIENET_KEEP_ARTIFACTS=1 \
+tests/zombienet/cli-smoke.sh
+```
+
+Artifacts are retained in `target/zombienet-cli-smoke` when `POLKAMETER_ZOMBIENET_KEEP_ARTIFACTS=1`; otherwise the script cleans them up after a successful or failed run. CI runs this smoke test on pull requests and `main`, and uploads the retained artifacts.
+
 ## Boundary
 
 Deliberately chain-generic: the standard `PolkadotConfig` transaction profile, credential-vault signer profiles, optional Prometheus telemetry and structural JMX interchange. Domain-specific setup, funding and assertions belong in adapters or scenario extensions, not the core plan model.

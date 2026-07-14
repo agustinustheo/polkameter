@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Fresh, native relay network used by the Polkameter command-line smoke test.
+# It deliberately has one validator and no parachain: the generic Polkadot
+# transaction profile only needs live metadata, a funded development signer,
+# finality, and Prometheus metrics.
+
+[settings]
+timeout = 600
+node_spawn_timeout = 180
+
+[relaychain]
+chain = "rococo-local"
+default_command = "polkadot"
+
+[[relaychain.nodes]]
+name = "alice"
+validator = true
+rpc_port = 19144
+prometheus_port = 19161
+p2p_port = 19344

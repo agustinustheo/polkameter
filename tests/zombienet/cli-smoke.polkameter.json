@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "testPlan": {
+    "name": "Fresh Zombienet CLI smoke",
+    "description": "One finalized transfer through a fresh local Zombienet relay.",
+    "seed": 17,
+    "limits": {
+      "wholeRunTimeoutMs": 120000,
+      "shutdownDrainTimeoutMs": 30000,
+      "maxConcurrentSamples": 1
+    }
+  },
+  "chain": {
+    "endpoint": "ws://127.0.0.1:19144",
+    "prometheusEndpoint": "http://127.0.0.1:19161/metrics",
+    "transactionProfile": "polkadot"
+  },
+  "signerSource": {
+    "profile": "zombienet-dev",
+    "baseSuri": "[redacted]",
+    "derivationPath": ""
+  },
+  "threadGroups": [
+    {
+      "name": "alice transfer",
+      "users": 1,
+      "concurrency": 1,
+      "iterations": 1,
+      "arrival": { "kind": "burst", "windowMs": 1 },
+      "samplers": [
+        {
+          "phase": "transaction",
+          "label": "balances.transfer_keep_alive",
+          "pallet": "Balances",
+          "call": "transfer_keep_alive",
+          "arguments": {
+            "dest": {
+              "$variant": "Id",
+              "value": {
+                "$bytes": "0x8eaf04151687736326c9fea17e25fc5287613693c912909cb226aa4794f26a48"
+              }
+            },
+            "value": "1000000000"
+          },
+          "completion": "finalized",
+          "mortalityPeriod": 64,
+          "finalityTimeoutMs": 60000,
+          "assertions": []
+        }
+      ]
+    }
+  ],
+  "collectors": ["jtl"]
+}
