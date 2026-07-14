@@ -12,6 +12,8 @@
   <a href="https://github.com/agustinustheo/polkameter/stargazers"><img src="https://img.shields.io/github/stars/agustinustheo/polkameter?style=flat-square" alt="Stars"></a>
 </p>
 
+<img width="1428" height="917" alt="Polkameter Dashboard" src="https://github.com/user-attachments/assets/fad26abd-92fc-49a8-9fa2-ee3773b30703" />
+
 Polkameter is a Tauri desktop workbench for stress-testing Polkadot SDK chains, modeled on JMeter: compose a test plan with thread groups and samplers, pick an arrival model, preflight against a live chain, then arm and run. The Rust core owns scheduling, signing, submission and artifacts; the TypeScript frontend is only an editor and monitor.
 
 ## Run
