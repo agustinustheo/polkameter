@@ -99,6 +99,7 @@ button { cursor: pointer; }
 .phase-chip strong { color: #f5f5f4; background: #292524; }
 .collector-list input { accent-color: #171717; }
 .report-plot h3, .live-metrics span { color: #57534e; border-color: #d6d3d1; }
+.plot-frame .report-svg { display: block; width: 100%; min-width: 340px; height: auto; }
 .live-metrics strong { color: #171717; }
 .toast { color: #f5f5f4; background: #171717; border-color: #57534e; }
 
