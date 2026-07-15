@@ -10,6 +10,7 @@ mod scenario;
 mod scheduler;
 mod subxt_adapter;
 mod telemetry;
+mod xml_scenario;
 
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
@@ -17,6 +18,13 @@ use tauri::{Emitter, Manager};
 use scenario::{ArrivalModel as NativeArrivalModel, ScenarioDocument, ValidationIssue};
 
 const SIGNER_KEYRING_SERVICE: &str = "io.github.agustinustheo.polkameter";
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenedScenario {
+	path: String,
+	document: ScenarioDocument,
+}
 
 struct TauriRunEventSink(tauri::AppHandle);
 
@@ -268,6 +276,16 @@ async fn preflight_scenario(
 }
 
 #[tauri::command]
+async fn fetch_runtime_metadata(
+	endpoint: String,
+) -> Result<preflight::RuntimeMetadataSchema, String> {
+	if !(endpoint.starts_with("ws://") || endpoint.starts_with("wss://")) {
+		return Err("WebSocket RPC must use ws:// or wss://".into());
+	}
+	preflight::fetch_runtime_metadata(&endpoint).await
+}
+
+#[tauri::command]
 fn store_signer_profile(profile: String, suri: String) -> Result<(), String> {
 	validate_signer_profile(&profile)?;
 	if suri.trim().is_empty() {
@@ -288,17 +306,42 @@ fn remove_signer_profile(profile: String) -> Result<(), String> {
 
 #[tauri::command]
 fn save_scenario(document: scenario::ScenarioDocument, path: String) -> Result<(), String> {
-	let encoded =
-		serde_json::to_vec_pretty(&document.redacted_clone()).map_err(|error| error.to_string())?;
-	if let Some(parent) = std::path::Path::new(&path).parent() {
-		std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-	}
-	std::fs::write(path, encoded).map_err(|error| error.to_string())
+	application::save_scenario_document(&document, path)
 }
 
 #[tauri::command]
 fn load_scenario(path: String) -> Result<scenario::ScenarioDocument, String> {
 	application::load_scenario_document(path)
+}
+
+#[tauri::command]
+fn open_scenario_dialog() -> Result<Option<OpenedScenario>, String> {
+	let Some(path) = rfd::FileDialog::new()
+		.set_title("Open Polkameter test plan")
+		.add_filter("Polkameter test plans", &["xml", "json"])
+		.pick_file()
+	else {
+		return Ok(None);
+	};
+	let document = application::load_scenario_document(&path)?;
+	Ok(Some(OpenedScenario { path: path.display().to_string(), document }))
+}
+
+#[tauri::command]
+fn save_scenario_as(
+	document: scenario::ScenarioDocument,
+	suggested_name: String,
+) -> Result<Option<String>, String> {
+	let Some(path) = rfd::FileDialog::new()
+		.set_title("Save Polkameter test plan")
+		.set_file_name(&suggested_name)
+		.add_filter("Polkameter XML plan", &["xml"])
+		.save_file()
+	else {
+		return Ok(None);
+	};
+	application::save_scenario_document(&document, &path)?;
+	Ok(Some(path.display().to_string()))
 }
 
 #[tauri::command]
@@ -425,10 +468,13 @@ pub fn run() {
 			stop_remote_run,
 			read_remote_run_report,
 			preflight_scenario,
+			fetch_runtime_metadata,
 			store_signer_profile,
 			remove_signer_profile,
 			save_scenario,
 			load_scenario,
+			open_scenario_dialog,
+			save_scenario_as,
 			read_run_report,
 			start_run,
 			stop_run,

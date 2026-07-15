@@ -46,6 +46,31 @@ export interface SchedulePreview {
   batchSize: number;
 }
 
+export interface RuntimeArgumentField {
+  name?: string;
+  typeId: number;
+  typeName?: string;
+  docs: string[];
+}
+
+export interface RuntimeCall {
+  name: string;
+  docs: string[];
+  fields: RuntimeArgumentField[];
+}
+
+export interface RuntimePallet {
+  name: string;
+  calls: RuntimeCall[];
+}
+
+export interface RuntimeMetadata {
+  endpoint: string;
+  specVersion: number;
+  metadataHash: string;
+  pallets: RuntimePallet[];
+}
+
 export interface NativeScenarioDocument {
   version: number;
   testPlan: {

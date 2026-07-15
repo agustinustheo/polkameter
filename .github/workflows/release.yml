@@ -1,6 +1,8 @@
 name: Release
 
 on:
+  push:
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
@@ -15,6 +17,7 @@ permissions:
 
 env:
   RUST_VERSION: 1.93.0
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   bundle:
@@ -84,8 +87,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ inputs.tag }}" \
+          gh release create "${{ env.RELEASE_TAG }}" \
             --target "${{ github.sha }}" \
-            --title "${{ inputs.tag }}" \
+            --title "${{ env.RELEASE_TAG }}" \
             --generate-notes \
             release-artifacts/**/*

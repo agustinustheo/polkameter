@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<polkameter-plan xmlns="https://polkameter.dev/schema/plan/v1" version="1">
+  <test-plan name="XML transfer journey" seed="1">
+    <description>A portable, ordered Polkameter workflow.</description>
+    <limits whole-run-timeout-ms="900000" shutdown-drain-timeout-ms="300000" max-concurrent-samples="100"/>
+  </test-plan>
+  <chain endpoint="ws://127.0.0.1:9944" transaction-profile="polkadot"/>
+  <signer profile="local-dev" derivation-path="//polkameter"/>
+  <user-group name="Virtual users" users="10" concurrency="5" iterations="1">
+    <arrival kind="burst" window-ms="1000"/>
+    <workflow>
+      <call label="workflow.Balances.transfer_keep_alive" pallet="Balances" method="transfer_keep_alive" completion="finalized" mortality-period="4096" finality-timeout-ms="300000">
+        <arguments>{&quot;dest&quot;:{&quot;$variant&quot;:&quot;Id&quot;,&quot;value&quot;:{&quot;$bytes&quot;:&quot;0xd43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d&quot;}},&quot;value&quot;:&quot;1000000000000&quot;}</arguments>
+        <assertion kind="success"/>
+      </call>
+    </workflow>
+  </user-group>
+  <collectors>
+    <collector kind="jtl"/>
+    <collector kind="events-jsonl"/>
+    <collector kind="summary"/>
+  </collectors>
+</polkameter-plan>

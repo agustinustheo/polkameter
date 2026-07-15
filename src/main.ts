@@ -30,7 +30,7 @@ import {
   Wrench,
   XCircle
 } from "lucide";
-import type { ArrivalModel, Collector, DashboardReport, JmxImportReport, NativeScenarioDocument, PreflightReport, RemoteRunnerTarget, RunStatus, SampleBatch, Scenario, ScenarioValidation, SchedulePreview } from "./types";
+import type { ArrivalModel, Collector, DashboardReport, JmxImportReport, NativeScenarioDocument, PreflightReport, RemoteRunnerTarget, RunStatus, RuntimeArgumentField, RuntimeCall, RuntimeMetadata, SampleBatch, Scenario, ScenarioValidation, SchedulePreview } from "./types";
 import { buildNativeScenario, removeSampler, removeThreadGroup, type EditablePhase, type EditableSampler, type EditableThreadGroup } from "./scenario-plan";
 import { decideRunIntent, preflightView } from "./run-state";
 import { appendLiveSample, liveMetrics, type LiveSample } from "./live-results";
@@ -92,6 +92,9 @@ let toastMessage = "";
 let toastVisible = false;
 let toastTimer: number | undefined;
 let remotePollFailures = 0;
+let runtimeMetadata: RuntimeMetadata | undefined;
+let metadataLoading = false;
+let currentScenarioPath = "";
 
 const PANEL_WIDTHS = {
   collapsed: 52,
@@ -112,7 +115,7 @@ function newThreadGroup(id: string, name: string): EditableThreadGroup {
 }
 
 function newSampler(id: string, phase: EditablePhase): EditableSampler {
-  return { id, phase, label: `${phase}.${scenario.pallet}.${scenario.call}`, pallet: scenario.pallet, call: scenario.call, argumentsJson: scenario.argumentsJson, completion: scenario.completion, mortalityPeriod: scenario.mortalityPeriod, finalityTimeoutMs: scenario.finalityTimeoutMs, maxElapsedMs: scenario.maxElapsedMs };
+  return { id, phase, label: `${samplerLabelPhase(phase)}.${scenario.pallet}.${scenario.call}`, pallet: scenario.pallet, call: scenario.call, argumentsJson: scenario.argumentsJson, completion: scenario.completion, mortalityPeriod: scenario.mortalityPeriod, finalityTimeoutMs: scenario.finalityTimeoutMs, maxElapsedMs: scenario.maxElapsedMs };
 }
 
 function activeThreadGroup(): EditableThreadGroup {
@@ -126,7 +129,7 @@ function syncActiveThreadGroup(): void {
 	group.iterations = scenario.iterations;
   group.arrival = structuredClone(scenario.arrival);
   const sampler = group.samplers[activeSamplerIndex];
-  if (sampler) Object.assign(sampler, { pallet: scenario.pallet, call: scenario.call, argumentsJson: scenario.argumentsJson, completion: scenario.completion, mortalityPeriod: scenario.mortalityPeriod, finalityTimeoutMs: scenario.finalityTimeoutMs, maxElapsedMs: scenario.maxElapsedMs, label: `${sampler.phase}.${scenario.pallet}.${scenario.call}` });
+  if (sampler) Object.assign(sampler, { pallet: scenario.pallet, call: scenario.call, argumentsJson: scenario.argumentsJson, completion: scenario.completion, mortalityPeriod: scenario.mortalityPeriod, finalityTimeoutMs: scenario.finalityTimeoutMs, maxElapsedMs: scenario.maxElapsedMs, label: `${samplerLabelPhase(sampler.phase)}.${scenario.pallet}.${scenario.call}` });
 }
 
 function selectThreadGroup(id: string): void {
@@ -203,8 +206,9 @@ function render(): void {
           <span class="state-pill ${resultClass}"><span></span>${resultState}</span>
           <button class="icon-button" id="tour-button" title="Guided tour"><i data-lucide="circle-help"></i></button>
           <button class="icon-button" id="reset-button" title="Reset scenario"><i data-lucide="rotate-ccw"></i></button>
-          <button class="command-button quiet" id="load-button"><i data-lucide="folder-open"></i> Load scenario</button>
-          <button class="command-button quiet" id="save-button"><i data-lucide="save"></i> Save scenario</button>
+		  <button class="command-button quiet" id="load-button"><i data-lucide="folder-open"></i> Open test</button>
+          <button class="command-button quiet" id="save-button"><i data-lucide="save"></i> Save</button>
+		  <button class="command-button quiet" id="save-as-button"><i data-lucide="save"></i> Save as</button>
 		  <button class="command-button quiet" id="export-jmx-button"><i data-lucide="save"></i> Export JMX</button>
 		  <button class="command-button quiet" id="import-jmx-button"><i data-lucide="folder-open"></i> Inspect JMX</button>
 		  <input id="import-jmx-file" type="file" accept=".jmx,application/xml,text/xml" hidden/>
@@ -232,18 +236,18 @@ function render(): void {
 
         <section class="editor-panel">
           <div class="section-bar">
-            <div><span class="eyebrow">Scenario editor</span><h1>${escapeHtml(scenario.name)}</h1></div>
+            <div><span class="eyebrow">${currentScenarioPath ? `Open XML plan · ${escapeHtml(fileName(currentScenarioPath))}` : "New XML plan"}</span><h1>${escapeHtml(scenario.name)}</h1></div>
             <div class="run-boundary"><span>Completion boundary</span><strong>${scenario.completion.replace("_", " ")}</strong></div>
           </div>
 
           <div class="editor-scroll">
             <section class="form-section" id="plan-section">
-              <div class="section-title"><i data-lucide="clipboard-list"></i><div><h2>Plan structure</h2><p>Setup runs once, transactions follow the arrival schedule and teardown runs after the load drains.</p></div></div>
+              <div class="section-title"><i data-lucide="clipboard-list"></i><div><h2>Plan structure</h2><p>Setup runs once, workflow steps run in order for every virtual user, and teardown runs after the load drains.</p></div></div>
               <div class="plan-actions">
                 <button class="command-button quiet" id="add-thread-group-button"><i data-lucide="users"></i> Add thread group</button>
                 <button class="command-button quiet" id="remove-thread-group-button" ${threadGroups.length === 1 ? "disabled" : ""}><i data-lucide="x-circle"></i> Remove group</button>
                 <button class="command-button quiet" id="add-setup-button"><i data-lucide="wrench"></i> Add setup sampler</button>
-                <button class="command-button quiet" id="add-transaction-button"><i data-lucide="braces"></i> Add transaction sampler</button>
+                <button class="command-button quiet" id="add-transaction-button"><i data-lucide="braces"></i> Add workflow step</button>
                 <button class="command-button quiet" id="add-teardown-button"><i data-lucide="flag"></i> Add teardown sampler</button>
               </div>
               <div class="form-grid two group-name-field">${textField("Thread group name", "threadGroupName", activeThreadGroup().name)}<div class="group-summary"><strong>${threadGroups.length} thread groups</strong><span>${plannedSamples()} total scheduled samples</span></div></div>
@@ -251,17 +255,15 @@ function render(): void {
             </section>
 
             <section class="form-section" id="connection-section">
-              <div class="section-title"><i data-lucide="git-branch"></i><div><h2>Chain connection</h2><p>The target RPC and dynamic call identity.</p></div></div>
+              <div class="section-title"><i data-lucide="git-branch"></i><div><h2>Chain connection</h2><p>Choose a chain, then let its runtime describe the transaction fields.</p></div></div>
               <div class="form-grid two">
                 ${textField("Scenario name", "name", scenario.name)}
-                ${textField("WebSocket RPC", "endpoint", scenario.endpoint)}
+				<label class="field rpc-field"><span>WebSocket RPC</span><div class="input-action"><input id="endpoint" value="${escapeHtml(scenario.endpoint)}"/><button class="command-button" id="load-metadata-button" type="button" ${metadataLoading ? "disabled" : ""}>${metadataLoading ? "Loading…" : "Load call fields"}</button></div><small>Read-only: this never submits a transaction.</small></label>
 					${textField("Node Prometheus", "prometheusEndpoint", scenario.prometheusEndpoint)}
 					${textField("Remote runner URL", "remoteRunnerEndpoint", remoteRunnerEndpoint)}
 					<label class="field"><span>Remote runner token</span><input id="remoteRunnerToken" type="password" autocomplete="off" value="${escapeHtml(remoteRunnerToken)}"/></label>
-                ${textField("Pallet", "pallet", scenario.pallet)}
-                ${textField("Call", "call", scenario.call)}
               </div>
-              <label class="field full"><span>Call arguments JSON</span><textarea id="argumentsJson" spellcheck="false">${escapeHtml(scenario.argumentsJson)}</textarea></label>
+			  ${transactionForm()}
             </section>
 
             <section class="form-section split-section" id="users-section">
@@ -391,6 +393,79 @@ function numberField(label: string, field: string, value: number, min: number): 
   return `<label class="field"><span>${label}</span><input id="${field}" type="number" min="${min}" value="${value}" /></label>`;
 }
 
+function selectedRuntimeCall(): RuntimeCall | undefined {
+  const pallet = runtimeMetadata?.pallets.find((item) => item.name.toLowerCase() === scenario.pallet.toLowerCase());
+  return pallet?.calls.find((item) => item.name.toLowerCase() === scenario.call.toLowerCase());
+}
+
+function argumentObject(): Record<string, unknown> {
+  try {
+    const value = JSON.parse(scenario.argumentsJson) as unknown;
+    return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
+function argumentKind(field: RuntimeArgumentField): "address" | "amount" | "boolean" | "json" {
+  const type = `${field.name ?? ""} ${field.typeName ?? ""}`.toLowerCase();
+  if (field.name?.toLowerCase() === "dest" || type.includes("accountid") || type.includes("multiaddress")) return "address";
+  if (type.includes("bool")) return "boolean";
+  if (field.name?.toLowerCase().includes("amount") || field.name?.toLowerCase() === "value" || /(?:^|[^a-z])u(?:8|16|32|64|128|256)(?:$|[^a-z])/.test(type) || type.includes("balance") || type.includes("compact")) return "amount";
+  return "json";
+}
+
+function fieldValue(field: RuntimeArgumentField, index: number): string {
+  const value = argumentObject()[field.name ?? String(index)];
+  if (argumentKind(field) === "address" && value && typeof value === "object") {
+    const encoded = value as { value?: { $bytes?: unknown } };
+    return typeof encoded.value?.$bytes === "string" ? encoded.value.$bytes : "";
+  }
+  if (argumentKind(field) === "boolean") return value === true ? "true" : "false";
+  if (argumentKind(field) === "amount") return value === undefined ? "" : String(value);
+  return value === undefined ? "" : JSON.stringify(value, null, 2);
+}
+
+function friendlyArgumentField(field: RuntimeArgumentField, index: number): string {
+  const key = field.name ?? String(index);
+  const kind = argumentKind(field);
+  const label = field.name ? humanize(field.name) : `Argument ${index + 1}`;
+  const detail = [field.typeName, field.docs[0]].filter(Boolean).join(" · ");
+  if (kind === "boolean") {
+    return `<label class="friendly-field toggle"><span>${escapeHtml(label)}</span><select data-friendly-argument="${escapeHtml(key)}" data-argument-kind="${kind}"><option value="false" ${fieldValue(field, index) === "false" ? "selected" : ""}>No</option><option value="true" ${fieldValue(field, index) === "true" ? "selected" : ""}>Yes</option></select>${detail ? `<small>${escapeHtml(detail)}</small>` : ""}</label>`;
+  }
+  if (kind === "json") {
+    return `<label class="friendly-field"><span>${escapeHtml(label)}</span><textarea data-friendly-argument="${escapeHtml(key)}" data-argument-kind="${kind}" rows="3" placeholder='Enter a JSON value'>${escapeHtml(fieldValue(field, index))}</textarea>${detail ? `<small>${escapeHtml(detail)}</small>` : ""}</label>`;
+  }
+  const addressHelp = kind === "address" ? "Paste an SS58 address or a 0x account ID." : "Use whole units; decimal values are not supported.";
+  return `<label class="friendly-field"><span>${escapeHtml(label)}</span><input data-friendly-argument="${escapeHtml(key)}" data-argument-kind="${kind}" inputmode="${kind === "amount" ? "numeric" : "text"}" placeholder="${kind === "address" ? "e.g. 5GrwvaEF…" : "e.g. 1000000000000"}" value="${escapeHtml(fieldValue(field, index))}"/>${detail || addressHelp ? `<small>${escapeHtml(detail || addressHelp)}</small>` : ""}</label>`;
+}
+
+function transactionForm(): string {
+  const pallets = runtimeMetadata?.pallets ?? [];
+  const selectedPallet = pallets.find((item) => item.name.toLowerCase() === scenario.pallet.toLowerCase());
+  const selectedCall = selectedRuntimeCall();
+  const metadataNote = runtimeMetadata
+    ? `Runtime ${runtimeMetadata.specVersion} · metadata ${runtimeMetadata.metadataHash.slice(0, 14)}…`
+    : "Load metadata to replace SCALE-shaped JSON with normal fields.";
+  const palletControl = pallets.length
+    ? `<select id="pallet">${pallets.map((item) => `<option value="${escapeHtml(item.name)}" ${item.name.toLowerCase() === scenario.pallet.toLowerCase() ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select>`
+    : `<input id="pallet" value="${escapeHtml(scenario.pallet)}" placeholder="e.g. Balances"/>`;
+  const callControl = selectedPallet
+    ? `<select id="call">${selectedPallet.calls.map((item) => `<option value="${escapeHtml(item.name)}" ${item.name.toLowerCase() === scenario.call.toLowerCase() ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select>`
+    : `<input id="call" value="${escapeHtml(scenario.call)}" placeholder="e.g. transfer_keep_alive"/>`;
+  return `<div class="transaction-builder">
+    <div class="transaction-heading"><div><span class="field-label">Transaction</span><strong>What should each virtual user do?</strong></div><small>${escapeHtml(metadataNote)}</small></div>
+    <div class="form-grid two"><label class="field"><span>Pallet</span>${palletControl}</label><label class="field"><span>Call</span>${callControl}</label></div>
+    ${selectedCall ? `<div class="friendly-call"><div class="friendly-call-heading"><div><strong>${escapeHtml(humanize(selectedCall.name))}</strong><p>${escapeHtml(selectedCall.docs[0] || "Fields are generated from this chain’s current runtime metadata.")}</p></div><span>${selectedCall.fields.length} ${selectedCall.fields.length === 1 ? "field" : "fields"}</span></div><div class="friendly-fields">${selectedCall.fields.map(friendlyArgumentField).join("") || "<p>This call has no arguments.</p>"}</div></div>` : `<div class="metadata-empty"><i data-lucide="braces"></i><div><strong>Load the chain’s call fields</strong><p>Connect to the RPC above to browse available pallets and get labelled inputs for this transaction.</p></div></div>`}
+    <details class="advanced-json"><summary>Advanced: edit call arguments as JSON</summary><label class="field full"><span>Raw runtime value</span><textarea id="argumentsJson" spellcheck="false">${escapeHtml(scenario.argumentsJson)}</textarea></label></details>
+  </div>`;
+}
+
+function humanize(value: string): string {
+  return value.replace(/_/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
 function segmentedButton(value: Scenario["completion"], label: string): string {
   return `<button class="segment ${scenario.completion === value ? "selected" : ""}" data-completion="${value}">${label}</button>`;
 }
@@ -487,13 +562,37 @@ function metric(label: string, value: string, detail: string, icon: string): str
 function bindEvents(): void {
 	const strings: (keyof Pick<Scenario, "name" | "endpoint" | "prometheusEndpoint" | "pallet" | "call" | "argumentsJson" | "signerProfile" | "signerSource" | "fundingAmount">)[] = ["name", "endpoint", "prometheusEndpoint", "pallet", "call", "argumentsJson", "signerProfile", "signerSource", "fundingAmount"];
   for (const field of strings) {
-    const input = document.querySelector<HTMLInputElement | HTMLTextAreaElement>(`#${field}`);
+    const input = document.querySelector<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(`#${field}`);
     input?.addEventListener("input", () => {
       scenario[field] = input.value;
       if (field === "pallet" || field === "call" || field === "argumentsJson") syncActiveThreadGroup();
       markDraftChanged();
     });
+		if (field === "pallet" || field === "call") {
+			input?.addEventListener("change", () => {
+				scenario[field] = input.value;
+				if (field === "pallet") {
+					const pallet = runtimeMetadata?.pallets.find((item) => item.name === scenario.pallet);
+					if (pallet?.calls.length) scenario.call = pallet.calls[0].name;
+				}
+				syncActiveThreadGroup();
+				markDraftChanged();
+				render();
+			});
+		}
   }
+	document.querySelector<HTMLButtonElement>("#load-metadata-button")?.addEventListener("click", () => void loadRuntimeMetadata());
+	document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>("[data-friendly-argument]").forEach((input) => {
+		const update = () => {
+			const key = input.dataset.friendlyArgument!;
+			const kind = input.dataset.argumentKind as "address" | "amount" | "boolean" | "json";
+			const result = updateFriendlyArgument(key, kind, input.value);
+			input.toggleAttribute("aria-invalid", !result.valid);
+			if (!result.valid && document.activeElement !== input) showToast(result.error!);
+		};
+		input.addEventListener("input", update);
+		input.addEventListener("change", update);
+	});
 	for (const [id, assign] of [
 		["remoteRunnerEndpoint", (value: string) => remoteRunnerEndpoint = value],
 		["remoteRunnerToken", (value: string) => remoteRunnerToken = value]
@@ -610,7 +709,8 @@ function bindEvents(): void {
 	});
 	document.querySelector<HTMLButtonElement>("#store-signer-button")?.addEventListener("click", () => void storeSignerProfile());
 	document.querySelector<HTMLButtonElement>("#remove-signer-button")?.addEventListener("click", () => void removeSignerProfile());
-  document.querySelector<HTMLButtonElement>("#load-button")?.addEventListener("click", () => void loadScenarioFile());
+  document.querySelector<HTMLButtonElement>("#load-button")?.addEventListener("click", () => void openScenarioFile());
+	document.querySelector<HTMLButtonElement>("#save-as-button")?.addEventListener("click", () => void saveScenarioAsFile());
   document.querySelector<HTMLButtonElement>("#open-report-button")?.addEventListener("click", () => void loadRunReport());
   document.querySelector<HTMLButtonElement>("#plan-menu-button")?.addEventListener("click", () => {
     planMenuOpen = !planMenuOpen;
@@ -747,6 +847,73 @@ function applyPanelLayout(): void {
   workspace.style.setProperty("--monitor-panel-width", `${monitorPanelCollapsed ? PANEL_WIDTHS.collapsed : monitorPanelWidth}px`);
 }
 
+async function loadRuntimeMetadata(): Promise<void> {
+	metadataLoading = true;
+	render();
+	try {
+		runtimeMetadata = await invoke<RuntimeMetadata>("fetch_runtime_metadata", { endpoint: scenario.endpoint.trim() });
+		const selectedPallet = runtimeMetadata.pallets.find((item) => item.name.toLowerCase() === scenario.pallet.toLowerCase());
+		if (!selectedPallet) scenario.pallet = runtimeMetadata.pallets[0]?.name ?? scenario.pallet;
+		const calls = runtimeMetadata.pallets.find((item) => item.name === scenario.pallet)?.calls ?? [];
+		if (!calls.some((item) => item.name.toLowerCase() === scenario.call.toLowerCase())) scenario.call = calls[0]?.name ?? scenario.call;
+		syncActiveThreadGroup();
+		markDraftChanged();
+		showToast(`Loaded ${runtimeMetadata.pallets.length} pallets from the live runtime`);
+	} catch (error) {
+		showToast(`Could not load call fields: ${String(error)}`);
+	} finally {
+		metadataLoading = false;
+		render();
+	}
+}
+
+function updateFriendlyArgument(key: string, kind: "address" | "amount" | "boolean" | "json", raw: string): { valid: true } | { valid: false; error: string } {
+	const argumentsValue = argumentObject();
+	if (kind === "address") {
+		if (!raw.trim()) return { valid: false, error: "Enter a recipient address." };
+		const accountId = accountIdHex(raw);
+		if (!accountId) return { valid: false, error: "Use an SS58 address or a 32-byte 0x account ID." };
+		argumentsValue[key] = { $variant: "Id", value: { $bytes: accountId } };
+	} else if (kind === "amount") {
+		if (!/^\d+$/.test(raw.trim())) return { valid: false, error: "Enter a whole-number amount." };
+		argumentsValue[key] = raw.trim();
+	} else if (kind === "boolean") {
+		argumentsValue[key] = raw === "true";
+	} else {
+		try {
+			argumentsValue[key] = JSON.parse(raw);
+		} catch {
+			return { valid: false, error: `Enter valid JSON for ${humanize(key)}.` };
+		}
+	}
+	scenario.argumentsJson = JSON.stringify(argumentsValue, null, 2);
+	syncActiveThreadGroup();
+	markDraftChanged();
+	const rawEditor = document.querySelector<HTMLTextAreaElement>("#argumentsJson");
+	if (rawEditor) rawEditor.value = scenario.argumentsJson;
+	return { valid: true };
+}
+
+function accountIdHex(value: string): string | undefined {
+	const input = value.trim();
+	if (/^0x[\da-fA-F]{64}$/.test(input)) return `0x${input.slice(2).toLowerCase()}`;
+	const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+	let decoded = 0n;
+	for (const character of input) {
+		const position = alphabet.indexOf(character);
+		if (position < 0) return undefined;
+		decoded = decoded * 58n + BigInt(position);
+	}
+	let hex = decoded.toString(16);
+	if (hex.length % 2) hex = `0${hex}`;
+	const leadingZeroes = input.match(/^1*/)?.[0].length ?? 0;
+	hex = "00".repeat(leadingZeroes) + hex;
+	const bytes = hex.match(/.{2}/g) ?? [];
+	// The common one-byte SS58 prefix and two-byte checksum surround AccountId32.
+	if (bytes.length !== 35 || Number.parseInt(bytes[0], 16) >= 64) return undefined;
+	return `0x${bytes.slice(1, 33).join("")}`;
+}
+
 async function previewScenario(): Promise<void> {
   try {
     lastValidation = await invoke<ScenarioValidation>("validate_native_scenario", { document: nativeScenario() });
@@ -870,16 +1037,20 @@ async function pollRemoteRun(): Promise<void> {
 }
 
 function scenarioFilePath(): string {
-  return `target/polkameter-scenarios/${scenario.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "scenario"}.polkameter.json`;
+  return `target/polkameter-scenarios/${scenario.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "scenario"}.polkameter.xml`;
 }
 
 function jmxFilePath(): string {
-	return scenarioFilePath().replace(/\.polkameter\.json$/, ".jmx");
+	return scenarioFilePath().replace(/\.polkameter\.xml$/, ".jmx");
 }
 
 async function saveScenarioFile(): Promise<void> {
+	if (!currentScenarioPath) {
+		await saveScenarioAsFile();
+		return;
+	}
   try {
-    const path = scenarioFilePath();
+		const path = currentScenarioPath;
     await invoke("save_scenario", { document: nativeScenario(), path });
     const { signerSource: _signerSource, ...persisted } = scenario;
     localStorage.setItem("polkameter-scenario", JSON.stringify(persisted));
@@ -887,6 +1058,20 @@ async function saveScenarioFile(): Promise<void> {
   } catch (error) {
     showToast(`Could not save scenario: ${String(error)}`);
   }
+}
+
+async function saveScenarioAsFile(): Promise<void> {
+	try {
+		const path = await invoke<string | null>("save_scenario_as", { document: nativeScenario(), suggestedName: fileName(scenarioFilePath()) });
+		if (!path) return;
+		currentScenarioPath = path;
+		const { signerSource: _signerSource, ...persisted } = scenario;
+		localStorage.setItem("polkameter-scenario", JSON.stringify(persisted));
+		render();
+		showToast(`Saved XML test plan to ${path}`);
+	} catch (error) {
+		showToast(`Could not save test plan: ${String(error)}`);
+	}
 }
 
 async function saveJmxFile(): Promise<void> {
@@ -911,9 +1096,19 @@ async function inspectJmxFile(file: File): Promise<void> {
 	}
 }
 
-async function loadScenarioFile(): Promise<void> {
+async function openScenarioFile(): Promise<void> {
   try {
-    const document = await invoke<NativeScenarioDocument>("load_scenario", { path: scenarioFilePath() });
+    const opened = await invoke<{ path: string; document: NativeScenarioDocument } | null>("open_scenario_dialog");
+    if (!opened) return;
+    currentScenarioPath = opened.path;
+    applyScenarioDocument(opened.document);
+    showToast(`Opened ${fileName(currentScenarioPath)}. Signer material stays in the credential vault.`);
+  } catch (error) {
+    showToast(`Could not open test plan: ${String(error)}`);
+  }
+}
+
+function applyScenarioDocument(document: NativeScenarioDocument): void {
     const group = document.threadGroups[0];
     const primary = group?.samplers.find((sampler) => sampler.phase === "transaction") ?? group?.samplers[0];
     if (!group || !primary) throw new Error("scenario has no editable thread group sampler");
@@ -959,10 +1154,10 @@ async function loadScenarioFile(): Promise<void> {
     lastPreflight = undefined;
     preflightRunId = undefined;
     render();
-    showToast("Scenario reopened. Its signer profile remains in the operating system credential vault.");
-  } catch (error) {
-    showToast(`Could not load scenario: ${String(error)}`);
-  }
+}
+
+function fileName(path: string): string {
+	return path.split(/[\\/]/).at(-1) || path;
 }
 
 async function storeSignerProfile(): Promise<void> {
@@ -999,7 +1194,11 @@ function formatDuration(value: number): string {
 }
 
 function phaseLabel(phase: "setup" | "transaction" | "teardown"): string {
-  return phase.charAt(0).toUpperCase() + phase.slice(1);
+  return phase === "transaction" ? "Workflow" : phase.charAt(0).toUpperCase() + phase.slice(1);
+}
+
+function samplerLabelPhase(phase: EditablePhase): string {
+	return phase === "transaction" ? "workflow" : phase;
 }
 
 function escapeHtml(value: string): string {
