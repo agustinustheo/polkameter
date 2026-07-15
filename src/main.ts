@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import DOMPurify from "dompurify";
 import {
   Activity,
   Boxes,
@@ -193,7 +194,7 @@ function render(): void {
   const sampleStep = stepClass(runFinished, runStatus.state === "running");
   const collectStep = stepClass(runFinished, runStatus.state === "stopping");
 
-  document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
+  const appMarkup = `
     <main class="shell">
       <header class="topbar" data-tauri-drag-region>
         <div class="product-lockup" data-tauri-drag-region>
@@ -359,6 +360,9 @@ function render(): void {
       <div class="toast ${toastVisible ? "visible" : ""}" id="toast" role="status">${escapeHtml(toastMessage)}</div>
     </main>
   `;
+  document.querySelector<HTMLDivElement>("#app")!.innerHTML = DOMPurify.sanitize(appMarkup, {
+    USE_PROFILES: { html: true }
+  });
 
   bindEvents();
   renderReportPanel();
