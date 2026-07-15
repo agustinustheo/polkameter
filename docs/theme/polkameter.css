@@ -1,0 +1,5 @@
+.logo-dark { display: none; max-width: 360px; margin: 1rem 0 2rem; }
+.logo-light { display: block; max-width: 360px; margin: 1rem 0 2rem; }
+.navy .logo-light, .coal .logo-light, .ayu .logo-light { display: none; }
+.navy .logo-dark, .coal .logo-dark, .ayu .logo-dark { display: block; }
+.content main { max-width: 56rem; }

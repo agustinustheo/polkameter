@@ -5,6 +5,8 @@
   </picture>
 </p>
 
+> **Documentation:** [agustinustheodorus.com/polkameter](https://agustinustheodorus.com/polkameter/)
+
 <p align="center">
   <a href="https://github.com/agustinustheo/polkameter/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/agustinustheo/polkameter/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/agustinustheo/polkameter?style=flat-square" alt="Apache-2.0 license"></a>
