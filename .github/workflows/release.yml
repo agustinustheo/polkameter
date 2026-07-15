@@ -72,25 +72,38 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           path: release-artifacts
-          merge-multiple: true
+      - name: Package platform release archives
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          for artifact in release-artifacts/polkameter-*; do
+            test -d "$artifact"
+            case "$(basename "$artifact")" in
+              polkameter-Linux) target=linux-x86_64 ;;
+              polkameter-macOS) target=macos-aarch64 ;;
+              polkameter-Windows) target=windows-x86_64 ;;
+              *) echo "Unexpected release artifact: $artifact" >&2; exit 1 ;;
+            esac
+            tar -C "$artifact" -czf "release-assets/polkameter-${target}.tar.gz" .
+          done
       - name: Generate SPDX SBOM
         uses: anchore/sbom-action@v0
         with:
           path: .
           format: spdx-json
-          output-file: release-artifacts/polkameter.spdx.json
+          output-file: release-assets/polkameter.spdx.json
       - name: Attest release bundles
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: release-artifacts/**/*
+          subject-path: release-assets/**/*
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mapfile -d '' assets < <(find release-artifacts -type f -print0)
+          mapfile -d '' assets < <(find release-assets -type f -print0)
           test "${#assets[@]}" -gt 0
           gh release create "${{ env.RELEASE_TAG }}" \
-            --target "${{ github.sha }}" \
+            --verify-tag \
             --title "${{ env.RELEASE_TAG }}" \
             --generate-notes \
             "${assets[@]}"

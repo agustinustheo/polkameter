@@ -1,6 +1,6 @@
 [package]
 name = "polkameter"
-version = "0.1.1"
+version = "0.1.2"
 description = "A JMeter-inspired Polkadot SDK stress testing workbench"
 homepage = "https://github.com/agustinustheo/polkameter"
 repository = "https://github.com/agustinustheo/polkameter"
