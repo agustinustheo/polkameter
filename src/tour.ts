@@ -30,21 +30,21 @@ const steps: DriveStep[] = [
     element: "#load-button",
     popover: {
       title: "Load scenario",
-      description: "Reopens a saved .polkameter.json plan. Signer secrets are never in the file; the plan only names a profile that stays in the operating-system credential vault."
+      description: "Reopens a saved .polkameter.xml plan. Signer secrets are never in the file; the plan only names a profile that stays in the operating-system credential vault."
     }
   },
   {
     element: "#save-button",
     popover: {
       title: "Save scenario",
-      description: "Writes the plan as redacted .polkameter.json: test-plan limits, thread groups, samplers and collectors, with the signer reduced to a profile alias."
+      description: "Writes the plan as redacted .polkameter.xml: test-plan limits, thread groups, samplers and collectors, with the signer reduced to a profile alias."
     }
   },
   {
     element: "#export-jmx-button",
     popover: {
       title: "Export JMX",
-      description: "Writes a structural JMeter companion file with thread groups and collectors. The .polkameter.json stays authoritative because JMX carries no pallet, call or SCALE contract."
+      description: "Writes a structural JMeter companion file with thread groups and collectors. The .polkameter.xml stays authoritative because JMX carries no pallet, call or SCALE contract."
     }
   },
   {
