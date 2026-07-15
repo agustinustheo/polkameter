@@ -87,8 +87,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          mapfile -d '' assets < <(find release-artifacts -type f -print0)
+          test "${#assets[@]}" -gt 0
           gh release create "${{ env.RELEASE_TAG }}" \
             --target "${{ github.sha }}" \
             --title "${{ env.RELEASE_TAG }}" \
             --generate-notes \
-            release-artifacts/**/*
+            "${assets[@]}"

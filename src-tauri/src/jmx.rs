@@ -26,7 +26,7 @@ pub fn export(document: &ScenarioDocument) -> String {
 			ArrivalModel::Ramp { duration_ms } => duration_ms.div_ceil(1_000),
 			ArrivalModel::Burst { .. } | ArrivalModel::Poisson { .. } => 0,
 		};
-		format!("<ThreadGroup guiclass=\"ThreadGroupGui\" testclass=\"ThreadGroup\" testname=\"{}\" enabled=\"true\"><stringProp name=\"ThreadGroup.num_threads\">{}</stringProp><stringProp name=\"ThreadGroup.ramp_time\">{ramp_seconds}</stringProp><elementProp name=\"ThreadGroup.main_controller\" elementType=\"LoopController\"><stringProp name=\"LoopController.loops\">{}</stringProp><boolProp name=\"LoopController.continue_forever\">false</boolProp></elementProp></ThreadGroup><hashTree><TestPlan.comments>Polkameter Substrate transaction samplers are retained in the .polkameter.json scenario.</TestPlan.comments></hashTree>", escape(&group.name), group.users, group.iterations)
+		format!("<ThreadGroup guiclass=\"ThreadGroupGui\" testclass=\"ThreadGroup\" testname=\"{}\" enabled=\"true\"><stringProp name=\"ThreadGroup.num_threads\">{}</stringProp><stringProp name=\"ThreadGroup.ramp_time\">{ramp_seconds}</stringProp><elementProp name=\"ThreadGroup.main_controller\" elementType=\"LoopController\"><stringProp name=\"LoopController.loops\">{}</stringProp><boolProp name=\"LoopController.continue_forever\">false</boolProp></elementProp></ThreadGroup><hashTree><TestPlan.comments>Polkameter Substrate transaction samplers are retained in the .polkameter.xml scenario.</TestPlan.comments></hashTree>", escape(&group.name), group.users, group.iterations)
 	}).collect::<String>();
 	format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><jmeterTestPlan version=\"1.2\" properties=\"5.0\"><hashTree><TestPlan guiclass=\"TestPlanGui\" testclass=\"TestPlan\" testname=\"{}\" enabled=\"true\"/><hashTree>{groups}<ResultCollector guiclass=\"SimpleDataWriter\" testclass=\"ResultCollector\" testname=\"Polkameter JTL collector\" enabled=\"true\"/><hashTree/></hashTree></hashTree></jmeterTestPlan>", escape(&document.test_plan.name))
 }
@@ -137,6 +137,8 @@ mod tests {
 	#[test]
 	fn exported_plan_has_importable_thread_groups() {
 		let xml = export(&crate::artifacts::test_scenario());
+		assert!(xml.contains(".polkameter.xml scenario"));
+		assert!(!xml.contains(".polkameter.json scenario"));
 		let report = import(&xml).expect("export is importable");
 		assert_eq!(report.thread_groups.len(), 1);
 		assert_eq!(report.thread_groups[0].users, 1);
