@@ -3,10 +3,18 @@ use std::path::Path;
 use crate::scenario::ScenarioDocument;
 
 pub fn load_scenario_document(path: impl AsRef<Path>) -> Result<ScenarioDocument, String> {
+	let path = path.as_ref();
 	let encoded = std::fs::read(path).map_err(|error| error.to_string())?;
-	let document = serde_json::from_slice::<ScenarioDocument>(&encoded)
-		.map_err(|error| error.to_string())?
-		.migrate()?;
+	let document =
+		if path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("xml")) {
+			let xml = std::str::from_utf8(&encoded)
+				.map_err(|error| format!("scenario XML must be UTF-8: {error}"))?;
+			crate::xml_scenario::parse(xml)?
+		} else {
+			serde_json::from_slice::<ScenarioDocument>(&encoded)
+				.map_err(|error| error.to_string())?
+				.migrate()?
+		};
 	let stored_suri = document.signer_source.base_suri.trim();
 	if !stored_suri.is_empty() && stored_suri != "[redacted]" {
 		return Err(
@@ -15,6 +23,23 @@ pub fn load_scenario_document(path: impl AsRef<Path>) -> Result<ScenarioDocument
 		);
 	}
 	Ok(document)
+}
+
+pub fn save_scenario_document(
+	document: &ScenarioDocument,
+	path: impl AsRef<Path>,
+) -> Result<(), String> {
+	let path = path.as_ref();
+	let encoded = if path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+	{
+		crate::xml_scenario::serialize(&document.redacted_clone()).into_bytes()
+	} else {
+		serde_json::to_vec_pretty(&document.redacted_clone()).map_err(|error| error.to_string())?
+	};
+	if let Some(parent) = path.parent() {
+		std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+	}
+	std::fs::write(path, encoded).map_err(|error| error.to_string())
 }
 
 pub fn resolve_signer_source(
@@ -68,6 +93,22 @@ mod tests {
 		std::fs::write(&path, serde_json::to_vec(&document).expect("scenario encodes"))
 			.expect("scenario writes");
 		assert!(load_scenario_document(&path).is_err());
+		let _ = std::fs::remove_file(path);
+	}
+
+	#[test]
+	fn saves_and_reopens_a_redacted_xml_plan() {
+		let path = std::env::temp_dir()
+			.join(format!("polkameter-scenario-test-{}.polkameter.xml", std::process::id()));
+		let mut document = crate::artifacts::test_scenario();
+		document.signer_source.base_suri = "//Alice".into();
+		save_scenario_document(&document, &path).expect("XML plan saves");
+		let xml = std::fs::read_to_string(&path).expect("XML plan reads");
+		assert!(xml.contains("<workflow>"));
+		assert!(!xml.contains("//Alice"));
+		let reopened = load_scenario_document(&path).expect("XML plan reopens");
+		assert_eq!(reopened.test_plan.name, document.test_plan.name);
+		assert!(reopened.signer_source.base_suri.is_empty());
 		let _ = std::fs::remove_file(path);
 	}
 

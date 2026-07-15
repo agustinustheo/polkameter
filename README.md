@@ -49,19 +49,19 @@ The release includes a headless `polkameter` command alongside the desktop app. 
 
 ```sh
 # Validate a portable, redacted scenario without touching a chain.
-polkameter validate scenario.polkameter.json
+polkameter validate scenario.polkameter.xml
 
 # Resolve a signer profile from the OS credential vault and preflight live metadata.
-polkameter preflight scenario.polkameter.json --signer-profile local-dev
+polkameter preflight scenario.polkameter.xml --signer-profile local-dev
 
 # Run locally. Human progress is written to stderr; the final artifact location and report summary are written to stdout.
-polkameter run scenario.polkameter.json \
+polkameter run scenario.polkameter.xml \
   --signer-profile local-dev \
   --output target/runs
 
 # Use a named environment variable in CI; neither scenarios nor command arguments contain a SURI.
 POLKAMETER_SURI='//Alice' \
-  polkameter run scenario.polkameter.json \
+  polkameter run scenario.polkameter.xml \
   --signer-env POLKAMETER_SURI \
   --output target/runs \
   --format json
@@ -81,7 +81,7 @@ POLKAMETER_AGENT_TOKEN='long-random-token' \
   polkameter agent serve --output-root target/polkameter-agent-runs
 
 POLKAMETER_REMOTE_TOKEN='long-random-token' \
-  polkameter run scenario.polkameter.json \
+  polkameter run scenario.polkameter.xml \
   --remote http://127.0.0.1:9901 \
   --remote-token-env POLKAMETER_REMOTE_TOKEN \
   --format json
@@ -104,9 +104,13 @@ polkadot --dev --tmp --rpc-port 9944 --prometheus-port 9615 --rpc-methods Unsafe
 
 Each run writes a portable, redacted artifact directory: `scenario.polkameter.json`, `resolved-plan.json`, `config.json`, `command.txt`, `samples.jtl`, `events.jsonl`, `telemetry.jsonl`, `summary.md` and SVG plots (throughput, latency percentiles, failure breakdown, node resources).
 
-## Scenarios
+## XML test plans
 
-A scenario is test-plan metadata, run limits, thread groups and ordered setup/transaction/teardown samplers, each with its own pallet, call, JSON arguments, completion boundary, mortality period and timeouts. Where plain JSON is ambiguous, use explicit markers:
+A `.polkameter.xml` file is the portable test plan used by both the desktop app and headless CLI. It has thread groups and ordered setup/workflow/teardown calls. Workflow calls run in the order written for each virtual user. The desktop app opens and saves these files directly; it presents runtime-derived fields for normal editing and retains JSON only for dynamic call arguments.
+
+The XML contract is versioned and documented in [XML plan v1](docs/xml-format-v1.md), with the machine-readable [XSD schema](schemas/polkameter-plan-v1.xsd). Runtime metadata preflight then validates the chosen pallet, call, and call arguments against the live chain.
+
+Call arguments use JSON inside an XML `<arguments>` tag because each chain runtime defines their type shape. Where plain JSON is ambiguous, use explicit markers:
 
 ```json
 {
@@ -126,7 +130,7 @@ Saved plans and artifacts contain only a `signerProfile` alias, never a SURI. Th
 
 ## Telemetry and JMX
 
-An optional `Node Prometheus` endpoint collects node RSS/CPU and `substrate_ready_transactions_number` alongside run telemetry; missing metrics are recorded as absent, not zero. Scenarios export to structural `.jmx` companions and `Inspect JMX` reports imported JMeter structure without executing non-Substrate samplers. The `.polkameter.json` file stays authoritative because JMX carries no pallet or SCALE contract.
+An optional `Node Prometheus` endpoint collects node RSS/CPU and `substrate_ready_transactions_number` alongside run telemetry; missing metrics are recorded as absent, not zero. Plans export to structural `.jmx` companions and `Inspect JMX` reports imported JMeter structure without executing non-Substrate samplers. The `.polkameter.xml` file stays authoritative because JMX carries no pallet or SCALE contract.
 
 ## Acceptance test
 

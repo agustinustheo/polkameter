@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Polkameter portable test plan v1.
+  Runtime metadata preflight validates that call names and JSON arguments encode
+  for the selected chain after this structural schema has passed.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="https://polkameter.dev/schema/plan/v1"
+           xmlns="https://polkameter.dev/schema/plan/v1"
+           elementFormDefault="qualified">
+  <xs:element name="polkameter-plan">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="test-plan"/>
+        <xs:element ref="chain"/>
+        <xs:element ref="signer"/>
+        <xs:element ref="user-group" minOccurs="1" maxOccurs="unbounded"/>
+        <xs:element ref="collectors"/>
+      </xs:sequence>
+      <xs:attribute name="version" type="xs:positiveInteger" use="required"/>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:element name="test-plan">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="description" type="xs:string" minOccurs="0"/>
+        <xs:element name="limits">
+          <xs:complexType><xs:attribute name="whole-run-timeout-ms" type="xs:positiveInteger" use="required"/><xs:attribute name="shutdown-drain-timeout-ms" type="xs:positiveInteger" use="required"/><xs:attribute name="max-concurrent-samples" type="xs:positiveInteger" use="required"/></xs:complexType>
+        </xs:element>
+      </xs:sequence>
+      <xs:attribute name="name" type="xs:string" use="required"/><xs:attribute name="seed" type="xs:nonNegativeInteger" use="required"/>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:element name="chain"><xs:complexType><xs:sequence><xs:element name="prometheus" minOccurs="0"><xs:complexType><xs:attribute name="endpoint" type="xs:anyURI" use="required"/></xs:complexType></xs:element></xs:sequence><xs:attribute name="endpoint" type="xs:anyURI" use="required"/><xs:attribute name="transaction-profile" type="xs:string" use="required"/></xs:complexType></xs:element>
+  <xs:element name="signer"><xs:complexType><xs:sequence><xs:element name="funding" minOccurs="0"><xs:complexType><xs:attribute name="amount" type="xs:positiveInteger" use="required"/><xs:attribute name="finality-timeout-ms" type="xs:positiveInteger" use="required"/><xs:attribute name="batch-size" type="xs:positiveInteger" use="required"/></xs:complexType></xs:element></xs:sequence><xs:attribute name="profile" type="xs:string" use="required"/><xs:attribute name="derivation-path" type="xs:string" use="required"/></xs:complexType></xs:element>
+
+  <xs:element name="user-group"><xs:complexType><xs:sequence><xs:element ref="arrival"/><xs:element ref="setup" minOccurs="0"/><xs:element ref="workflow" minOccurs="0"/><xs:element ref="teardown" minOccurs="0"/></xs:sequence><xs:attribute name="name" type="xs:string" use="required"/><xs:attribute name="users" type="xs:positiveInteger" use="required"/><xs:attribute name="concurrency" type="xs:positiveInteger" use="required"/><xs:attribute name="iterations" type="xs:positiveInteger" use="required"/></xs:complexType></xs:element>
+  <xs:element name="arrival"><xs:complexType><xs:attribute name="kind" use="required"><xs:simpleType><xs:restriction base="xs:string"><xs:enumeration value="burst"/><xs:enumeration value="ramp"/><xs:enumeration value="poisson"/></xs:restriction></xs:simpleType></xs:attribute><xs:attribute name="window-ms" type="xs:positiveInteger"/><xs:attribute name="duration-ms" type="xs:positiveInteger"/><xs:attribute name="rate-per-second" type="xs:decimal"/></xs:complexType></xs:element>
+  <xs:element name="setup" type="call-list"/><xs:element name="workflow" type="call-list"/><xs:element name="teardown" type="call-list"/>
+  <xs:complexType name="call-list"><xs:sequence><xs:element ref="call" minOccurs="1" maxOccurs="unbounded"/></xs:sequence></xs:complexType>
+  <xs:element name="call"><xs:complexType><xs:sequence><xs:element name="arguments" type="xs:string"/><xs:element ref="assertion" minOccurs="0" maxOccurs="unbounded"/></xs:sequence><xs:attribute name="label" type="xs:string" use="required"/><xs:attribute name="pallet" type="xs:string" use="required"/><xs:attribute name="method" type="xs:string" use="required"/><xs:attribute name="completion" use="required"><xs:simpleType><xs:restriction base="xs:string"><xs:enumeration value="submitted"/><xs:enumeration value="in-block"/><xs:enumeration value="finalized"/></xs:restriction></xs:simpleType></xs:attribute><xs:attribute name="mortality-period" type="xs:positiveInteger" use="required"/><xs:attribute name="finality-timeout-ms" type="xs:positiveInteger" use="required"/></xs:complexType></xs:element>
+  <xs:element name="assertion"><xs:complexType><xs:attribute name="kind" use="required"><xs:simpleType><xs:restriction base="xs:string"><xs:enumeration value="success"/><xs:enumeration value="max-elapsed"/></xs:restriction></xs:simpleType></xs:attribute><xs:attribute name="milliseconds" type="xs:nonNegativeInteger"/></xs:complexType></xs:element>
+  <xs:element name="collectors"><xs:complexType><xs:sequence><xs:element name="collector" minOccurs="1" maxOccurs="unbounded"><xs:complexType><xs:attribute name="kind" use="required"><xs:simpleType><xs:restriction base="xs:string"><xs:enumeration value="jtl"/><xs:enumeration value="events-jsonl"/><xs:enumeration value="telemetry-jsonl"/><xs:enumeration value="summary"/><xs:enumeration value="svg-plots"/></xs:restriction></xs:simpleType></xs:attribute></xs:complexType></xs:element></xs:sequence></xs:complexType></xs:element>
+</xs:schema>

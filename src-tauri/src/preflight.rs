@@ -58,6 +58,30 @@ pub struct ArgumentField {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RuntimeMetadataSchema {
+	pub endpoint: String,
+	pub spec_version: u32,
+	pub metadata_hash: String,
+	pub pallets: Vec<RuntimePalletSchema>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimePalletSchema {
+	pub name: String,
+	pub calls: Vec<RuntimeCallSchema>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeCallSchema {
+	pub name: String,
+	pub docs: Vec<String>,
+	pub fields: Vec<ArgumentField>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DerivedAccount {
 	pub index: u32,
 	pub address: String,
@@ -136,6 +160,52 @@ pub async fn preflight(
 			transaction_profile: format!("{:?}", document.chain.transaction_profile),
 		},
 		resolved_sample_count,
+	})
+}
+
+/// Read only the information the editor needs to build a call form. This does
+/// not resolve a signer, derive accounts, or submit anything to the chain.
+pub async fn fetch_runtime_metadata(endpoint: &str) -> Result<RuntimeMetadataSchema, String> {
+	let client = OnlineClient::<PolkadotConfig>::from_insecure_url(endpoint)
+		.await
+		.map_err(|error| format!("could not connect to {endpoint}: {error}"))?;
+	let at_block = client
+		.at_current_block()
+		.await
+		.map_err(|error| format!("could not read the current block: {error}"))?;
+	let metadata = at_block.metadata();
+	let pallets = metadata
+		.pallets()
+		.filter_map(|pallet| {
+			let calls = pallet.call_variants()?;
+			Some(RuntimePalletSchema {
+				name: pallet.name().into(),
+				calls: calls
+					.iter()
+					.map(|call| RuntimeCallSchema {
+						name: call.name.clone(),
+						docs: call.docs.clone(),
+						fields: call
+							.fields
+							.iter()
+							.map(|field| ArgumentField {
+								name: field.name.clone(),
+								type_id: field.ty.id,
+								type_name: field.type_name.clone(),
+								docs: field.docs.clone(),
+							})
+							.collect(),
+					})
+					.collect(),
+			})
+		})
+		.collect();
+
+	Ok(RuntimeMetadataSchema {
+		endpoint: endpoint.into(),
+		spec_version: at_block.spec_version(),
+		metadata_hash: format!("0x{}", hex::encode(metadata.hasher().hash())),
+		pallets,
 	})
 }
 
