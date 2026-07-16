@@ -13,8 +13,8 @@ For development dependencies and build commands, see [Install and build](install
 
 ## The shortest safe workflow
 
-1. Save a redacted scenario file. Start from `src-tauri/tests/fixtures/valid-scenario.polkameter.json` or create one in the desktop app.
-2. Check its structure locally: `polkameter validate scenario.polkameter.json`.
+1. Save a portable XML plan. Start from `src-tauri/tests/fixtures/valid-scenario.polkameter.xml` or create one in the desktop app.
+2. Check its structure locally: `polkameter validate scenario.polkameter.xml`.
 3. Start a disposable local chain and set a signer only in the process environment.
 4. Preflight. It connects to the chain and validates metadata and call encoding, but makes no submission.
 5. Run to a dedicated output directory and read the generated report.
@@ -29,4 +29,4 @@ The [first local run](first-run.md) provides copyable commands and explains each
 | Run in CI, scripts, containers, or a terminal | [CLI](using/cli.md) |
 | Execute on a dedicated machine without sending it a secret | [Remote runner agent](using/remote-agent.md) |
 
-All three use the same `.polkameter.json` file. Keep that file in version control, and keep the corresponding SURI in a credential vault or CI secret instead.
+All three use the same `.polkameter.xml` plan. Keep that file in version control, and keep the corresponding SURI in a credential vault or CI secret instead. Legacy JSON plans remain readable for compatibility, but the desktop saves XML and new plans should use XML.

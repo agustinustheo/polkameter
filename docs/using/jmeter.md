@@ -6,7 +6,7 @@ Polkameter borrows JMeter's test-plan vocabulary and can exchange a structural `
 
 The desktop's **Export JMX** command writes a JMeter document containing the test-plan name, thread groups, user count, ramp time, loop count, and a JTL collector. A ramp arrival becomes `ThreadGroup.ramp_time` rounded up to seconds; Burst and Poisson have no equivalent ramp time and export as zero.
 
-The `.polkameter.json` scenario remains authoritative because a JMX file cannot carry the target pallet, call, dynamic SCALE arguments, completion boundary, signer policy, or Polkameter-specific scheduling semantics.
+The `.polkameter.xml` plan remains authoritative because a JMX file cannot carry the target pallet, call, dynamic SCALE arguments, completion boundary, signer policy, or Polkameter-specific scheduling semantics.
 
 ## Inspect
 
@@ -18,5 +18,5 @@ Unsupported or non-Substrate structures—including HTTP, Java, JSR223, generic,
 
 1. Keep the original `.jmx` as documentation of a legacy plan.
 2. Inspect it in Polkameter to recover group shape and collectors.
-3. Create the `.polkameter.json` equivalent, including explicit pallet/call/arguments and signer policy.
+3. Create the `.polkameter.xml` equivalent, including explicit pallet/call/arguments and signer policy.
 4. Preflight it against the actual chain before running.

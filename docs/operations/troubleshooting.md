@@ -2,7 +2,7 @@
 
 ## Scenario validation fails
 
-Run `polkameter validate scenario.polkameter.json --format json` and fix the reported `field` and message. Common causes are an empty group/sampler name, invalid RPC scheme, zero users, concurrency above users, a non-power-of-two mortality period, or a timeout under one second.
+Run `xmllint --noout --schema schemas/polkameter-plan-v1.xsd scenario.polkameter.xml`, then `polkameter validate scenario.polkameter.xml --format json`, and fix the reported message. Common causes are a missing namespace or required XML attribute, an empty group/call name, invalid RPC scheme, zero users, concurrency above users, a non-power-of-two mortality period, or a timeout under one second.
 
 ## Preflight cannot connect or cannot encode a call
 

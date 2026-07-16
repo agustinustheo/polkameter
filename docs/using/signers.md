@@ -4,8 +4,8 @@ Scenarios and artifacts are designed to be shareable. Secrets are intentionally 
 
 ## Secret-handling rules
 
-- Saved scenarios contain a profile alias and a redacted `baseSuri`, never an actual SURI.
-- The loader rejects scenario files that contain a non-redacted SURI.
+- Saved XML plans contain a profile alias and derivation path, never a SURI.
+- Legacy JSON loaders reject files that contain a non-redacted SURI.
 - Artifact validation rejects files with unredacted signer material, including familiar development SURI values.
 - The desktop stores a profile in the operating-system credential vault and resolves it only just before preflight or execution.
 - The CLI accepts `--signer-profile <name>` or `--signer-env <VARIABLE>`. CI should normally use `--signer-env` with its protected secret store.

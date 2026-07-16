@@ -16,4 +16,4 @@ The documentation GitHub Actions workflow repeats that build for pull requests. 
 
 ## Scenario and security review
 
-Never commit SURI material, API tokens, or real production endpoints in example files. Scenarios should retain `[redacted]` signer sources. If a change broadens signing, remote access, validation, or artifact behavior, document the boundary and exercise it against a disposable chain before review.
+Never commit SURI material, API tokens, or real production endpoints in example files. XML plans must contain only signer profile aliases and derivation paths; artifact/native JSON representations must retain `[redacted]` signer sources. If a change broadens signing, remote access, validation, XML schema behavior, or artifacts, document the boundary and exercise it against a disposable chain before review.

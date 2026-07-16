@@ -22,7 +22,7 @@ Polkameter is chain-generic at the execution boundary: it currently runs the sta
 ## Read this first
 
 - Start with [Getting started](getting-started.md) if you want a local run.
-- Use [Scenarios](using/scenarios.md) to author a durable `.polkameter.json` plan.
+- Use [XML test plans](using/scenarios.md) to author a durable `.polkameter.xml` plan.
 - Use [CI/CD integration](operations/ci.md) for a safe automation pattern.
 - Read [Signers and security](using/signers.md) before putting a signer on any machine.
 

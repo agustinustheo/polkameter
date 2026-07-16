@@ -12,7 +12,7 @@ Then run the [first local run](../first-run.md), optionally enabling the scenari
 
 ## Ignored integration tests
 
-The Rust integration test exercises save/reopen, preflight, development funding, execution, and artifact validation against a fresh node. It is ignored by default because it requires the chain:
+The Rust integration test exercises save/reopen, preflight, development funding, execution, and artifact validation against a fresh node. XML plans are also validated by the standard CI fixture. The integration test is ignored by default because it requires the chain:
 
 ```sh
 POLKAMETER_E2E_RPC=ws://127.0.0.1:9944 \

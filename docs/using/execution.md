@@ -14,10 +14,10 @@ Offsets are sorted and deterministic for a given `testPlan.seed`, group, and wor
 
 ## Phases, users, and iterations
 
-For each group, setup samplers execute once, transaction samplers execute for every scheduled virtual user and iteration, and teardown samplers execute once. The resolved-plan sample count is:
+For each group, setup calls execute once, XML `<workflow>` calls (the runner's internal transaction phase) execute for every scheduled virtual user and iteration, and teardown calls execute once. The resolved-plan sample count is:
 
 ```text
-setup samplers + (users × iterations × transaction samplers) + teardown samplers
+setup calls + (users × iterations × workflow calls) + teardown calls
 ```
 
 Each group gets a disjoint signer-index range. The runner processes all groups concurrently in the transaction phase, but setup and teardown group work is sequential.

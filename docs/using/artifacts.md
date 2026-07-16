@@ -6,7 +6,7 @@ Every completed or failed local run creates a directory named `run-<timestamp>` 
 
 | File | Contents |
 |---|---|
-| `scenario.polkameter.json` | Redacted source scenario. |
+| `scenario.polkameter.json` | Redacted normalized scenario used by the runner. It is an artifact representation even when the source plan was XML. |
 | `resolved-plan.json` | Redacted scenario plus run ID, signer derivation root, required signer count, scheduled samples, and scheduler description. |
 | `config.json` | The same resolved-plan contract for compatibility. |
 | `command.txt` | Provenance: desktop, CLI, or remote agent origin. |

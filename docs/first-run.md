@@ -19,24 +19,24 @@ Keep this process running. Its WebSocket endpoint is `ws://127.0.0.1:9944`; Prom
 The repository's structural fixture is a safe starting point:
 
 ```sh
-cp src-tauri/tests/fixtures/valid-scenario.polkameter.json transfer.polkameter.json
+cp src-tauri/tests/fixtures/valid-scenario.polkameter.xml transfer.polkameter.xml
 ```
 
-It is deliberately redacted: the `signerSource.baseSuri` field is `[redacted]`. Do not replace it with a secret. The CLI refuses to load a scenario containing a literal SURI.
+The XML plan contains only the signer profile and derivation path; it never stores a SURI. Do not add a secret to any plan. The CLI rejects legacy JSON scenarios that contain literal signer material.
 
 ## 3. Validate before connecting
 
 ```sh
-polkameter validate transfer.polkameter.json
+polkameter validate transfer.polkameter.xml
 ```
 
-This checks the JSON shape and local constraints only. A valid result does not prove that the selected pallet or call exists on the chain.
+This checks the XML contract and local constraints only. A valid result does not prove that the selected pallet or call exists on the chain. For an additional structural gate in CI, validate the XML with the supplied XSD before calling the CLI.
 
 ## 4. Preflight against the node
 
 ```sh
 POLKAMETER_SURI='//Alice' \
-  polkameter preflight transfer.polkameter.json \
+  polkameter preflight transfer.polkameter.xml \
   --signer-env POLKAMETER_SURI
 ```
 
@@ -46,7 +46,7 @@ Preflight reads current runtime metadata, tries to SCALE-encode each sampler, de
 
 ```sh
 POLKAMETER_SURI='//Alice' \
-  polkameter run transfer.polkameter.json \
+  polkameter run transfer.polkameter.xml \
   --signer-env POLKAMETER_SURI \
   --output target/runs
 

@@ -24,7 +24,7 @@ ssh -N -L 9901:127.0.0.1:9901 stress-host
 
 ```sh
 POLKAMETER_REMOTE_TOKEN='long-random-token' \
-  polkameter run scenario.polkameter.json \
+  polkameter run scenario.polkameter.xml \
   --remote http://127.0.0.1:9901 \
   --remote-token-env POLKAMETER_REMOTE_TOKEN \
   --format json
@@ -34,6 +34,6 @@ Do not pass `--signer-env` with `--remote`; it is rejected. A `--signer-profile`
 
 ## Protocol and isolation
 
-Every request uses bearer authentication and protocol version `1`. Run IDs are constrained to ASCII letters, digits, hyphens, underscores, and periods, preventing path traversal through artifact paths. The received scenario must contain `[redacted]` as `baseSuri` and pass normal validation before an agent accepts it.
+Every request uses bearer authentication and protocol version `1`. The CLI reads the XML plan and sends the agent an internal redacted document. Run IDs are constrained to ASCII letters, digits, hyphens, underscores, and periods, preventing path traversal through artifact paths. The received document must contain `[redacted]` as `baseSuri` and pass normal validation before an agent accepts it.
 
 The available routes are documented in [Remote agent protocol](../reference/agent-protocol.md). The health endpoint is unauthenticated; all run operations require `Authorization: Bearer <token>`.

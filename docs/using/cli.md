@@ -1,6 +1,6 @@
 # Command-line interface
 
-The `polkameter` executable is a headless Polkadot SDK stress-testing command. It opens no window and is appropriate for shell scripts, CI jobs, and stress hosts.
+The `polkameter` executable is a headless Polkadot SDK stress-testing command. It opens no window and is appropriate for shell scripts, CI jobs, and stress hosts. Commands accept a portable `.polkameter.xml` test plan; legacy `.polkameter.json` files are also readable for compatibility.
 
 ## Commands
 
@@ -19,14 +19,14 @@ Every command accepts `--format human` (the default) or `--format json`. Run `po
 
 ```sh
 # No RPC connection; useful as a fast CI gate.
-polkameter validate scenario.polkameter.json
+polkameter validate scenario.polkameter.xml
 
 # Use a local credential-vault profile.
-polkameter preflight scenario.polkameter.json --signer-profile local-dev
+polkameter preflight scenario.polkameter.xml --signer-profile local-dev
 
 # Or resolve the SURI from the named environment variable.
 POLKAMETER_SURI='//Alice' \
-  polkameter run scenario.polkameter.json \
+  polkameter run scenario.polkameter.xml \
   --signer-env POLKAMETER_SURI \
   --output target/polkameter-runs
 

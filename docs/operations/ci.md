@@ -20,7 +20,7 @@ on:
       scenario:
         description: Scenario path
         required: true
-        default: scenarios/transfer.polkameter.json
+        default: scenarios/transfer.polkameter.xml
 
 jobs:
   validate:
@@ -28,6 +28,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4 # Replace with your released CLI download step.
+      - name: Validate XML structure
+        run: xmllint --noout --schema schemas/polkameter-plan-v1.xsd "${{ inputs.scenario }}"
       - run: polkameter validate "${{ inputs.scenario }}" --format json
 
   run:
@@ -64,7 +66,7 @@ For a dedicated stress machine, keep the agent and signer there. The CI job stor
 
 ## Repository CI
 
-The repository's `.github/workflows/ci.yml` runs pnpm unit/build checks, Rust formatting/tests, CLI help/fixture validation/reporting, a fresh native Zombienet CLI smoke test, and debug desktop builds on Linux, macOS, and Windows. The Zombienet job uploads retained artifacts for seven days. CodeQL, dependency review, and gitleaks run in separate workflows.
+The repository's `.github/workflows/ci.yml` runs pnpm unit/build checks, Rust formatting/tests, CLI help/fixture validation/reporting, XSD validation of the XML fixture, a fresh native Zombienet CLI smoke test, and debug desktop builds on Linux, macOS, and Windows. The Zombienet job uploads retained artifacts for seven days. CodeQL, dependency review, and gitleaks run in separate workflows.
 
 ## Documentation deployment
 
