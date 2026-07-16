@@ -2,7 +2,7 @@
 
 Polkameter plans are portable XML files ending in `.polkameter.xml`. They are
 the file used by both the desktop app and headless CLI. The authoritative
-schema is [`polkameter-plan-v1.xsd`](../schemas/polkameter-plan-v1.xsd).
+schema is [`polkameter-plan-v1.xsd`](https://github.com/agustinustheo/polkameter/blob/main/schemas/polkameter-plan-v1.xsd).
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -29,7 +29,8 @@ schema is [`polkameter-plan-v1.xsd`](../schemas/polkameter-plan-v1.xsd).
 `<workflow>` calls run in their written order for each virtual user. `<setup>`
 runs once before scheduled users and `<teardown>` runs once after load drains.
 Call arguments remain JSON because the selected chain's runtime metadata defines
-their shape; the desktop editor normally presents these as labelled fields.
+their shape; the desktop editor can fetch the metadata and normally presents
+them as labelled fields, with an advanced raw JSON escape hatch for complex values.
 
 Plans never contain a SURI. Use a signer profile in the desktop credential vault
 or `--signer-env` in CI.

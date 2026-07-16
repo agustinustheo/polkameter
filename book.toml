@@ -1,0 +1,19 @@
+[book]
+title = "Polkameter Documentation"
+authors = ["Polkameter contributors"]
+description = "A practical guide to the Polkameter desktop workbench, CLI, scenarios, automation, and operations."
+language = "en"
+multilingual = false
+src = "docs"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/agustinustheo/polkameter"
+edit-url-template = "https://github.com/agustinustheo/polkameter/edit/main/{path}"
+site-url = "/polkameter/"
+additional-css = ["docs/theme/polkameter.css"]
