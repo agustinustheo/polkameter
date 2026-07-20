@@ -15,8 +15,8 @@ importers:
         specifier: ^3.4.12
         version: 3.4.12
       driver.js:
-        specifier: ^1.6.0
-        version: 1.6.0
+        specifier: ^1.8.0
+        version: 1.8.0
       lucide:
         specifier: ^1.24.0
         version: 1.24.0
@@ -419,8 +419,8 @@ packages:
   dompurify@3.4.12:
     resolution: {integrity: sha512-zQvGet8Z2sWbQhCmfFz/T5QWH2oBmjnqK3qvOjaqaNLrLEF912WamU+ohnTp0TCep/MFVHpdJuCZEdFOdTnEFg==}
 
-  driver.js@1.6.0:
-    resolution: {integrity: sha512-gryo9QS7AZhz8J0bmdf42dwaTzcd1BgSJLnaSM7cPJbu8bTW8wIEuiGDy4MoCvB4Sr8wA9g5o2G9EFNVYZGeVQ==}
+  driver.js@1.8.0:
+    resolution: {integrity: sha512-+8/IO7h1v14IzWh2GP60N7T3PFZweXwdn5e5POuxRSBoCYUojsBxzqawPeXh3YZIibRy7EehYNEyxe7slwwtdg==}
 
   es-module-lexer@2.3.1:
     resolution: {integrity: sha512-shc1dbU90Yl/xq1QrC7QRtfcwURZuVRfPhZbDoldJ1cn1gzDvBaBWlv0eFolj5+0znnPJz5TXLxsN77X/12KTA==}
@@ -940,7 +940,7 @@ snapshots:
     optionalDependencies:
       '@types/trusted-types': 2.0.7
 
-  driver.js@1.6.0: {}
+  driver.js@1.8.0: {}
 
   es-module-lexer@2.3.1: {}
 
