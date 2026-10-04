@@ -1,0 +1,49 @@
+[workspace]
+resolver = "3"
+members = ["src-tauri", "crates/*", "plugins/*"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+subxt-rpcs = "0.50.3"
+polkameter-files = { path = "crates/files" }
+polkameter-chain = { path = "crates/chain" }
+polkameter-proofs = { path = "plugins/proofs" }
+polkameter-monitors = { path = "crates/monitors" }
+polkameter-load = { path = "crates/load" }
+polkameter-checks = { path = "crates/checks" }
+polkameter-scenarios = { path = "plugins/scenarios" }
+
+anyhow = "1"
+clap = { version = "4.5", features = ["derive"] }
+hex = "0.4"
+parity-scale-codec = { version = "3.7", features = ["derive"] }
+rayon = "1.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+sp-crypto-hashing = "0.1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+# Without `std`: its `ark-vrf/parallel` builds a rayon pool inside every MSM, and a long
+# proving run then runs out of threads (EAGAIN). One proof per thread is faster anyway.
+verifiable = { version = "=0.3.0", default-features = false, features = ["no-std-prover"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+needless_pass_by_value = "warn"
+too_many_lines = "warn"
+
+[profile.release]
+debug = 1
+
+[profile.dev.package."*"]
+opt-level = 3
