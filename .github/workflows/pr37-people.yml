@@ -12,7 +12,7 @@ on:
         options: [smoke, capacity, default]
         default: smoke
       ppn_ref:
-        description: previewnet-engine ref (v0.7.0 or later: fresh bites with cores/collators)
+        description: "previewnet-engine ref (v0.7.0 or later: fresh bites with cores/collators)"
         default: v0.7.0
 
 concurrency:
