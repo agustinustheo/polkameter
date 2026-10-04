@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<polkameter-plan xmlns="https://polkameter.dev/schema/plan/v2" version="2" name="Plugin data flow" timeout-ms="30000">
+  <plugins><plugin id="example" version="0.1.0" protocol="1"/></plugins>
+  <setup>
+    <step id="seed" use="example.double"><input name="value" value="21"/></step>
+    <step id="copied" use="core.echo"><input name="value" ref="steps.seed.value"/></step>
+  </setup>
+  <workflow id="users" users="3" iterations="2" concurrency="2">
+    <step id="computed" use="example.double"><input name="value" ref="steps.copied.value"/></step>
+    <step id="verified" use="core.assert-equal">
+      <input name="actual" ref="steps.computed.value"/><input name="expected" value="84"/>
+    </step>
+  </workflow>
+</polkameter-plan>
