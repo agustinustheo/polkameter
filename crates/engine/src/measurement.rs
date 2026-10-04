@@ -1,4 +1,6 @@
-//! PR 37 measurement lifecycle hosted by Polkameter after XML preparation.
+//! The measured load: baseline, rate steps, recovery and reconciliation of prepared transactions,
+//! with the node monitors. It returns the summary; the caller writes the report once plugin checks
+//! have run.
 use crate::{
 	execute::{Values, resolve, transactions},
 	machine,
@@ -18,8 +20,18 @@ use polkameter_load::steps::final_step;
 use polkameter_load::tracker::{Phase, Tracker};
 use polkameter_load::{Lane, QueueSource, StateCheck, Tx, TxHash, follower, now_ms, rules};
 use polkameter_plugin_sdk::Context;
-use std::{path::Path, time::Duration};
+use std::path::Path;
 use tokio_util::sync::CancellationToken;
+
+/// A finished measurement, before the report.
+pub struct Measured {
+	summary: Summary,
+	finals: Vec<FinalStep>,
+	mode: Mode,
+}
+
+/// File of the plugin check results, kept so `polkameter report` can write the same summary.
+const PLUGIN_CHECKS: &str = "plugin-checks.json";
 
 pub async fn run(
 	plan: &Plan,
@@ -29,7 +41,7 @@ pub async fn run(
 	context: &Context,
 	setup_seconds: u64,
 	progress: &(dyn Fn(&str) -> Result<()> + Send + Sync),
-) -> Result<i32> {
+) -> Result<Measured> {
 	let dir = &RunDir::open(&context.artifact_dir);
 	let load = plan.load.as_ref().context("load missing")?;
 	let configured_rules = plan.thresholds.rules()?;
@@ -82,7 +94,7 @@ pub async fn run(
 			.topologies
 			.get(&monitors.topology)
 			.context("topology alias not installed on this host")?;
-		let targets = polkameter_monitors::load_targets(topology)?;
+		let targets = polkameter_monitors::load_targets(topology, monitors.para_id)?;
 
 		(
 			targets,
@@ -105,12 +117,8 @@ pub async fn run(
 	};
 	// Monitors and the load.
 	let (events, _) = tokio::sync::broadcast::channel(64);
-	let chains = Chains {
-		people: &client,
-		people_url: &url,
-		relay_url: plan.monitors.as_ref().map(|_| relay_url.as_str()),
-		vouchers: None,
-	};
+	let chains =
+		Chains { node_url: &url, relay_url: plan.monitors.as_ref().map(|_| relay_url.as_str()) };
 	let mut monitors = Monitors::start(dir, targets, &events, chains).await?;
 	let (replies_tx, replies) = tokio::sync::mpsc::unbounded_channel();
 	let (blocks_tx, blocks) = tokio::sync::mpsc::unbounded_channel();
@@ -190,10 +198,7 @@ pub async fn run(
 	lost_out.flush()?;
 	let unreadable = tracker.unreadable.clone();
 	tracker.finish()?.close();
-	// Let the Recycler build roots for the last loads' vouchers, then stop the chain recorders.
-	monitors
-		.stop_chain(Duration::from_millis(configured_rules.recycler_drain_ms))
-		.await?;
+	monitors.stop_chain().await?;
 	let mut problems = monitors.problems.all();
 	problems.extend(unreadable.into_iter().map(|u| format!("blocks: {u}")));
 	monitors.stop().await?;
@@ -234,7 +239,8 @@ pub async fn run(
 		baseline: base,
 		problems,
 		network: Network {
-			people: url,
+			url,
+			para_id: plan.monitors.as_ref().map(|m| m.para_id),
 			spec_version: chain.spec_version,
 			block_interval_s: (block_interval_s * 100.0).round() / 100.0,
 		},
@@ -242,8 +248,21 @@ pub async fn run(
 		steps: run_opts.plan.steps.len(),
 		checks: None,
 	};
-	progress("checks")?;
-	let checks = polkameter_checks::report::write(dir, summary.clone(), &finals)?;
+	// Plugin checks read it, with the raw files, before the report adds the checks.
+	dir.write_json("summary.json", &summary)?;
+	Ok(Measured { summary, finals, mode })
+}
+
+/// Writes run.om, the checks (the plugins' after the built-in ones), summary.json and summary.md,
+/// and returns the exit code.
+pub fn report(
+	dir: &RunDir,
+	measured: Measured,
+	plugin_checks: &[polkameter_checks::CheckResult],
+) -> Result<i32> {
+	dir.write_json(PLUGIN_CHECKS, &plugin_checks)?;
+	let Measured { summary, finals, mode } = measured;
+	let checks = polkameter_checks::report::write(dir, summary.clone(), &finals, plugin_checks)?;
 	Ok(exit_code(mode, &summary, &checks))
 }
 
@@ -341,7 +360,7 @@ fn exit_code(mode: Mode, summary: &Summary, checks: &[polkameter_checks::CheckRe
 		return 0;
 	}
 	let mut errors = summary.problems.clone();
-	errors.extend(polkameter_checks::smoke_gaps(&polkameter_checks::all(), checks));
+	errors.extend(polkameter_checks::smoke_gaps(checks));
 	for e in &errors {
 		eprintln!("smoke: {e}");
 	}
@@ -354,7 +373,13 @@ pub fn check(dir: &Path) -> anyhow::Result<()> {
 	let summary: Summary =
 		serde_json::from_str(&std::fs::read_to_string(dir.join("summary.json"))?)?;
 	let finals: Vec<FinalStep> = run.read_jsonl("steps.jsonl")?;
-	polkameter_checks::report::write(&run, summary, &finals)?;
+	let plugin_checks: Vec<polkameter_checks::CheckResult> =
+		match std::fs::read_to_string(dir.join(PLUGIN_CHECKS)) {
+			Ok(text) => serde_json::from_str(&text)?,
+			Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+			Err(e) => return Err(e.into()),
+		};
+	polkameter_checks::report::write(&run, summary, &finals, &plugin_checks)?;
 	Ok(())
 }
 
@@ -392,28 +417,24 @@ mod tests {
 
 	#[test]
 	fn exit_code_policy() {
-		let definitions = polkameter_checks::all();
-		for (name, mode, problem, missing, status, expected) in [
-			("stress reports health failures", Mode::Stress, false, None, Status::Fail, 0),
-			("smoke monitor problem", Mode::Smoke, true, None, Status::Pass, 1),
-			("smoke required gap", Mode::Smoke, false, Some(false), Status::Pass, 1),
-			("smoke optional gap", Mode::Smoke, false, Some(true), Status::Pass, 0),
-			("smoke all pass", Mode::Smoke, false, None, Status::Pass, 0),
+		let result = |check: &str, status, optional| CheckResult {
+			outcome: "pool".into(),
+			check: check.into(),
+			verdict: Verdict::new(status, check),
+			optional,
+		};
+		for (name, mode, problem, required, optional, expected) in [
+			("stress reports health failures", Mode::Stress, false, Status::Fail, Status::Pass, 0),
+			("smoke monitor problem", Mode::Smoke, true, Status::Pass, Status::Pass, 1),
+			("smoke required gap", Mode::Smoke, false, Status::NoResult, Status::Pass, 1),
+			("smoke optional gap", Mode::Smoke, false, Status::Pass, Status::NoResult, 0),
+			("smoke all pass", Mode::Smoke, false, Status::Pass, Status::Pass, 0),
 		] {
 			let mut summary: Summary =
 				serde_json::from_str(include_str!("../../checks/tests/summary.json")).unwrap();
 			summary.problems = if problem { vec!["monitor scrape failed".into()] } else { vec![] };
-			let checks = definitions
-				.iter()
-				.map(|check| CheckResult {
-					outcome: check.outcome,
-					check: check.name,
-					verdict: Verdict::new(
-						if missing == Some(check.optional) { Status::NoResult } else { status },
-						name,
-					),
-				})
-				.collect::<Vec<_>>();
+			let checks =
+				[result("required", required, false), result("from a plugin", optional, true)];
 			assert_eq!(exit_code(mode, &summary, &checks), expected, "{name}");
 		}
 	}

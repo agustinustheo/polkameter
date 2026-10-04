@@ -147,12 +147,15 @@ pub struct FailureMode {
 	pub what: String,
 }
 
-/// People as the run found it.
+/// The chain under load, as the run found it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Network {
-	/// RPC URL.
-	pub people: String,
+	/// RPC URL of the node the load is submitted to.
+	pub url: String,
+	/// The parachain the relay checks judge; absent when the run observes no relay.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub para_id: Option<u32>,
 	/// Runtime spec.
 	pub spec_version: u32,
 	/// Block interval before the run.
@@ -224,7 +227,7 @@ pub struct Summary {
 	pub baseline: Baseline,
 	/// What the monitors could not record.
 	pub problems: Vec<String>,
-	/// People.
+	/// The chain under load.
 	pub network: Network,
 	/// The load tool's machine.
 	pub runner: Runner,

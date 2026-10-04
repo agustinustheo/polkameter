@@ -17,7 +17,7 @@ fn io(path: &Path) -> impl FnOnce(std::io::Error) -> FileError + '_ {
 pub struct RunDir {
 	/// `<root>/<run id>`.
 	pub path: PathBuf,
-	/// E.g. `stmt-flood-2026-09-26T03-31-55-471Z`.
+	/// E.g. `run-1791091539106-57209-1`.
 	pub run_id: String,
 }
 

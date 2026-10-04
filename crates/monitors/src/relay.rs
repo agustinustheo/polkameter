@@ -5,7 +5,7 @@
 //! - `ParasDisputes.DisputeInitiated` (the event names only the candidate, not the para);
 //! - the slots offered to each para: the cores whose claim queue starts with it.
 //!
-//! Missed slots for People = slots offered − candidates included (outcomes.md, PVF level 1).
+//! Missed slots for a parachain = slots offered − candidates included (outcomes.md, PVF level 1).
 
 use std::collections::BTreeMap;
 

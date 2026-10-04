@@ -13,7 +13,7 @@ pub type Millis = u64;
 pub struct ScrapeRecord {
 	/// When the node answered.
 	pub t: Millis,
-	/// `people-collator`, `people-collator-relay` or `validator`.
+	/// `collator`, `collator-relay` or `validator`.
 	pub job: String,
 	/// The node's name in zombie.json.
 	pub instance: String,
@@ -57,7 +57,7 @@ pub enum Sample {
 	},
 }
 
-/// One block of People (`blocks.jsonl`): a best block, or one a best block builds on.
+/// One block of the chain under load (`blocks.jsonl`): a best block, or one a best block builds on.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BlockRecord {
@@ -104,7 +104,7 @@ pub struct BlockRecord {
 	pub fetch_lag_ms: Option<u64>,
 }
 
-/// CPU and memory of the People node (`node.jsonl`), as `ps` reports them, rounded.
+/// CPU and memory of the node under load (`node.jsonl`), as `ps` reports them, rounded.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NodeSample {
@@ -136,7 +136,7 @@ pub struct BlockStats {
 	pub max_block_bytes: u64,
 }
 
-/// The People node's highest CPU and memory in a window, from `node.jsonl`.
+/// The node's highest CPU and memory in a window, from `node.jsonl`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NodeMax {

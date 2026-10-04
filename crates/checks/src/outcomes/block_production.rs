@@ -6,7 +6,7 @@ use serde::Serialize;
 use crate::data::{CounterReset, RunData, count_above, quantile};
 use crate::{Check, LIMITS, Status, Verdict};
 
-const COLLATOR: (&str, &str) = ("job", "people-collator");
+const COLLATOR: (&str, &str) = ("job", "collator");
 const END_REASON: &str = "substrate_proposer_end_proposal_reason";
 const BUILD_TIME: &str = "substrate_proposer_block_constructed";
 

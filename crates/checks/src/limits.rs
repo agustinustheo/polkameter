@@ -8,7 +8,7 @@ pub struct Limits {
 	pub authoring_deadline_s: f64,
 	/// PVF backing timeout; approval allows 12 s.
 	pub backing_timeout_s: f64,
-	/// People relay slots a step may miss beyond the idle rate.
+	/// Relay slots of the observed parachain a step may miss beyond the idle rate.
 	pub max_extra_missed_slots: u32,
 	/// Our waiting txs above which a block that ends empty is a fault.
 	pub pool_stuck_min_txs: f64,

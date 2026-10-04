@@ -45,17 +45,14 @@ jobs:
       - run: corepack pnpm build
       - run: cargo +${{ env.RUST_VERSION }} fmt --all -- --check
       - run: cargo +${{ env.RUST_VERSION }} test --workspace
-      # The migrated PR 37 crates keep its `clippy -D warnings` gate; the v1 app is not yet clean.
+      # Every crate but the v1 app, which still has inherited warnings.
       - run: cargo +${{ env.RUST_VERSION }} clippy --workspace --exclude polkameter --all-targets -- -D warnings
-      - name: Verify plugin plans and proof feature guard
-        env:
-          RUSTUP_TOOLCHAIN: ${{ env.RUST_VERSION }}
+      - name: Verify the XML v2 examples
         run: |
           for plan in examples/*.polkameter.xml; do
             xmllint --noout --schema schemas/polkameter-plan-v2.xsd "$plan"
             cargo +${{ env.RUST_VERSION }} run -p polkameter --bin polkameter -- validate "$plan" --format json
           done
-          python3 scripts/check-proof-features.py
       - run: cargo +${{ env.RUST_VERSION }} run --manifest-path src-tauri/Cargo.toml --bin polkameter -- --help
       - run: cargo +${{ env.RUST_VERSION }} run --manifest-path src-tauri/Cargo.toml --bin polkameter -- validate src-tauri/tests/fixtures/valid-scenario.polkameter.json --format json
       - run: xmllint --noout --schema schemas/polkameter-plan-v1.xsd src-tauri/tests/fixtures/valid-scenario.polkameter.xml

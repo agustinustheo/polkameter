@@ -93,7 +93,7 @@ pub struct RunOptions {
 	pub recovery_s: u32,
 	/// Probes before the load.
 	pub baseline_probes: usize,
-	/// People's block interval before the run.
+	/// The chain's block interval before the run.
 	pub block_interval_s: f64,
 }
 

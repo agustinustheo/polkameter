@@ -1,4 +1,4 @@
-//! One People (or relay) node over RPC: subxt for typed reads at a block, plain JSON-RPC for the
+//! One node (a parachain or the relay) over RPC: subxt for typed reads at a block, plain JSON-RPC for the
 //! calls subxt doesn't wrap (`state_call`, `author_*`).
 //!
 //! Errors here are the chain's, not ours: the caller decides whether one stops a setup or is a
@@ -240,7 +240,7 @@ impl Client {
 			.map_err(decode_err("header number"))
 	}
 
-	/// People's block interval: the `Timestamp.Now` span of the last 60 blocks since the fork
+	/// The chain's block interval: the `Timestamp.Now` span of the last 60 blocks since the fork
 	/// started, over their count. Not a median or trimmed mean of gaps: on a fork the timestamps
 	/// come in bunches (0 s / 12 s pairs on 1 core, 12 s then five 0 s on 3 cores), and only the
 	/// span is right. A fork just started has fewer blocks: this waits for 20 of them.

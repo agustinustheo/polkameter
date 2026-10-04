@@ -1,24 +1,29 @@
-//! PVF (outcomes.md): level 1 counts People's relay slots on chain and decides pass or fail;
-//! level 2 reads the validators (all parachains together) for timing and causes.
+//! PVF (outcomes.md): level 1 counts the observed parachain's relay slots on chain and decides
+//! pass or fail; level 2 reads the validators (all parachains together) for timing and causes.
 
 use polkameter_files::registry::Outcome;
-use polkameter_files::{PEOPLE_PARA_ID, num, to_fixed};
+use polkameter_files::{num, to_fixed};
 use serde::Serialize;
 
 use crate::data::{CounterReset, RunData, Window, count_above, quantile};
 use crate::{Check, LIMITS, Status, Verdict};
 
-const PEOPLE: (&str, &str) = ("para", PEOPLE_PARA_ID);
 const VALIDATOR: (&str, &str) = ("job", "validator");
-const FUNNEL: (&str, &str) = ("job", "people-collator-relay");
+const FUNNEL: (&str, &str) = ("job", "collator-relay");
 
-/// Where People's offered slots went in a window; the parts add up to `missed`.
+/// The `para` label of the observed parachain; empty when the run declared none, so its series
+/// are absent and the checks have no result.
+fn para(d: &RunData) -> String {
+	d.summary.network.para_id.map(|id| id.to_string()).unwrap_or_default()
+}
+
+/// Where the parachain's offered slots went in a window; the parts add up to `missed`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Slots {
 	/// Finalized relay blocks the recorder read.
 	pub relay_blocks: f64,
-	/// Slots offered to People.
+	/// Slots offered to the parachain.
 	pub offered: f64,
 	/// Candidates included.
 	pub included: f64,
@@ -32,15 +37,17 @@ pub struct Slots {
 	pub not_backed: f64,
 }
 
-/// People's slots in `w`.
+/// The parachain's slots in `w`.
 fn slots(d: &RunData, w: &Window) -> Result<Slots, CounterReset> {
+	let para = para(d);
+	let para = ("para", para.as_str());
 	let diff =
 		|name: &str, filter: &[(&str, &str)]| d.diff(name, filter, w).map(|v| v.unwrap_or(0.0));
-	let offered = diff("polkameter_para_slots_total", &[PEOPLE])?;
-	let included = diff("polkameter_para_included_total", &[PEOPLE])?;
-	let timed_out = diff("polkameter_para_timed_out_total", &[PEOPLE])?;
+	let offered = diff("polkameter_para_slots_total", &[para])?;
+	let included = diff("polkameter_para_included_total", &[para])?;
+	let timed_out = diff("polkameter_para_timed_out_total", &[para])?;
 	let relay_blocks = diff("polkameter_relay_finalized_blocks_total", &[])?;
-	let built = diff("substrate_proposer_block_constructed_count", &[("job", "people-collator")])?;
+	let built = diff("substrate_proposer_block_constructed_count", &[("job", "collator")])?;
 	let missed = (offered - included).max(0.0);
 	let not_built = missed.min((offered - built).max(0.0));
 	Ok(Slots {
@@ -70,7 +77,9 @@ fn worst_violation(windows: &[WindowSlots]) -> Option<&WindowSlots> {
 }
 
 fn relay_slots(d: &RunData) -> Result<Verdict, CounterReset> {
-	let (Some(base), true) = (d.phase("baseline"), d.has("polkameter_para_slots_total", &[PEOPLE]))
+	let para = para(d);
+	let (Some(base), true) =
+		(d.phase("baseline"), d.has("polkameter_para_slots_total", &[("para", para.as_str())]))
 	else {
 		return Ok(Verdict::new(Status::NoResult, "no relay recorder data"));
 	};
@@ -119,7 +128,10 @@ fn relay_slots(d: &RunData) -> Result<Verdict, CounterReset> {
 
 fn no_timeouts_or_disputes(d: &RunData) -> Result<Verdict, CounterReset> {
 	let w = d.run();
-	let timed_out = d.diff("polkameter_para_timed_out_total", &[PEOPLE], &w)?.unwrap_or(0.0);
+	let para = para(d);
+	let timed_out = d
+		.diff("polkameter_para_timed_out_total", &[("para", para.as_str())], &w)?
+		.unwrap_or(0.0);
 	let relay = d.diff("polkameter_relay_dispute_total", &[], &w)?.unwrap_or(0.0);
 	let raised = d.diff("polkadot_parachain_candidate_disputes_total", &[VALIDATOR], &w)?;
 	if !d.has("polkameter_relay_finalized_blocks_total", &[]) {
@@ -127,7 +139,7 @@ fn no_timeouts_or_disputes(d: &RunData) -> Result<Verdict, CounterReset> {
 	}
 	let bad = timed_out + relay + raised.unwrap_or(0.0) > 0.0;
 	let detail = format!(
-		"People candidates timed out {}; disputes on the relay {}, raised by validators {}",
+		"parachain candidates timed out {}; disputes on the relay {}, raised by validators {}",
 		num(timed_out),
 		num(relay),
 		raised.map_or("-".into(), num)
@@ -235,7 +247,7 @@ fn collation_funnel(d: &RunData) -> Result<Verdict, CounterReset> {
 pub const CHECKS: &[Check] = &[
 	Check {
 		outcome: Outcome::Pvf,
-		name: "People relay slots (level 1)",
+		name: "relay slots (level 1)",
 		optional: false,
 		run: relay_slots,
 	},
@@ -253,7 +265,7 @@ pub const CHECKS: &[Check] = &[
 	},
 	Check {
 		outcome: Outcome::Pvf,
-		name: "collation funnel (People)",
+		name: "collation funnel",
 		optional: false,
 		run: collation_funnel,
 	},

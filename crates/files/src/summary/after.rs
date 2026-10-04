@@ -147,7 +147,7 @@ pub struct LostTx {
 	pub sent_at: Millis,
 	/// The tracker counted it in this block, which the finalized chain doesn't have.
 	pub on_fork_block: Option<u32>,
-	/// The scenario's view of it, e.g. the member and slot of a claim.
+	/// The workload's view of it, from the state check plugin.
 	pub scenario: serde_json::Value,
 	/// It left the state it should have at the finalized block; `None` when not checked.
 	pub state_landed: Option<bool>,

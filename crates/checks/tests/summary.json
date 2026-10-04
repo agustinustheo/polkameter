@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "scenario": "Statement-store claim flood",
-  "runId": "stmt-flood-1790577261",
+  "scenario": "Prepared transaction flood",
+  "runId": "run-1790577261",
   "mode": "smoke",
   "params": {
     "common": {
@@ -21,7 +21,7 @@
       "threads": null
     }
   },
-  "budget": "50 people × 4 slots = 200 claims (42 kept for probes)",
+  "budget": "200 prepared transactions (42 kept for probes)",
   "setupSeconds": 35,
   "extra": {
     "period": 20724,
@@ -49,7 +49,6 @@
     "poolRefusesRatio": 0.1,
     "probesInARow": 3,
     "recoveredBlockGapFactor": 1.5,
-    "recyclerDrainMs": 180000,
     "stallMs": 30000
   },
   "stop": {
@@ -142,7 +141,7 @@
     "state": {
       "checked": 100,
       "missing": 0,
-      "detail": "sampled claims have their StmtStoreAllowanceByAccount entry"
+      "detail": "sampled transactions have their expected state"
     }
   },
   "baseline": {
@@ -152,7 +151,7 @@
   },
   "problems": [],
   "network": {
-    "people": "ws://127.0.0.1:10010",
+    "url": "ws://127.0.0.1:10010",
     "specVersion": 3003000,
     "blockIntervalS": 2.0
   },

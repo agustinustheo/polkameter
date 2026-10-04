@@ -1,21 +1,18 @@
 //! Starts the monitors next to the load and connects them: run events to the scraper, tool
 //! errors to the load loop. They stop in stages, as the run needs their files: the process
-//! sampler before the step records are written, the chain recorders after the loss check (the
-//! Recycler may still be working through the run's loads), the rest at the end. The load crate
-//! knows nothing of the monitors.
+//! sampler before the step records are written, the chain recorders after the loss check, the
+//! rest at the end. The load crate knows nothing of the monitors.
 
 use std::future::Future;
-use std::time::Duration;
 
 use polkameter_chain::Client;
 use polkameter_files::{Problems, RunDir};
 use polkameter_load::runner::RunEvent;
-use polkameter_monitors::recycler::RecyclerRecorder;
 use polkameter_monitors::relay::RelayRecorder;
 use polkameter_monitors::{
 	MonitorError, Scraper, ScraperHandle, Target, chain_series, process, walker,
 };
-use tokio::sync::{broadcast, watch};
+use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -23,14 +20,10 @@ type Task = JoinHandle<Result<(), MonitorError>>;
 
 /// Where the monitors read from.
 pub struct Chains<'a> {
-	/// People.
-	pub people: &'a Client,
-	/// People's WebSocket URL: the node whose process is sampled.
-	pub people_url: &'a str,
+	/// WebSocket URL of the node the load is submitted to: its process is sampled.
+	pub node_url: &'a str,
 	/// The relay's WebSocket URL, for the relay recorder.
 	pub relay_url: Option<&'a str>,
-	/// Keys the recycler recorder follows to a built root: a Members collection and its keys.
-	pub vouchers: Option<([u8; 32], Vec<[u8; 32]>)>,
 }
 
 /// The running monitors.
@@ -48,8 +41,6 @@ pub struct Monitors {
 	walkers: Vec<Task>,
 	chain: Option<Task>,
 	rest: Vec<Task>,
-	/// True while the Recycler backlog is back to where the run found it.
-	drained: Option<watch::Receiver<bool>>,
 }
 
 /// Runs a monitor; its own error cancels `failed` so the load loop sees it.
@@ -112,13 +103,15 @@ impl Monitors {
 			spawn(step_edges(events.subscribe(), handle.clone(), stop.clone()), &failed),
 		];
 
-		let sampler = match process::find_pid(chains.people_url).await {
+		let sampler = match process::find_pid(chains.node_url).await {
 			Some(pid) => Some(spawn(
 				process::NodeSampler::new(pid, dir.jsonl("node.jsonl")?).run(stop_sampling.clone()),
 				&failed,
 			)),
 			None => {
-				eprintln!("node: no People node PID (set PEOPLE_PID); no CPU or memory recorded");
+				eprintln!(
+					"node: no PID for the node under load (set POLKAMETER_NODE_PID); no CPU or memory recorded"
+				);
 				None
 			},
 		};
@@ -142,25 +135,6 @@ impl Monitors {
 					.record(format!("relay recorder: cannot connect to {} ({e})", relay_url)),
 			}
 		}
-		let mut drained = None;
-		if chains.relay_url.is_some() {
-			match RecyclerRecorder::new(chains.people.clone(), series, chains.vouchers).await {
-				Ok(Some((recorder, rx))) => {
-					drained = Some(rx);
-					walkers.push(spawn(
-						walker::walk(
-							chains.people.clone(),
-							recorder,
-							stop_chain.clone(),
-							problems.clone(),
-						),
-						&failed,
-					));
-				},
-				Ok(None) => {},
-				Err(e) => problems.record(format!("recycler recorder: cannot start ({e})")),
-			}
-		}
 		Ok(Self {
 			scraper: handle,
 			problems,
@@ -172,7 +146,6 @@ impl Monitors {
 			walkers,
 			chain,
 			rest,
-			drained,
 		})
 	}
 
@@ -182,12 +155,8 @@ impl Monitors {
 		join(self.sampler.take()).await
 	}
 
-	/// Lets the Recycler get back to where it started (up to `wait`), then stops the chain
-	/// recorders; each walks the last finalized block it saw first.
-	pub async fn stop_chain(&mut self, wait: Duration) -> Result<(), MonitorError> {
-		if let Some(mut rx) = self.drained.take() {
-			let _ = tokio::time::timeout(wait, rx.wait_for(|d| *d)).await;
-		}
+	/// Stops the chain recorders; each walks the last finalized block it saw first.
+	pub async fn stop_chain(&mut self) -> Result<(), MonitorError> {
 		self.stop_chain.cancel();
 		for t in self.walkers.drain(..) {
 			join(Some(t)).await?;

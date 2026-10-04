@@ -10,14 +10,14 @@ mod outcomes;
 pub mod report;
 
 use polkameter_files::registry::Outcome;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub use data::{CounterReset, RunData, Window, count_above, quantile};
 pub use limits::LIMITS;
 pub use outcomes::all;
 
 /// A check's status.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
 	/// Within the limit.
@@ -47,14 +47,14 @@ impl Status {
 }
 
 /// What a check found.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Verdict {
 	/// Status.
 	pub status: Status,
 	/// One line for the summary table.
 	pub detail: String,
 	/// Numbers behind it, for summary.json.
-	#[serde(skip_serializing_if = "Option::is_none")]
+	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub numbers: Option<serde_json::Value>,
 }
 
@@ -85,26 +85,26 @@ pub struct Check {
 	pub run: fn(&RunData) -> Result<Verdict, CounterReset>,
 }
 
-/// A check's result, as summary.json has it.
-#[derive(Debug, Clone, Serialize)]
+/// A check's result, as summary.json has it. Plugin checks return the same shape.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckResult {
-	/// The outcome.
-	pub outcome: Outcome,
+	/// The outcome it belongs to, e.g. `pool`.
+	pub outcome: String,
 	/// The check.
-	pub check: &'static str,
+	pub check: String,
 	/// What it found.
 	#[serde(flatten)]
 	pub verdict: Verdict,
+	/// Smoke mode does not need a result from it.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub optional: bool,
 }
 
 /// Checks without a result that a smoke run must still produce.
-pub fn smoke_gaps(checks: &[Check], results: &[CheckResult]) -> Vec<String> {
+pub fn smoke_gaps(results: &[CheckResult]) -> Vec<String> {
 	results
 		.iter()
-		.filter(|r| {
-			r.verdict.status == Status::NoResult
-				&& checks.iter().any(|c| c.name == r.check && !c.optional)
-		})
+		.filter(|r| r.verdict.status == Status::NoResult && !r.optional)
 		.map(|r| format!("{}: {}", r.check, r.verdict.detail))
 		.collect()
 }
@@ -114,11 +114,12 @@ pub fn run(checks: &[Check], data: &RunData) -> Vec<CheckResult> {
 	checks
 		.iter()
 		.map(|c| CheckResult {
-			outcome: c.outcome,
-			check: c.name,
+			outcome: c.outcome.name().to_owned(),
+			check: c.name.to_owned(),
 			verdict: (c.run)(data).unwrap_or_else(|reset| {
 				Verdict::new(Status::NoResult, format!("a node restarted: {reset}"))
 			}),
+			optional: c.optional,
 		})
 		.collect()
 }

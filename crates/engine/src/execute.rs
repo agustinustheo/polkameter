@@ -271,7 +271,7 @@ pub async fn check_environment(plan: &Plan, registry: &Registry) -> Result<()> {
 			.topologies
 			.get(&monitor.topology)
 			.context("topology alias is unavailable on this host")?;
-		let targets = polkameter_monitors::load_targets(path)?;
+		let targets = polkameter_monitors::load_targets(path, monitor.para_id)?;
 		let missing = polkameter_monitors::preflight::preflight(&targets).await?;
 		for warning in missing {
 			eprintln!("preflight: {warning}");
@@ -368,13 +368,14 @@ pub async fn run(
             result=tokio::time::timeout(Duration::from_millis(plan.timeout_ms),Plugins::start(&plan.plugins.entries,&registry,&context))=>result.context("whole-run deadline exceeded during plugin startup")??,
         };
         let mut values=plan.values(&run_id);values.extend(credentials);
+        values.insert("run.directory".into(),json!(context.artifact_dir));
         let main=async {
             validate_contracts(&plan,&plugins)?;
             let requirements=json!({"plugins":plugins.manifests,"topologies":plan.monitors,"installations":registry.plugins.iter().filter(|(id,_)|plugins.manifests.contains_key(*id)).collect::<BTreeMap<_,_>>(),"host":{"engineVersion":env!("CARGO_PKG_VERSION"),"blake2":crate::plugins::checksum(&std::env::current_exe()?)?}});
             std::fs::write(directory.join("resolved-plan.json"),serde_json::to_vec_pretty(&requirements)?)?;
             if let Some(monitors)=&plan.monitors {
                 let topology=registry.topologies.get(&monitors.topology).context("topology is not installed")?;
-                let targets=polkameter_monitors::load_targets(topology)?;
+                let targets=polkameter_monitors::load_targets(topology,monitors.para_id)?;
                 std::fs::write(directory.join("resolved-targets.json"),serde_json::to_vec_pretty(&json!({"topologyHash":crate::plugins::checksum(topology)?,"targets":targets.iter().map(|t|json!({"role":t.job.label(),"instance":t.instance,"url":t.url})).collect::<Vec<_>>()}))?)?;
             }
             log.emit(json!({"event":"phase","phase":"preflight"}))?;
@@ -403,12 +404,24 @@ pub async fn run(
                 }
                 while let Some(task)=tasks.join_next().await {task??;}
             }
-            let mut code=0;
-            if plan.load.is_some(){
-                log.emit(json!({"event":"phase","phase":"measurement"}))?;
-                code=crate::measurement::run(&plan,&plugins,&registry,&values,&context,preparation_started.elapsed().as_secs(),&|phase|log.emit(json!({"event":"phase","phase":phase}))).await?;
-            }
-            execute_steps(&plan.evaluate.entries,&plugins,&mut values,&context,&cancel,&log).await?;
+            let dir=polkameter_files::RunDir::open(&context.artifact_dir);
+            let measured=match &plan.load {
+                Some(_)=>{
+                    log.emit(json!({"event":"phase","phase":"measurement"}))?;
+                    Some(crate::measurement::run(&plan,&plugins,&registry,&values,&context,preparation_started.elapsed().as_secs(),&|phase|log.emit(json!({"event":"phase","phase":phase}))).await?)
+                },
+                None=>None,
+            };
+            let evaluated=execute_steps(&plan.evaluate.entries,&plugins,&mut values,&context,&cancel,&log).await;
+            // The report keeps the built-in evidence even when a plugin check failed.
+            let code=match measured {
+                Some(measured)=>{
+                    log.emit(json!({"event":"phase","phase":"checks"}))?;
+                    crate::measurement::report(&dir,measured,&plugin_checks(&plan,&plugins,&values)?)?
+                },
+                None=>0,
+            };
+            evaluated?;
             Ok::<_,anyhow::Error>(code)
         };
         let result=tokio::select! {
@@ -581,6 +594,27 @@ async fn submit(inputs: &Value, context: &Context, wait_finalized: bool) -> Resu
 	Ok(json!({"hashes":hashes,"at":finalized_at}))
 }
 
+/// Check results of the evaluate steps whose operation declares a `checks` output, in plan order.
+/// A step that failed returned nothing.
+fn plugin_checks(
+	plan: &Plan,
+	plugins: &Plugins,
+	values: &Values,
+) -> Result<Vec<polkameter_checks::CheckResult>> {
+	let mut out = Vec::new();
+	for step in &plan.evaluate.entries {
+		if !contract(plugins, &step.operation)?.outputs.contains_key("checks") {
+			continue;
+		}
+		let Some(value) = values.get(&format!("steps.{}", step.id)) else { continue };
+		let checks: Vec<polkameter_checks::CheckResult> =
+			serde_json::from_value(value["checks"].clone())
+				.with_context(|| format!("step {} returned malformed checks", step.id))?;
+		out.extend(checks);
+	}
+	Ok(out)
+}
+
 async fn check_requirements(plan: &Plan, registry: &Registry, plugins: &Plugins) -> Result<()> {
 	for requirement in plugins
 		.manifests
@@ -617,6 +651,7 @@ async fn check_requirements(plan: &Plan, registry: &Registry, plugins: &Plugins)
 					plan.monitors.as_ref().context("metric requirement needs a topology")?;
 				let targets = polkameter_monitors::load_targets(
 					registry.topologies.get(&monitor.topology).context("topology missing")?,
+					monitor.para_id,
 				)?;
 				polkameter_monitors::preflight::require_metrics(
 					&targets,

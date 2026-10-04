@@ -5,16 +5,13 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-/// People's para id on previewnet.
-pub use polkameter_files::PEOPLE_PARA_ID;
-
 /// What a node is to us.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Job {
-	/// A People collator's own node (block building, tx pool).
-	PeopleCollator,
-	/// The relay node inside a People collator (collation funnel).
-	PeopleCollatorRelay,
+	/// A collator of the observed parachain (block building, tx pool).
+	Collator,
+	/// The relay node inside such a collator (collation funnel).
+	CollatorRelay,
 	/// A relay validator (PVF, backing, disputes).
 	Validator,
 }
@@ -23,8 +20,8 @@ impl Job {
 	/// The `job` label.
 	pub fn label(self) -> &'static str {
 		match self {
-			Job::PeopleCollator => "people-collator",
-			Job::PeopleCollatorRelay => "people-collator-relay",
+			Job::Collator => "collator",
+			Job::CollatorRelay => "collator-relay",
 			Job::Validator => "validator",
 		}
 	}
@@ -91,15 +88,15 @@ pub fn zombie_json_path() -> Option<PathBuf> {
 		.find(|p| p.exists())
 }
 
-/// Every node to scrape.
-pub fn load_targets(path: &Path) -> Result<Vec<Target>, TopologyError> {
+/// Every node to scrape: the collators of `para_id` and every relay validator.
+pub fn load_targets(path: &Path, para_id: u32) -> Result<Vec<Target>, TopologyError> {
 	let err = |detail: String| TopologyError { path: path.display().to_string(), detail };
 	let text = std::fs::read_to_string(path).map_err(|e| err(e.to_string()))?;
 	let z: Zombie = serde_json::from_str(&text).map_err(|e| err(e.to_string()))?;
 	let paras = z
 		.parachains
-		.get(PEOPLE_PARA_ID)
-		.ok_or_else(|| err(format!("no para {PEOPLE_PARA_ID}")))?;
+		.get(&para_id.to_string())
+		.ok_or_else(|| err(format!("no para {para_id}")))?;
 	// One entry per para, or a list of them.
 	let paras: Vec<Para> = match paras {
 		serde_json::Value::Array(_) => serde_json::from_value(paras.clone()),
@@ -109,7 +106,7 @@ pub fn load_targets(path: &Path) -> Result<Vec<Target>, TopologyError> {
 	let mut targets = Vec::new();
 	for c in paras.iter().flat_map(|p| &p.collators) {
 		targets.push(Target {
-			job: Job::PeopleCollator,
+			job: Job::Collator,
 			instance: c.name.clone(),
 			url: c.prometheus_uri.clone(),
 		});
@@ -121,7 +118,7 @@ pub fn load_targets(path: &Path) -> Result<Vec<Target>, TopologyError> {
 		if let Some(port) = port {
 			let url = with_port(&c.prometheus_uri, port);
 			targets.push(Target {
-				job: Job::PeopleCollatorRelay,
+				job: Job::CollatorRelay,
 				instance: format!("{}-relay", c.name),
 				url,
 			});

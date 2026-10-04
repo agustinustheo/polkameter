@@ -1,4 +1,4 @@
-//! Follows People's best and finalized blocks. Two tasks:
+//! Follows the chain's best and finalized blocks. Two tasks:
 //! - heads: sends [`BlockEvent::Head`] the moment a new best block arrives (the stall rule reads
 //!   it), and queues the block for the fetcher, after the blocks it builds on that were never
 //!   read: after a reorg the node announces only the new tip, so the branch below it is

@@ -9,15 +9,15 @@ polkameter_step{instance="load-tool",job="stress"} 0 100.000
 polkameter_step{instance="load-tool",job="stress"} 1 110.000
 polkameter_step{instance="load-tool",job="stress"} -1 120.000
 # TYPE substrate_proposer_block_constructed histogram
-substrate_proposer_block_constructed_bucket{instance="c",job="people-collator",le="1.0"} 0 100.001
-substrate_proposer_block_constructed_bucket{instance="c",job="people-collator",le="2.5"} 0 100.001
-substrate_proposer_block_constructed_bucket{instance="c",job="people-collator",le="+Inf"} 0 100.001
-substrate_proposer_block_constructed_bucket{instance="c",job="people-collator",le="1.0"} 5 110.001
-substrate_proposer_block_constructed_bucket{instance="c",job="people-collator",le="2.5"} 5 110.001
-substrate_proposer_block_constructed_bucket{instance="c",job="people-collator",le="+Inf"} 5 110.001
-substrate_proposer_block_constructed_bucket{instance="c",job="people-collator",le="1.0"} 5 120.001
-substrate_proposer_block_constructed_bucket{instance="c",job="people-collator",le="2.5"} 6 120.001
-substrate_proposer_block_constructed_bucket{instance="c",job="people-collator",le="+Inf"} 10 120.001
+substrate_proposer_block_constructed_bucket{instance="c",job="collator",le="1.0"} 0 100.001
+substrate_proposer_block_constructed_bucket{instance="c",job="collator",le="2.5"} 0 100.001
+substrate_proposer_block_constructed_bucket{instance="c",job="collator",le="+Inf"} 0 100.001
+substrate_proposer_block_constructed_bucket{instance="c",job="collator",le="1.0"} 5 110.001
+substrate_proposer_block_constructed_bucket{instance="c",job="collator",le="2.5"} 5 110.001
+substrate_proposer_block_constructed_bucket{instance="c",job="collator",le="+Inf"} 5 110.001
+substrate_proposer_block_constructed_bucket{instance="c",job="collator",le="1.0"} 5 120.001
+substrate_proposer_block_constructed_bucket{instance="c",job="collator",le="2.5"} 6 120.001
+substrate_proposer_block_constructed_bucket{instance="c",job="collator",le="+Inf"} 10 120.001
 # EOF
 "#;
 
@@ -33,7 +33,7 @@ fn steps_and_buckets() {
 	let steps = d.steps();
 	assert_eq!(steps.iter().map(|w| w.label.as_str()).collect::<Vec<_>>(), ["step 0", "step 1"]);
 	let b = d
-		.buckets("substrate_proposer_block_constructed", &[("job", "people-collator")], &steps[1])
+		.buckets("substrate_proposer_block_constructed", &[("job", "collator")], &steps[1])
 		.unwrap()
 		.unwrap();
 	assert_eq!(b, vec![(1.0, 0.0), (2.5, 1.0), (f64::INFINITY, 5.0)]);
@@ -47,13 +47,13 @@ fn end_reasons_count_each_block_once_over_collators() {
 polkameter_step{instance="load-tool",job="stress"} 0 100.000
 polkameter_step{instance="load-tool",job="stress"} -1 110.000
 # TYPE substrate_proposer_end_proposal_reason counter
-substrate_proposer_end_proposal_reason{instance="a",job="people-collator",reason="no_more_transactions"} 1 100.001
-substrate_proposer_end_proposal_reason{instance="b",job="people-collator",reason="no_more_transactions"} 2 100.001
-substrate_proposer_end_proposal_reason{instance="b",job="people-collator",reason="hit_deadline"} 0 100.001
-substrate_proposer_end_proposal_reason{instance="a",job="people-collator",reason="no_more_transactions"} 4 110.001
-substrate_proposer_end_proposal_reason{instance="b",job="people-collator",reason="no_more_transactions"} 4 110.001
-substrate_proposer_end_proposal_reason{instance="b",job="people-collator",reason="hit_deadline"} 1 110.001
-substrate_proposer_end_proposal_reason{instance="a",job="people-collator",reason="hit_block_weight_limit"} 2 110.001
+substrate_proposer_end_proposal_reason{instance="a",job="collator",reason="no_more_transactions"} 1 100.001
+substrate_proposer_end_proposal_reason{instance="b",job="collator",reason="no_more_transactions"} 2 100.001
+substrate_proposer_end_proposal_reason{instance="b",job="collator",reason="hit_deadline"} 0 100.001
+substrate_proposer_end_proposal_reason{instance="a",job="collator",reason="no_more_transactions"} 4 110.001
+substrate_proposer_end_proposal_reason{instance="b",job="collator",reason="no_more_transactions"} 4 110.001
+substrate_proposer_end_proposal_reason{instance="b",job="collator",reason="hit_deadline"} 1 110.001
+substrate_proposer_end_proposal_reason{instance="a",job="collator",reason="hit_block_weight_limit"} 2 110.001
 # EOF
 "#;
 	let d = RunData::new(parse_run_om(run_om), summary());

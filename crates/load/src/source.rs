@@ -77,7 +77,7 @@ pub struct QueueSource {
 }
 
 impl QueueSource {
-	/// `what` names the txs for the stop detail, e.g. "claims".
+	/// `what` names the txs for the stop detail, e.g. "prepared transactions".
 	pub fn new(flood: Vec<Tx>, probes: Vec<Tx>, what: &'static str) -> Self {
 		let total = (flood.len(), probes.len());
 		Self { flood: flood.into_iter(), probes: probes.into_iter(), what, total }

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "scenario": "people-smoke",
+  "scenario": "smoke-run",
   "artifact": {
     "name": "prepared extrinsics",
     "description": "Each operation is prepared by an installed plugin and submitted by Polkameter",
@@ -12,7 +12,7 @@
     "connections": 4,
     "plan": {
       "@mode": "smoke",
-      "@name": "people-smoke",
+      "@name": "smoke-run",
       "@timeout-ms": 7200000,
       "@version": 2,
       "@xmlns": "https://polkameter.dev/schema/plan/v2",
@@ -59,7 +59,7 @@
         "metric": [
           {
             "@name": "substrate_block_height",
-            "@role": "people-collator"
+            "@role": "collator"
           },
           {
             "@name": "substrate_block_height",
@@ -206,7 +206,6 @@
         "@pool-refuses-ratio": null,
         "@probes-in-a-row": null,
         "@recovered-block-gap-factor": null,
-        "@recycler-drain-ms": null,
         "@stall-ms": 30000
       },
       "workflow": []
@@ -228,7 +227,6 @@
     "poolRefusesRatio": 0.1,
     "probesInARow": 3,
     "recoveredBlockGapFactor": 1.5,
-    "recyclerDrainMs": 180000,
     "stallMs": 30000
   },
   "stop": {
@@ -338,7 +336,8 @@
   },
   "problems": [],
   "network": {
-    "people": "ws://127.0.0.1:10010",
+    "url": "ws://127.0.0.1:10010",
+    "paraId": 1502,
     "specVersion": 3003000,
     "blockIntervalS": 6.0
   },
@@ -418,7 +417,7 @@
       "status": "pass"
     },
     {
-      "check": "People relay slots (level 1)",
+      "check": "relay slots (level 1)",
       "detail": "step 1: missed 2 of 5 slots, 2.0 more than at idle: not built 0 (collator), not backed 2 (PVF, delivery or statements; forks not measured yet), timed out 0 (availability)",
       "numbers": {
         "idle": {
@@ -529,7 +528,7 @@
       "status": "pass"
     },
     {
-      "check": "collation funnel (People)",
+      "check": "collation funnel",
       "detail": "expired after advertised 0 (delivery), after fetched 2 (validation or backing), after backed 0 (availability); backed to included 1.00 relay blocks on average",
       "numbers": {
         "generated": 20.0,
@@ -595,6 +594,12 @@
       "status": "pass"
     },
     {
+      "check": "monitors recorded everything",
+      "detail": "no failed scrapes or unreadable blocks",
+      "outcome": "run",
+      "status": "pass"
+    },
+    {
       "check": "the backlog clears",
       "detail": "at the end: 0 queued, 0 unbuilt, 0 stale rings (start 0 / 0 / 0); queue peak 0; back to the start 2 s after the last load",
       "outcome": "recycler",
@@ -616,13 +621,8 @@
       "check": "time from load to built root",
       "detail": "no sampled voucher reached a built root (no loads in this run?)",
       "outcome": "recycler",
-      "status": "no result"
-    },
-    {
-      "check": "monitors recorded everything",
-      "detail": "no failed scrapes or unreadable blocks",
-      "outcome": "run",
-      "status": "pass"
+      "status": "no result",
+      "optional": true
     }
   ]
 }
