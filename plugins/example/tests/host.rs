@@ -79,7 +79,7 @@ async fn incompatible_version_and_unknown_operation_fail_before_setup() {
 #[tokio::test]
 async fn plugin_timeout_fails_run_and_teardown_still_runs() {
 	let root = directory("timeout");
-	let xml = r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan/v2" version="2" name="Deadline">
+	let xml = r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="Deadline">
     <plugins><plugin id="example" version="0.1.0" protocol="1"/></plugins>
     <setup><step id="slow" use="example.wait" timeout-ms="20"><input name="milliseconds" value="5000"/></step></setup>
     <teardown><step id="cleanup" use="core.echo"><input name="value" value="done"/></step></teardown>
@@ -105,7 +105,7 @@ async fn plugin_timeout_fails_run_and_teardown_still_runs() {
 #[tokio::test]
 async fn cancellation_stops_a_waiting_plugin() {
 	let root = directory("cancel");
-	let xml = r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan/v2" version="2" name="Cancellation">
+	let xml = r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="Cancellation">
     <plugins><plugin id="example" version="0.1.0" protocol="1"/></plugins>
     <setup><step id="slow" use="example.wait" timeout-ms="65000"><input name="milliseconds" value="60000"/></step></setup>
     <teardown><step id="cleanup" use="core.echo"><input name="value" value="done"/></step></teardown>
@@ -190,7 +190,7 @@ async fn crashes_and_invalid_outputs_are_tool_failures_with_cleanup() {
 	for operation in ["crash", "invalid-output"] {
 		let root = directory(operation);
 		let xml = format!(
-			r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan/v2" version="2" name="Failure">
+			r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="Failure">
         <plugins><plugin id="example" version="0.1.0" protocol="1"/></plugins>
         <setup><step id="failure" use="example.{operation}"/></setup>
         <teardown><step id="clean" use="core.echo"><input name="value" value="done"/></step></teardown></polkameter-plan>"#
@@ -241,7 +241,7 @@ async fn escaped_credentials_are_redacted_from_errors_and_events() {
 	}
 	registry.credentials.insert("test".into(), variable.clone());
 	let root = directory("redaction");
-	let xml = r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan/v2" version="2" name="Redaction">
+	let xml = r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="Redaction">
     <plugins><plugin id="example" version="0.1.0" protocol="1"/></plugins>
     <credentials><credential id="secret" profile="test"/></credentials>
     <setup><step id="failure" use="example.fail-with-message"><input name="message" ref="credentials.secret"/></step></setup></polkameter-plan>"#;

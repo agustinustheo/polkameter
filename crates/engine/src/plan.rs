@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const NAMESPACE: &str = "https://polkameter.dev/schema/plan/v2";
+pub const NAMESPACE: &str = "https://polkameter.dev/schema/plan";
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Plan {
@@ -275,7 +275,10 @@ impl Plan {
 	}
 	pub fn validate(&self) -> Result<()> {
 		self.thresholds.rules()?;
-		ensure!(self.version == 2 && self.namespace == NAMESPACE, "expected XML plan v2 namespace");
+		ensure!(
+			self.version == 1 && self.namespace == NAMESPACE,
+			"expected a version 1 Polkameter plan in its namespace"
+		);
 		ensure!(!self.name.is_empty() && self.timeout_ms > 0, "name and run deadline required");
 		ensure!(matches!(self.mode.as_str(), "stress" | "smoke"), "unknown run mode");
 		let mut plugin_ids = BTreeSet::new();
