@@ -11,15 +11,6 @@ importers:
       '@tauri-apps/api':
         specifier: ^2.12.1
         version: 2.12.1
-      dompurify:
-        specifier: ^3.4.16
-        version: 3.4.16
-      driver.js:
-        specifier: ^1.8.0
-        version: 1.8.0
-      lucide:
-        specifier: ^1.51.0
-        version: 1.51.0
     devDependencies:
       '@tauri-apps/cli':
         specifier: ^2.12.1
@@ -299,9 +290,6 @@ packages:
   '@types/estree@1.0.9':
     resolution: {integrity: sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==}
 
-  '@types/trusted-types@2.0.7':
-    resolution: {integrity: sha512-ScaPdn1dQczgbl0QFTeTOmVHFULt394XJgOQNoyVhZ6r2vLnMLJfBPd53SB52T/3G36VI1/g2MZaX0cwDuXsfw==}
-
   '@typescript/typescript-aix-ppc64@7.0.2':
     resolution: {integrity: sha512-MTKKkWB7p/0E9xi1d1tHtZ5PiLkGEMIq88pK2CubZjOsLtYTLqhgIgi6zepFa+9GHZ6h05NMCkQxGKiPXMxXtQ==}
     engines: {node: '>=16.20.0'}
@@ -462,12 +450,6 @@ packages:
     resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==}
     engines: {node: '>=8'}
 
-  dompurify@3.4.16:
-    resolution: {integrity: sha512-sqo+pNp3qRhCIpbgRi1y8Tgk27Bo2Ry7w0dC1NBeNTdZChWjz9Xb/KOoZbRP/R6pQZ80Qw8YhXw13hWWBbMRnQ==}
-
-  driver.js@1.8.0:
-    resolution: {integrity: sha512-+8/IO7h1v14IzWh2GP60N7T3PFZweXwdn5e5POuxRSBoCYUojsBxzqawPeXh3YZIibRy7EehYNEyxe7slwwtdg==}
-
   entities@8.1.0:
     resolution: {integrity: sha512-kxL7msIffSuh9aaFAMD7rxAIuTRMAHMeBtgHW2yUdWw732ZNh4MehkF2gdjvtdmikkaIP9bFDDJOPlsvm7avrA==}
     engines: {node: '>=20.19.0'}
@@ -589,9 +571,6 @@ packages:
   lru-cache@11.5.3:
     resolution: {integrity: sha512-U4N8FgzmWxc8k1VH8Kr6lQg18U7Fjvby6wXHVRX/ZZ7IwWbRMgrRbP0Wrb5q5NVinryp4SQampHKdvtecItxUg==}
     engines: {node: 20 || >=22}
-
-  lucide@1.51.0:
-    resolution: {integrity: sha512-7K2Zm6Haz2EhYOAAE1ZQfsfs83ywGodSCvwr7YvCBzB9oelqDsRvMFUBDbXEGUaUMAisC7xcjMmSrozzYL/UwQ==}
 
   magic-string@1.4.2:
     resolution: {integrity: sha512-vG+rjFRj1PqdIBozIxAGMjPlOhaVe+GXpbttY/iSK7rGcJRMlwNJO7dcUwmUqkymsFLJiNGI06t4D7Fr7yRC9g==}
@@ -963,9 +942,6 @@ snapshots:
 
   '@types/estree@1.0.9': {}
 
-  '@types/trusted-types@2.0.7':
-    optional: true
-
   '@typescript/typescript-aix-ppc64@7.0.2':
     optional: true
 
@@ -1060,12 +1036,6 @@ snapshots:
   decimal.js@10.6.0: {}
 
   detect-libc@2.1.2: {}
-
-  dompurify@3.4.16:
-    optionalDependencies:
-      '@types/trusted-types': 2.0.7
-
-  driver.js@1.8.0: {}
 
   entities@8.1.0: {}
 
@@ -1167,8 +1137,6 @@ snapshots:
       lightningcss-win32-x64-msvc: 1.33.0
 
   lru-cache@11.5.3: {}
-
-  lucide@1.51.0: {}
 
   magic-string@1.4.2:
     dependencies:
