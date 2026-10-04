@@ -62,8 +62,8 @@ After recovery the run snapshots the ready pool, waits until the chain has final
 
 A plugin can watch the chain during a run and judge what it saw:
 
-- **Observer.** A setup step starts it and an evaluate step stops it. It writes `series.jsonl` (the same records as `chain.jsonl`, e.g. with `polkameter-monitors`' `ChainSeries` and `walker`) and `metrics.json` (a list of `PluginMetric`: `name`, `kind`, `help`, `buckets`) into its plugin directory. The report merges these series into `run.om` with `job="plugin"` and `instance=<plugin id>`. A plugin may not redefine a built-in metric.
-- **Check.** An evaluate step whose operation declares a `checks` output contributes check results: a list of `{outcome, check, status, detail, numbers?, optional?}`, with `status` one of `pass`, `warn`, `fail`, `info`, `no result`. Pass `run.directory` to it; it can rebuild `run.om` with `polkameter_files::build_run_om` and read `summary.json` with `polkameter_checks::RunData`, the same data the built-in checks use. Smoke mode fails on a check without a result unless it is `optional`.
+- **Observer.** A setup step starts it and an evaluate step stops it. It writes `series.jsonl` (the same records as `chain.jsonl`, e.g. with `polkameter-monitors`' `ChainSeries` and `walker`) and `metrics.json` (a list of `PluginMetric`: `name`, `kind`, `help`, `buckets`) into its plugin directory. The checks read these series with the run's own, labelled `job="plugin"` and `instance=<plugin id>`. A plugin may not redefine a built-in metric.
+- **Check.** An evaluate step whose operation declares a `checks` output contributes check results: a list of `{outcome, check, status, detail, numbers?, optional?}`, with `status` one of `pass`, `warn`, `fail`, `info`, `no result`. Pass `run.directory` to it; `polkameter_files::read_store` and `summary.json` give it a `polkameter_checks::RunData`, the same data the built-in checks use. Smoke mode fails on a check without a result unless it is `optional`.
 
 The report keeps plugin results in `plugin-checks.json`, so `polkameter report RUN_DIRECTORY` reproduces the same summary offline.
 
@@ -86,7 +86,7 @@ Deadlines include time waiting for the plugin's serialization lock. An operation
 
 ## Results, desktop and remote workers
 
-A run directory includes the normalized plan, installation manifests and checksums, `events.jsonl`, `execution.json` and JMeter-compatible `samples.jtl`. Load plans additionally retain raw scrapes, blocks, steps, `run.om`, `transactions.jsonl`, `summary.json` and `summary.md`. Run `polkameter report RUN_DIRECTORY` to regenerate the checks and SVG plots offline, also after copying a bundle.
+A run directory includes the normalized plan, installation manifests and checksums, `events.jsonl`, `execution.json` and JMeter-compatible `samples.jtl`. Load plans additionally retain raw node scrapes, the load and chain series, blocks, steps, `transactions.jsonl`, `summary.json` and `summary.md`. Run `polkameter report RUN_DIRECTORY` to regenerate the checks and SVG plots offline, also after copying a bundle.
 
 Stress mode measures degradation and may return zero despite failed chain-health checks. Smoke mode additionally fails on monitor problems and required checks without results. Tool or setup failures and failed explicit XML assertions are nonzero in both modes.
 
