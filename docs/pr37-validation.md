@@ -14,7 +14,14 @@ This section supersedes the pass counts and CI notes in the older sections below
 - `people-default` expects 2-second blocks: it reproduces the upstream default dispatch (750 × 20, 6 + 4 tx/s for ten steps) on 3 People cores and 5 collators.
 - `pr37-people.yml` and the E2E `stress-flood.yml` workflow share provisioning: system packages install without `sudo` when the runner is root, the frontend builds before Cargo, the fork is bitten with retries, `verify-previewnet-requirements.py` checks the exported requirements against the bitten bundle, and `ppn fork wait` gates the run. Each plan fixes its People cores and collators, so a plan cannot be started on a topology with the wrong block interval.
 - The E2E workflow keeps a temporary branch `push` trigger (capacity plan), so it can run on its PR branch before it reaches E2E `main`. Remove that trigger before merging, as upstream planned.
-- No live network run was repeated for these changes.
+- Local live runs through `polkameter run`, each on a fresh fork spawned by `scripts/local-people-run.sh` from release binaries of this branch:
+
+  | Plan | Topology | Executed rates (tx/s) | Sent / finalized | Lost / unknown | Stop | Recovery | Calibration |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | `people-smoke` | 1 core, 1 collator | 2/4/6 | 360 / 360 | 0 / 0 | rate cap | 1 s | 6.0 s measured, 6 s expected |
+  | `people-capacity` | 3 cores, 5 collators | 12/15/18/21 | 3960 / 3960 | 0 / 0 | rate cap | 1 s | 1.8 s measured, 2 s expected |
+
+  Both exited 0 with every required check passing; 100 sampled allowances were present in each. The only non-pass verdicts were the informational "why blocks end" and the optional voucher-to-root check, which has no data because this workload loads no vouchers. No node process outlived either run.
 
 ## Requested test pass (2026-10-04)
 
