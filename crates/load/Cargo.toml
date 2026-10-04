@@ -1,0 +1,22 @@
+[package]
+name = "polkameter-load"
+description = "The runner: load sources, sender, tracker, ramp, rules, loss check"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+polkameter-files.workspace = true
+polkameter-chain.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tokio-tungstenite = "0.27"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+hex.workspace = true
+
+[lints]
+workspace = true
