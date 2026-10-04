@@ -26,26 +26,6 @@ pub struct StepPlan {
 	pub rates: Vec<f64>,
 }
 
-/// A scenario's ramp defaults; every field can be changed from the command line.
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Ramp {
-	/// First step's rate, tx/s.
-	pub start: f64,
-	/// Rate added per step.
-	pub step: f64,
-	/// Rate multiplier per step; replaces `step` when set.
-	pub growth: Option<f64>,
-	/// Step length, s.
-	pub interval_s: u32,
-	/// Steps.
-	pub steps: u32,
-	/// Recovery budget, s.
-	pub recovery_s: u32,
-	/// Baseline probes.
-	pub probes: usize,
-}
-
 /// The steps of a run.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Plan {

@@ -3,21 +3,20 @@
 //! [`Problems`]. Only our own errors (a file we can't write, an answer that doesn't decode as
 //! our types) end a monitor with [`MonitorError`], and then the run.
 //!
-//! | monitor           | reads                                 | writes          |
-//! | ----------------- | ------------------------------------- | --------------- |
-//! | scraper           | every node's `/metrics`               | `scrapes.jsonl` |
-//! | relay recorder    | People inclusion, disputes, slots     | `chain.jsonl`   |
-//! | recycler recorder | Recycler backlog and maintenance      | `chain.jsonl`   |
-//! | process sampler   | the People node's CPU and memory      | `node.jsonl`    |
+//! | monitor         | reads                                          | writes          |
+//! | --------------- | ---------------------------------------------- | --------------- |
+//! | scraper         | every node's `/metrics`                        | `scrapes.jsonl` |
+//! | relay recorder  | inclusion, disputes and slots of each parachain | `chain.jsonl`   |
+//! | process sampler | the CPU and memory of the node under load      | `node.jsonl`    |
 //!
-//! The two chain recorders walk finalized blocks ([`walker`]) and send their series to the one
-//! task that owns `chain.jsonl` ([`chain_series`]). The block follower is not here: the load
+//! Chain recorders walk finalized blocks ([`walker`]) and send their series to the one task that
+//! owns `chain.jsonl` ([`chain_series`]). A plugin can run its own recorder with the same walker
+//! and series types, writing to its plugin directory. The block follower is not here: the load
 //! tool drives it, because it matches our txs in each block.
 
 pub mod chain_series;
 pub mod preflight;
 pub mod process;
-pub mod recycler;
 pub mod relay;
 pub mod scraper;
 pub mod topology;

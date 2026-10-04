@@ -47,7 +47,6 @@ pub struct Rules {
 	pub probes_in_a_row: usize,
 	pub recovered_block_gap_factor: f64,
 	pub finality_wait_ms: Ms,
-	pub recycler_drain_ms: Ms,
 }
 
 /// The rules.
@@ -65,7 +64,6 @@ pub const RULES: Rules = Rules {
 	probes_in_a_row: 3,
 	recovered_block_gap_factor: 1.5,
 	finality_wait_ms: 180_000,
-	recycler_drain_ms: 180_000,
 };
 
 fn pct(ratio: f64) -> String {

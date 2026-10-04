@@ -5,12 +5,10 @@ mod block_production;
 mod pool;
 mod pvf;
 mod recorded;
-mod recycler;
 
 use crate::Check;
 
 /// Every check, one list per outcome, in the order of the summary.
 pub fn all() -> Vec<Check> {
-	[block_production::CHECKS, pvf::CHECKS, pool::CHECKS, recycler::CHECKS, recorded::CHECKS]
-		.concat()
+	[block_production::CHECKS, pvf::CHECKS, pool::CHECKS, recorded::CHECKS].concat()
 }
