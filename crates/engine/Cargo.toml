@@ -1,0 +1,22 @@
+[package]
+name = "polkameter-engine"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+[dependencies]
+polkameter-plugin-sdk = { path = "../plugin-sdk" }
+polkameter-chain.workspace = true
+polkameter-load.workspace = true
+polkameter-files.workspace = true
+polkameter-checks.workspace = true
+polkameter-monitors.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+hex.workspace = true
+sp-crypto-hashing.workspace = true
+quick-xml = { version = "0.41", features = ["serialize"] }
+csv = "1.3"
+subxt-rpcs.workspace = true

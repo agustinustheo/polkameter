@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<polkameter-plan xmlns="https://polkameter.dev/schema/plan/v2" version="2" name="people-one-claim" mode="stress" timeout-ms="7200000">
+  <plugins><plugin id="people" version="0.1.0" protocol="1"/></plugins>
+  <targets>
+    <target id="people" endpoint="ws://127.0.0.1:10010"/>
+    <target id="relay" endpoint="ws://127.0.0.1:10000"/>
+  </targets>
+  <credentials><credential id="admin" profile="previewnet-sudo"/></credentials>
+  <preflight><step id="compatibility" use="people.preflight"><input name="target" ref="targets.people"/></step></preflight>
+  <setup>
+    <step id="recognition" use="people.recognize">
+      <input name="target" ref="targets.people"/>
+      <input name="credential" ref="credentials.admin"/>
+      <input name="members" value="2"/>
+    </step>
+    <step id="recognized" use="core.submit-setup" timeout-ms="1200000">
+      <input name="target" ref="targets.people"/>
+      <input name="transactions" ref="steps.recognition.transactions"/>
+    </step>
+    <step id="claims" use="people.prepare-claims" timeout-ms="3600000">
+      <input name="target" ref="targets.people"/>
+      <input name="members" ref="steps.recognition.members"/>
+      <input name="slots" value="1"/>
+      <input name="probe-reserve" value="1"/>
+    </step>
+    <step id="fresh" use="people.validate-prepared">
+      <input name="target" ref="targets.people"/>
+      <input name="identity" ref="steps.claims.identity"/>
+    </step>
+    <step id="claim" use="core.submit-setup" timeout-ms="180000">
+      <input name="target" ref="targets.people"/>
+      <input name="transactions" ref="steps.claims.flood"/>
+    </step>
+  </setup>
+  <evaluate>
+    <step id="allowance" use="people.check-state">
+      <input name="target" ref="targets.people"/>
+      <input name="state" ref="steps.claims.state"/>
+      <input name="hashes" ref="steps.claim.hashes"/>
+      <input name="at" ref="steps.claim.at"/>
+    </step>
+    <step id="verified" use="core.assert-equal"><input name="actual" ref="steps.allowance.missing"/><input name="expected" value="0"/></step>
+  </evaluate>
+</polkameter-plan>

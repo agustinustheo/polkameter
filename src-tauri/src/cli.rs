@@ -28,6 +28,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+	/// Install or inspect independently packaged XML operations.
+	Plugin {
+		#[command(subcommand)]
+		command: PluginCommand,
+	},
 	/// Parse and structurally validate a scenario without connecting to a chain.
 	Validate {
 		scenario: PathBuf,
@@ -72,6 +77,22 @@ enum Command {
 		#[command(subcommand)]
 		command: AgentCommand,
 	},
+}
+
+#[derive(Debug, Subcommand)]
+enum PluginCommand {
+	/// Record a capability supplied by the local network provisioner.
+	Capability { name: String },
+	/// Resolve manifests and export requirements without connecting or submitting.
+	Inspect { scenario: PathBuf },
+	/// Register an executable after reading its manifest and pinning its checksum.
+	Install { executable: PathBuf },
+	/// List installed plugin packages.
+	List,
+	/// Map a credential profile to an environment variable on this host.
+	Credential { profile: String, env: String },
+	/// Register a local Zombienet topology under a portable alias.
+	Topology { name: String, path: PathBuf },
 }
 
 #[derive(Debug, Subcommand)]
@@ -168,6 +189,7 @@ pub fn main() -> i32 {
 
 async fn execute(cli: Cli) -> Result<i32, CliError> {
 	match cli.command {
+		Command::Plugin { command } => plugin_command(command).await,
 		Command::Validate { scenario, format } => validate(scenario, format),
 		Command::Preflight { scenario, signer, format } => {
 			preflight(scenario, signer, format).await
@@ -181,6 +203,14 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 }
 
 fn validate(path: PathBuf, format: OutputFormat) -> Result<i32, CliError> {
+	if let Some(plan) = crate::plugin_application::load(&path).map_err(CliError::Invalid)? {
+		write_result(
+			format,
+			&json!({"version":2,"event":"validation","valid":true,"plan":plan.name}),
+			"XML v2 plan is structurally valid. Preflight verifies installed plugins.".into(),
+		);
+		return Ok(0);
+	}
 	let document = application::load_scenario_document(path).map_err(CliError::Invalid)?;
 	let issues = document.validate();
 	let samples = estimated_samples(&document);
@@ -206,6 +236,14 @@ async fn preflight(
 	signer: SignerArgs,
 	format: OutputFormat,
 ) -> Result<i32, CliError> {
+	if let Some(plan) = crate::plugin_application::load(&path).map_err(CliError::Invalid)? {
+		let registry = plugin_registry(&plan, &signer)?;
+		let result = polkameter_engine::execute::preflight(&plan, &registry)
+			.await
+			.map_err(|e| CliError::Preflight(e.to_string()))?;
+		write_result(format, &result, "XML plugin preflight passed.".into());
+		return Ok(0);
+	}
 	let mut document = application::load_scenario_document(path).map_err(CliError::Invalid)?;
 	resolve_signer(&mut document, &signer)?;
 	let run_id = artifacts::new_run_id();
@@ -229,6 +267,55 @@ async fn run(
 	remote_token_env: Option<String>,
 	format: OutputFormat,
 ) -> Result<i32, CliError> {
+	if let Some(plan) = crate::plugin_application::load(&path).map_err(CliError::Invalid)? {
+		if let Some(endpoint) = remote {
+			let target = remote_target(endpoint, remote_token_env)?;
+			if signer.signer_env.is_some() || signer.signer_profile.is_some() {
+				return Err(CliError::Invalid(
+					"configure plugin credentials on the remote agent".into(),
+				));
+			}
+			return run_plugin_remote(
+				target,
+				std::fs::read_to_string(path).map_err(|e| CliError::Invalid(e.to_string()))?,
+				format,
+			)
+			.await;
+		}
+		let registry = plugin_registry(&plan, &signer)?;
+		let cancel = tokio_util::sync::CancellationToken::new();
+		let signal = cancel.clone();
+		let interrupt = tokio::spawn(async move {
+			if tokio::signal::ctrl_c().await.is_ok() {
+				signal.cancel();
+			}
+		});
+		let sink = Arc::new(move |event: Value| {
+			if format == OutputFormat::Json {
+				write_json_line(&event);
+			} else if event["event"] == "phase" {
+				eprintln!("Phase: {}", event["phase"].as_str().unwrap_or("unknown"));
+			}
+		});
+		let result = polkameter_engine::execute::run(
+			plan,
+			registry,
+			&output.expect("local output required"),
+			cancel,
+			sink,
+		)
+		.await;
+		interrupt.abort();
+		let outcome = result
+			.and_then(crate::plugin_application::finalize_report)
+			.map_err(|e| CliError::Runtime(e.to_string()))?;
+		write_result(
+			format,
+			&json!({"version":2,"event":"artifact-written","outcome":outcome}),
+			format!("Run {}. Artifacts: {}", outcome.state, outcome.artifact_dir.display()),
+		);
+		return Ok(outcome.exit_code);
+	}
 	let mut document = application::load_scenario_document(path).map_err(CliError::Invalid)?;
 	if let Some(endpoint) = remote {
 		if signer.signer_env.is_some() {
@@ -346,6 +433,28 @@ async fn finish_local_run(state: Arc<RunnerState>, format: OutputFormat) -> Resu
 }
 
 fn report(path: PathBuf, format: OutputFormat) -> Result<i32, CliError> {
+	if path.join("execution.json").is_file() {
+		polkameter_engine::artifacts::write_samples(&path)
+			.map_err(|e| CliError::Runtime(e.to_string()))?;
+		crate::report::write(&path).map_err(CliError::Runtime)?;
+		let outcome: polkameter_engine::execute::Outcome = serde_json::from_slice(
+			&std::fs::read(path.join("execution.json"))
+				.map_err(|e| CliError::Runtime(e.to_string()))?,
+		)
+		.map_err(|e| CliError::Runtime(e.to_string()))?;
+		if path.join("summary.json").is_file() {
+			polkameter_engine::measurement::check(&path)
+				.map_err(|e| CliError::Runtime(e.to_string()))?;
+		}
+		let summary = std::fs::read_to_string(path.join("summary.md"))
+			.map_err(|e| CliError::Runtime(e.to_string()))?;
+		write_result(
+			format,
+			&json!({"version":2,"event":"report","outcome":outcome,"summary":summary}),
+			summary,
+		);
+		return Ok(0);
+	}
 	let report = report::read_dashboard(&path).map_err(CliError::Runtime)?;
 	write_result(
 		format,
@@ -583,9 +692,155 @@ impl RunEventSink for ConsoleEventSink {
 	}
 }
 
+fn plugin_registry(
+	plan: &polkameter_engine::plan::Plan,
+	signer: &SignerArgs,
+) -> Result<polkameter_engine::plugins::Registry, CliError> {
+	let mut registry = polkameter_engine::plugins::Registry::load()
+		.map_err(|e| CliError::Invalid(e.to_string()))?;
+	if let Some(variable) = &signer.signer_env {
+		if plan.credentials.entries.len() != 1 {
+			return Err(CliError::Invalid(
+				"--signer-env requires exactly one plan credential".into(),
+			));
+		}
+		registry
+			.credentials
+			.insert(plan.credentials.entries[0].profile.clone(), variable.clone());
+	}
+	if signer.signer_profile.is_some() {
+		return Err(CliError::Invalid(
+			"plugin plans select credential profiles in XML; configure them with plugin credential"
+				.into(),
+		));
+	}
+	Ok(registry)
+}
+async fn plugin_command(command: PluginCommand) -> Result<i32, CliError> {
+	use polkameter_engine::plugins::Registry;
+	let result = async {
+		let path = Registry::path()?;
+		let mut registry = Registry::read(&path)?;
+		let changed = !matches!(&command, PluginCommand::List | PluginCommand::Inspect { .. });
+		let result = match command {
+			PluginCommand::Install { executable } => {
+				serde_json::to_value(registry.install(&executable).await?)?
+			},
+			PluginCommand::List => serde_json::to_value(&registry.plugins)?,
+			PluginCommand::Capability { name } => {
+				if !registry.capabilities.contains(&name) {
+					registry.capabilities.push(name);
+				}
+				json!({"configured":true})
+			},
+			PluginCommand::Inspect { scenario } => {
+				let xml = std::fs::read_to_string(scenario)?;
+				polkameter_engine::execute::inspect(
+					&polkameter_engine::plan::Plan::parse(&xml)?,
+					&registry,
+				)
+				.await?
+			},
+			PluginCommand::Credential { profile, env } => {
+				registry.credentials.insert(profile, env);
+				json!({"configured":true})
+			},
+			PluginCommand::Topology { name, path } => {
+				registry.topologies.insert(name, path.canonicalize()?);
+				json!({"configured":true})
+			},
+		};
+		if changed {
+			registry.write(&path)?;
+		}
+		Ok::<_, anyhow::Error>(result)
+	}
+	.await
+	.map_err(|e| CliError::Invalid(e.to_string()))?;
+	println!(
+		"{}",
+		serde_json::to_string_pretty(&result).map_err(|e| CliError::Runtime(e.to_string()))?
+	);
+	Ok(0)
+}
+async fn run_plugin_remote(
+	target: RemoteRunnerTarget,
+	xml: String,
+	format: OutputFormat,
+) -> Result<i32, CliError> {
+	let started = remote::plugin_start(&target, xml).await.map_err(CliError::Runtime)?;
+	let mut interrupt = Box::pin(tokio::signal::ctrl_c());
+	let mut stopped = false;
+	loop {
+		let status =
+			remote::plugin_status(&started.id, &target).await.map_err(CliError::Runtime)?;
+		if status.state != "running" {
+			if let Some(outcome) = status.outcome {
+				write_result(
+					format,
+					&json!({"event":"artifact-written","outcome":outcome}),
+					format!(
+						"Remote run {}. Artifacts: {}",
+						outcome.state,
+						outcome.artifact_dir.display()
+					),
+				);
+				return Ok(outcome.exit_code);
+			}
+			return Err(CliError::Runtime(
+				status.error.unwrap_or_else(|| "remote run produced no outcome".into()),
+			));
+		}
+		tokio::select! {result=&mut interrupt,if !stopped=>{result.map_err(|e|CliError::Runtime(e.to_string()))?;remote::plugin_stop(&started.id,&target).await.map_err(CliError::Runtime)?;stopped=true;},_=tokio::time::sleep(Duration::from_millis(300))=>{}}
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn offline_report_reproduces_retained_smoke_verdicts() {
+		let fixture =
+			std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pr37-smoke");
+		let directory = std::env::temp_dir().join(format!(
+			"polkameter-pr37-golden-{}-{}",
+			std::process::id(),
+			rand::random::<u64>()
+		));
+		std::fs::create_dir(&directory).unwrap();
+		for entry in std::fs::read_dir(&fixture).unwrap() {
+			let path = entry.unwrap().path();
+			if path.extension().is_some_and(|ext| ext == "gz") {
+				let mut decoder = flate2::read::GzDecoder::new(std::fs::File::open(&path).unwrap());
+				let mut output =
+					std::fs::File::create(directory.join(path.file_stem().unwrap())).unwrap();
+				std::io::copy(&mut decoder, &mut output).unwrap();
+			} else if path.extension().is_some_and(|ext| ext == "json" || ext == "jsonl") {
+				std::fs::copy(&path, directory.join(path.file_name().unwrap())).unwrap();
+			}
+		}
+		let recorded: Value =
+			serde_json::from_slice(&std::fs::read(directory.join("summary.json")).unwrap())
+				.unwrap();
+		// The CLI report path also invokes measurement::check from the raw files.
+		assert_eq!(report(directory.clone(), OutputFormat::Json).unwrap(), 0);
+		let replayed: Value =
+			serde_json::from_slice(&std::fs::read(directory.join("summary.json")).unwrap())
+				.unwrap();
+		let verdicts = |summary: &Value| {
+			summary["checks"]
+				.as_array()
+				.unwrap()
+				.iter()
+				.map(|check| (check["check"].clone(), check["status"].clone()))
+				.collect::<Vec<_>>()
+		};
+		assert_eq!(verdicts(&replayed), verdicts(&recorded));
+		assert!(directory.join("summary.md").is_file());
+		assert_eq!(replayed["loss"], recorded["loss"]);
+		std::fs::remove_dir_all(directory).unwrap();
+	}
 
 	#[test]
 	fn command_line_enforces_run_argument_constraints() {

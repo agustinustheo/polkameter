@@ -77,6 +77,7 @@ struct AgentState {
 	bearer_token: String,
 	output_root: String,
 	runner: Arc<runner::RunnerState>,
+	plugins: Arc<crate::plugin_application::State>,
 }
 
 pub async fn serve(bind: &str, bearer_token: String, output_root: String) -> Result<(), String> {
@@ -91,10 +92,20 @@ pub async fn serve(bind: &str, bearer_token: String, output_root: String) -> Res
 			"agent binds only to a loopback address; use an SSH tunnel or TLS terminator".into()
 		);
 	}
-	let state =
-		AgentState { bearer_token, output_root, runner: Arc::new(runner::RunnerState::default()) };
+	let state = AgentState {
+		bearer_token,
+		output_root,
+		runner: Arc::new(runner::RunnerState::default()),
+		plugins: Arc::new(crate::plugin_application::State::default()),
+	};
 	let app = Router::new()
 		.route("/v1/health", get(health))
+		.route("/v2/plugins", get(plugin_capabilities))
+		.route("/v2/preflight", post(plugin_preflight_handler))
+		.route("/v2/inspect", post(plugin_inspect_handler))
+		.route("/v2/runs", post(plugin_start_handler))
+		.route("/v2/runs/{id}", get(plugin_status_handler))
+		.route("/v2/runs/{id}/stop", post(plugin_stop_handler))
 		.route("/v1/preflight", post(preflight_run))
 		.route("/v1/runs", post(start_run))
 		.route("/v1/runs/{run_id}", get(run_status))
@@ -215,6 +226,10 @@ async fn start_run(
 	Json(request): Json<RemoteRunRequest>,
 ) -> AgentResult<Json<runner::RunStatus>> {
 	authorize(&headers, &state)?;
+	let _gate = state.plugins.start_gate.lock().await;
+	if state.plugins.status.lock().await.state == "running" {
+		return Err(bad_request("a plugin run is active"));
+	}
 	request.validate().map_err(bad_request)?;
 	let mut document = request.document;
 	resolve_agent_signer(&mut document).map_err(bad_request)?;
@@ -388,4 +403,143 @@ mod tests {
 		.validate()
 		.is_err());
 	}
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct PluginRequest {
+	pub xml: String,
+}
+async fn plugin_capabilities(
+	State(state): State<AgentState>,
+	headers: HeaderMap,
+) -> AgentResult<Json<serde_json::Value>> {
+	authorize(&headers, &state)?;
+	let registry = polkameter_engine::plugins::Registry::load().map_err(bad_request)?;
+	Ok(Json(
+		serde_json::json!({"protocol":1,"plugins":registry.plugins.iter().map(|(id,p)|serde_json::json!({"id":id,"version":p.version,"blake2":p.blake2})).collect::<Vec<_>>()}),
+	))
+}
+async fn plugin_preflight_handler(
+	State(state): State<AgentState>,
+	headers: HeaderMap,
+	Json(request): Json<PluginRequest>,
+) -> AgentResult<Json<serde_json::Value>> {
+	authorize(&headers, &state)?;
+	let plan = polkameter_engine::plan::Plan::parse(&request.xml).map_err(bad_request)?;
+	let registry = polkameter_engine::plugins::Registry::load().map_err(bad_request)?;
+	polkameter_engine::execute::preflight(&plan, &registry)
+		.await
+		.map(Json)
+		.map_err(bad_request)
+}
+async fn plugin_start_handler(
+	State(state): State<AgentState>,
+	headers: HeaderMap,
+	Json(request): Json<PluginRequest>,
+) -> AgentResult<Json<crate::plugin_application::Status>> {
+	authorize(&headers, &state)?;
+	let _gate = state.plugins.start_gate.lock().await;
+	let legacy = runner::status(state.runner.clone()).await;
+	if matches!(legacy.state.as_str(), "arming" | "running" | "stopping") {
+		return Err(bad_request("a v1 run is active"));
+	}
+	crate::plugin_application::start(
+		request.xml,
+		state.output_root,
+		state.plugins.clone(),
+		Arc::new(|_| {}),
+	)
+	.await
+	.map(Json)
+	.map_err(bad_request)
+}
+async fn plugin_status_handler(
+	axum::extract::Path(id): axum::extract::Path<String>,
+	State(state): State<AgentState>,
+	headers: HeaderMap,
+) -> AgentResult<Json<crate::plugin_application::Status>> {
+	authorize(&headers, &state)?;
+	crate::plugin_application::status(&state.plugins, &id)
+		.await
+		.map(Json)
+		.map_err(bad_request)
+}
+async fn plugin_stop_handler(
+	axum::extract::Path(id): axum::extract::Path<String>,
+	State(state): State<AgentState>,
+	headers: HeaderMap,
+) -> AgentResult<Json<crate::plugin_application::Status>> {
+	authorize(&headers, &state)?;
+	crate::plugin_application::stop(&state.plugins, &id)
+		.await
+		.map(Json)
+		.map_err(bad_request)
+}
+pub async fn plugin_start(
+	target: &RemoteRunnerTarget,
+	xml: String,
+) -> Result<crate::plugin_application::Status, String> {
+	plugin_request(target, reqwest::Method::POST, "/v2/runs", Some(xml)).await
+}
+pub async fn plugin_status(
+	id: &str,
+	target: &RemoteRunnerTarget,
+) -> Result<crate::plugin_application::Status, String> {
+	if !is_safe_run_id(id) {
+		return Err("invalid run ID".into());
+	}
+	plugin_request(target, reqwest::Method::GET, &format!("/v2/runs/{id}"), None).await
+}
+pub async fn plugin_stop(
+	id: &str,
+	target: &RemoteRunnerTarget,
+) -> Result<crate::plugin_application::Status, String> {
+	if !is_safe_run_id(id) {
+		return Err("invalid run ID".into());
+	}
+	plugin_request(target, reqwest::Method::POST, &format!("/v2/runs/{id}/stop"), None).await
+}
+pub async fn plugin_preflight(
+	target: &RemoteRunnerTarget,
+	xml: String,
+) -> Result<serde_json::Value, String> {
+	plugin_request(target, reqwest::Method::POST, "/v2/preflight", Some(xml)).await
+}
+
+async fn plugin_inspect_handler(
+	State(state): State<AgentState>,
+	headers: HeaderMap,
+	Json(request): Json<PluginRequest>,
+) -> AgentResult<Json<serde_json::Value>> {
+	authorize(&headers, &state)?;
+	let plan = polkameter_engine::plan::Plan::parse(&request.xml).map_err(bad_request)?;
+	let registry = polkameter_engine::plugins::Registry::load().map_err(bad_request)?;
+	polkameter_engine::execute::inspect(&plan, &registry)
+		.await
+		.map(Json)
+		.map_err(bad_request)
+}
+pub async fn plugin_inspect(
+	target: &RemoteRunnerTarget,
+	xml: String,
+) -> Result<serde_json::Value, String> {
+	plugin_request(target, reqwest::Method::POST, "/v2/inspect", Some(xml)).await
+}
+
+async fn plugin_request<T: serde::de::DeserializeOwned>(
+	target: &RemoteRunnerTarget,
+	method: reqwest::Method,
+	path: &str,
+	xml: Option<String>,
+) -> Result<T, String> {
+	target.validate()?;
+	static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+	let mut request = CLIENT
+		.get_or_init(reqwest::Client::new)
+		.request(method, format!("{}{path}", target.endpoint.trim_end_matches('/')))
+		.bearer_auth(&target.bearer_token);
+	if let Some(xml) = xml {
+		request = request.json(&PluginRequest { xml });
+	}
+	decode_response(request.send().await.map_err(|error| error.to_string())?).await
 }

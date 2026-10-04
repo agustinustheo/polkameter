@@ -50,7 +50,6 @@ pub fn validate(run_dir: &Path) -> Result<(), String> {
 		"command.txt",
 		"samples.jtl",
 		"events.jsonl",
-		"telemetry.jsonl",
 		"summary.md",
 	] {
 		let path = run_dir.join(name);
@@ -127,8 +126,11 @@ fn read_samples(run_dir: &Path) -> Result<Vec<SampleRecord>, String> {
 }
 
 fn read_telemetry(run_dir: &Path) -> Result<Vec<TelemetryRecord>, String> {
-	let text =
-		fs::read_to_string(run_dir.join("telemetry.jsonl")).map_err(|error| error.to_string())?;
+	let text = match fs::read_to_string(run_dir.join("telemetry.jsonl")) {
+		Ok(text) => text,
+		Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+		Err(error) => return Err(error.to_string()),
+	};
 	text.lines()
 		.filter(|line| !line.trim().is_empty())
 		.map(serde_json::from_str)

@@ -39,6 +39,7 @@ import { maybeStartTour, refreshActiveTour, startTour } from "./tour";
 import { svgImageDataUrl } from "./svg-data";
 import polkameterMark from "./assets/polkameter-mark.png";
 import "./styles.css";
+import { openPluginWorkbench } from "./plugin-plans";
 
 const initialScenario: Scenario = {
   name: "1000 user transfer burst",
@@ -204,7 +205,7 @@ function render(): void {
             <div class="product-subtitle">Polkadot SDK load workbench</div>
           </div>
         </div>
-        <div class="topbar-actions">
+        <div class="topbar-actions"><button class="command-button quiet" id="plugin-plans-button">Plugin plans</button>
           <span class="state-pill ${resultClass}"><span></span>${resultState}</span>
           <button class="icon-button" id="tour-button" title="Guided tour"><i data-lucide="circle-help"></i></button>
           <button class="icon-button" id="reset-button" title="Reset scenario"><i data-lucide="rotate-ccw"></i></button>
@@ -1293,3 +1294,5 @@ void listen<SampleBatch>("sample-batch", (event) => {
     }, 150);
   }
 });
+
+document.addEventListener("click", (event) => { if ((event.target as Element).closest("#plugin-plans-button")) void openPluginWorkbench(); });

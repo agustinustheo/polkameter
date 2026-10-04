@@ -267,3 +267,15 @@ body { min-width: 0; overflow: hidden; }
   .transaction-heading, .friendly-call-heading { display: grid; gap: 7px; }
   .transaction-heading small { text-align: left; }
 }
+
+.plugin-workbench { width: min(1200px, 94vw); max-height: 90vh; overflow: auto; color: #182329; background: #f7f9fa; border: 1px solid #b9c6cb; border-radius: 12px; padding: 24px; }
+.plugin-workbench::backdrop { background: #101a2499; }
+.plugin-workbench header, .plugin-workbench nav { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.plugin-workbench header { justify-content: space-between; }
+.plugin-workbench button, .plugin-workbench input, .plugin-workbench select { padding: 8px 12px; border: 1px solid #9baeb7; border-radius: 6px; background: white; color: #182329; }
+.plugin-plan-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 18px; }
+.plugin-workbench label { display: grid; gap: 6px; margin: 10px 0; }
+.plugin-workbench textarea { width: 100%; min-height: 460px; padding: 12px; font: 12px/1.6 monospace; box-sizing: border-box; color: #182329; background: white; }
+.plugin-workbench fieldset { border: 1px solid #c8d3d8; margin-bottom: 12px; }
+.plugin-workbench pre { max-height: 150px; overflow: auto; white-space: pre-wrap; }
+@media (max-width: 800px) { .plugin-plan-columns { grid-template-columns: 1fr; } }

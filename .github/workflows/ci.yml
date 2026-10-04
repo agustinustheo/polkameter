@@ -22,16 +22,16 @@ jobs:
     name: Checks
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
-          components: rustfmt
+          components: rustfmt, clippy
       - name: Install Linux test dependencies
         run: |
           sudo apt-get update
@@ -39,8 +39,19 @@ jobs:
       - run: corepack pnpm install --frozen-lockfile
       - run: corepack pnpm test
       - run: corepack pnpm build
-      - run: cargo +${{ env.RUST_VERSION }} fmt --manifest-path src-tauri/Cargo.toml -- --check
-      - run: cargo +${{ env.RUST_VERSION }} test --manifest-path src-tauri/Cargo.toml
+      - run: cargo +${{ env.RUST_VERSION }} fmt --all -- --check
+      - run: cargo +${{ env.RUST_VERSION }} test --workspace
+      # The migrated PR 37 crates keep its `clippy -D warnings` gate; the v1 app is not yet clean.
+      - run: cargo +${{ env.RUST_VERSION }} clippy --workspace --exclude polkameter --all-targets -- -D warnings
+      - name: Verify plugin plans and proof feature guard
+        env:
+          RUSTUP_TOOLCHAIN: ${{ env.RUST_VERSION }}
+        run: |
+          for plan in examples/*.polkameter.xml; do
+            xmllint --noout --schema schemas/polkameter-plan-v2.xsd "$plan"
+            cargo +${{ env.RUST_VERSION }} run -p polkameter --bin polkameter -- validate "$plan" --format json
+          done
+          python3 scripts/check-proof-features.py
       - run: cargo +${{ env.RUST_VERSION }} run --manifest-path src-tauri/Cargo.toml --bin polkameter -- --help
       - run: cargo +${{ env.RUST_VERSION }} run --manifest-path src-tauri/Cargo.toml --bin polkameter -- validate src-tauri/tests/fixtures/valid-scenario.polkameter.json --format json
       - run: xmllint --noout --schema schemas/polkameter-plan-v1.xsd src-tauri/tests/fixtures/valid-scenario.polkameter.xml
@@ -52,7 +63,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -70,7 +81,7 @@ jobs:
         run: tests/zombienet/cli-smoke.sh
       - name: Upload Zombienet CLI smoke artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: zombienet-cli-smoke
           path: target/zombienet-cli-smoke
@@ -91,9 +102,9 @@ jobs:
             os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm

@@ -1,0 +1,23 @@
+[package]
+name = "polkameter-monitors"
+description = "Monitors of a run, each writing its own raw file: scraper, chain recorders, process sampler"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+polkameter-files.workspace = true
+polkameter-chain.workspace = true
+hex.workspace = true
+parity-scale-codec.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+reqwest = { version = "0.12", default-features = false }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true

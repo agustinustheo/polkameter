@@ -13,3 +13,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/dependency-review-action@v5
+        with:
+          # glib 0.18 (VariantStrIter unsoundness) comes from Tauri 2's Linux GTK 0.18 stack.
+          # The fix is in glib 0.20, which Tauri does not support yet. Remove when Tauri moves on.
+          allow-ghsas: GHSA-wrw7-89jp-8q8g

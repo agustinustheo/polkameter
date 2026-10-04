@@ -1,0 +1,628 @@
+{
+  "schemaVersion": 1,
+  "scenario": "people-smoke",
+  "artifact": {
+    "name": "prepared extrinsics",
+    "description": "Each operation is prepared by an installed plugin and submitted by Polkameter",
+    "context": "XML plugin workload"
+  },
+  "runId": "run-1791020675891-18194",
+  "mode": "smoke",
+  "params": {
+    "connections": 4,
+    "plan": {
+      "@mode": "smoke",
+      "@name": "people-smoke",
+      "@timeout-ms": 7200000,
+      "@version": 2,
+      "@xmlns": "https://polkameter.dev/schema/plan/v2",
+      "credentials": {
+        "credential": [
+          {
+            "@id": "admin",
+            "@profile": "previewnet-sudo"
+          }
+        ]
+      },
+      "evaluate": {
+        "step": []
+      },
+      "load": {
+        "@baseline-probes": 3,
+        "@block-interval-seconds": 6.0,
+        "@connections": 4,
+        "@probes-ref": "steps.claims.probes",
+        "@recovery-seconds": 120,
+        "@source-ref": "steps.claims.flood",
+        "@state-check": "people.check-state",
+        "@state-ref": "steps.claims.state",
+        "@target": "people",
+        "ramp": null,
+        "rate": [
+          {
+            "@seconds": 30,
+            "@tx-per-second": 2.0
+          },
+          {
+            "@seconds": 30,
+            "@tx-per-second": 4.0
+          },
+          {
+            "@seconds": 30,
+            "@tx-per-second": 6.0
+          }
+        ]
+      },
+      "monitors": {
+        "@relay-target": "relay",
+        "@topology": "previewnet",
+        "metric": [
+          {
+            "@name": "substrate_block_height",
+            "@role": "people-collator"
+          },
+          {
+            "@name": "substrate_block_height",
+            "@role": "validator"
+          }
+        ]
+      },
+      "plugins": {
+        "plugin": [
+          {
+            "@id": "people",
+            "@protocol": 1,
+            "@version": "0.1.0"
+          }
+        ]
+      },
+      "preflight": {
+        "step": [
+          {
+            "@id": "compatibility",
+            "@timeout-ms": 60000,
+            "@use": "people.preflight",
+            "input": [
+              {
+                "@name": "target",
+                "@ref": "targets.people",
+                "@value": null
+              }
+            ]
+          }
+        ]
+      },
+      "setup": {
+        "step": [
+          {
+            "@id": "recognition",
+            "@timeout-ms": 60000,
+            "@use": "people.recognize",
+            "input": [
+              {
+                "@name": "target",
+                "@ref": "targets.people",
+                "@value": null
+              },
+              {
+                "@name": "credential",
+                "@ref": "credentials.admin",
+                "@value": null
+              },
+              {
+                "@name": "members",
+                "@ref": null,
+                "@value": "40"
+              }
+            ]
+          },
+          {
+            "@id": "recognized",
+            "@timeout-ms": 1200000,
+            "@use": "core.submit-setup",
+            "input": [
+              {
+                "@name": "target",
+                "@ref": "targets.people",
+                "@value": null
+              },
+              {
+                "@name": "transactions",
+                "@ref": "steps.recognition.transactions",
+                "@value": null
+              }
+            ]
+          },
+          {
+            "@id": "claims",
+            "@timeout-ms": 3600000,
+            "@use": "people.prepare-claims",
+            "input": [
+              {
+                "@name": "target",
+                "@ref": "targets.people",
+                "@value": null
+              },
+              {
+                "@name": "members",
+                "@ref": "steps.recognition.members",
+                "@value": null
+              },
+              {
+                "@name": "slots",
+                "@ref": null,
+                "@value": "12"
+              },
+              {
+                "@name": "probe-reserve",
+                "@ref": "run.probeBudget",
+                "@value": null
+              }
+            ]
+          },
+          {
+            "@id": "fresh",
+            "@timeout-ms": 60000,
+            "@use": "people.validate-prepared",
+            "input": [
+              {
+                "@name": "target",
+                "@ref": "targets.people",
+                "@value": null
+              },
+              {
+                "@name": "identity",
+                "@ref": "steps.claims.identity",
+                "@value": null
+              }
+            ]
+          }
+        ]
+      },
+      "targets": {
+        "target": [
+          {
+            "@endpoint": "ws://127.0.0.1:10010",
+            "@id": "people"
+          },
+          {
+            "@endpoint": "ws://127.0.0.1:10000",
+            "@id": "relay"
+          }
+        ]
+      },
+      "teardown": {
+        "step": []
+      },
+      "thresholds": {
+        "@finality-stall-ms": 60000,
+        "@finality-wait-ms": null,
+        "@max-block-gap-factor": null,
+        "@max-p95-latency-ms": null,
+        "@max-refused-ratio": null,
+        "@max-submit-reply-ms": null,
+        "@min-included-ratio": null,
+        "@min-send-ratio": null,
+        "@pool-refuses-ratio": null,
+        "@probes-in-a-row": null,
+        "@recovered-block-gap-factor": null,
+        "@recycler-drain-ms": null,
+        "@stall-ms": 30000
+      },
+      "workflow": []
+    }
+  },
+  "budget": "447 flood transactions and 33 reserved probes",
+  "setupSeconds": 0,
+  "extra": {},
+  "rules": {
+    "finalityStallMs": 60000,
+    "finalityWaitMs": 180000,
+    "maxBlockGapFactor": 2.0,
+    "maxP95LatencyMs": 10000,
+    "maxRefusedRatio": 0.01,
+    "maxSubmitReplyMs": 5000,
+    "maxTickGapMs": 5000,
+    "minIncludedRatio": 0.9,
+    "minSendRatio": 0.95,
+    "poolRefusesRatio": 0.1,
+    "probesInARow": 3,
+    "recoveredBlockGapFactor": 1.5,
+    "recyclerDrainMs": 180000,
+    "stallMs": 30000
+  },
+  "stop": {
+    "rule": "rate cap",
+    "detail": "all 3 steps ran",
+    "step": 2,
+    "class": null
+  },
+  "breakingPoint": {
+    "step": 0,
+    "targetRate": 2.0,
+    "measure": "latency",
+    "detail": "p95 send -> best block 23.1 s"
+  },
+  "maxSustained": null,
+  "failureModes": [],
+  "recovery": {
+    "measured": true,
+    "recovered": true,
+    "seconds": 1,
+    "detail": "3 probes in a row landed within 12.0 s",
+    "thresholdMs": 12044,
+    "backlogAtStop": 37,
+    "backlogAtEnd": 0,
+    "drainedSeconds": 7,
+    "drainPerS": 2.0552130200522134,
+    "probes": [
+      {
+        "phase": "recovery",
+        "sentAtS": 0.396,
+        "latencyMs": 5578,
+        "outcome": "included"
+      },
+      {
+        "phase": "recovery",
+        "sentAtS": 5.974,
+        "latencyMs": 5983,
+        "outcome": "included"
+      },
+      {
+        "phase": "recovery",
+        "sentAtS": 11.957,
+        "latencyMs": 6001,
+        "outcome": "included"
+      },
+      {
+        "phase": "recovery",
+        "sentAtS": 17.958,
+        "latencyMs": null,
+        "outcome": "pending"
+      }
+    ],
+    "blocks": {
+      "blocks": 4,
+      "meanBlockGapMs": 5892.0,
+      "maxBlockGapMs": 6005,
+      "maxOursPerBlock": 36,
+      "maxNormalRefTimePct": 72.5358144,
+      "maxNormalProofPct": 0.59844970703125,
+      "maxBlockBytes": 37199
+    },
+    "node": {
+      "maxCpuPct": 19,
+      "maxRssMiB": 316
+    }
+  },
+  "loss": {
+    "accepted": 360,
+    "unknown": 0,
+    "sent": 360,
+    "included": 360,
+    "failedInBlock": 0,
+    "refused": 0,
+    "dropped": 0,
+    "inPool": 0,
+    "lost": 0,
+    "onChain": {
+      "blocks": [
+        216173,
+        216191
+      ],
+      "included": 360,
+      "missed": 0,
+      "onlyOnFork": 0,
+      "moved": 0
+    },
+    "nodePool": {
+      "mempool": 1,
+      "ready": 0
+    },
+    "note": null,
+    "finalized": {
+      "lastOursBlock": 216191,
+      "finalizedAt": 216191,
+      "waitedForIt": true
+    },
+    "state": {
+      "checked": 100,
+      "missing": 0,
+      "detail": "claim targets have allowance entries at the selected finalized block"
+    }
+  },
+  "baseline": {
+    "probes": 3,
+    "p50Ms": 5979,
+    "maxMs": 6022
+  },
+  "problems": [],
+  "network": {
+    "people": "ws://127.0.0.1:10010",
+    "specVersion": 3003000,
+    "blockIntervalS": 6.0
+  },
+  "runner": {
+    "cpus": 12,
+    "cpuModel": "Apple M4 Pro",
+    "memGiB": 24
+  },
+  "steps": 3,
+  "checks": [
+    {
+      "check": "why blocks end",
+      "detail": "no block ended full",
+      "numbers": {
+        "windows": [
+          {
+            "reasons": {
+              "empty": 3.0
+            },
+            "window": "step 0"
+          },
+          {
+            "reasons": {
+              "empty": 5.0
+            },
+            "window": "step 1"
+          },
+          {
+            "reasons": {
+              "empty": 6.0
+            },
+            "window": "step 2"
+          },
+          {
+            "reasons": {
+              "empty": 3.0
+            },
+            "window": "recovery"
+          }
+        ]
+      },
+      "outcome": "block production",
+      "status": "info"
+    },
+    {
+      "check": "build time within the authoring deadline",
+      "detail": "p95 build time at most 1 s in every step and in recovery",
+      "numbers": {
+        "windows": [
+          {
+            "blocks": 3.0,
+            "over": 0.0,
+            "p95S": 1.0,
+            "window": "step 0"
+          },
+          {
+            "blocks": 5.0,
+            "over": 0.0,
+            "p95S": 0.5,
+            "window": "step 1"
+          },
+          {
+            "blocks": 6.0,
+            "over": 0.0,
+            "p95S": 0.5,
+            "window": "step 2"
+          },
+          {
+            "blocks": 3.0,
+            "over": 0.0,
+            "p95S": 0.05,
+            "window": "recovery"
+          }
+        ]
+      },
+      "outcome": "block production",
+      "status": "pass"
+    },
+    {
+      "check": "People relay slots (level 1)",
+      "detail": "step 1: missed 2 of 5 slots, 2.0 more than at idle: not built 0 (collator), not backed 2 (PVF, delivery or statements; forks not measured yet), timed out 0 (availability)",
+      "numbers": {
+        "idle": {
+          "included": 19.0,
+          "missed": 0.0,
+          "notBacked": 0.0,
+          "notBuilt": 0.0,
+          "offered": 19.0,
+          "relayBlocks": 19.0,
+          "timedOut": 0.0
+        },
+        "windows": [
+          {
+            "extra": 0.0,
+            "included": 5.0,
+            "missed": 0.0,
+            "notBacked": 0.0,
+            "notBuilt": 0.0,
+            "offered": 5.0,
+            "relayBlocks": 5.0,
+            "timedOut": 0.0,
+            "window": "step 0"
+          },
+          {
+            "extra": 2.0,
+            "included": 3.0,
+            "missed": 2.0,
+            "notBacked": 2.0,
+            "notBuilt": 0.0,
+            "offered": 5.0,
+            "relayBlocks": 5.0,
+            "timedOut": 0.0,
+            "window": "step 1"
+          },
+          {
+            "extra": 0.0,
+            "included": 5.0,
+            "missed": 0.0,
+            "notBacked": 0.0,
+            "notBuilt": 0.0,
+            "offered": 5.0,
+            "relayBlocks": 5.0,
+            "timedOut": 0.0,
+            "window": "step 2"
+          },
+          {
+            "extra": 0.0,
+            "included": 3.0,
+            "missed": 0.0,
+            "notBacked": 0.0,
+            "notBuilt": 0.0,
+            "offered": 3.0,
+            "relayBlocks": 3.0,
+            "timedOut": 0.0,
+            "window": "recovery"
+          }
+        ]
+      },
+      "outcome": "pvf",
+      "status": "fail"
+    },
+    {
+      "check": "no timed-out candidates or disputes",
+      "detail": "People candidates timed out 0; disputes on the relay 0, raised by validators 0",
+      "outcome": "pvf",
+      "status": "pass"
+    },
+    {
+      "check": "PVF time on validators (level 2, all parachains)",
+      "detail": "no run over 2 s; highest p95 0.5 s in step 1, queue p95 0.01 s",
+      "numbers": {
+        "windows": [
+          {
+            "invalid": 0.0,
+            "over2s": 0.0,
+            "p95S": 0.25,
+            "queueP95S": 0.01,
+            "runs": 90.0,
+            "window": "step 0"
+          },
+          {
+            "invalid": 0.0,
+            "over2s": 0.0,
+            "p95S": 0.5,
+            "queueP95S": 0.01,
+            "runs": 111.0,
+            "window": "step 1"
+          },
+          {
+            "invalid": 0.0,
+            "over2s": 0.0,
+            "p95S": 0.5,
+            "queueP95S": 0.01,
+            "runs": 112.0,
+            "window": "step 2"
+          },
+          {
+            "invalid": 0.0,
+            "over2s": 0.0,
+            "p95S": 0.5,
+            "queueP95S": 0.01,
+            "runs": 80.0,
+            "window": "recovery"
+          }
+        ]
+      },
+      "outcome": "pvf",
+      "status": "pass"
+    },
+    {
+      "check": "collation funnel (People)",
+      "detail": "expired after advertised 0 (delivery), after fetched 2 (validation or backing), after backed 0 (availability); backed to included 1.00 relay blocks on average",
+      "numbers": {
+        "generated": 20.0,
+        "inclusionLatency": 1.0,
+        "lost": {
+          "advertised": 0.0,
+          "backed": 0.0,
+          "fetched": 2.0
+        }
+      },
+      "outcome": "pvf",
+      "status": "warn"
+    },
+    {
+      "check": "no silent loss",
+      "detail": "0 of 360 txs accepted, in no block, and without any error; the node's mempool holds 1 txs, 0 ready",
+      "outcome": "pool",
+      "status": "pass"
+    },
+    {
+      "check": "the burst drains",
+      "detail": "probes back in time 1 s after the load stopped; backlog 37 at the stop, drained after 7 s",
+      "numbers": {
+        "drainedSeconds": 7
+      },
+      "outcome": "pool",
+      "status": "pass"
+    },
+    {
+      "check": "refusals are clean",
+      "detail": "0 refused (none)",
+      "outcome": "pool",
+      "status": "pass"
+    },
+    {
+      "check": "pool work leaves time for blocks",
+      "detail": "maintenance p95 within 3.0 s in every step and in recovery",
+      "numbers": {
+        "windows": [
+          {
+            "backlog": 2.0,
+            "maintainP95S": 0.25,
+            "window": "step 0"
+          },
+          {
+            "backlog": 1.0,
+            "maintainP95S": 0.25,
+            "window": "step 1"
+          },
+          {
+            "backlog": 0.0,
+            "maintainP95S": 0.25,
+            "window": "step 2"
+          },
+          {
+            "backlog": 0.0,
+            "maintainP95S": 0.25,
+            "window": "recovery"
+          }
+        ]
+      },
+      "outcome": "pool",
+      "status": "pass"
+    },
+    {
+      "check": "the backlog clears",
+      "detail": "at the end: 0 queued, 0 unbuilt, 0 stale rings (start 0 / 0 / 0); queue peak 0; back to the start 2 s after the last load",
+      "outcome": "recycler",
+      "status": "pass"
+    },
+    {
+      "check": "maintenance keeps up",
+      "detail": "0 ring builds, 0 onboardings, 0 failed maintenance calls; stale rings peak 0",
+      "outcome": "recycler",
+      "status": "pass"
+    },
+    {
+      "check": "cleanup keeps up",
+      "detail": "ring_pages 0 -> 0, old_roots 1 -> 1, suspensions 0 -> 0 (old roots are kept 600 s, longer than this run)",
+      "outcome": "recycler",
+      "status": "pass"
+    },
+    {
+      "check": "time from load to built root",
+      "detail": "no sampled voucher reached a built root (no loads in this run?)",
+      "outcome": "recycler",
+      "status": "no result"
+    },
+    {
+      "check": "monitors recorded everything",
+      "detail": "no failed scrapes or unreadable blocks",
+      "outcome": "run",
+      "status": "pass"
+    }
+  ]
+}

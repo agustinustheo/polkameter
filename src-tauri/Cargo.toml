@@ -28,6 +28,9 @@ path = "src/main.rs"
 tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
+polkameter-engine = { path = "../crates/engine" }
+tokio-util = "0.7"
+
 anyhow = "1"
 axum = "0.8"
 clap = { version = "4", features = ["derive"] }
@@ -48,4 +51,5 @@ tauri = { version = "2.11.5", features = [] }
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 
-[workspace]
+[dev-dependencies]
+flate2 = "1"

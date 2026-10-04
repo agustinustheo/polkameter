@@ -89,7 +89,7 @@ mkdir -p "$LOG_DIR"
 
 echo "Building the headless CLI"
 cargo +"$RUST_VERSION" build --manifest-path "$ROOT/src-tauri/Cargo.toml" --bin polkameter
-CLI="$ROOT/src-tauri/target/debug/polkameter"
+CLI="$ROOT/target/debug/polkameter"
 
 echo "Spawning a fresh Zombienet relay on ws://127.0.0.1:$RPC_PORT"
 if [ "$(basename "$ZOMBIENET_BIN")" = "zombie-cli" ]; then
