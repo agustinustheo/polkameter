@@ -36,6 +36,12 @@ target/debug/polkameter run examples/people-one-claim.polkameter.xml --output ta
 target/debug/polkameter run examples/people-smoke.polkameter.xml --output target/runs
 ```
 
+To do all of this in one command on a fresh local fork, pass a Zombienet config from `ppn fork toml <bundle> <out>`. The script spawns the network into a new directory, waits until the relay and People produce and finalize blocks, registers the plugin, credential and topology in a throwaway registry, runs the plan and stops the network:
+
+```sh
+scripts/local-people-run.sh /path/to/fork.toml examples/people-smoke.polkameter.xml target/local-people/smoke
+```
+
 Endpoints are XML values. Credential values are resolved on the executing host from the named environment-variable profile; no SURI belongs in the XML. `--signer-env NAME` overrides the environment mapping when a plan declares exactly one credential.
 
 | Plan | Members × slots | Offered load | Recovery / baseline |
