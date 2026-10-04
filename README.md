@@ -181,3 +181,9 @@ Artifacts are retained in `target/zombienet-cli-smoke` when `POLKAMETER_ZOMBIENE
 ## Boundary
 
 Deliberately chain-generic: the standard `PolkadotConfig` transaction profile, credential-vault signer profiles, optional Prometheus telemetry and structural JMX interchange. Domain-specific setup, funding and assertions belong in adapters or scenario extensions, not the core plan model.
+
+## XML v2 plugins and PR 37 workloads
+
+XML v2 composes independently installed Rust plugins with built-in steps. It includes People statement-claim preparation, sustained transaction-rate schedules, baseline/recovery, finalized-chain reconciliation and the PR 37 evidence checks. CLI, the desktop **Plugin plans** workbench and remote agents share the same plugin engine; v1 signed-call plans remain supported.
+
+Start with [the plugin guide](docs/plugins.md), [runnable XML examples](examples/), and [migration validation](docs/pr37-validation.md). The XML uses Polkameter's JMeter-inspired component model; it is not an arbitrary JMeter JMX executor.
