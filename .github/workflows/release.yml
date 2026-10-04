@@ -54,7 +54,6 @@ jobs:
       - run: corepack pnpm install --frozen-lockfile
       - run: corepack pnpm tauri build --bundles ${{ matrix.bundles }}
       - run: cargo +${{ env.RUST_VERSION }} build --release --manifest-path src-tauri/Cargo.toml --bin polkameter
-      - run: cargo +${{ env.RUST_VERSION }} build --release -p polkameter-scenarios --bin polkameter-people-plugin
       - uses: actions/upload-artifact@v7
         with:
           name: polkameter-${{ matrix.name }}
@@ -62,8 +61,6 @@ jobs:
             target/release/bundle/**
             target/release/polkameter
             target/release/polkameter.exe
-            target/release/polkameter-people-plugin
-            target/release/polkameter-people-plugin.exe
           if-no-files-found: error
 
   publish:

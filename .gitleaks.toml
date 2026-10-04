@@ -1,6 +1,0 @@
-[extend]
-useDefault = true
-
-[allowlist]
-description = "Public test vectors: People member keys derived from fixed entropy, shared with the TypeScript implementation"
-paths = ['''^plugins/scenarios/tests/vectors/claim\.json$''']
