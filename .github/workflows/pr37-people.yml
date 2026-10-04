@@ -12,7 +12,7 @@ on:
         options: [smoke, capacity, default]
         default: smoke
       ppn_ref:
-        description: previewnet-engine ref (v0.7.0 or later: fresh bites with cores/collators)
+        description: "previewnet-engine ref (v0.7.0 or later: fresh bites with cores/collators)"
         default: v0.7.0
 
 concurrency:
@@ -30,6 +30,8 @@ jobs:
     runs-on: parity-large
     timeout-minutes: 180
     env:
+      # previewnet-engine fetches release assets when it bites and when it starts the fork.
+      GITHUB_TOKEN: ${{ github.token }}
       RECIPE: ${{ inputs.recipe }}
       FORK_DIR: ${{ github.workspace }}/ppn/fork-bundle-previewnet
       RESULTS_DIR: ${{ github.workspace }}/people-results
@@ -90,8 +92,6 @@ jobs:
 
       # Same retry loop as the upstream workflow: the bite can hang.
       - name: Ensure engine dependencies and bite a fresh fork
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           for attempt in 1 2 3; do
             if timeout 1800 make -C ppn ensure-deps FORK=1 FRESH_BITE=1 CORES="$CORES" COLLATORS="$COLLATORS"; then
