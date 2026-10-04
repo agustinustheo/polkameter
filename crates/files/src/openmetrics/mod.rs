@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, HashMap};
 mod build;
 mod parse;
 
-pub use build::build_run_om;
+pub use build::{PluginMetric, build_run_om};
 pub use parse::parse_run_om;
 
 /// Label name -> value.

@@ -8,7 +8,8 @@
 use std::marker::PhantomData;
 
 /// Prometheus type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Kind {
 	/// Goes up; read by the difference between two times.
 	Counter,
@@ -33,8 +34,6 @@ pub enum Outcome {
 	Forks,
 	/// Declared weight against measured time.
 	Weights,
-	/// Recycler maintenance.
-	Recycler,
 	/// The run itself.
 	Run,
 }
@@ -48,7 +47,6 @@ impl Outcome {
 			Outcome::Pool => "pool",
 			Outcome::Forks => "forks",
 			Outcome::Weights => "weights",
-			Outcome::Recycler => "recycler",
 			Outcome::Run => "run",
 		}
 	}
@@ -92,6 +90,15 @@ pub struct Metric<K, const N: usize> {
 	_kind: PhantomData<K>,
 }
 
+impl<K, const N: usize> Metric<K, N> {
+	/// A handle for a metric defined outside this registry, e.g. by a plugin. `N` must equal
+	/// `def.labels.len()`.
+	pub const fn new(def: Def) -> Self {
+		assert!(def.labels.len() == N, "label count does not match the definition");
+		Self { def, _kind: PhantomData }
+	}
+}
+
 macro_rules! polkameter_metrics {
     ($( $id:ident: $k:ident [$($label:literal),*] $(buckets $b:expr,)? $name:literal, $help:literal; )*) => {
         $(
@@ -125,17 +132,10 @@ polkameter_metrics! {
 	PARA_INCLUDED: Counter ["para"] "polkameter_para_included_total", "Candidates included on the relay (ParaInclusion.CandidateIncluded).";
 	PARA_TIMED_OUT: Counter ["para"] "polkameter_para_timed_out_total", "Candidates backed but not available in time (ParaInclusion.CandidateTimedOut).";
 	RELAY_DISPUTES: Counter [] "polkameter_relay_dispute_total", "Disputes started on the relay (ParasDisputes.DisputeInitiated), for any parachain; the event names only the candidate.";
-	RECYCLER_QUEUED: Gauge ["collection"] "polkameter_recycler_queued_keys", "Keys in the onboarding queue, not yet in a ring (Members.OnboardingQueue).";
-	RECYCLER_UNBUILT: Gauge ["collection"] "polkameter_recycler_unbuilt_keys", "Keys in rings but not yet in a built root (Members.RingKeysStatus total minus included).";
-	RECYCLER_STALE: Gauge ["collection"] "polkameter_recycler_stale_rings", "Rings that need a build (Members.StaleRings).";
-	VOUCHER_IN_ROOT: Histogram [] buckets &[2.0, 4.0, 6.0, 9.0, 12.0, 18.0, 24.0, 36.0, 60.0, 120.0, 300.0, 600.0, 1200.0],
-		"polkameter_voucher_in_root_seconds", "For a sample of keys queued in coinage/recycler collections: from queued_at in Members.Members until a ring build covers the key's position. Buckets are a first guess.";
-	MAINTENANCE_CALLS: Counter ["call", "result"] "polkameter_maintenance_calls_total", "Members and Coinage *_authorized calls in People blocks, by call and result (success or failed).";
-	CLEANUP_BACKLOG: Gauge ["kind"] "polkameter_cleanup_backlog", "Cleanup work left, by kind: ring_pages (Members.RingDeletionQueue), old_roots (Members.OldRoots), suspensions (Members.PendingSuspensions).";
 }
 
-const COLLATOR: &[&str] = &["people-collator"];
-const RELAY_IN_COLLATOR: &[&str] = &["people-collator-relay"];
+const COLLATOR: &[&str] = &["collator"];
+const RELAY_IN_COLLATOR: &[&str] = &["collator-relay"];
 const VALIDATOR: &[&str] = &["validator"];
 
 const fn node(
@@ -183,7 +183,7 @@ pub const NODE_METRICS: &[Def] = &[
 		Kind::Histogram,
 		&["compressed"],
 		VALIDATOR,
-		"PoV size per validated candidate, for all parachains together. Buckets stop at 8 MiB (16 KiB times 2^9), below the 10 MiB limit; the exact size is People's System.BlockWeight.proof_size.",
+		"PoV size per validated candidate, for all parachains together. Buckets stop at 8 MiB (16 KiB times 2^9), below the 10 MiB limit; the exact size is the parachain's System.BlockWeight.proof_size.",
 	),
 	node(
 		"polkadot_parachain_candidate_backing_candidates_seconded_total",
@@ -204,7 +204,7 @@ pub const NODE_METRICS: &[Def] = &[
 		Kind::Counter,
 		&[],
 		RELAY_IN_COLLATOR,
-		"Collations the People collator generated.",
+		"Collations the collator generated.",
 	),
 	node(
 		"polkadot_parachain_collation_advertisements_made_total",

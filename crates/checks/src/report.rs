@@ -10,15 +10,18 @@ use polkameter_files::{
 
 use crate::{CheckResult, RunData, Status, Window, all, run};
 
-/// Builds run.om, runs every check, writes summary.json (with the checks) and summary.md.
+/// Builds run.om, runs every check, appends the plugins' check results, and writes summary.json
+/// (with all checks) and summary.md.
 pub fn write(
 	dir: &RunDir,
 	mut summary: Summary,
 	finals: &[FinalStep],
+	plugin_checks: &[CheckResult],
 ) -> Result<Vec<CheckResult>, FileError> {
 	let text = build_run_om(dir)?;
 	let data = RunData::new(parse_run_om(&text), summary.clone());
-	let checks = run(&all(), &data);
+	let mut checks = run(&all(), &data);
+	checks.extend_from_slice(plugin_checks);
 	summary.checks = Some(serde_json::to_value(&checks).expect("checks serialize"));
 	dir.write_json("summary.json", &summary)?;
 	let md = markdown(&summary, finals, &data, &checks);
@@ -48,7 +51,7 @@ pub fn render_checks(results: &[CheckResult]) -> String {
 	lines.extend(results.iter().map(|r| {
 		format!(
 			"| {} | {} | **{}** | {} |",
-			r.outcome.name(),
+			r.outcome,
 			r.check,
 			r.verdict.status.name(),
 			r.verdict.detail.replace('|', "\\|")
@@ -66,7 +69,7 @@ fn row(cells: &[String]) -> String {
 	format!("| {} |", cells.join(" | "))
 }
 
-const COLLATOR: (&str, &str) = ("job", "people-collator");
+const COLLATOR: (&str, &str) = ("job", "collator");
 
 /// The collator in one step: mean build time, pool work, and why blocks ended.
 struct CollatorStep {
@@ -169,11 +172,7 @@ fn overall_status(s: &Summary, checks: &[CheckResult]) -> OverallStatus {
 	if s.stop.rule != Rule::RateCap {
 		return OverallStatus::Inconclusive;
 	}
-	let definitions = all();
-	let required_gap = checks.iter().any(|r| {
-		r.verdict.status == Status::NoResult
-			&& definitions.iter().any(|c| c.name == r.check && !c.optional)
-	});
+	let required_gap = checks.iter().any(|r| r.verdict.status == Status::NoResult && !r.optional);
 	if required_gap {
 		OverallStatus::Inconclusive
 	} else if checks.iter().any(|r| r.verdict.status == Status::Warn) {
@@ -343,7 +342,7 @@ fn render_summary(s: &Summary, steps: &[FinalStep], d: &RunData, checks: &[Check
         format!("- **Recovery:** {}", recovery_line(s)),
         format!("- **Loss check:** {}", loss_line(s)),
         format!("- **Baseline:** {} probes before the load, p50 {} s, max {} s", s.baseline.probes, to_fixed(s.baseline.p50_ms as f64 / 1000.0, 1), to_fixed(s.baseline.max_ms as f64 / 1000.0, 1)),
-        format!("- **Network:** People spec {}, {} s blocks at start", s.network.spec_version, num(s.network.block_interval_s)),
+        format!("- **Network:** spec {}, {} s blocks at start", s.network.spec_version, num(s.network.block_interval_s)),
         format!("- **Runner:** {} CPUs ({})", s.runner.cpus, s.runner.cpu_model.as_deref().unwrap_or("?")),
         String::new(),
         "#### Load steps".into(),
@@ -358,7 +357,7 @@ fn render_summary(s: &Summary, steps: &[FinalStep], d: &RunData, checks: &[Check
 	lines.push(row(&cells));
 	lines.extend([
         String::new(),
-        "People collator metrics per step (CPU/memory: submitting collator; block/pool metrics: all collators):".into(),
+        "Collator metrics per step (CPU/memory: the node under load; block/pool metrics: all collators):".into(),
         String::new(),
         "| step | max CPU % | max memory MiB | block build ms | pool validations (all) | validations waiting (all) | pool ready txs (all) | why blocks ended |".into(),
         format!("|{} --- |", " ---: |".repeat(7)),
@@ -418,7 +417,6 @@ fn render_summary(s: &Summary, steps: &[FinalStep], d: &RunData, checks: &[Check
 
 #[cfg(test)]
 mod tests {
-	use polkameter_files::registry::Outcome;
 	use polkameter_files::summary::{Artifact, BreakingPoint};
 
 	use super::*;
@@ -428,8 +426,13 @@ mod tests {
 		serde_json::from_str(include_str!("../tests/summary.json")).expect("summary fixture")
 	}
 
-	fn check(name: &'static str, status: Status) -> CheckResult {
-		CheckResult { outcome: Outcome::Run, check: name, verdict: Verdict::new(status, "test") }
+	fn check(name: &str, status: Status) -> CheckResult {
+		CheckResult {
+			outcome: "run".into(),
+			check: name.into(),
+			verdict: Verdict::new(status, "test"),
+			optional: false,
+		}
 	}
 
 	#[test]
@@ -455,15 +458,18 @@ mod tests {
 	#[test]
 	fn ending_before_the_rate_cap_is_inconclusive() {
 		let mut s = summary();
-		s.stop =
-			polkameter_files::summary::Stop::new(Rule::BudgetUsedUp, Some(1), "no claims left");
+		s.stop = polkameter_files::summary::Stop::new(
+			Rule::BudgetUsedUp,
+			Some(1),
+			"no transactions left",
+		);
 		assert_eq!(overall_status(&s, &[]), OverallStatus::Inconclusive);
 	}
 
 	#[test]
 	fn a_failed_outcome_check_fails() {
 		assert_eq!(
-			overall_status(&summary(), &[check("People relay slots (level 1)", Status::Fail)]),
+			overall_status(&summary(), &[check("relay slots (level 1)", Status::Fail)]),
 			OverallStatus::Fail
 		);
 	}
@@ -472,7 +478,7 @@ mod tests {
 	fn the_summary_separates_the_verdict_from_the_load_stop() {
 		let s = summary();
 		let data = RunData::new(parse_run_om("# EOF\n"), s.clone());
-		let md = markdown(&s, &[], &data, &[check("People relay slots (level 1)", Status::Fail)]);
+		let md = markdown(&s, &[], &data, &[check("relay slots (level 1)", Status::Fail)]);
 		assert!(md.contains("- **Verdict:** FAIL"));
 		assert!(md.contains("- **Load stop:** rate cap"));
 		assert!(!md.contains("- **Failure:**"));
@@ -483,10 +489,10 @@ mod tests {
 	fn the_summary_explains_the_artifact_load_and_exact_threshold() {
 		let mut s = summary();
 		s.artifact = Some(Artifact {
-            name: "Resources.set_statement_store_account(period, slot, target)".into(),
-            description: "One unique person/slot claim with a ring-VRF proof.".into(),
-            context: "Coinage exchanges encrypted private keys through the Statement Store to perform transfers.".into(),
-        });
+			name: "Balances.transfer_keep_alive(dest, value)".into(),
+			description: "One signed transfer per prepared account.".into(),
+			context: "Wallets move funds between accounts.".into(),
+		});
 		let step = FinalStep {
 			step: 0,
 			target_rate: 15.0,
@@ -498,8 +504,8 @@ mod tests {
 		let data = RunData::new(parse_run_om("# EOF\n"), s.clone());
 		let md = markdown(&s, &[step], &data, &[]);
 		assert!(md.contains("#### Artifact under test"));
-		assert!(md.contains("`Resources.set_statement_store_account(period, slot, target)`"));
-		assert!(md.contains("Coinage exchanges encrypted private keys"));
+		assert!(md.contains("`Balances.transfer_keep_alive(dest, value)`"));
+		assert!(md.contains("Wallets move funds between accounts"));
 		assert!(md.contains("p95 send-to-inclusion latency exceeds 10.0 s"));
 		assert!(md.contains("p95 s (limit 10.0)"));
 		assert!(md.contains("| 0 | 15 | 60.0 | 900 |"));
@@ -512,10 +518,9 @@ mod tests {
 			overall_status(&summary(), &[check("monitors recorded everything", Status::NoResult)]),
 			OverallStatus::Inconclusive
 		);
-		assert_eq!(
-			overall_status(&summary(), &[check("time from load to built root", Status::NoResult)]),
-			OverallStatus::Pass
-		);
+		let mut optional = check("a plugin check without data", Status::NoResult);
+		optional.optional = true;
+		assert_eq!(overall_status(&summary(), &[optional]), OverallStatus::Pass);
 	}
 
 	#[test]

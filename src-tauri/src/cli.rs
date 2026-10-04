@@ -802,9 +802,9 @@ mod tests {
 	#[test]
 	fn offline_report_reproduces_retained_smoke_verdicts() {
 		let fixture =
-			std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pr37-smoke");
+			std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/smoke-run");
 		let directory = std::env::temp_dir().join(format!(
-			"polkameter-pr37-golden-{}-{}",
+			"polkameter-report-replay-{}-{}",
 			std::process::id(),
 			rand::random::<u64>()
 		));
