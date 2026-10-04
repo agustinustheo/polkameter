@@ -1,10 +1,10 @@
-//! Window math and one check on a small hand-written run.om.
+//! Window math and one check on a few hand-written samples.
 
 use polkameter_checks::{RunData, Status, count_above, quantile};
-use polkameter_files::parse_run_om;
+use polkameter_files::parse_samples;
 use polkameter_files::summary::Summary;
 
-const RUN_OM: &str = r#"# TYPE polkameter_step gauge
+const SAMPLES: &str = r#"# TYPE polkameter_step gauge
 polkameter_step{instance="load-tool",job="stress"} 0 100.000
 polkameter_step{instance="load-tool",job="stress"} 1 110.000
 polkameter_step{instance="load-tool",job="stress"} -1 120.000
@@ -29,7 +29,7 @@ fn summary() -> Summary {
 
 #[test]
 fn steps_and_buckets() {
-	let d = RunData::new(parse_run_om(RUN_OM), summary());
+	let d = RunData::new(parse_samples(SAMPLES), summary());
 	let steps = d.steps();
 	assert_eq!(steps.iter().map(|w| w.label.as_str()).collect::<Vec<_>>(), ["step 0", "step 1"]);
 	let b = d
@@ -43,7 +43,7 @@ fn steps_and_buckets() {
 
 #[test]
 fn end_reasons_count_each_block_once_over_collators() {
-	let run_om = r#"# TYPE polkameter_step gauge
+	let samples = r#"# TYPE polkameter_step gauge
 polkameter_step{instance="load-tool",job="stress"} 0 100.000
 polkameter_step{instance="load-tool",job="stress"} -1 110.000
 # TYPE substrate_proposer_end_proposal_reason counter
@@ -56,7 +56,7 @@ substrate_proposer_end_proposal_reason{instance="b",job="collator",reason="hit_d
 substrate_proposer_end_proposal_reason{instance="a",job="collator",reason="hit_block_weight_limit"} 2 110.001
 # EOF
 "#;
-	let d = RunData::new(parse_run_om(run_om), summary());
+	let d = RunData::new(parse_samples(samples), summary());
 	let mut reasons = d.end_reasons(&d.steps()[0]).unwrap();
 	reasons.sort_by(|a, b| a.0.cmp(&b.0));
 	// weight: a's series first appears at the end scrape, after a was scraped without it: 0 -> 2.
@@ -68,7 +68,7 @@ substrate_proposer_end_proposal_reason{instance="a",job="collator",reason="hit_b
 
 #[test]
 fn build_time_fails_when_most_blocks_take_over_2_5_s() {
-	let d = RunData::new(parse_run_om(RUN_OM), summary());
+	let d = RunData::new(parse_samples(SAMPLES), summary());
 	let results = polkameter_checks::run(&polkameter_checks::all(), &d);
 	let build = results
 		.iter()

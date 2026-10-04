@@ -1,11 +1,11 @@
-//! `run.om` -> [`Store`] for the evaluator.
+//! Prometheus sample lines -> [`Store`], for tests and hand-made inputs.
 
 use std::collections::HashMap;
 
 use super::{Point, Series, Store, parse_sample_line};
 
-/// Parses `run.om` text.
-pub fn parse_run_om(text: &str) -> Store {
+/// Parses lines `name{labels} value timestamp`; `#` lines are skipped.
+pub fn parse_samples(text: &str) -> Store {
 	let mut index: HashMap<(String, Vec<(String, String)>), usize> = HashMap::new();
 	let mut all: Vec<(String, Series)> = Vec::new();
 	for line in text.lines().filter(|l| !l.is_empty() && !l.starts_with('#')) {

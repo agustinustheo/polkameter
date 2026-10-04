@@ -1,19 +1,13 @@
-//! The build step: merges a run's raw files into one OpenMetrics file, `run.om`, and parses it
-//! back for the evaluator. `promtool tsdb create-blocks-from openmetrics run.om ./data` loads it.
-//!
-//! OpenMetrics rules that shape the output:
-//! - a family's lines are not split up: family, then series, then time;
-//! - a counter's samples end in `_total`; a node counter without that suffix is written as
-//!   `unknown`, so its name stays what the node and the dashboards use;
-//! - histogram `le` values use the canonical rendering (Go `%g`, plus `.0`).
+//! The series a run recorded, as the checks read them: [`read_store`] merges a run's raw files,
+//! and [`parse_sample_line`] reads one line of a node's Prometheus `/metrics` text.
 
 use std::collections::{BTreeMap, HashMap};
 
-mod build;
 mod parse;
+mod store;
 
-pub use build::{PluginMetric, build_run_om};
-pub use parse::parse_run_om;
+pub use parse::parse_samples;
+pub use store::{PluginMetric, read_store};
 
 /// Label name -> value.
 pub type Labels = BTreeMap<String, String>;
@@ -27,7 +21,7 @@ pub struct Point {
 	pub value: f64,
 }
 
-/// One series of `run.om`: a sample name with fixed labels.
+/// One series: a sample name with fixed labels.
 #[derive(Debug, Clone)]
 pub struct Series {
 	/// Every label, `job` and `instance` included.
@@ -36,30 +30,8 @@ pub struct Series {
 	pub points: Vec<Point>,
 }
 
-/// A parsed `run.om`: sample name -> its series.
+/// Sample name -> its series.
 pub type Store = HashMap<String, Vec<Series>>;
-
-/// Go's `%g` for a float64 (shortest), with `.0` when there is no point or exponent.
-pub fn canonical_number(n: f64) -> String {
-	if n.is_nan() {
-		return "NaN".into();
-	}
-	if n.is_infinite() {
-		return if n > 0.0 { "+Inf" } else { "-Inf" }.into();
-	}
-	if n == 0.0 {
-		return "0.0".into();
-	}
-	let exp_form = format!("{n:e}");
-	let (mant, exp) = exp_form.split_once('e').expect("{:e} has an exponent");
-	let exp: i32 = exp.parse().expect("exponent is a number");
-	if !(-4..6).contains(&exp) {
-		let sign = if exp < 0 { '-' } else { '+' };
-		return format!("{mant}e{sign}{:02}", exp.abs());
-	}
-	let s = js_number(n);
-	if s.contains(['.', 'e']) { s } else { format!("{s}.0") }
-}
 
 /// JavaScript's `String(n)`, so sample values read the same as the TS tool writes them.
 pub(crate) fn js_number(n: f64) -> String {
@@ -152,17 +124,6 @@ pub(crate) fn parse_value(s: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-
-	#[test]
-	fn canonical_numbers_follow_go() {
-		assert_eq!(canonical_number(1.0), "1.0");
-		assert_eq!(canonical_number(0.005), "0.005");
-		assert_eq!(canonical_number(2.5), "2.5");
-		assert_eq!(canonical_number(1e-5), "1e-05");
-		assert_eq!(canonical_number(8_388_608.0), "8.388608e+06");
-		assert_eq!(canonical_number(f64::INFINITY), "+Inf");
-		assert_eq!(canonical_number(0.0), "0.0");
-	}
 
 	#[test]
 	fn values_follow_js() {

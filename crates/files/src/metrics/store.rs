@@ -1,4 +1,5 @@
-//! Raw files -> `run.om`.
+//! Raw files -> the [`Store`] the checks read: node scrapes, the load tool's and the chain
+//! recorders' series, and plugin series.
 //!
 //! A plugin that records its own metrics writes `plugins/<id>/series.jsonl` (the same records as
 //! `chain.jsonl`) and declares them in `plugins/<id>/metrics.json`; they are merged here with
@@ -8,7 +9,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
-use super::{Labels, canonical_number, js_number, parse_sample_line, parse_value};
+use super::{Labels, Point, Series, Store, js_number, parse_sample_line};
 use crate::records::{Sample, ScrapeRecord, SeriesRecord};
 use crate::registry::{self, Kind};
 use crate::{FileError, RunDir};
@@ -23,7 +24,7 @@ pub struct PluginMetric {
 	pub name: String,
 	/// Type.
 	pub kind: Kind,
-	/// Help text for `run.om`.
+	/// What it measures.
 	pub help: String,
 	/// Upper bounds of a histogram.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -41,13 +42,8 @@ impl From<&registry::Def> for PluginMetric {
 	}
 }
 
-#[derive(Debug)]
-struct Family {
-	kind: &'static str,
-	help: String,
-	/// Labels without `le` -> time -> (sample name, le) -> value.
-	metrics: BTreeMap<Vec<(String, String)>, Points>,
-}
+/// One metric family: labels -> time -> (sample name, le) -> value.
+type Family = BTreeMap<Vec<(String, String)>, Points>;
 
 #[derive(Debug, Default)]
 struct FamilySet {
@@ -64,25 +60,14 @@ impl FamilySet {
 	}
 
 	fn add(&mut self, family: &str, sample: &str, mut labels: Labels, t: u64, value: f64) {
-		let Some(def) = self.def(family) else { return };
-		let om_name = match def.kind {
-			Kind::Counter => family.strip_suffix("_total").unwrap_or(family),
-			_ => family,
-		};
-		let kind = match def.kind {
-			Kind::Counter if om_name == family => "unknown",
-			Kind::Counter => "counter",
-			Kind::Gauge => "gauge",
-			Kind::Histogram => "histogram",
-		};
-		let f = self.families.entry(om_name.to_owned()).or_insert_with(|| Family {
-			kind,
-			help: def.help.clone(),
-			metrics: BTreeMap::new(),
-		});
+		if self.def(family).is_none() {
+			return;
+		}
 		let le = labels.remove("le");
 		let key: Vec<_> = labels.into_iter().collect();
-		f.metrics
+		self.families
+			.entry(family.to_owned())
+			.or_default()
 			.entry(key)
 			.or_default()
 			.entry(t)
@@ -90,60 +75,36 @@ impl FamilySet {
 			.insert((sample.to_owned(), le), value);
 	}
 
-	fn render(&self) -> String {
-		let mut out = String::new();
-		for (name, f) in &self.families {
-			out.push_str(&format!("# TYPE {name} {}\n# HELP {name} {}\n", f.kind, escape(&f.help)));
-			for (labels, points) in &f.metrics {
+	/// Each sample name with its series, every series in time order.
+	fn into_store(self) -> Store {
+		let mut store = Store::new();
+		for family in self.families.into_values() {
+			let mut series: BTreeMap<(String, Vec<(String, String)>), Series> = BTreeMap::new();
+			for (labels, points) in family {
 				for (t, samples) in points {
-					let mut samples: Vec<_> = samples.iter().collect();
-					samples.sort_by(|a, b| {
-						sample_rank(a.0).partial_cmp(&sample_rank(b.0)).expect("ranks are numbers")
-					});
 					for ((sample, le), value) in samples {
-						let mut ls: Vec<String> =
-							labels.iter().map(|(k, v)| format!("{k}=\"{}\"", escape(v))).collect();
+						let mut labels: Labels = labels.iter().cloned().collect();
 						if let Some(le) = le {
-							ls.push(format!(
-								"le=\"{}\"",
-								canonical_number(parse_value(le).unwrap_or(f64::NAN))
-							));
+							labels.insert("le".into(), le);
 						}
-						let ls = if ls.is_empty() {
-							String::new()
-						} else {
-							format!("{{{}}}", ls.join(","))
-						};
-						out.push_str(&format!(
-							"{sample}{ls} {} {:.3}\n",
-							js_number(*value),
-							*t as f64 / 1000.0
-						));
+						series
+							.entry((sample, labels.clone().into_iter().collect()))
+							.or_insert_with(|| Series { labels, points: Vec::new() })
+							.points
+							.push(Point { t: t as f64, value });
 					}
 				}
 			}
+			for ((sample, _), s) in series {
+				store.entry(sample).or_default().push(s);
+			}
 		}
-		out.push_str("# EOF\n");
-		out
+		store
 	}
 }
 
-/// Within one point: buckets in `le` order, then `_count`, then `_sum`.
-fn sample_rank((name, le): &(String, Option<String>)) -> (u8, f64) {
-	match le {
-		Some(le) => (0, parse_value(le).unwrap_or(f64::MAX)),
-		None if name.ends_with("_count") => (1, 0.0),
-		None if name.ends_with("_sum") => (2, 0.0),
-		None => (0, 0.0),
-	}
-}
-
-fn escape(s: &str) -> String {
-	s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n")
-}
-
-/// Merges the raw files of `dir` into `run.om` and returns its text.
-pub fn build_run_om(dir: &RunDir) -> Result<String, FileError> {
+/// Reads the raw files of `dir` into one [`Store`].
+pub fn read_store(dir: &RunDir) -> Result<Store, FileError> {
 	let mut set = FamilySet::default();
 	let mut failures: HashMap<(String, String), f64> = HashMap::new();
 	for s in dir.read_jsonl::<ScrapeRecord>("scrapes.jsonl")? {
@@ -190,11 +151,7 @@ pub fn build_run_om(dir: &RunDir) -> Result<String, FileError> {
 			}
 		}
 	}
-	let text = set.render();
-	let path = dir.path.join("run.om");
-	std::fs::write(&path, &text)
-		.map_err(|source| FileError::Io { path: path.display().to_string(), source })?;
-	Ok(text)
+	Ok(set.into_store())
 }
 
 /// Each plugin directory with a `metrics.json`, and the metrics it declares. A plugin may not

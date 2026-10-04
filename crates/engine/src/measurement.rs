@@ -253,7 +253,7 @@ pub async fn run(
 	Ok(Measured { summary, finals, mode })
 }
 
-/// Writes run.om, the checks (the plugins' after the built-in ones), summary.json and summary.md,
+/// Writes the checks (the plugins' after the built-in ones), summary.json and summary.md,
 /// and returns the exit code.
 pub fn report(
 	dir: &RunDir,
@@ -367,7 +367,7 @@ fn exit_code(mode: Mode, summary: &Summary, checks: &[polkameter_checks::CheckRe
 	i32::from(!errors.is_empty())
 }
 
-/// `polkameter report <dir>`: run.om and the checks again, from the files alone.
+/// `polkameter report <dir>`: the checks again, from the files alone.
 pub fn check(dir: &Path) -> anyhow::Result<()> {
 	let run = RunDir::open(dir);
 	let summary: Summary =

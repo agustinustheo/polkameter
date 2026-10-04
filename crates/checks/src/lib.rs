@@ -1,5 +1,5 @@
-//! The evaluator: reads `run.om` and `summary.json`, runs every check, and returns one verdict
-//! per check. It depends on the file formats only, so it runs on any finished run.
+//! The evaluator: reads a run's recorded series and `summary.json`, runs every check, and returns
+//! one verdict per check. It depends on the file formats only, so it runs on any finished run.
 //!
 //! A new requirement is a new entry in one of the outcome lists under `outcomes/`: add its metric
 //! to the registry, record it in a monitor if none has it yet, and write the check.

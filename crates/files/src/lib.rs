@@ -1,7 +1,7 @@
-//! The on-disk contract of a stress run. Every part of a run (load tool, chain recorder,
-//! scraper) writes its own raw file in `results/<run id>/`; the build step merges them into
-//! `run.om`, and the evaluator reads only that. This crate is the one place that knows the
-//! formats, so each part can be its own process.
+//! The on-disk contract of a run. Every part of a run (load tool, chain recorder, scraper,
+//! plugins) writes its own raw file in the run directory; [`read_store`] merges them into the
+//! series the checks read. This crate is the one place that knows the formats, so each part can
+//! be its own process.
 //!
 //! | file            | written by        | record              |
 //! | --------------- | ----------------- | ------------------- |
@@ -10,10 +10,9 @@
 //! | `load.jsonl`    | load tool         | [`SeriesRecord`]    |
 //! | `chain.jsonl`   | chain recorders   | [`SeriesRecord`]    |
 //! | `node.jsonl`    | process sampler   | [`NodeSample`]      |
-//! | `run.om`        | build             | OpenMetrics text    |
 
+mod metrics;
 mod num;
-mod openmetrics;
 mod problems;
 mod records;
 pub mod registry;
@@ -21,11 +20,10 @@ mod run_dir;
 mod series;
 pub mod summary;
 
-pub use num::{num, to_fixed};
-pub use openmetrics::{
-	PluginMetric, Point, Series, Store, build_run_om, canonical_number, parse_run_om,
-	parse_sample_line,
+pub use metrics::{
+	PluginMetric, Point, Series, Store, parse_sample_line, parse_samples, read_store,
 };
+pub use num::{num, to_fixed};
 pub use problems::Problems;
 pub use records::{
 	BlockRecord, BlockStats, FinalStep, Millis, NodeMax, NodeSample, ScrapeRecord, SeriesRecord,
