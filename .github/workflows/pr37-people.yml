@@ -1,8 +1,8 @@
 name: People plugin measurement
 
-# Runs a PR 37 People plan on a fresh Previewnet fork. Provisioning matches the
-# polkadot-pop-e2e cutover in docs/pr37-e2e-cutover.patch, so a green run here
-# exercises the same path. Manual; the original E2E workflow is not retired.
+# Runs a PR 37 People plan on a fresh Previewnet fork. Provisioning matches
+# polkadot-pop-e2e's stress-flood.yml, so a green run here exercises the same path.
+# Manual; E2E CI runs the flood from its own workflow.
 on:
   workflow_dispatch:
     inputs:
@@ -12,8 +12,8 @@ on:
         options: [smoke, capacity, default]
         default: smoke
       ppn_ref:
-        description: previewnet-engine ref (must support fresh bites with cores/collators)
-        default: e95c6a2ead177d8a7eb08dc839bdfc4af715c091
+        description: previewnet-engine ref (v0.7.0 or later: fresh bites with cores/collators)
+        default: v0.7.0
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
