@@ -1,29 +1,38 @@
 #!/usr/bin/env bash
-# Runs a People XML plan through the Polkameter CLI on a fresh local Previewnet fork.
+# Runs an XML v2 plan through the Polkameter CLI on a fresh local Zombienet network.
 #
-# Usage: scripts/local-people-run.sh NETWORK_TOML [PLAN] [OUTPUT_DIR]
+# Usage: scripts/local-fork-run.sh NETWORK_TOML PLAN [OUTPUT_DIR]
 #
-# NETWORK_TOML is a Zombienet config from `ppn fork toml <bundle> <out>`. Each run spawns
-# it into a new directory, so the fork snapshots give a fresh People chain every time.
-# Build first: pnpm build && cargo build --release -p polkameter -p polkameter-scenarios.
-# Binaries come from the directory of the toml's `default_command`; ZOMBIE_CLI and
-# PPN_BIN_DIR override zombie-cli and the collator binaries.
+# NETWORK_TOML is a Zombienet config, e.g. a Previewnet fork from `ppn fork toml <bundle> <out>`.
+# Each run spawns it into a new directory, so a fork's snapshots give a fresh chain every time.
+#
+# Environment:
+#   POLKAMETER_PLUGINS      plugin executables to install, separated by spaces
+#   POLKAMETER_CREDENTIALS  credential profiles, `profile=ENV_VAR` separated by spaces
+#   POLKAMETER              the CLI (default target/release/polkameter)
+#   ZOMBIE_CLI, PPN_BIN_DIR zombie-cli and the collator binaries; both default to the directory
+#                           of the toml's `default_command`
+#
+# The script waits until every WebSocket target of the plan produces and finalizes blocks,
+# registers the plan's topology alias, runs the plan and always stops the network.
 set -euo pipefail
 
-toml=${1:?usage: $0 NETWORK_TOML [PLAN] [OUTPUT_DIR]}
-plan=${2:-examples/people-smoke.polkameter.xml}
-out=${3:-target/local-people/run-$(date +%s)}
+toml=${1:?usage: $0 NETWORK_TOML PLAN [OUTPUT_DIR]}
+plan=${2:?usage: $0 NETWORK_TOML PLAN [OUTPUT_DIR]}
+out=${3:-target/local-runs/run-$(date +%s)}
 cli=${POLKAMETER:-target/release/polkameter}
-plugin=${POLKAMETER_PEOPLE_PLUGIN:-target/release/polkameter-people-plugin}
 bin=$(dirname "$(sed -n 's/^default_command = "\(.*\)"/\1/p' "$toml" | head -1)")
 zombie=${ZOMBIE_CLI:-$bin/zombie-cli}
 [ -x "$zombie" ] || zombie=$(command -v zombie-cli)
 # Previewnet's omni-node.sh wrapper finds the collator binary through PPN_BIN_DIR.
 export PPN_BIN_DIR=${PPN_BIN_DIR:-$bin}
 
-for port in 10000 10010; do
-	if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
-		echo "port $port is in use; stop the other network first" >&2
+endpoints=$(grep -o 'endpoint="wss\{0,1\}://[^"]*"' "$plan" | sed 's/endpoint="ws\(s\{0,1\}\)\(:[^"]*\)"/http\1\2/' | sort -u)
+topology=$(grep -o 'topology="[^"]*"' "$plan" | head -1 | sed 's/topology="\(.*\)"/\1/')
+for url in $endpoints; do
+	port=${url##*:}
+	if (exec 3<>"/dev/tcp/127.0.0.1/${port%%/*}") 2>/dev/null; then
+		echo "port ${port%%/*} is in use; stop the other network first" >&2
 		exit 1
 	fi
 done
@@ -32,7 +41,6 @@ mkdir -p "$out"
 out=$(cd "$out" && pwd)
 network="$out/network"
 export POLKAMETER_PLUGIN_REGISTRY="$out/plugins.json"
-export POLKAMETER_SETUP_SURI=${POLKAMETER_SETUP_SURI:-//Alice}
 
 # Own process group, so the trap stops every node zombie-cli started.
 set -m
@@ -46,7 +54,7 @@ stop() {
 }
 trap stop EXIT
 
-# Best and finalized must both advance on the relay and on People.
+# Best and finalized height of the node at $1.
 heights() {
 	python3 - "$1" <<'EOF'
 import json, sys, urllib.request
@@ -60,7 +68,7 @@ finalized = int(rpc("chain_getHeader", [rpc("chain_getFinalizedHead")])["number"
 print(best, finalized)
 EOF
 }
-for url in http://127.0.0.1:10000 http://127.0.0.1:10010; do
+for url in $endpoints; do
 	start="" deadline=$((SECONDS + 900))
 	until now=$(heights "$url" 2>/dev/null) && [ -n "$start" ] &&
 		[ "${now% *}" -gt "${start% *}" ] && [ "${now#* }" -gt "${start#* }" ]; do
@@ -78,9 +86,15 @@ for url in http://127.0.0.1:10000 http://127.0.0.1:10010; do
 	echo "$url is producing and finalizing (best/finalized $now)"
 done
 
-"$cli" plugin install "$plugin" > /dev/null
-"$cli" plugin credential previewnet-sudo POLKAMETER_SETUP_SURI > /dev/null
-"$cli" plugin topology previewnet "$network/zombie.json" > /dev/null
+for plugin in ${POLKAMETER_PLUGINS:-}; do
+	"$cli" plugin install "$plugin" > /dev/null
+done
+for credential in ${POLKAMETER_CREDENTIALS:-}; do
+	"$cli" plugin credential "${credential%%=*}" "${credential#*=}" > /dev/null
+done
+if [ -n "$topology" ]; then
+	"$cli" plugin topology "$topology" "$network/zombie.json" > /dev/null
+fi
 
 status=0
 "$cli" run "$plan" --output "$out/results" || status=$?
