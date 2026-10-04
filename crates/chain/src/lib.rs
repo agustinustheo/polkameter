@@ -1,5 +1,5 @@
-//! People over RPC: our own tx builder, typed reads, and the checks that our encoding still
-//! matches the running runtime.
+//! A Polkadot SDK node over RPC: typed reads, events, submission, and the check that a
+//! transaction encoding still matches the running runtime's extension layout.
 
 pub mod client;
 pub mod reads;

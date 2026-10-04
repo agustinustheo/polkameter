@@ -1,6 +1,6 @@
 [package]
 name = "polkameter-chain"
-description = "People over RPC: tx building, reads, the extension layout guard"
+description = "A Polkadot SDK node over RPC: typed reads, events, submission and the extension layout guard"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

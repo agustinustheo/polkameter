@@ -69,7 +69,7 @@ pub struct RunData {
 	store: Store,
 	/// summary.json without the checks.
 	pub summary: Summary,
-	/// People's block interval before the run.
+	/// The chain's block interval before the run.
 	pub block_interval_s: f64,
 	/// Each node's first scrape, by (job, instance).
 	node_first: HashMap<(String, String), f64>,
@@ -231,7 +231,7 @@ impl RunData {
 	/// The collator's blocks per end reason (short names) in `w`.
 	pub fn end_reasons(&self, w: &Window) -> Result<Vec<(String, f64)>, CounterReset> {
 		const END_REASON: &str = "substrate_proposer_end_proposal_reason";
-		const COLLATOR: (&str, &str) = ("job", "people-collator");
+		const COLLATOR: (&str, &str) = ("job", "collator");
 		// One series per collator and reason; `diff` already sums the collators, so once per reason.
 		let mut reasons: Vec<&str> = self
 			.series(END_REASON, &[COLLATOR])

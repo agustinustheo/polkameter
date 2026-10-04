@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 requirements = json.loads(Path(sys.argv[1]).read_text())
 manifest = json.loads(Path(sys.argv[2]).read_text())
-roles = {"people-collator", "people-collator-relay", "validator"}
+roles = {"collator", "collator-relay", "validator"}
 for requirement in requirements.get("requirements", []):
     if not requirement.get("required"):
         continue

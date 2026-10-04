@@ -7,7 +7,7 @@ use serde::Serialize;
 use crate::data::{CounterReset, RunData, Window, quantile};
 use crate::{Check, LIMITS, Status, Verdict};
 
-const COLLATOR: (&str, &str) = ("job", "people-collator");
+const COLLATOR: (&str, &str) = ("job", "collator");
 
 /// Our flood txs not yet included, refused or expired, from the load tool's own counters.
 fn backlog(d: &RunData, t: f64) -> f64 {

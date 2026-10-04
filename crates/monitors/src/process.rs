@@ -1,9 +1,9 @@
-//! Samples the People node's CPU and memory with `ps` every few seconds, since the node
+//! Samples the CPU and memory of the node under load with `ps` every few seconds, since the node
 //! exports no process metrics on macOS. CPU is the change in the node's CPU time over wall
 //! time, so 250% means 2.5 cores busy.
 //!
-//! The process is `PEOPLE_PID`, or the one listening on the People RPC port. Neither found:
-//! no samples, with a warning.
+//! The process is `POLKAMETER_NODE_PID`, or the one listening on the node's RPC port. Neither
+//! found: no samples, with a warning.
 
 use std::time::Duration;
 
@@ -24,9 +24,9 @@ fn cpu_seconds(time: &str) -> Option<f64> {
 	Some(days * 86_400.0 + s)
 }
 
-/// The PID listening on the port of a `ws://` URL: `PEOPLE_PID`, else `lsof`, else `ss`.
+/// The PID listening on the port of a `ws://` URL: `POLKAMETER_NODE_PID`, else `lsof`, else `ss`.
 pub async fn find_pid(ws_url: &str) -> Option<u32> {
-	if let Ok(pid) = std::env::var("PEOPLE_PID") {
+	if let Ok(pid) = std::env::var("POLKAMETER_NODE_PID") {
 		return pid.parse().ok();
 	}
 	let port = ws_url.rsplit_once(':')?.1.split('/').next()?;

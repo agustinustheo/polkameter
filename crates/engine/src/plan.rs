@@ -203,6 +203,9 @@ pub struct Monitors {
 	/// Alias into the executing host's topology registry.
 	#[serde(rename = "@topology")]
 	pub topology: String,
+	/// The parachain whose collators are scraped and whose relay slots are judged.
+	#[serde(rename = "@para-id")]
+	pub para_id: u32,
 	#[serde(rename = "@relay-target")]
 	pub relay_target: String,
 }
@@ -286,7 +289,8 @@ impl Plan {
 				"unsupported plugin protocol or empty version"
 			);
 		}
-		let mut known: BTreeSet<String> = ["run.id", "run.probeBudget"].map(str::to_owned).into();
+		let mut known: BTreeSet<String> =
+			["run.id", "run.probeBudget", "run.directory"].map(str::to_owned).into();
 		for t in &self.targets.entries {
 			ensure!(
 				identifier(&t.id) && known.insert(format!("targets.{}", t.id)),
@@ -416,6 +420,8 @@ impl Plan {
 			.map(|t| (format!("targets.{}", t.id), Value::String(t.endpoint.clone())))
 			.collect();
 		values.insert("run.id".into(), Value::String(run_id.into()));
+		// The run's directory; the run sets it once the directory exists.
+		values.insert("run.directory".into(), Value::String(String::new()));
 		let probes = self.load.as_ref().map_or(0, |load| {
 			polkameter_load::probe_count(
 				load.baseline_probes,
@@ -472,8 +478,6 @@ pub struct Thresholds {
 	pub recovered_block_gap_factor: Option<f64>,
 	#[serde(rename = "@finality-wait-ms")]
 	pub finality_wait_ms: Option<u64>,
-	#[serde(rename = "@recycler-drain-ms")]
-	pub recycler_drain_ms: Option<u64>,
 }
 impl Thresholds {
 	pub fn rules(&self) -> Result<polkameter_load::rules::Rules> {
@@ -525,10 +529,6 @@ impl Thresholds {
 		if let Some(value) = self.finality_wait_ms {
 			ensure!(value > 0, "invalid finality-wait-ms");
 			rules.finality_wait_ms = value;
-		}
-		if let Some(value) = self.recycler_drain_ms {
-			ensure!(value > 0, "invalid recycler-drain-ms");
-			rules.recycler_drain_ms = value;
 		}
 		Ok(rules)
 	}

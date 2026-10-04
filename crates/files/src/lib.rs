@@ -23,7 +23,8 @@ pub mod summary;
 
 pub use num::{num, to_fixed};
 pub use openmetrics::{
-	Point, Series, Store, build_run_om, canonical_number, parse_run_om, parse_sample_line,
+	PluginMetric, Point, Series, Store, build_run_om, canonical_number, parse_run_om,
+	parse_sample_line,
 };
 pub use problems::Problems;
 pub use records::{
@@ -31,9 +32,6 @@ pub use records::{
 };
 pub use run_dir::{JsonlWriter, RunDir};
 pub use series::{SeriesOp, SeriesWriter};
-
-/// People's para id on previewnet: the `para` label of the relay recorder's series.
-pub const PEOPLE_PARA_ID: &str = "1502";
 
 /// Now: milliseconds since the Unix epoch. The one clock of a run (ticks, rules, files), so a
 /// machine that sleeps shows up as a gap, as it does in the TS tool.

@@ -75,7 +75,7 @@ type Scrapes = HashMap<String, Option<Sample>>;
 #[derive(Debug, Clone)]
 pub struct ScraperHandle {
 	now: mpsc::Sender<oneshot::Sender<Scrapes>>,
-	/// The first People collator's last good sample.
+	/// The first collator's last good sample.
 	pub collator: watch::Receiver<Option<Sample>>,
 }
 
@@ -152,7 +152,7 @@ impl Scraper {
 					if self
 						.targets
 						.iter()
-						.find(|x| x.job == crate::Job::PeopleCollator)
+						.find(|x| x.job == crate::Job::Collator)
 						.is_some_and(|x| x.instance == instance)
 					{
 						let _ = self.collator.send(Some(sample.clone()));

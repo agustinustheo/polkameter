@@ -1,5 +1,5 @@
-//! The one writer of `chain.jsonl`. The relay and the Recycler recorder each hold a
-//! [`ChainSeries`] and send it typed writes; one task applies them in order and writes the
+//! The one writer of a series file such as `chain.jsonl`. Each chain recorder holds a
+//! [`ChainSeries`] and sends it typed writes; one task applies them in order and writes the
 //! pending counters once a second, as the load tool does for `load.jsonl`.
 
 use std::time::Duration;
