@@ -357,7 +357,7 @@ pub async fn run(
 		sink,
 		secrets,
 	};
-	std::fs::write(directory.join("scenario-v2.json"), serde_json::to_vec_pretty(&plan)?)?;
+	std::fs::write(directory.join("plan.json"), serde_json::to_vec_pretty(&plan)?)?;
 	let context_for_tasks = context.clone();
 	let preparation_started = Instant::now();
 	let result=async {
@@ -719,7 +719,7 @@ mod calibration_tests {
 
 	#[tokio::test]
 	async fn calibration_failure_prevents_setup_and_still_runs_teardown() {
-		let plan = Plan::parse(r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan/v2" version="2" name="Calibration" timeout-ms="5000">
+		let plan = Plan::parse(r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="Calibration" timeout-ms="5000">
             <targets><target id="chain" endpoint="ws://127.0.0.1:0"/></targets>
             <setup><step id="prepare" use="core.echo"><input name="value" value="[]"/></step></setup>
             <load target="chain" source-ref="steps.prepare.value" probes-ref="steps.prepare.value">

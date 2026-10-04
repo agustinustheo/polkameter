@@ -16,39 +16,10 @@ pub struct Status {
 }
 #[derive(Default)]
 pub struct State {
-	/// Serializes v1/v2 start checks in the desktop and remote adapters.
-	pub start_gate: Mutex<()>,
 	pub status: Mutex<Status>,
 	pub history: Mutex<std::collections::BTreeMap<String, Status>>,
 	pub progress: std::sync::Mutex<Option<String>>,
 	pub cancel: Mutex<Option<CancellationToken>>,
-}
-pub fn load(path: &Path) -> Result<Option<Plan>, String> {
-	let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-	if !text.trim_start().starts_with('<') {
-		return Ok(None);
-	}
-	let mut reader = quick_xml::Reader::from_str(&text);
-	loop {
-		match reader.read_event().map_err(|e| e.to_string())? {
-			quick_xml::events::Event::Start(e) | quick_xml::events::Event::Empty(e) => {
-				let version = e
-					.attributes()
-					.collect::<Result<Vec<_>, _>>()
-					.map_err(|e| e.to_string())?
-					.into_iter()
-					.find(|a| a.key.as_ref() == b"version")
-					.map(|a| a.value.into_owned());
-				return if version.as_deref() == Some(b"2") {
-					Plan::parse(&text).map(Some).map_err(|e| e.to_string())
-				} else {
-					Ok(None)
-				};
-			},
-			quick_xml::events::Event::Eof => return Ok(None),
-			_ => {},
-		}
-	}
 }
 pub async fn start(
 	xml: String,
@@ -177,7 +148,7 @@ mod tests {
 	async fn panicked_run_releases_the_state_for_the_next_start() {
 		let state = Arc::new(State::default());
 		let root = std::env::temp_dir().join(format!("polkameter-panic-{}", std::process::id()));
-		let xml = r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan/v2" version="2" name="panic"><setup><step id="echo" use="core.echo"><input name="value" value="1"/></step></setup></polkameter-plan>"#;
+		let xml = r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="panic"><setup><step id="echo" use="core.echo"><input name="value" value="1"/></step></setup></polkameter-plan>"#;
 		let first = start(
 			xml.into(),
 			root.to_string_lossy().into(),

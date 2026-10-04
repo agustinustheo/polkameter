@@ -70,7 +70,5 @@ pub fn write_samples(directory: &Path) -> Result<()> {
 		}
 	}
 	out.flush()?;
-	// v2 node.jsonl/scrapes.jsonl remain authoritative; no fabricated v1 observations.
-
 	Ok(())
 }

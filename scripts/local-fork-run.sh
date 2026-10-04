@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs an XML v2 plan through the Polkameter CLI on a fresh local Zombienet network.
+# Runs an XML plan through the Polkameter CLI on a fresh local Zombienet network.
 #
 # Usage: scripts/local-fork-run.sh NETWORK_TOML PLAN [OUTPUT_DIR]
 #

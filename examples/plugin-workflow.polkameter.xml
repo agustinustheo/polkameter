@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<polkameter-plan xmlns="https://polkameter.dev/schema/plan/v2" version="2" name="Plugin data flow" timeout-ms="30000">
+<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="Plugin data flow" timeout-ms="30000">
   <plugins><plugin id="example" version="0.1.0" protocol="1"/></plugins>
   <setup>
     <step id="seed" use="example.double"><input name="value" value="21"/></step>

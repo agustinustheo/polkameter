@@ -1,6 +1,6 @@
 # XML plans and Rust plugins
 
-Polkameter uses JMeter's separation between declarative plans and executable components. It remains a Rust engine; XML v2 is a Polkameter schema, not arbitrary JMeter JMX or a Java plugin interface. Existing v1 plans continue to use the signed-call runner.
+Polkameter uses JMeter's separation between declarative plans and executable components. It remains a Rust engine; the plan is a Polkameter XML schema, not arbitrary JMeter JMX or a Java plugin interface.
 
 The core works with any Polkadot SDK chain: it submits prepared extrinsics at a controlled rate, follows best and finalized blocks, reconciles every transaction, scrapes node metrics and, for a parachain, observes the relay. Anything specific to one runtime (how to build its transactions, what state they should leave, which pallets to watch) belongs in a plugin.
 
@@ -25,7 +25,7 @@ The registry defaults to `~/.config/polkameter/plugins.json`; `POLKAMETER_PLUGIN
 
 ## Plan execution
 
-[The XSD](../schemas/polkameter-plan-v2.xsd) defines structural authoring rules; host validation additionally resolves references, schemas, limits and installed versions. Processing order is:
+[The XSD](../schemas/polkameter-plan.xsd) defines structural authoring rules; host validation additionally resolves references, schemas, limits and installed versions. Processing order is:
 
 1. Resolve installations and credentials; validate every operation contract.
 2. Check required evidence, run read-only preflight steps and, for a load, calibrate the block interval.
@@ -86,11 +86,11 @@ Deadlines include time waiting for the plugin's serialization lock. An operation
 
 ## Results, desktop and remote workers
 
-A v2 bundle includes the normalized plan, installation manifests and checksums, `events.jsonl`, `execution.json` and JMeter-compatible `samples.jtl`. Load plans additionally retain raw scrapes, blocks, steps, `run.om`, `transactions.jsonl`, `summary.json` and `summary.md`. Run `polkameter report RUN_DIRECTORY` to regenerate the checks and SVG plots offline, also after copying a bundle.
+A run directory includes the normalized plan, installation manifests and checksums, `events.jsonl`, `execution.json` and JMeter-compatible `samples.jtl`. Load plans additionally retain raw scrapes, blocks, steps, `run.om`, `transactions.jsonl`, `summary.json` and `summary.md`. Run `polkameter report RUN_DIRECTORY` to regenerate the checks and SVG plots offline, also after copying a bundle.
 
-Stress mode measures degradation and may return zero despite failed chain-health checks. Smoke mode additionally fails on monitor problems and required checks without results. Tool or setup failures and failed explicit XML assertions are nonzero in both modes. v1 exit semantics are unchanged.
+Stress mode measures degradation and may return zero despite failed chain-health checks. Smoke mode additionally fails on monitor problems and required checks without results. Tool or setup failures and failed explicit XML assertions are nonzero in both modes.
 
-The desktop's **Plugin plans** workbench opens and saves XML, derives input editors from installed manifests and uses the same engine for preflight, run and stop. Desktop run bundles go to the operating system's Polkameter application-data directory under `runs/`. Remote workers expose authenticated `/v2/plugins`, `/v2/inspect`, `/v2/preflight`, `/v2/runs` and run-specific status and stop routes. Install plugins and configure credential and topology profiles on the worker; the client sends XML, not executable paths or secret values. The remote bearer token grants full execution trust, including any credential profile and target endpoint configured on that agent; use separate agents for separate trust domains.
+The desktop app opens and saves plans, derives input editors from installed manifests and uses the same engine for preflight, run and stop. Desktop run bundles go to the operating system's Polkameter application-data directory under `runs/`. Remote agents expose authenticated `/plugins`, `/inspect`, `/preflight` and `/runs` routes, with run-specific status and stop routes. Install plugins and configure credential and topology profiles on the worker; the client sends XML, not executable paths or secret values. The remote bearer token grants full execution trust, including any credential profile and target endpoint configured on that agent; use separate agents for separate trust domains.
 
 ```sh
 # Worker, using its own registry and token environment:
