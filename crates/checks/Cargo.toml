@@ -1,6 +1,6 @@
 [package]
 name = "polkameter-checks"
-description = "The evaluator: outcome checks over run.om"
+description = "The evaluator: outcome checks over a run's recorded series"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

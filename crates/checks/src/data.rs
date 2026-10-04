@@ -1,4 +1,4 @@
-//! `RunData`: window math over `run.om`.
+//! `RunData`: window math over a run's recorded series.
 //!
 //! Values at a time: node series are scraped, so a step edge takes the first scrape at or after
 //! the edge (the edge scrape lands a few ms after it). Our own series only change on events, so
@@ -63,7 +63,7 @@ fn value_at(s: &Series, t: f64, node_first: Option<f64>) -> f64 {
 /// Histogram buckets over a window: (upper bound, count), ascending, `+Inf` last.
 pub type Buckets = Vec<(f64, f64)>;
 
-/// A finished run: `run.om` plus what the load tool knew.
+/// A finished run: its recorded series plus what the load tool knew.
 #[derive(Debug)]
 pub struct RunData {
 	store: Store,
@@ -76,7 +76,7 @@ pub struct RunData {
 }
 
 impl RunData {
-	/// From a parsed `run.om` and summary.
+	/// From the run's series and summary.
 	pub fn new(store: Store, summary: Summary) -> Self {
 		let block_interval_s = summary.network.block_interval_s;
 		let mut node_first: HashMap<(String, String), f64> = HashMap::new();

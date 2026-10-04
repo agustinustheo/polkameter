@@ -59,7 +59,7 @@ pub struct Def {
 	pub name: &'static str,
 	/// Type.
 	pub kind: Kind,
-	/// Help text for `run.om`.
+	/// What it measures.
 	pub help: &'static str,
 	/// The labels the evaluator reads.
 	pub labels: &'static [&'static str],

@@ -1,6 +1,6 @@
 [package]
 name = "polkameter-files"
-description = "The on-disk contract of a stress run: raw files, metric registry, run.om"
+description = "The on-disk contract of a run: raw files, metric registry, recorded series"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

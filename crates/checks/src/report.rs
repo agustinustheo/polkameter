@@ -1,25 +1,21 @@
-//! The summary of a run: builds `run.om` from the raw files, runs the checks on it and writes
-//! `summary.json` and `summary.md`. The collator table comes from `run.om` too, so the summary
-//! and the checks read the same numbers, and `polkameter report <dir>` can write it all again
-//! later.
+//! The summary of a run: reads the raw files, runs the checks on them and writes `summary.json`
+//! and `summary.md`. The collator table comes from the same series, so the summary and the checks
+//! read the same numbers, and `polkameter report <dir>` can write it all again later.
 
 use polkameter_files::summary::{ProbePhase, Rule, Summary};
-use polkameter_files::{
-	BlockStats, FileError, FinalStep, RunDir, build_run_om, num, parse_run_om, to_fixed,
-};
+use polkameter_files::{BlockStats, FileError, FinalStep, RunDir, num, read_store, to_fixed};
 
 use crate::{CheckResult, RunData, Status, Window, all, run};
 
-/// Builds run.om, runs every check, appends the plugins' check results, and writes summary.json
-/// (with all checks) and summary.md.
+/// Runs every check on the run's files, appends the plugins' check results, and writes
+/// summary.json (with all checks) and summary.md.
 pub fn write(
 	dir: &RunDir,
 	mut summary: Summary,
 	finals: &[FinalStep],
 	plugin_checks: &[CheckResult],
 ) -> Result<Vec<CheckResult>, FileError> {
-	let text = build_run_om(dir)?;
-	let data = RunData::new(parse_run_om(&text), summary.clone());
+	let data = RunData::new(read_store(dir)?, summary.clone());
 	let mut checks = run(&all(), &data);
 	checks.extend_from_slice(plugin_checks);
 	summary.checks = Some(serde_json::to_value(&checks).expect("checks serialize"));
@@ -477,7 +473,7 @@ mod tests {
 	#[test]
 	fn the_summary_separates_the_verdict_from_the_load_stop() {
 		let s = summary();
-		let data = RunData::new(parse_run_om("# EOF\n"), s.clone());
+		let data = RunData::new(Default::default(), s.clone());
 		let md = markdown(&s, &[], &data, &[check("relay slots (level 1)", Status::Fail)]);
 		assert!(md.contains("- **Verdict:** FAIL"));
 		assert!(md.contains("- **Load stop:** rate cap"));
@@ -501,7 +497,7 @@ mod tests {
 			p95_latency_ms: 8_400,
 			..FinalStep::default()
 		};
-		let data = RunData::new(parse_run_om("# EOF\n"), s.clone());
+		let data = RunData::new(Default::default(), s.clone());
 		let md = markdown(&s, &[step], &data, &[]);
 		assert!(md.contains("#### Artifact under test"));
 		assert!(md.contains("`Balances.transfer_keep_alive(dest, value)`"));
