@@ -1,0 +1,15 @@
+[package]
+name = "polkameter-files"
+description = "The on-disk contract of a stress run: raw files, metric registry, run.om"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
