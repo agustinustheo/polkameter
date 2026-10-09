@@ -1,14 +1,13 @@
 //! After the load: when do new txs land in time again.
 
-use polkameter_files::summary::{Outcome, Probe, ProbePhase};
-use polkameter_files::{BlockRecord, Millis};
-
-#[cfg(test)]
-use crate::rules::RULES;
+use polkameter_files::{
+	BlockRecord, Millis,
+	summary::{Outcome, Probe, ProbePhase},
+};
 
 /// The send time of the first of `probes_in_a_row` recovery probes in a row that landed within
 /// the threshold, with blocks from then on at about the start interval. `None` while not back.
-pub fn recovered_at_with_rules(
+pub fn recovered_at(
 	probes: &[Probe],
 	blocks: &[BlockRecord],
 	threshold_ms: Millis,
@@ -39,6 +38,7 @@ pub fn recovered_at_with_rules(
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::rules::RULES;
 
 	fn probe(sent_at: Millis, latency: Millis) -> Probe {
 		Probe {
@@ -57,7 +57,7 @@ mod tests {
 			.to_vec();
 		let probes =
 			[probe(0, 30_000), probe(6_000, 7_000), probe(12_000, 6_000), probe(18_000, 6_000)];
-		assert_eq!(recovered_at_with_rules(&probes, &blocks, 12_000, 6_000.0, &RULES), Some(6_000));
-		assert_eq!(recovered_at_with_rules(&probes[..3], &blocks, 12_000, 6_000.0, &RULES), None);
+		assert_eq!(recovered_at(&probes, &blocks, 12_000, 6_000.0, &RULES), Some(6_000));
+		assert_eq!(recovered_at(&probes[..3], &blocks, 12_000, 6_000.0, &RULES), None);
 	}
 }

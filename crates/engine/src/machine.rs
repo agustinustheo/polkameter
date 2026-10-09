@@ -1,4 +1,4 @@
-//! The machine the load tool runs on, for the summary: CPUs, CPU model, memory.
+//! The machine the load tool runs on, for the summary: CPUs and CPU model.
 
 use std::process::Command;
 
@@ -22,19 +22,10 @@ fn proc_field(path: &str, key: &str) -> Option<String> {
 /// This machine.
 pub fn runner() -> Runner {
 	let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
-	let (cpu_model, mem_bytes) = if cfg!(target_os = "macos") {
-		(
-			sysctl("machdep.cpu.brand_string"),
-			sysctl("hw.memsize").and_then(|s| s.parse::<u64>().ok()),
-		)
+	let cpu_model = if cfg!(target_os = "macos") {
+		sysctl("machdep.cpu.brand_string")
 	} else {
-		let kib = proc_field("/proc/meminfo", "MemTotal")
-			.and_then(|v| v.split_whitespace().next()?.parse::<u64>().ok());
-		(proc_field("/proc/cpuinfo", "model name"), kib.map(|k| k * 1024))
+		proc_field("/proc/cpuinfo", "model name")
 	};
-	Runner {
-		cpus,
-		cpu_model,
-		mem_gi_b: mem_bytes.map_or(0, |b| (b as f64 / f64::from(1u32 << 30)).round() as u64),
-	}
+	Runner { cpus, cpu_model }
 }

@@ -87,5 +87,6 @@ mod tests {
 		assert_eq!(num(2.5), "2.5");
 		assert_eq!(num(f64::INFINITY), "Infinity");
 		assert_eq!(num(1e-7), "1e-7");
+		assert_eq!(num(1.5e21), "1.5e+21");
 	}
 }

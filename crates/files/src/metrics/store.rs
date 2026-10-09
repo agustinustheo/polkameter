@@ -9,13 +9,12 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
-use super::{Labels, Point, Series, Store, js_number, parse_sample_line};
-use crate::records::{Sample, ScrapeRecord, SeriesRecord};
-use crate::registry::{self, Kind};
-use crate::{FileError, RunDir};
-
-/// Time -> (sample name, le) -> value.
-type Points = BTreeMap<u64, BTreeMap<(String, Option<String>), f64>>;
+use super::{Labels, Point, Series, Store, parse_sample_line};
+use crate::{
+	FileError, RunDir, num,
+	records::{Sample, ScrapeRecord, SeriesRecord},
+	registry::{self, Kind},
+};
 
 /// A metric a plugin declares in `plugins/<id>/metrics.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,73 +30,36 @@ pub struct PluginMetric {
 	pub buckets: Vec<f64>,
 }
 
-impl From<&registry::Def> for PluginMetric {
-	fn from(def: &registry::Def) -> Self {
-		Self {
-			name: def.name.to_owned(),
-			kind: def.kind,
-			help: def.help.to_owned(),
-			buckets: def.buckets.to_vec(),
-		}
-	}
-}
-
-/// One metric family: labels -> time -> (sample name, le) -> value.
-type Family = BTreeMap<Vec<(String, String)>, Points>;
-
+/// The samples read so far: (sample name, labels with `le`) -> time -> value.
 #[derive(Debug, Default)]
-struct FamilySet {
-	families: BTreeMap<String, Family>,
+struct Samples {
+	samples: BTreeMap<(String, Labels), BTreeMap<u64, f64>>,
 	/// Plugin metrics, by family name.
 	plugin: HashMap<String, PluginMetric>,
 }
 
-impl FamilySet {
-	fn def(&self, family: &str) -> Option<PluginMetric> {
-		registry::def(family)
-			.map(PluginMetric::from)
-			.or_else(|| self.plugin.get(family).cloned())
-	}
-
-	fn add(&mut self, family: &str, sample: &str, mut labels: Labels, t: u64, value: f64) {
-		if self.def(family).is_none() {
-			return;
+impl Samples {
+	/// The histogram bounds of a family, from the registry or a plugin; `None` when neither
+	/// defines it.
+	fn buckets(&self, family: &str) -> Option<&[f64]> {
+		match registry::def(family) {
+			Some(def) => Some(def.buckets),
+			None => self.plugin.get(family).map(|m| m.buckets.as_slice()),
 		}
-		let le = labels.remove("le");
-		let key: Vec<_> = labels.into_iter().collect();
-		self.families
-			.entry(family.to_owned())
-			.or_default()
-			.entry(key)
-			.or_default()
-			.entry(t)
-			.or_default()
-			.insert((sample.to_owned(), le), value);
 	}
 
-	/// Each sample name with its series, every series in time order.
+	fn add(&mut self, family: &str, sample: &str, labels: Labels, t: u64, value: f64) {
+		if self.buckets(family).is_some() {
+			self.samples.entry((sample.to_owned(), labels)).or_default().insert(t, value);
+		}
+	}
+
 	fn into_store(self) -> Store {
 		let mut store = Store::new();
-		for family in self.families.into_values() {
-			let mut series: BTreeMap<(String, Vec<(String, String)>), Series> = BTreeMap::new();
-			for (labels, points) in family {
-				for (t, samples) in points {
-					for ((sample, le), value) in samples {
-						let mut labels: Labels = labels.iter().cloned().collect();
-						if let Some(le) = le {
-							labels.insert("le".into(), le);
-						}
-						series
-							.entry((sample, labels.clone().into_iter().collect()))
-							.or_insert_with(|| Series { labels, points: Vec::new() })
-							.points
-							.push(Point { t: t as f64, value });
-					}
-				}
-			}
-			for ((sample, _), s) in series {
-				store.entry(sample).or_default().push(s);
-			}
+		for ((sample, labels), points) in self.samples {
+			let points =
+				points.into_iter().map(|(t, value)| Point { t: t as f64, value }).collect();
+			store.entry(sample).or_default().push(Series { labels, points });
 		}
 		store
 	}
@@ -105,7 +67,7 @@ impl FamilySet {
 
 /// Reads the raw files of `dir` into one [`Store`].
 pub fn read_store(dir: &RunDir) -> Result<Store, FileError> {
-	let mut set = FamilySet::default();
+	let mut set = Samples::default();
 	let mut failures: HashMap<(String, String), f64> = HashMap::new();
 	for s in dir.read_jsonl::<ScrapeRecord>("scrapes.jsonl")? {
 		let base = [("job", &s.job), ("instance", &s.instance)];
@@ -174,18 +136,18 @@ fn plugin_metrics(dir: &RunDir) -> Result<Vec<(String, Vec<PluginMetric>)>, File
 }
 
 fn add_histogram(
-	set: &mut FamilySet,
+	set: &mut Samples,
 	name: &str,
 	labels: &Labels,
 	t: u64,
 	buckets: &[f64],
 	sum: f64,
 ) {
-	let Some(def) = set.def(name) else { return };
-	let bounds = def.buckets.iter().copied().chain([f64::INFINITY]);
+	let Some(bounds) = set.buckets(name).map(<[f64]>::to_vec) else { return };
+	let bounds = bounds.iter().copied().chain([f64::INFINITY]);
 	for (bound, count) in bounds.zip(buckets) {
 		let mut l = labels.clone();
-		l.insert("le".into(), if bound.is_infinite() { "+Inf".into() } else { js_number(bound) });
+		l.insert("le".into(), if bound.is_infinite() { "+Inf".into() } else { num(bound) });
 		set.add(name, &format!("{name}_bucket"), l, t, *count);
 	}
 	set.add(

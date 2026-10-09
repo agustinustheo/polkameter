@@ -1,3 +1,8 @@
+---
+title: Plugins
+description: Writing and installing plugins, the plan execution order, measured load, monitors, checks and the plugin protocol
+---
+
 # XML plans and Rust plugins
 
 Polkameter uses JMeter's separation between declarative plans and executable components. It remains a Rust engine; the plan is a Polkameter XML schema, not arbitrary JMeter JMX or a Java plugin interface.
@@ -6,12 +11,11 @@ The core works with any Polkadot SDK chain: it submits prepared extrinsics at a 
 
 ## Build and try it
 
-From the repository root, using Rust 1.93 or newer. The CLI shares a crate with the desktop app, so build the frontend first:
+From the repository root, using Rust 1.93 or newer. The CLI builds without the desktop app, so it needs no frontend build:
 
 ```sh
-pnpm install --frozen-lockfile
-pnpm build
-cargo build --workspace --bins
+cargo build -p polkameter --no-default-features --bin polkameter
+cargo build -p polkameter-example-plugin
 export POLKAMETER_PLUGIN_REGISTRY="$PWD/target/plugins.json"
 target/debug/polkameter plugin install target/debug/polkameter-example-plugin
 target/debug/polkameter validate examples/plugin-workflow.polkameter.xml
@@ -25,7 +29,7 @@ The registry defaults to `~/.config/polkameter/plugins.json`; `POLKAMETER_PLUGIN
 
 ## Plan execution
 
-[The XSD](../schemas/polkameter-plan.xsd) defines structural authoring rules; host validation additionally resolves references, schemas, limits and installed versions. Processing order is:
+[The XSD](https://github.com/agustinustheo/polkameter/blob/main/schemas/polkameter-plan.xsd) defines structural authoring rules; host validation additionally resolves references, schemas, limits and installed versions. Processing order is:
 
 1. Resolve installations and credentials; validate every operation contract.
 2. Check required evidence, run read-only preflight steps and, for a load, calibrate the block interval.
@@ -50,13 +54,13 @@ An `<input>` has exactly one `ref` or `value`. Literals parse as JSON when possi
 
 `<thresholds>` overrides the default stop rules: `stall-ms`, `finality-stall-ms`, `max-p95-latency-ms`, `max-submit-reply-ms`, inclusion/refusal/send ratios, block-gap factors, recovery probe count and finality wait. Values and rules are retained in the report.
 
-After recovery the run snapshots the ready pool, waits until the chain has finalized past the best block at that moment, and walks the finalized chain. Each submitted transaction gets exactly one status in `transactions.jsonl`: `finalized`, `in_pool`, `refused`, `expired`, `lost` or `unknown`. Missing pool or finality evidence makes a transaction `unknown`, never `lost`. With `state-check` and `state-ref`, a plugin operation receives `target`, `state`, `hashes` and `at` for a sample of finalized transactions and returns `checked`, `missing` and `detail`.
+After recovery the run snapshots the ready pool, waits until the chain has finalized past the best block at that moment, and walks the finalized chain. Each submitted transaction gets exactly one status in `transactions.jsonl`: `finalized`, `in_pool`, `refused`, `lost`, `unverified` or `unknown`. A transaction seen in a best block whose finality was not verified is `unverified`; missing pool or finality evidence never makes it `lost`. With `state-check` and `state-ref`, a plugin operation receives `target`, `state`, `hashes` and `at` for a sample of finalized transactions and returns `checked`, `missing` and `detail`.
 
 ## Monitors
 
 `<monitors topology="ALIAS" relay-target="TARGET" para-id="N">` scrapes every node of the registered Zombienet topology: the collators of parachain `N` (role `collator`), the relay node inside each collator (`collator-relay`) and the relay validators (`validator`). The relay recorder follows the relay's finalized blocks for backing, inclusion, timeouts, disputes and the slots offered to each parachain; the relay checks judge parachain `N`. Child `<metric role="collator" name="substrate_block_height"/>` entries make a metric family required on every node of that role. The process sampler records CPU and memory of the node under load (`POLKAMETER_NODE_PID`, else the process listening on its RPC port).
 
-`plugin inspect PLAN` is offline with respect to the chain: it validates installed manifests and exports target declarations, monitor requirements and the node metric catalog. A provisioner should consume this before starting a network. Required manifest evidence supports `rpc` (a target and an RPC method checked against `rpc_methods`), `metric` (a role and a metric family) and `capability` (registered by the provisioner with `plugin capability NAME`). `scripts/verify-previewnet-requirements.py` checks the exported requirements against a bitten Previewnet bundle before the network starts.
+`plugin inspect PLAN` is offline with respect to the chain: it validates installed manifests and exports target declarations, monitor requirements and the node metric catalog. A provisioner should consume this before starting a network. Required manifest evidence supports `rpc` (a target and an RPC method checked against `rpc_methods`), `metric` (a role and a metric family) and `capability` (registered by the provisioner with `plugin capability NAME`). `scripts/verify-previewnet-requirements.py REQUIREMENTS MANIFEST` rejects any required requirement that is not a `metric` or `rpc`, and any metric role other than `collator`, `collator-relay` or `validator`, before the nodes start.
 
 ## Plugin observers and checks
 
@@ -90,7 +94,7 @@ A run directory includes the normalized plan, installation manifests and checksu
 
 Stress mode measures degradation and may return zero despite failed chain-health checks. Smoke mode additionally fails on monitor problems and required checks without results. Tool or setup failures and failed explicit XML assertions are nonzero in both modes.
 
-The desktop app opens and saves plans, derives input editors from installed manifests and uses the same engine for preflight, run and stop. Desktop run bundles go to the operating system's Polkameter application-data directory under `runs/`. Remote agents expose authenticated `/plugins`, `/inspect`, `/preflight` and `/runs` routes, with run-specific status and stop routes. Install plugins and configure credential and topology profiles on the worker; the client sends XML, not executable paths or secret values. The remote bearer token grants full execution trust, including any credential profile and target endpoint configured on that agent; use separate agents for separate trust domains.
+The desktop app opens and saves plans, derives input editors from installed manifests and uses the same engine for preflight, run and stop. Desktop run bundles go to the operating system's Polkameter application-data directory under `runs/`. Remote agents expose authenticated `/plugins`, `/inspect`, `/preflight` and `/runs` routes, with run-specific status and stop routes. Install plugins and configure credential and topology profiles on the worker; the client sends XML, not executable paths or secret values. The remote bearer token grants full execution trust, including any credential profile configured on that agent, and any endpoint a plan names; use separate agents for separate trust domains.
 
 ```sh
 # Worker, using its own registry and token environment:
@@ -108,7 +112,8 @@ polkameter run scenario.xml --remote http://127.0.0.1:9901 --remote-token-env AG
 ```sh
 cargo test --workspace
 cargo fmt --all -- --check
-cargo clippy --workspace --exclude polkameter --all-targets -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy -p polkameter --all-targets --no-default-features -- -D warnings
 pnpm test
 pnpm build
 ```

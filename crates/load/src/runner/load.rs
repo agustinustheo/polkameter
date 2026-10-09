@@ -2,15 +2,14 @@
 
 use polkameter_files::summary::{Rule, Stop};
 
-use super::{Io, Mode, RunError, RunEvent, RunOptions, interval, next, phase};
-use crate::now_ms;
-use crate::rules::{
-	LiveState, SourceState, check_step_with_rules, live_failure_with_rules,
-	measure_violation_with_rules, secs,
+use super::{Io, Mode, RunError, RunEvent, RunOptions, interval, next};
+use crate::{
+	now_ms,
+	rules::{LiveState, check_step, live_failure, measure_violation, secs},
+	steps::final_step,
+	submit::Submit,
+	tracker::{Phase, Tracker},
 };
-use crate::steps::final_step;
-use crate::submit::Submit;
-use crate::tracker::{Phase, Tracker};
 
 /// 2. The plan's steps, until the first failure or the last step. Returns why the load ended.
 pub async fn load<S: Submit>(
@@ -18,7 +17,7 @@ pub async fn load<S: Submit>(
 	io: &mut Io,
 	opts: &RunOptions,
 ) -> Result<Stop, RunError> {
-	phase(t, io, Phase::Ramp)?;
+	t.set_phase(Phase::Ramp, now_ms())?;
 	let block_ms = opts.block_interval_s * 1000.0;
 	let mut breaking = false;
 	for (k, plan) in opts.plan.steps.iter().enumerate() {
@@ -30,24 +29,21 @@ pub async fn load<S: Submit>(
 		let _ = io.events.send(RunEvent::StepEdge(k));
 		log_step(t);
 		if !breaking
-			&& let Some((_, detail)) = t.steps[0].len().checked_sub(2).and_then(|i| {
-				measure_violation_with_rules(&final_step(&t.steps[0][i], None), &opts.rules)
-			}) {
+			&& let Some((_, detail)) = t.steps[0]
+				.len()
+				.checked_sub(2)
+				.and_then(|i| measure_violation(&final_step(&t.steps[0][i], None), &opts.rules))
+		{
 			breaking = true;
 			eprintln!("breaking point: step {}: {detail}; the load goes on until a failure", k - 1);
 		}
 		if let Some(stop) = ended {
 			return Ok(stop);
 		}
-		for lane in 0..t.lanes().len() {
-			let s = &t.lanes()[lane].source;
-			if let Some(stop) = check_step_with_rules(
-				&t.steps[lane],
-				&SourceState { exhausted: s.exhausted(), starved_reason: s.starved_reason() },
-				t.sender().queued_bytes() / 1024,
-				block_ms,
-				&opts.rules,
-			) {
+		for (lane, steps) in t.steps.iter().enumerate() {
+			let source = &t.lanes()[lane].source;
+			let unsent_kib = t.sender().queued_bytes() / 1024;
+			if let Some(stop) = check_step(steps, source, unsent_kib, block_ms, &opts.rules) {
 				return Ok(stop);
 			}
 		}
@@ -103,7 +99,7 @@ async fn send_step<S: Submit>(
 			finalized: t.last_finalized.1,
 			smoke_problems: if opts.mode == Mode::Smoke { io.problems.all() } else { Vec::new() },
 		};
-		if let Some(stop) = live_failure_with_rules(&live, &opts.rules) {
+		if let Some(stop) = live_failure(&live, &opts.rules) {
 			return Ok(Some(stop));
 		}
 	}

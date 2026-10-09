@@ -5,18 +5,30 @@
 
 use std::future::Future;
 
+use anyhow::Context as _;
 use polkameter_chain::Client;
 use polkameter_files::{Problems, RunDir};
 use polkameter_load::runner::RunEvent;
-use polkameter_monitors::relay::RelayRecorder;
 use polkameter_monitors::{
-	MonitorError, Scraper, ScraperHandle, Target, chain_series, process, walker,
+	MonitorError, Scraper, ScraperHandle, Target, chain_series, process, relay,
 };
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::{plan::Plan, plugins::Registry};
+
 type Task = JoinHandle<Result<(), MonitorError>>;
+
+/// The targets of the plan's monitors, read from the topology this host registered under the plan's
+/// alias. `None` when the plan has no monitors.
+pub fn monitor_targets(plan: &Plan, registry: &Registry) -> anyhow::Result<Option<Vec<Target>>> {
+	let Some(monitors) = &plan.monitors else { return Ok(None) };
+	let topology = registry.topologies.get(&monitors.topology).with_context(|| {
+		format!("topology alias {} is not installed on this host", monitors.topology)
+	})?;
+	Ok(Some(polkameter_monitors::load_targets(topology, monitors.para_id)?))
+}
 
 /// Where the monitors read from.
 pub struct Chains<'a> {
@@ -70,7 +82,6 @@ async fn step_edges(
 			() = stop.cancelled() => return Ok(()),
 			e = rx.recv() => match e {
 				Ok(RunEvent::StepEdge(_)) => { scraper.scrape_now().await; }
-				Ok(RunEvent::Phase(_)) => {}
 				// A missed step edge makes a step window wrong: an error of our tools.
 				Err(broadcast::error::RecvError::Lagged(n)) => return Err(MonitorError::Tool(format!("run events lagged by {n}: step edges missed"))),
 				Err(broadcast::error::RecvError::Closed) => return Ok(()),
@@ -89,12 +100,8 @@ impl Monitors {
 		chains: Chains<'_>,
 	) -> Result<Self, MonitorError> {
 		let problems = Problems::default();
-		let (failed, stop, stop_sampling, stop_chain) = (
-			CancellationToken::new(),
-			CancellationToken::new(),
-			CancellationToken::new(),
-			CancellationToken::new(),
-		);
+		let [failed, stop, stop_sampling, stop_chain] =
+			std::array::from_fn(|_| CancellationToken::new());
 
 		let (scraper, handle) =
 			Scraper::new(targets, dir.jsonl("scrapes.jsonl")?, problems.clone());
@@ -122,13 +129,8 @@ impl Monitors {
 		let mut walkers = Vec::new();
 		if let Some(relay_url) = chains.relay_url {
 			match Client::connect(relay_url).await {
-				Ok(relay) => walkers.push(spawn(
-					walker::walk(
-						relay.clone(),
-						RelayRecorder::new(relay, series.clone()),
-						stop_chain.clone(),
-						problems.clone(),
-					),
+				Ok(client) => walkers.push(spawn(
+					relay::walk(client, series.clone(), stop_chain.clone(), problems.clone()),
 					&failed,
 				)),
 				Err(e) => problems
@@ -151,17 +153,12 @@ impl Monitors {
 
 	/// Stops the process sampler, so `node.jsonl` is complete for the step records.
 	pub async fn stop_sampling(&mut self) -> Result<(), MonitorError> {
-		self.stop_sampling.cancel();
-		join(self.sampler.take()).await
+		halt(&self.stop_sampling, self.sampler.take()).await
 	}
 
 	/// Stops the chain recorders; each walks the last finalized block it saw first.
 	pub async fn stop_chain(&mut self) -> Result<(), MonitorError> {
-		self.stop_chain.cancel();
-		for t in self.walkers.drain(..) {
-			join(Some(t)).await?;
-		}
-		join(self.chain.take()).await
+		halt(&self.stop_chain, self.walkers.drain(..).chain(self.chain.take())).await
 	}
 
 	/// Stops everything that still runs (the scraper takes one last sample) and returns the
@@ -170,7 +167,6 @@ impl Monitors {
 		self.stop_sampling.cancel();
 		self.stop_chain.cancel();
 		self.stop.cancel();
-		let mut first = Ok(());
 		let tasks = self
 			.sampler
 			.take()
@@ -178,22 +174,29 @@ impl Monitors {
 			.chain(self.walkers.drain(..))
 			.chain(self.chain.take())
 			.chain(self.rest.drain(..));
+		let mut first = Ok(());
 		for t in tasks {
-			if let Err(e) = join(Some(t)).await
-				&& first.is_ok()
-			{
-				first = Err(e);
-			}
+			first = first.and(join(t).await);
 		}
 		first
 	}
 }
 
-async fn join(t: Option<Task>) -> Result<(), MonitorError> {
-	match t {
-		Some(t) => t.await.expect("a monitor task does not panic"),
-		None => Ok(()),
+/// Cancels a monitor's token, then waits for its tasks; the first error is returned.
+async fn halt(
+	token: &CancellationToken,
+	tasks: impl IntoIterator<Item = Task>,
+) -> Result<(), MonitorError> {
+	token.cancel();
+	for t in tasks {
+		join(t).await?;
 	}
+	Ok(())
+}
+
+async fn join(t: Task) -> Result<(), MonitorError> {
+	t.await
+		.unwrap_or_else(|e| Err(MonitorError::Tool(format!("monitor task ended abnormally: {e}"))))
 }
 
 impl Drop for Monitors {

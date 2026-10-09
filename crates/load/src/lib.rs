@@ -21,4 +21,4 @@ pub mod tracker;
 pub use plan::{Lane, Plan, StepPlan};
 pub use polkameter_files::{Millis, now_ms};
 pub use scenario::{BoxFuture, StateCheck};
-pub use source::{Block, LoadSource, QueueSource, Settled, Tx, TxHash, probe_count};
+pub use source::{QueueSource, Tx, TxHash, probe_count};

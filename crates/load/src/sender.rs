@@ -6,16 +6,19 @@
 //! A connection counts as backed up with 4 MiB queued and not yet written (as TS
 //! `bufferedAmount`), so "pool intake" fires at the same point whatever the tx size.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{
+	Arc,
+	atomic::{AtomicBool, AtomicU64, Ordering},
+};
 
 use futures_util::{SinkExt, StreamExt};
 use polkameter_files::Millis;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::now_ms;
-use crate::submit::Submit;
+use polkameter_chain::hex0x;
+
+use crate::{now_ms, submit::Submit};
 
 const MAX_QUEUED_BYTES: u64 = 4 * 1024 * 1024;
 
@@ -59,14 +62,6 @@ pub struct Sender {
 	connections: Vec<Connection>,
 	next: usize,
 	closing: Arc<AtomicBool>,
-}
-
-impl std::fmt::Debug for Sender {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		f.debug_struct("Sender")
-			.field("connections", &self.connections.len())
-			.finish_non_exhaustive()
-	}
 }
 
 /// A connection could not be opened: a wrong URL or a node that is down before the run.
@@ -136,8 +131,8 @@ impl Sender {
 impl Submit for Sender {
 	fn submit(&mut self, id: u64, bytes: &[u8]) -> Option<usize> {
 		let text = format!(
-			r#"{{"jsonrpc":"2.0","id":{id},"method":"author_submitExtrinsic","params":["0x{}"]}}"#,
-			hex::encode(bytes)
+			r#"{{"jsonrpc":"2.0","id":{id},"method":"author_submitExtrinsic","params":["{}"]}}"#,
+			hex0x(bytes)
 		);
 		for _ in 0..self.connections.len() {
 			let i = self.next;
@@ -162,20 +157,15 @@ impl Submit for Sender {
 
 fn parse_reply(text: &str) -> Option<Reply> {
 	let v: serde_json::Value = serde_json::from_str(text).ok()?;
-	let id = v.get("id")?.as_u64()?;
+	let id = v["id"].as_u64()?;
 	let at = now_ms();
 	let Some(e) = v.get("error") else { return Some(Reply::Accepted { id, at }) };
-	let message = e.get("message").and_then(|m| m.as_str()).unwrap_or("");
-	let error = match e.get("data").and_then(|d| d.as_str()) {
+	let message = e["message"].as_str().unwrap_or("");
+	let error = match e["data"].as_str() {
 		Some(data) => format!("{message}: {data}"),
 		None => message.to_owned(),
 	};
-	Some(Reply::Refused {
-		id,
-		at,
-		code: e.get("code").and_then(serde_json::Value::as_i64).unwrap_or(0),
-		error,
-	})
+	Some(Reply::Refused { id, at, code: e["code"].as_i64().unwrap_or(0), error })
 }
 
 #[cfg(test)]

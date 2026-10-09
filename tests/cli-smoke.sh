@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Exercises the CLI end to end without a chain: install the example plugin, validate and run its
 # plan locally and through a loopback remote agent, regenerate the report, and check that a
-# failed assertion exits nonzero. Build first: cargo build -p polkameter -p polkameter-example-plugin.
+# failed assertion exits nonzero. Build first: cargo build -p polkameter --no-default-features --bin polkameter
+# and cargo build -p polkameter-example-plugin.
 set -euo pipefail
 
 cli=${POLKAMETER:-target/debug/polkameter}

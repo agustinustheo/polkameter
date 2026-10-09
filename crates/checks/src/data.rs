@@ -6,13 +6,49 @@
 //! first increment, so a node series that first appears after the node's first scrape is 0
 //! before that.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt, ops::AddAssign};
 
-use polkameter_files::summary::Summary;
-use polkameter_files::{Series, Store};
+use polkameter_files::{Series, Store, num, serde_name, summary::Summary};
+use serde::{Serialize, Serializer};
 
 /// Label filter: every pair must match.
 pub type Filter<'a> = &'a [(&'a str, &'a str)];
+
+/// A phase of the run that the checks read windows of, as the `polkameter_phase` gauge names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Phase {
+	/// Before the load.
+	Baseline,
+	/// After the load stopped.
+	Recovery,
+}
+
+/// What a window is, for check details and summary.json: "step 3", "recovery", "run".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Label {
+	/// One ramp step.
+	Step(u32),
+	Phase(Phase),
+	/// The whole run.
+	Run,
+}
+
+impl fmt::Display for Label {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match self {
+			Label::Step(step) => write!(f, "step {step}"),
+			Label::Phase(phase) => f.write_str(&serde_name(phase)),
+			Label::Run => f.write_str("run"),
+		}
+	}
+}
+
+impl Serialize for Label {
+	fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+		s.collect_str(self)
+	}
+}
 
 /// A time window of the run, in ms.
 #[derive(Debug, Clone, PartialEq)]
@@ -21,24 +57,22 @@ pub struct Window {
 	pub start: f64,
 	/// End.
 	pub end: f64,
-	/// "step 3" or "recovery", for check details.
-	pub label: String,
+	/// What the window is.
+	pub label: Label,
 }
 
 /// A counter went down in a window: a node restarted, so that window has no result.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("{0}")]
 pub struct CounterReset(pub String);
-
-impl std::error::Error for CounterReset {}
-
-impl std::fmt::Display for CounterReset {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		f.write_str(&self.0)
-	}
-}
 
 /// How late after an edge its scrape may land, in ms (scrapes are 5 s apart).
 const EDGE_SCRAPE_MS: f64 = 1000.0;
+
+/// The collator's labels: each block is counted once over the collators.
+pub const COLLATOR: (&str, &str) = ("job", "collator");
+/// The collator's counter of why a block stopped taking txs, per `reason`.
+pub const END_REASON: &str = "substrate_proposer_end_proposal_reason";
 
 fn node(s: &Series) -> (String, String) {
 	let get = |k: &str| s.labels.get(k).cloned().unwrap_or_default();
@@ -111,6 +145,15 @@ impl RunData {
 		(!list.is_empty()).then(|| list.iter().map(|s| self.value_at(s, t)).sum())
 	}
 
+	/// One series' increase over `w`; a counter that went down means its node restarted.
+	fn delta(&self, name: &str, s: &Series, w: &Window) -> Result<f64, CounterReset> {
+		let (a, b) = (self.value_at(s, w.start), self.value_at(s, w.end));
+		if b < a {
+			return Err(CounterReset(format!("{name} went down from {a} to {b}")));
+		}
+		Ok(b - a)
+	}
+
 	/// A counter's increase over `w`, summed over matching series.
 	pub fn diff(
 		&self,
@@ -120,13 +163,19 @@ impl RunData {
 	) -> Result<Option<f64>, CounterReset> {
 		let mut sum = None;
 		for s in self.series(name, filter) {
-			let (a, b) = (self.value_at(s, w.start), self.value_at(s, w.end));
-			if b < a {
-				return Err(CounterReset(format!("{name} went down from {a} to {b}")));
-			}
-			*sum.get_or_insert(0.0) += b - a;
+			*sum.get_or_insert(0.0) += self.delta(name, s, w)?;
 		}
 		Ok(sum)
+	}
+
+	/// A counter's increase over `w`, summed over matching series; 0 when none matches.
+	pub fn increase(
+		&self,
+		name: &str,
+		filter: Filter<'_>,
+		w: &Window,
+	) -> Result<f64, CounterReset> {
+		Ok(self.diff(name, filter, w)?.unwrap_or(0.0))
 	}
 
 	/// A histogram's bucket increases over `w`, summed over matching series.
@@ -143,14 +192,7 @@ impl RunData {
 				Some(le) => le.parse().unwrap_or(f64::NAN),
 				None => continue,
 			};
-			let (a, b) = (self.value_at(s, w.start), self.value_at(s, w.end));
-			if b < a {
-				return Err(CounterReset(format!("{name} went down from {a} to {b}")));
-			}
-			match out.iter_mut().find(|(x, _)| *x == le) {
-				Some((_, n)) => *n += b - a,
-				None => out.push((le, b - a)),
-			}
+			add_to(&mut out, le, self.delta(name, s, w)?);
 		}
 		out.sort_by(|a, b| a.0.total_cmp(&b.0));
 		Ok((!out.is_empty()).then_some(out))
@@ -167,7 +209,7 @@ impl RunData {
 			.map(|i| Window {
 				start: p[i].t,
 				end: p.get(i + 1).map_or(p[i].t, |n| n.t),
-				label: format!("step {}", p[i].value),
+				label: Label::Step(p[i].value as u32),
 			})
 			.collect()
 	}
@@ -175,16 +217,17 @@ impl RunData {
 	/// The steps, then recovery: after a burst (one short step) the load lands there.
 	pub fn load_windows(&self) -> Vec<Window> {
 		let mut w = self.steps();
-		w.extend(self.phase("recovery").map(|r| Window { label: "recovery".into(), ..r }));
+		w.extend(self.phase(Phase::Recovery));
 		w
 	}
 
-	/// The window of a phase (baseline, ramp, recovery, done), from the `polkameter_phase` gauge.
-	pub fn phase(&self, name: &str) -> Option<Window> {
-		let s = *self.series("polkameter_phase", &[("phase", name)]).first()?;
+	/// The window of a phase, from the `polkameter_phase` gauge.
+	pub fn phase(&self, phase: Phase) -> Option<Window> {
+		let name = serde_name(phase);
+		let s = *self.series("polkameter_phase", &[("phase", &name)]).first()?;
 		let on = s.points.iter().position(|p| p.value == 1.0)?;
 		let end = s.points[on + 1..].iter().find(|p| p.value == 0.0).or(s.points.last())?;
-		Some(Window { start: s.points[on].t, end: end.t, label: name.into() })
+		Some(Window { start: s.points[on].t, end: end.t, label: Label::Phase(phase) })
 	}
 
 	/// The whole run: first to last sample of `polkameter_phase`.
@@ -195,44 +238,13 @@ impl RunData {
 			.flat_map(|s| s.points.iter().map(|p| p.t));
 		let (start, end) =
 			ts.fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), t| (a.min(t), b.max(t)));
-		Window { start, end, label: "run".into() }
-	}
-
-	/// A gauge's lowest and highest value in `w`, summed over matching series (each series'
-	/// own extremes; one without a sample inside takes its value at the start).
-	pub fn gauge_range(&self, name: &str, filter: Filter<'_>, w: &Window) -> Option<(f64, f64)> {
-		let list = self.series(name, filter);
-		if list.is_empty() {
-			return None;
-		}
-		let (mut min, mut max) = (0.0, 0.0);
-		for s in list {
-			let inside: Vec<f64> = s
-				.points
-				.iter()
-				.filter(|p| p.t >= w.start && p.t <= w.end)
-				.map(|p| p.value)
-				.collect();
-			let values = if inside.is_empty() { vec![self.value_at(s, w.start)] } else { inside };
-			min += values.iter().copied().fold(f64::INFINITY, f64::min);
-			max += values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-		}
-		Some((min, max))
-	}
-
-	/// Every sample time of `name`, whatever the labels.
-	pub fn times(&self, name: &str) -> Vec<f64> {
-		self.series(name, &[])
-			.into_iter()
-			.flat_map(|s| s.points.iter().map(|p| p.t))
-			.collect()
+		Window { start, end, label: Label::Run }
 	}
 
 	/// The collator's blocks per end reason (short names) in `w`.
 	pub fn end_reasons(&self, w: &Window) -> Result<Vec<(String, f64)>, CounterReset> {
-		const END_REASON: &str = "substrate_proposer_end_proposal_reason";
-		const COLLATOR: (&str, &str) = ("job", "collator");
-		// One series per collator and reason; `diff` already sums the collators, so once per reason.
+		// One series per collator and reason; `diff` already sums the collators, so once per
+		// reason.
 		let mut reasons: Vec<&str> = self
 			.series(END_REASON, &[COLLATOR])
 			.iter()
@@ -244,13 +256,23 @@ impl RunData {
 		for reason in reasons {
 			let n = self.diff(END_REASON, &[COLLATOR, ("reason", reason)], w)?.unwrap_or(0.0);
 			if n > 0.0 {
-				match out.iter_mut().find(|(k, _)| k == short_reason(reason)) {
-					Some((_, sum)) => *sum += n,
-					None => out.push((short_reason(reason).to_owned(), n)),
-				}
+				add_to(&mut out, short_reason(reason).to_owned(), n);
 			}
 		}
 		Ok(out)
+	}
+}
+
+/// `reason count` pairs, comma-separated: `empty 3, weight 2`.
+pub fn reasons_text(r: &[(String, f64)]) -> String {
+	r.iter().map(|(k, n)| format!("{k} {}", num(*n))).collect::<Vec<_>>().join(", ")
+}
+
+/// Adds `n` to the entry for `key`, or appends one.
+pub(crate) fn add_to<K: PartialEq, V: AddAssign>(list: &mut Vec<(K, V)>, key: K, n: V) {
+	match list.iter_mut().find(|(k, _)| *k == key) {
+		Some((_, sum)) => *sum += n,
+		None => list.push((key, n)),
 	}
 }
 

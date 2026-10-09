@@ -3,10 +3,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-mod parse;
 mod store;
 
-pub use parse::parse_samples;
 pub use store::{PluginMetric, read_store};
 
 /// Label name -> value.
@@ -32,29 +30,6 @@ pub struct Series {
 
 /// Sample name -> its series.
 pub type Store = HashMap<String, Vec<Series>>;
-
-/// JavaScript's `String(n)`, so sample values read the same as the TS tool writes them.
-pub(crate) fn js_number(n: f64) -> String {
-	if n.is_nan() {
-		return "NaN".into();
-	}
-	if n.is_infinite() {
-		return if n > 0.0 { "+Inf" } else { "-Inf" }.into();
-	}
-	if n == 0.0 {
-		return "0".into();
-	}
-	if n.abs() >= 1e21 || n.abs() < 1e-6 {
-		let exp_form = format!("{n:e}");
-		let (mant, exp) = exp_form.split_once('e').expect("{:e} has an exponent");
-		return if exp.starts_with('-') {
-			format!("{mant}e{exp}")
-		} else {
-			format!("{mant}e+{exp}")
-		};
-	}
-	format!("{n}")
-}
 
 /// One exposition sample line: `name{a="x",b="y"} value [timestamp]`.
 #[derive(Debug, Clone, PartialEq)]
@@ -124,14 +99,6 @@ pub(crate) fn parse_value(s: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-
-	#[test]
-	fn values_follow_js() {
-		assert_eq!(js_number(5.0), "5");
-		assert_eq!(js_number(0.25), "0.25");
-		assert_eq!(js_number(1e-7), "1e-7");
-		assert_eq!(js_number(1.5e21), "1.5e+21");
-	}
 
 	#[test]
 	fn sample_lines_parse() {

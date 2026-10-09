@@ -20,16 +20,23 @@ mod run_dir;
 mod series;
 pub mod summary;
 
-pub use metrics::{
-	PluginMetric, Point, Series, Store, parse_sample_line, parse_samples, read_store,
-};
+pub use metrics::{PluginMetric, Point, Series, Store, parse_sample_line, read_store};
 pub use num::{num, to_fixed};
 pub use problems::Problems;
 pub use records::{
 	BlockRecord, BlockStats, FinalStep, Millis, NodeMax, NodeSample, ScrapeRecord, SeriesRecord,
 };
 pub use run_dir::{JsonlWriter, RunDir};
-pub use series::{SeriesOp, SeriesWriter};
+pub use series::SeriesWriter;
+
+/// The name a unit variant has in the files, which is its serde name (`"block production"`,
+/// `"no result"`): one name per variant, so no table to keep in step with the serde renames.
+pub fn serde_name(variant: impl serde::Serialize) -> String {
+	match serde_json::to_value(variant) {
+		Ok(serde_json::Value::String(name)) => name,
+		_ => unreachable!("a unit variant serializes as a string"),
+	}
+}
 
 /// Now: milliseconds since the Unix epoch. The one clock of a run (ticks, rules, files), so a
 /// machine that sleeps shows up as a gap, as it does in the TS tool.

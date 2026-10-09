@@ -1,18 +1,14 @@
-//! A Polkadot SDK node over RPC: typed reads, events, submission, and the check that a
-//! transaction encoding still matches the running runtime's extension layout.
+//! A Polkadot SDK node over RPC: typed reads, events and submission.
 
 pub mod client;
 pub mod reads;
 pub mod tx;
 pub mod value;
 
-pub use client::{AtBlock, ChainError, Client, Fault, LayoutChanged};
-pub use reads::{calls, entries, events, fetch, has_prefix, runtime_call};
+pub use client::{AtBlock, ChainError, Client, Fault, Refusal, decode_err, hex0x};
+pub use reads::{Event, events, failed_extrinsics, fetch, runtime_call};
 #[doc(hidden)]
 pub use scale_decode as scale_decode_reexport;
 pub use scale_decode::DecodeAsType;
-#[doc(hidden)]
-pub use scale_value as scale_value_reexport;
 pub use subxt::dynamic::Value;
-pub use subxt_signer::sr25519::Keypair;
 pub use tx::{ChainInfo, tx_hash};

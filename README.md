@@ -19,8 +19,8 @@ It runs both ways: a headless `polkameter` CLI for CI and remote load machines, 
 ## Build
 
 ```sh
-corepack pnpm install && corepack pnpm build   # the desktop frontend, embedded in the binary
-cargo build --release --bin polkameter          # the CLI
+cargo build --release -p polkameter --no-default-features --bin polkameter   # the CLI, without the desktop app
+corepack pnpm install && corepack pnpm build    # the frontend, only for the desktop app
 corepack pnpm tauri dev                         # the desktop app
 ```
 
@@ -57,7 +57,11 @@ Each run directory holds `samples.jtl` (JMeter CSV), `events.jsonl`, `execution.
 
 ```sh
 corepack pnpm test
-cargo test --workspace
+cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-tests/cli-smoke.sh   # after cargo build -p polkameter -p polkameter-example-plugin
+cargo clippy -p polkameter --all-targets --no-default-features -- -D warnings
+cargo test --workspace
+cargo build -p polkameter --no-default-features --bin polkameter
+cargo build -p polkameter-example-plugin
+tests/cli-smoke.sh
 ```

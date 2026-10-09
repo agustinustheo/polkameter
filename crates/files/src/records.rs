@@ -75,28 +75,16 @@ pub struct BlockRecord {
 	pub gap_ms: Option<u64>,
 	/// `Timestamp.Now` of the block.
 	pub timestamp: Millis,
-	/// Timestamp gap to the block recorded before it. On a fork it comes in 0 s / 12 s pairs; use `gap_ms`.
-	pub interval_ms: Option<i64>,
 	/// Extrinsics in the body.
 	pub extrinsics: u32,
 	/// Of those, ours.
 	pub ours: u32,
 	/// Of ours, the ones with an `ExtrinsicFailed` event.
 	pub ours_failed: u32,
-	/// Body size.
-	pub bytes: u64,
-	/// `System.BlockWeight` of the normal class.
-	pub normal_ref_time: u64,
-	/// Proof size of the normal class.
-	pub normal_proof_size: u64,
 	/// Share of the running runtime's normal limit, in %.
 	pub normal_ref_time_pct: f64,
 	/// Share of the normal proof size limit, in %.
 	pub normal_proof_pct: f64,
-	/// Operational class ref time.
-	pub operational_ref_time: u64,
-	/// Mandatory class ref time.
-	pub mandatory_ref_time: u64,
 	/// The finalized number when the block was recorded.
 	pub finalized: u32,
 	/// From arrival to read (Rust tool only).
@@ -132,8 +120,6 @@ pub struct BlockStats {
 	pub max_normal_ref_time_pct: f64,
 	/// Of the normal proof size limit.
 	pub max_normal_proof_pct: f64,
-	/// Largest body.
-	pub max_block_bytes: u64,
 }
 
 /// The node's highest CPU and memory in a window, from `node.jsonl`.
@@ -188,8 +174,6 @@ pub struct FinalStep {
 	pub rejected: u64,
 	/// Refused against sent.
 	pub rejected_ratio: f64,
-	/// Expired unseen.
-	pub dropped: u64,
 	/// p50 send to best block.
 	pub p50_latency_ms: Millis,
 	/// p95 send to best block.

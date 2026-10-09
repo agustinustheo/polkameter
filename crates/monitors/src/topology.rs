@@ -1,8 +1,10 @@
 //! The nodes a run scrapes, from zombienet's `zombie.json` (previewnet-engine writes it to its
 //! data dir). zombienet picks the Prometheus ports, so they change on every restart.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::str::FromStr;
 
+use anyhow::anyhow;
 use serde::Deserialize;
 
 /// What a node is to us.
@@ -24,6 +26,18 @@ impl Job {
 			Job::CollatorRelay => "collator-relay",
 			Job::Validator => "validator",
 		}
+	}
+}
+
+impl FromStr for Job {
+	type Err = anyhow::Error;
+
+	/// The `job` label, as a plan writes it.
+	fn from_str(s: &str) -> anyhow::Result<Self> {
+		[Job::Collator, Job::CollatorRelay, Job::Validator]
+			.into_iter()
+			.find(|job| job.label() == s)
+			.ok_or_else(|| anyhow!("unknown job {s}"))
 	}
 }
 
@@ -62,6 +76,8 @@ struct Relay {
 	nodes: Vec<Node>,
 }
 
+/// A parachain's entry in zombie.json: one para, or a list of them.
+
 #[derive(Deserialize)]
 struct Zombie {
 	relay: Relay,
@@ -74,18 +90,6 @@ struct Zombie {
 pub struct TopologyError {
 	path: String,
 	detail: String,
-}
-
-/// `ZOMBIE_JSON`, else the engine's fork or genesis network under `PPN_DIR`.
-pub fn zombie_json_path() -> Option<PathBuf> {
-	if let Ok(p) = std::env::var("ZOMBIE_JSON") {
-		return Some(p.into());
-	}
-	let ppn = std::env::var("PPN_DIR").map(PathBuf::from).ok()?;
-	["data-fork/zombie.json", "data/zombie.json"]
-		.iter()
-		.map(|p| ppn.join(p))
-		.find(|p| p.exists())
 }
 
 /// Every node to scrape: the collators of `para_id` and every relay validator.

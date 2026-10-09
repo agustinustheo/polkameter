@@ -1,5 +1,4 @@
 //! Frontend adapters for the shared XML plugin engine.
-use futures::FutureExt;
 use polkameter_engine::{execute, plan::Plan, plugins::Registry};
 use serde::Serialize;
 use std::{path::Path, sync::Arc};
@@ -21,14 +20,31 @@ pub struct State {
 	pub progress: std::sync::Mutex<Option<String>>,
 	pub cancel: Mutex<Option<CancellationToken>>,
 }
+
+/// Parses a plan and loads this host's registry: the inputs of every plugin gate.
+pub fn resolve(xml: &str) -> anyhow::Result<(Plan, Registry)> {
+	Ok((Plan::parse(xml)?, Registry::load()?))
+}
+
+/// The `inspect` gate over plan XML, for the desktop app and the remote agent.
+pub async fn inspect_xml(xml: &str) -> anyhow::Result<serde_json::Value> {
+	let (plan, registry) = resolve(xml)?;
+	execute::inspect(&plan, &registry).await
+}
+
+/// The `preflight` gate over plan XML, for the desktop app and the remote agent.
+pub async fn preflight_xml(xml: &str) -> anyhow::Result<serde_json::Value> {
+	let (plan, registry) = resolve(xml)?;
+	execute::preflight(&plan, &registry).await
+}
+
 pub async fn start(
 	xml: String,
 	root: String,
 	state: Arc<State>,
 	sink: execute::EventSink,
 ) -> Result<Status, String> {
-	let plan = Plan::parse(&xml).map_err(|e| e.to_string())?;
-	let registry = Registry::load().map_err(|e| e.to_string())?;
+	let (plan, registry) = resolve(&xml).map_err(|e| e.to_string())?;
 	let mut status = state.status.lock().await;
 	if status.state == "running" {
 		return Err("a plugin plan is already running".into());
@@ -43,26 +59,25 @@ pub async fn start(
 		std::process::id(),
 		NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 	);
-	*status = Status { id: id.clone(), phase: None, state: "running".into(), ..Status::default() };
+	*status = Status { id: id.clone(), state: "running".into(), ..Status::default() };
 	*state.progress.lock().map_err(|_| "progress lock poisoned")? = None;
 	let initial = status.clone();
 	drop(status);
 	tokio::spawn(async move {
 		let progress_state = state.clone();
 		let progress = Arc::new(move |event: serde_json::Value| {
-			if event["event"] == "phase" {
-				if let Ok(mut phase) = progress_state.progress.lock() {
-					*phase = event["phase"].as_str().map(str::to_owned);
-				}
+			if event["event"] == "phase"
+				&& let Ok(mut phase) = progress_state.progress.lock()
+			{
+				*phase = event["phase"].as_str().map(str::to_owned);
 			}
 			sink(event);
 		});
-		let result = std::panic::AssertUnwindSafe(async {
-			execute::run(plan, registry, Path::new(&root), token, progress)
-				.await
-				.and_then(finalize_report)
+		// A panic in the run, or in its event sink, ends this inner task and surfaces as a
+		// JoinError.
+		let result = tokio::spawn(async move {
+			execute::run(plan, registry, Path::new(&root), token, progress).await
 		})
-		.catch_unwind()
 		.await
 		.unwrap_or_else(|_| Err(anyhow::anyhow!("run task panicked; see host/plugin diagnostics")));
 
@@ -70,17 +85,15 @@ pub async fn start(
 		*status = match result {
 			Ok(outcome) => Status {
 				id: id.clone(),
-				phase: None,
-				state: outcome.state.clone(),
+				state: outcome.state.to_string(),
 				outcome: Some(outcome),
-				error: None,
+				..Status::default()
 			},
 			Err(error) => Status {
 				id: id.clone(),
-				phase: None,
 				state: "failed".into(),
 				error: Some(error.to_string()),
-				outcome: None,
+				..Status::default()
 			},
 		};
 		*state.cancel.lock().await = None;
@@ -93,29 +106,8 @@ pub async fn start(
 	Ok(initial)
 }
 
-/// One report-failure policy for headless, desktop and agent runs.
-pub fn finalize_report(mut outcome: execute::Outcome) -> anyhow::Result<execute::Outcome> {
-	if let Err(error) = crate::report::write(&outcome.artifact_dir) {
-		outcome.state = "failed".into();
-		outcome.exit_code = 1;
-		outcome.error = Some(format!("report generation failed: {error}"));
-		std::fs::write(
-			outcome.artifact_dir.join("execution.json"),
-			serde_json::to_vec_pretty(&outcome)?,
-		)?;
-	}
-	Ok(outcome)
-}
-
-pub async fn status(state: &State, id: &str) -> Result<Status, String> {
-	let status = state.status.lock().await;
-	if status.id == id {
-		let mut result = status.clone();
-		if result.state == "running" {
-			result.phase = state.progress.lock().map_err(|_| "progress lock poisoned")?.clone();
-		}
-		return Ok(result);
-	}
+/// A finished run from the history of the last 32.
+async fn archived(state: &State, id: &str) -> Result<Status, String> {
 	state
 		.history
 		.lock()
@@ -124,21 +116,28 @@ pub async fn status(state: &State, id: &str) -> Result<Status, String> {
 		.cloned()
 		.ok_or_else(|| "run ID is unknown or expired".into())
 }
+
+pub async fn status(state: &State, id: &str) -> Result<Status, String> {
+	let current = state.status.lock().await;
+	if current.id != id {
+		return archived(state, id).await;
+	}
+	let mut result = current.clone();
+	if result.state == "running" {
+		result.phase = state.progress.lock().map_err(|_| "progress lock poisoned")?.clone();
+	}
+	Ok(result)
+}
+
 pub async fn stop(state: &State, id: &str) -> Result<Status, String> {
-	let status = state.status.lock().await;
-	if status.id != id {
-		return state
-			.history
-			.lock()
-			.await
-			.get(id)
-			.cloned()
-			.ok_or_else(|| "run ID is unknown or expired".into());
+	let current = state.status.lock().await;
+	if current.id != id {
+		return archived(state, id).await;
 	}
 	if let Some(token) = state.cancel.lock().await.as_ref() {
 		token.cancel();
 	}
-	Ok(status.clone())
+	Ok(current.clone())
 }
 
 #[cfg(test)]

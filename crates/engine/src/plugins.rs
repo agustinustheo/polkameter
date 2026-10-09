@@ -72,12 +72,7 @@ impl Registry {
 	}
 	pub async fn install(&mut self, executable: &Path) -> Result<Manifest> {
 		let executable = executable.canonicalize()?;
-		let context = Context {
-			run_id: "inspect".into(),
-			artifact_dir: std::env::temp_dir(),
-			user: None,
-			iteration: None,
-		};
+		let context = Context::host("inspect", std::env::temp_dir());
 		let mut process = Process::spawn(&executable, &context, None)?;
 		let manifest = process.describe(&context).await?;
 		process.shutdown(&context).await;
@@ -114,8 +109,8 @@ impl Registry {
 			.collect()
 	}
 }
-pub fn checksum(path: &Path) -> Result<String> {
-	Ok(hex::encode(sp_crypto_hashing::blake2_256(&std::fs::read(path)?)))
+pub(crate) fn checksum(path: &Path) -> Result<String> {
+	Ok(polkameter_plugin_sdk::blake2_hex(&std::fs::read(path)?))
 }
 
 struct InFlight<'a> {
@@ -130,7 +125,7 @@ impl Drop for InFlight<'_> {
 	}
 }
 
-pub struct Process {
+struct Process {
 	child: Child,
 	input: ChildStdin,
 	output: BufReader<ChildStdout>,
@@ -213,18 +208,7 @@ impl Process {
 				.await?
 				.ok_or_else(|| anyhow::anyhow!("plugin exited before responding"))?;
 			let response: Response = serde_json::from_str(&line)?;
-			ensure!(
-				response.protocol == PROTOCOL && response.id == id,
-				"plugin protocol/request ID mismatch"
-			);
-			ensure!(
-				response.error.is_some() ^ response.result.is_some(),
-				"invalid plugin response"
-			);
-			if let Some(error) = response.error {
-				anyhow::bail!("plugin operation failed: {error}");
-			}
-			Ok(response.result.unwrap())
+			response.into_result(id)
 		};
 		let result = tokio::select! {
 			biased;
@@ -248,10 +232,20 @@ impl Process {
 		let _ = tokio::time::timeout(Duration::from_secs(2), self.child.wait()).await;
 	}
 }
+/// The plugin processes of one run, shared by every task of the run.
 #[derive(Clone, Default)]
-pub struct Plugins {
+pub struct Plugins(Arc<PluginSet>);
+/// Each plugin's manifest and its serialized process, by plugin ID.
+#[derive(Default)]
+pub struct PluginSet {
 	pub manifests: BTreeMap<String, Manifest>,
-	processes: BTreeMap<String, Arc<Mutex<Process>>>,
+	processes: BTreeMap<String, Mutex<Process>>,
+}
+impl std::ops::Deref for Plugins {
+	type Target = PluginSet;
+	fn deref(&self) -> &PluginSet {
+		&self.0
+	}
 }
 impl Plugins {
 	pub async fn start(
@@ -259,21 +253,25 @@ impl Plugins {
 		registry: &Registry,
 		context: &Context,
 	) -> Result<Self> {
-		let mut plugins = Self::default();
 		// Validate every installation before launching any plugin.
-		for spec in specs {
-			let installed = registry.plugins.get(&spec.id).ok_or_else(|| {
-				anyhow::anyhow!("plugin {} is not installed on this host", spec.id)
-			})?;
-			ensure!(
-				installed.version == spec.version
-					&& checksum(&installed.executable)? == installed.blake2,
-				"plugin {} version/checksum mismatch",
-				spec.id
-			);
-		}
-		for spec in specs {
-			let installed = &registry.plugins[&spec.id];
+		let installed = specs
+			.iter()
+			.map(|spec| -> Result<_> {
+				let installed = registry
+					.plugins
+					.get(&spec.id)
+					.with_context(|| format!("plugin {} is not installed on this host", spec.id))?;
+				ensure!(
+					installed.version == spec.version
+						&& checksum(&installed.executable)? == installed.blake2,
+					"plugin {} version/checksum mismatch",
+					spec.id
+				);
+				Ok((spec, installed))
+			})
+			.collect::<Result<Vec<_>>>()?;
+		let mut set = PluginSet::default();
+		for (spec, installed) in installed {
 			let directory = context.artifact_dir.join("plugins").join(&spec.id);
 			std::fs::create_dir_all(&directory)?;
 			let mut process = Process::spawn(
@@ -289,18 +287,16 @@ impl Plugins {
 				"manifest identity mismatch for {}",
 				spec.id
 			);
-			plugins.manifests.insert(spec.id.clone(), manifest);
-			plugins.processes.insert(spec.id.clone(), Arc::new(Mutex::new(process)));
+			set.manifests.insert(spec.id.clone(), manifest);
+			set.processes.insert(spec.id.clone(), Mutex::new(process));
 		}
-		Ok(plugins)
+		Ok(Self(Arc::new(set)))
 	}
-	pub fn operation(&self, name: &str) -> Result<&Operation> {
-		let (plugin, operation) =
-			name.split_once('.').ok_or_else(|| anyhow::anyhow!("invalid operation"))?;
+	pub fn operation(&self, plugin: &str, operation: &str) -> Result<&Operation> {
 		self.manifests
 			.get(plugin)
 			.and_then(|p| p.operations.get(operation))
-			.ok_or_else(|| anyhow::anyhow!("unknown operation {name}"))
+			.ok_or_else(|| anyhow::anyhow!("unknown operation {plugin}.{operation}"))
 	}
 	pub async fn invoke(
 		&self,
@@ -310,14 +306,18 @@ impl Plugins {
 		timeout_ms: u64,
 		cancel: &CancellationToken,
 	) -> Result<Value> {
-		let operation = self.operation(name)?;
-		operation.validate_inputs(&inputs)?;
-		let (plugin, name) = name.split_once('.').unwrap();
+		let (plugin, operation) =
+			name.split_once('.').ok_or_else(|| anyhow::anyhow!("invalid operation"))?;
+		let contract = self.operation(plugin, operation)?;
+		contract.validate_inputs(&inputs)?;
+		let queue = self.processes.get(plugin).context("plugin process is missing")?;
 		let started = std::time::Instant::now();
 		let mut process = tokio::select! {
 			biased;
-			_=cancel.cancelled()=>anyhow::bail!("run cancelled"),
-			result=tokio::time::timeout(Duration::from_millis(timeout_ms),self.processes[plugin].lock())=>result.map_err(|_|anyhow::anyhow!("plugin queue deadline exceeded"))?,
+			_ = cancel.cancelled() => anyhow::bail!("run cancelled"),
+			result = tokio::time::timeout(Duration::from_millis(timeout_ms), queue.lock()) => {
+				result.map_err(|_| anyhow::anyhow!("plugin queue deadline exceeded"))?
+			},
 		};
 		let remaining =
 			timeout_ms.saturating_sub(started.elapsed().as_millis().try_into().unwrap_or(u64::MAX));
@@ -325,8 +325,8 @@ impl Plugins {
 		let mut context = context.clone();
 		context.artifact_dir = context.artifact_dir.join("plugins").join(plugin);
 		std::fs::create_dir_all(&context.artifact_dir)?;
-		let result = process.call(name, inputs, &context, remaining, cancel).await?;
-		operation.validate_outputs(&result)?;
+		let result = process.call(operation, inputs, &context, remaining, cancel).await?;
+		contract.validate_outputs(&result)?;
 		Ok(result)
 	}
 	pub async fn shutdown(&self, context: &Context) {

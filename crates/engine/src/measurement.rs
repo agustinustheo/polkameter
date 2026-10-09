@@ -2,11 +2,11 @@
 //! with the node monitors. It returns the summary; the caller writes the report once plugin checks
 //! have run.
 use crate::{
-	execute::{Values, resolve, transactions},
+	execute::{Values, resolve, target_endpoint, transactions},
 	machine,
 	plan::Plan,
 	plugins::{Plugins, Registry},
-	wiring::{Chains, Monitors},
+	wiring::{Chains, Monitors, monitor_targets},
 };
 use anyhow::{Context as _, Result, bail};
 use polkameter_chain::{ChainError, Client};
@@ -19,7 +19,7 @@ use polkameter_load::sender::Sender;
 use polkameter_load::steps::final_step;
 use polkameter_load::tracker::{Phase, Tracker};
 use polkameter_load::{Lane, QueueSource, StateCheck, Tx, TxHash, follower, now_ms, rules};
-use polkameter_plugin_sdk::Context;
+use polkameter_plugin_sdk::{Context, StateCheckInput};
 use std::path::Path;
 use tokio_util::sync::CancellationToken;
 
@@ -45,11 +45,8 @@ pub async fn run(
 	let dir = &RunDir::open(&context.artifact_dir);
 	let load = plan.load.as_ref().context("load missing")?;
 	let configured_rules = plan.thresholds.rules()?;
-	let mode: Mode = plan.mode.parse().map_err(anyhow::Error::msg)?;
-	let url = values[&format!("targets.{}", load.target)]
-		.as_str()
-		.context("target missing")?
-		.to_owned();
+	let mode = plan.mode;
+	let url = target_endpoint(plan, &load.target)?.to_owned();
 	let client = Client::connect(&url).await?;
 	let chain = client.chain_info().await?;
 	let block_interval_s = load.block_interval_seconds;
@@ -66,46 +63,35 @@ pub async fn run(
 	);
 	let lanes = vec![Lane {
 		call: "prepared",
-		source: Box::new(QueueSource::new(
+		source: QueueSource::new(
 			flood.iter().map(|t| Ok(Tx::new(t.decode()?))).collect::<Result<Vec<_>>>()?,
 			probes.iter().map(|t| Ok(Tx::new(t.decode()?))).collect::<Result<Vec<_>>>()?,
 			"prepared transactions",
-		)),
+		),
 	}];
 	let mut seen = std::collections::HashSet::new();
 	for tx in flood.iter().chain(&probes) {
 		anyhow::ensure!(seen.insert(&tx.hash), "duplicate transaction in flood/probe sources");
 	}
 	let state_check = load
-		.state_check
+		.state
 		.as_ref()
-		.map(|operation| -> Result<_> {
+		.map(|state| -> Result<_> {
 			Ok(PluginState {
 				plugins: plugins.clone(),
-				operation: operation.clone(),
+				operation: state.check.clone(),
 				target: url.clone(),
-				state: resolve(values, load.state_ref.as_ref().unwrap())?,
+				state: resolve(values, &state.reference)?,
 				context: context.clone(),
 			})
 		})
 		.transpose()?;
-	let (targets, relay_url) = if let Some(monitors) = &plan.monitors {
-		let topology = registry
-			.topologies
-			.get(&monitors.topology)
-			.context("topology alias not installed on this host")?;
-		let targets = polkameter_monitors::load_targets(topology, monitors.para_id)?;
-
-		(
-			targets,
-			values[&format!("targets.{}", monitors.relay_target)]
-				.as_str()
-				.context("relay target missing")?
-				.to_owned(),
-		)
-	} else {
-		(vec![], url.clone())
-	};
+	let relay_url = plan
+		.monitors
+		.as_ref()
+		.map(|m| target_endpoint(plan, &m.relay_target).map(str::to_owned))
+		.transpose()?;
+	let targets = monitor_targets(plan, registry)?.unwrap_or_default();
 	let run_opts = RunOptions {
 		rules: configured_rules,
 		mode,
@@ -117,8 +103,7 @@ pub async fn run(
 	};
 	// Monitors and the load.
 	let (events, _) = tokio::sync::broadcast::channel(64);
-	let chains =
-		Chains { node_url: &url, relay_url: plan.monitors.as_ref().map(|_| relay_url.as_str()) };
+	let chains = Chains { node_url: &url, relay_url: relay_url.as_deref() };
 	let mut monitors = Monitors::start(dir, targets, &events, chains).await?;
 	let (replies_tx, replies) = tokio::sync::mpsc::unbounded_channel();
 	let (blocks_tx, blocks) = tokio::sync::mpsc::unbounded_channel();
@@ -179,13 +164,12 @@ pub async fn run(
 	monitors.stop_sampling().await?;
 	let samples: Vec<NodeSample> = dir.read_jsonl("node.jsonl")?;
 	recovery.node = NodeMax::over(&samples, recovery_window.0, recovery_window.1);
-	let finals = write_steps(dir, &tracker, &["prepared"], &samples)?;
+	let finals = write_steps(dir, &tracker, &samples)?;
 	progress("reconciliation")?;
 	let (loss, lost) = loss_check(
 		&client,
 		&monitors,
 		&mut tracker,
-		&finals,
 		dir,
 		configured_rules.finality_wait_ms,
 		state_check.as_ref().map(|s| s as &dyn polkameter_load::StateCheck),
@@ -204,7 +188,7 @@ pub async fn run(
 	monitors.stop().await?;
 
 	// Summary.
-	let bp = rules::breaking_point_with_rules(&finals, &configured_rules);
+	let bp = rules::breaking_point(&finals, &configured_rules);
 	let sustained = match &bp {
 		None => finals.last(),
 		Some(b) => finals.iter().find(|f| f.step + 1 == b.step),
@@ -272,12 +256,10 @@ async fn loss_check<S: polkameter_load::submit::Submit>(
 	client: &Client,
 	monitors: &Monitors,
 	tracker: &mut Tracker<S>,
-	finals: &[FinalStep],
 	dir: &RunDir,
 	finality_wait_ms: u64,
 	state: Option<&dyn polkameter_load::StateCheck>,
 ) -> (Loss, Vec<LostTx>) {
-	let outstanding = tracker.outstanding();
 	let included_ok: Vec<_> = tracker.included_ok.concat();
 	let scraper = monitors.scraper.clone();
 	let node_pool = async move {
@@ -289,8 +271,6 @@ async fn loss_check<S: polkameter_load::submit::Submit>(
 		})
 	};
 	let settled = polkameter_load::loss::Settled {
-		finals,
-		outstanding: &outstanding,
 		included_ok: &included_ok,
 		last_ours_block: tracker.last_ours_block.max(tracker.last_fetched),
 		flood: &tracker.flood,
@@ -325,25 +305,20 @@ async fn loss_check<S: polkameter_load::submit::Submit>(
 	(loss, lost)
 }
 
-/// steps.jsonl: one record per step and lane (no lane name in a single-lane run, as TS), with
-/// the node's highest CPU and memory while the step ran.
+/// steps.jsonl: one record per step, with the node's highest CPU and memory while the step ran.
 fn write_steps<S: polkameter_load::submit::Submit>(
 	dir: &RunDir,
 	tracker: &Tracker<S>,
-	calls: &[&str],
 	samples: &[NodeSample],
-) -> anyhow::Result<Vec<FinalStep>> {
-	let single = calls.len() == 1;
+) -> Result<Vec<FinalStep>> {
 	let finals: Vec<FinalStep> = tracker
 		.steps
 		.iter()
-		.zip(calls)
-		.flat_map(|(steps, call)| {
-			steps.iter().map(move |s| {
-				let mut f = final_step(s, (!single).then_some(*call));
-				f.node = NodeMax::over(samples, s.started_at, s.ended_at);
-				f
-			})
+		.flatten()
+		.map(|s| {
+			let mut f = final_step(s, None);
+			f.node = NodeMax::over(samples, s.started_at, s.ended_at);
+			f
 		})
 		.collect();
 	let mut out = dir.jsonl("steps.jsonl")?;
@@ -401,7 +376,19 @@ impl StateCheck for PluginState {
 		Result<polkameter_files::summary::StateSample, ChainError>,
 	> {
 		Box::pin(async move {
-			let result = self.plugins.invoke(&self.operation,serde_json::json!({"target":self.target,"state":self.state,"hashes":included.iter().map(hex::encode).collect::<Vec<_>>(),"at":hex::encode(at)}),&self.context,60_000,&CancellationToken::new()).await.map_err(|e| ChainError::Read{what:"plugin state check",detail:e.to_string()})?;
+			let read = |detail: String| ChainError::Read { what: "plugin state check", detail };
+			let input = StateCheckInput {
+				target: self.target.clone(),
+				state: self.state.clone(),
+				hashes: included.iter().map(hex::encode).collect(),
+				at: hex::encode(at),
+			};
+			let inputs = serde_json::to_value(input).map_err(|e| read(e.to_string()))?;
+			let result = self
+				.plugins
+				.invoke(&self.operation, inputs, &self.context, 60_000, &CancellationToken::new())
+				.await
+				.map_err(|e| read(e.to_string()))?;
 			serde_json::from_value(result).map_err(|e| ChainError::Read {
 				what: "plugin state response",
 				detail: e.to_string(),
@@ -430,8 +417,10 @@ mod tests {
 			("smoke optional gap", Mode::Smoke, false, Status::Pass, Status::NoResult, 0),
 			("smoke all pass", Mode::Smoke, false, Status::Pass, Status::Pass, 0),
 		] {
-			let mut summary: Summary =
-				serde_json::from_str(include_str!("../../checks/tests/summary.json")).unwrap();
+			let mut summary: Summary = serde_json::from_str(include_str!(
+				"../../../src-tauri/tests/fixtures/smoke-run/summary.json"
+			))
+			.unwrap();
 			summary.problems = if problem { vec!["monitor scrape failed".into()] } else { vec![] };
 			let checks =
 				[result("required", required, false), result("from a plugin", optional, true)];

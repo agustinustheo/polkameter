@@ -23,7 +23,6 @@ pub enum Outcome {
 	Failed,
 	/// The file word for a probe the node refused at submit.
 	Refused,
-	Dropped,
 }
 
 /// A probe tx, one per block before and after the load.
@@ -155,30 +154,35 @@ pub struct LostTx {
 	pub validate: String,
 }
 
-/// Every flood tx is included, refused, expired or ready in the pool; anything else is lost.
+/// Every sent flood tx has one status, and the statuses partition `sent`: `included`, `refused`,
+/// `in_pool`, `lost`, `unverified` and `unknown` add up to it. A `None` count (`in_pool`, `lost`)
+/// was not counted, and its txs fall under the other statuses.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Loss {
 	/// Successful RPC replies (not a dispatch-success count).
 	#[serde(default)]
 	pub accepted: u64,
-	/// Unresolved submissions without an acceptance reply.
+	/// No evidence either way: no acceptance reply and no inclusion seen, or the chain or pool was
+	/// not read.
 	#[serde(default)]
 	pub unknown: u64,
+	/// Seen in a best block, but finality was not verified (the wait timed out or the chain was not
+	/// walked).
+	#[serde(default)]
+	pub unverified: u64,
 	/// Sent.
 	pub sent: u64,
-	/// Included.
+	/// Included in a finalized block, read by the walk.
 	pub included: u64,
-	/// Failed after inclusion.
+	/// Failed after inclusion, in a best or a finalized block.
 	pub failed_in_block: u64,
-	/// Refused.
+	/// Refused at submit.
 	pub refused: u64,
-	/// Expired.
-	pub dropped: u64,
 	/// Still ready in the node's pool; `None` when it could not be listed.
 	pub in_pool: Option<u64>,
-	/// Accepted, in no finalized block, refused by nobody, not ready in the pool; `None` when the
-	/// pool could not be listed or the finalized chain not walked.
+	/// Accepted or seen in a best block, in no finalized block, not ready in the pool; `None` when
+	/// the pool could not be listed or the finalized chain not walked, or finality was not verified.
 	pub lost: Option<u64>,
 	/// The count on the finalized chain; zeros when it could not be walked (see `note`).
 	pub on_chain: OnChain,
@@ -190,17 +194,4 @@ pub struct Loss {
 	pub finalized: Option<Finality>,
 	/// The state check.
 	pub state: Option<StateSample>,
-}
-
-impl Outcome {
-	/// The name in the files and the summary.
-	pub fn name(self) -> &'static str {
-		match self {
-			Outcome::Pending => "pending",
-			Outcome::Included => "included",
-			Outcome::Failed => "failed",
-			Outcome::Refused => "refused",
-			Outcome::Dropped => "dropped",
-		}
-	}
 }

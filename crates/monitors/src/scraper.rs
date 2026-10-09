@@ -4,20 +4,20 @@
 //! Each scrape of each node is one [`ScrapeRecord`] in `scrapes.jsonl`; `t` is when that node's
 //! answer arrived. A node that doesn't answer is a record with `error`, never a stop.
 
-use std::collections::HashMap;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{collections::HashMap, time::Duration};
 
-use polkameter_files::registry::{self, NODE_METRICS};
-use polkameter_files::{FileError, JsonlWriter, ScrapeRecord, parse_sample_line};
+use polkameter_files::{
+	FileError, JsonlWriter, ScrapeRecord, now_ms, parse_sample_line,
+	registry::{self, NODE_METRICS},
+};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
 use polkameter_files::Problems;
 
-use crate::Target;
+use crate::{Job, Target};
 
 const EVERY: Duration = Duration::from_secs(5);
-const TIMEOUT: Duration = Duration::from_secs(5);
 
 /// One good scrape of one node: series (name plus labels, as served) to value.
 #[derive(Debug, Clone, Default)]
@@ -99,6 +99,8 @@ pub struct Scraper {
 	http: reqwest::Client,
 	problems: Problems,
 	failures: HashMap<String, u32>,
+	/// The instance name of the first collator: its sample goes to `collator`.
+	collator_instance: Option<String>,
 	collator: watch::Sender<Option<Sample>>,
 	now: mpsc::Receiver<oneshot::Sender<Scrapes>>,
 }
@@ -112,8 +114,18 @@ impl Scraper {
 	) -> (Self, ScraperHandle) {
 		let (collator, collator_rx) = watch::channel(None);
 		let (now_tx, now) = mpsc::channel(16);
-		let http = reqwest::Client::builder().timeout(TIMEOUT).build().expect("http client");
-		let s = Self { targets, out, http, problems, failures: HashMap::new(), collator, now };
+		let collator_instance =
+			targets.iter().find(|t| t.job == Job::Collator).map(|t| t.instance.clone());
+		let s = Self {
+			targets,
+			out,
+			http: http_client(),
+			problems,
+			failures: HashMap::new(),
+			collator_instance,
+			collator,
+			now,
+		};
 		(s, ScraperHandle { now: now_tx, collator: collator_rx })
 	}
 
@@ -149,12 +161,7 @@ impl Scraper {
 						error: None,
 					})?;
 					let sample = Sample { t, metrics };
-					if self
-						.targets
-						.iter()
-						.find(|x| x.job == crate::Job::Collator)
-						.is_some_and(|x| x.instance == instance)
-					{
+					if self.collator_instance.as_deref() == Some(instance.as_str()) {
 						let _ = self.collator.send(Some(sample.clone()));
 					}
 					out.insert(instance, Some(sample));
@@ -183,14 +190,27 @@ impl Scraper {
 	}
 }
 
+/// The HTTP client of every read of a node: a 5 s timeout.
+pub(crate) fn http_client() -> reqwest::Client {
+	reqwest::Client::builder()
+		.timeout(Duration::from_secs(5))
+		.build()
+		.expect("http client")
+}
+
+/// GET `url`; a transport error or an error status (4xx, 5xx) is the error.
+pub(crate) async fn get(
+	http: &reqwest::Client,
+	url: &str,
+) -> Result<reqwest::Response, reqwest::Error> {
+	http.get(url).send().await?.error_for_status()
+}
+
+/// A node's `/metrics` body, or why it could not be read.
 async fn fetch(http: &reqwest::Client, target: &Target) -> Result<String, String> {
 	let res = http.get(&target.url).send().await.map_err(|e| e.to_string())?;
 	if !res.status().is_success() {
 		return Err(format!("HTTP {}", res.status().as_u16()));
 	}
 	res.text().await.map_err(|e| e.to_string())
-}
-
-fn now_ms() -> u64 {
-	SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }

@@ -13,6 +13,13 @@ fn children(v: &Value) -> Box<dyn Iterator<Item = &Value> + '_> {
 	}
 }
 
+/// The only field of a single-field composite or variant (a newtype wrapper).
+fn only_child(v: &Value) -> Option<&Value> {
+	let mut c = children(v);
+	let first = c.next()?;
+	c.next().is_none().then_some(first)
+}
+
 fn composite_values(c: &Composite<()>) -> Box<dyn Iterator<Item = &Value> + '_> {
 	match c {
 		Composite::Named(fields) => Box::new(fields.iter().map(|(_, v)| v)),
@@ -55,31 +62,8 @@ pub fn as_u64(v: &Value) -> Option<u64> {
 		ValueDef::Primitive(Primitive::U128(n)) => u64::try_from(*n).ok(),
 		ValueDef::Primitive(Primitive::I128(n)) => u64::try_from(*n).ok(),
 		ValueDef::Primitive(_) | ValueDef::BitSequence(_) => None,
-		_ => {
-			let mut c = children(v);
-			let first = c.next()?;
-			if c.next().is_some() {
-				return None;
-			}
-			as_u64(first)
-		},
+		_ => only_child(v).and_then(as_u64),
 	}
-}
-
-/// 32 bytes, through any single-field wrappers.
-pub fn as_bytes32(v: &Value) -> Option<[u8; 32]> {
-	let bytes: Vec<u8> = children(v)
-		.map(|b| as_u64(b).and_then(|n| u8::try_from(n).ok()))
-		.collect::<Option<_>>()?;
-	if bytes.len() == 32 {
-		return bytes.try_into().ok();
-	}
-	let mut c = children(v);
-	let first = c.next()?;
-	if c.next().is_some() {
-		return None;
-	}
-	as_bytes32(first)
 }
 
 #[cfg(test)]
@@ -91,17 +75,16 @@ mod tests {
 		let receipt = Value::named_composite([
 			(
 				"descriptor",
-				Value::named_composite([
-					("para_id", Value::unnamed_composite([Value::u128(1502)])),
-					("relay_parent", Value::from_bytes([7u8; 32])),
-				]),
+				Value::named_composite([(
+					"para_id",
+					Value::unnamed_composite([Value::u128(1502)]),
+				)]),
 			),
 			("commitments_hash", Value::from_bytes([1u8; 32])),
 		]);
 		let event = Value::unnamed_composite([receipt, Value::u128(3)]);
 		let r = nth(&event, 0).unwrap();
 		assert_eq!(field(r, "para_id").and_then(as_u64), Some(1502));
-		assert_eq!(field(r, "relay_parent").and_then(as_bytes32), Some([7u8; 32]));
 		assert_eq!(
 			as_u64(&Value::named_composite([("a", Value::u128(1)), ("b", Value::u128(2))])),
 			None,

@@ -2,7 +2,6 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Polkameter",
   "mainBinaryName": "polkameter-desktop",
-  "version": "0.1.0",
   "identifier": "io.parity.polkameter",
   "build": {
     "beforeDevCommand": "pnpm dev",

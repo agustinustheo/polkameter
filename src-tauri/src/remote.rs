@@ -5,10 +5,12 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
-	extract::State,
-	http::{header::AUTHORIZATION, HeaderMap, StatusCode},
-	routing::{get, post},
 	Json, Router,
+	extract::{Path, Request, State},
+	http::{StatusCode, header::AUTHORIZATION},
+	middleware::{self, Next},
+	response::{IntoResponse, Response},
+	routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
 
@@ -57,14 +59,17 @@ pub async fn serve(bind: &str, bearer_token: String, output_root: String) -> Res
 		output_root,
 		plugins: Arc::new(crate::plugin_application::State::default()),
 	};
-	let app = Router::new()
-		.route("/health", get(|| async { Json(serde_json::json!({"status":"ok"})) }))
+	let protected = Router::new()
 		.route("/plugins", get(plugin_capabilities))
 		.route("/preflight", post(plugin_preflight_handler))
 		.route("/inspect", post(plugin_inspect_handler))
 		.route("/runs", post(plugin_start_handler))
 		.route("/runs/{id}", get(plugin_status_handler))
 		.route("/runs/{id}/stop", post(plugin_stop_handler))
+		.route_layer(middleware::from_fn_with_state(state.clone(), require_bearer));
+	let app = Router::new()
+		.route("/health", get(|| async { Json(serde_json::json!({"status":"ok"})) }))
+		.merge(protected)
 		.with_state(state);
 	let listener = tokio::net::TcpListener::bind(address)
 		.await
@@ -91,16 +96,25 @@ async fn decode_response<T: for<'de> Deserialize<'de>>(
 
 type AgentResult<T> = Result<T, (StatusCode, String)>;
 
-fn authorize(headers: &HeaderMap, state: &AgentState) -> AgentResult<()> {
-	let provided = headers
+/// Lets a request through only when it carries the agent's bearer token.
+async fn require_bearer(State(state): State<AgentState>, request: Request, next: Next) -> Response {
+	let provided = request
+		.headers()
 		.get(AUTHORIZATION)
 		.and_then(|value| value.to_str().ok())
 		.and_then(|value| value.strip_prefix("Bearer "));
-	if provided == Some(state.bearer_token.as_str()) {
-		Ok(())
+	if provided
+		.is_some_and(|token| constant_time_eq(token.as_bytes(), state.bearer_token.as_bytes()))
+	{
+		next.run(request).await
 	} else {
-		Err((StatusCode::UNAUTHORIZED, "missing or invalid bearer token".into()))
+		(StatusCode::UNAUTHORIZED, "missing or invalid bearer token").into_response()
 	}
+}
+
+/// Equal lengths, then a XOR fold over every byte, so the time does not reveal where they differ.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+	a.len() == b.len() && a.iter().zip(b).fold(0u8, |diff, (x, y)| diff | (x ^ y)) == 0
 }
 
 fn bad_request(error: impl ToString) -> (StatusCode, String) {
@@ -125,35 +139,32 @@ fn is_loopback_http(endpoint: &str) -> bool {
 pub struct PluginRequest {
 	pub xml: String,
 }
-async fn plugin_capabilities(
-	State(state): State<AgentState>,
-	headers: HeaderMap,
-) -> AgentResult<Json<serde_json::Value>> {
-	authorize(&headers, &state)?;
+async fn plugin_capabilities() -> AgentResult<Json<serde_json::Value>> {
 	let registry = polkameter_engine::plugins::Registry::load().map_err(bad_request)?;
 	Ok(Json(
 		serde_json::json!({"protocol":1,"plugins":registry.plugins.iter().map(|(id,p)|serde_json::json!({"id":id,"version":p.version,"blake2":p.blake2})).collect::<Vec<_>>()}),
 	))
 }
 async fn plugin_preflight_handler(
-	State(state): State<AgentState>,
-	headers: HeaderMap,
 	Json(request): Json<PluginRequest>,
 ) -> AgentResult<Json<serde_json::Value>> {
-	authorize(&headers, &state)?;
-	let plan = polkameter_engine::plan::Plan::parse(&request.xml).map_err(bad_request)?;
-	let registry = polkameter_engine::plugins::Registry::load().map_err(bad_request)?;
-	polkameter_engine::execute::preflight(&plan, &registry)
+	crate::plugin_application::preflight_xml(&request.xml)
+		.await
+		.map(Json)
+		.map_err(bad_request)
+}
+async fn plugin_inspect_handler(
+	Json(request): Json<PluginRequest>,
+) -> AgentResult<Json<serde_json::Value>> {
+	crate::plugin_application::inspect_xml(&request.xml)
 		.await
 		.map(Json)
 		.map_err(bad_request)
 }
 async fn plugin_start_handler(
 	State(state): State<AgentState>,
-	headers: HeaderMap,
 	Json(request): Json<PluginRequest>,
 ) -> AgentResult<Json<crate::plugin_application::Status>> {
-	authorize(&headers, &state)?;
 	crate::plugin_application::start(
 		request.xml,
 		state.output_root,
@@ -165,27 +176,25 @@ async fn plugin_start_handler(
 	.map_err(bad_request)
 }
 async fn plugin_status_handler(
-	axum::extract::Path(id): axum::extract::Path<String>,
+	Path(id): Path<String>,
 	State(state): State<AgentState>,
-	headers: HeaderMap,
 ) -> AgentResult<Json<crate::plugin_application::Status>> {
-	authorize(&headers, &state)?;
 	crate::plugin_application::status(&state.plugins, &id)
 		.await
 		.map(Json)
 		.map_err(bad_request)
 }
 async fn plugin_stop_handler(
-	axum::extract::Path(id): axum::extract::Path<String>,
+	Path(id): Path<String>,
 	State(state): State<AgentState>,
-	headers: HeaderMap,
 ) -> AgentResult<Json<crate::plugin_application::Status>> {
-	authorize(&headers, &state)?;
 	crate::plugin_application::stop(&state.plugins, &id)
 		.await
 		.map(Json)
 		.map_err(bad_request)
 }
+
+/// The client side: each call targets one agent endpoint.
 pub async fn plugin_start(
 	target: &RemoteRunnerTarget,
 	xml: String,
@@ -196,45 +205,35 @@ pub async fn plugin_status(
 	id: &str,
 	target: &RemoteRunnerTarget,
 ) -> Result<crate::plugin_application::Status, String> {
-	if !is_safe_run_id(id) {
-		return Err("invalid run ID".into());
-	}
-	plugin_request(target, reqwest::Method::GET, &format!("/runs/{id}"), None).await
+	plugin_request(target, reqwest::Method::GET, &run_path(id, "")?, None).await
 }
 pub async fn plugin_stop(
 	id: &str,
 	target: &RemoteRunnerTarget,
 ) -> Result<crate::plugin_application::Status, String> {
-	if !is_safe_run_id(id) {
-		return Err("invalid run ID".into());
-	}
-	plugin_request(target, reqwest::Method::POST, &format!("/runs/{id}/stop"), None).await
+	plugin_request(target, reqwest::Method::POST, &run_path(id, "/stop")?, None).await
 }
+#[cfg(feature = "desktop")]
 pub async fn plugin_preflight(
 	target: &RemoteRunnerTarget,
 	xml: String,
 ) -> Result<serde_json::Value, String> {
 	plugin_request(target, reqwest::Method::POST, "/preflight", Some(xml)).await
 }
-
-async fn plugin_inspect_handler(
-	State(state): State<AgentState>,
-	headers: HeaderMap,
-	Json(request): Json<PluginRequest>,
-) -> AgentResult<Json<serde_json::Value>> {
-	authorize(&headers, &state)?;
-	let plan = polkameter_engine::plan::Plan::parse(&request.xml).map_err(bad_request)?;
-	let registry = polkameter_engine::plugins::Registry::load().map_err(bad_request)?;
-	polkameter_engine::execute::inspect(&plan, &registry)
-		.await
-		.map(Json)
-		.map_err(bad_request)
-}
+#[cfg(feature = "desktop")]
 pub async fn plugin_inspect(
 	target: &RemoteRunnerTarget,
 	xml: String,
 ) -> Result<serde_json::Value, String> {
 	plugin_request(target, reqwest::Method::POST, "/inspect", Some(xml)).await
+}
+
+/// The endpoint `/runs/{id}{suffix}`, after rejecting run IDs that could escape the path.
+fn run_path(id: &str, suffix: &str) -> Result<String, String> {
+	if !is_safe_run_id(id) {
+		return Err("invalid run ID".into());
+	}
+	Ok(format!("/runs/{id}{suffix}"))
 }
 
 async fn plugin_request<T: serde::de::DeserializeOwned>(
@@ -261,23 +260,29 @@ mod tests {
 
 	#[test]
 	fn remote_targets_require_tls_or_a_loopback_tunnel() {
-		assert!(RemoteRunnerTarget {
-			endpoint: "http://127.0.0.1:9901".into(),
-			bearer_token: "token".into(),
-		}
-		.validate()
-		.is_ok());
-		assert!(RemoteRunnerTarget {
-			endpoint: "https://runner.example".into(),
-			bearer_token: "token".into(),
-		}
-		.validate()
-		.is_ok());
-		assert!(RemoteRunnerTarget {
-			endpoint: "http://runner.example".into(),
-			bearer_token: "token".into(),
-		}
-		.validate()
-		.is_err());
+		assert!(
+			RemoteRunnerTarget {
+				endpoint: "http://127.0.0.1:9901".into(),
+				bearer_token: "token".into(),
+			}
+			.validate()
+			.is_ok()
+		);
+		assert!(
+			RemoteRunnerTarget {
+				endpoint: "https://runner.example".into(),
+				bearer_token: "token".into(),
+			}
+			.validate()
+			.is_ok()
+		);
+		assert!(
+			RemoteRunnerTarget {
+				endpoint: "http://runner.example".into(),
+				bearer_token: "token".into(),
+			}
+			.validate()
+			.is_err()
+		);
 	}
 }

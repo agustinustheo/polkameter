@@ -17,6 +17,7 @@ polkameter-load = { path = "crates/load" }
 polkameter-checks = { path = "crates/checks" }
 
 anyhow = "1"
+csv = "1.3"
 hex = "0.4"
 parity-scale-codec = { version = "3.7", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
@@ -36,7 +37,8 @@ needless_pass_by_value = "warn"
 too_many_lines = "warn"
 
 [profile.release]
-debug = 1
+debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 3
+debug = false

@@ -10,25 +10,28 @@
 
 use std::time::Duration;
 
-use polkameter_files::summary::{Baseline, Outcome, ProbePhase, Recovery};
-use polkameter_files::{FileError, Millis, NodeMax, Problems};
+use polkameter_files::{
+	FileError, Millis, NodeMax, Problems,
+	summary::{Baseline, Outcome, ProbePhase, Recovery},
+};
 use serde::Serialize;
-use tokio::sync::broadcast;
-use tokio::sync::mpsc::UnboundedReceiver;
-use tokio::time::MissedTickBehavior;
+use tokio::{
+	sync::{broadcast, mpsc::UnboundedReceiver},
+	time::MissedTickBehavior,
+};
 
-use crate::follower::BlockEvent;
-use crate::now_ms;
-use crate::plan::Plan;
+use crate::{follower::BlockEvent, now_ms, plan::Plan};
 
 mod load;
 
-use crate::recovery::recovered_at_with_rules;
-use crate::rules::{Rules, secs};
-use crate::sender::Reply;
-use crate::steps::{block_stats, percentile};
-use crate::submit::Submit;
-use crate::tracker::{Phase, Tracker};
+use crate::{
+	recovery::recovered_at,
+	rules::{Rules, secs},
+	sender::Reply,
+	steps::{block_stats, percentile},
+	submit::Submit,
+	tracker::{Phase, Tracker},
+};
 pub use load::load;
 
 /// smoke: stop at the first problem of any part; stress: only errors of our own tools stop a run.
@@ -41,19 +44,12 @@ pub enum Mode {
 	Stress,
 }
 
-impl Mode {
-	/// The name on the command line and in the summary.
-	pub fn as_str(self) -> &'static str {
-		match self {
-			Self::Smoke => "smoke",
-			Self::Stress => "stress",
-		}
-	}
-}
-
 impl std::fmt::Display for Mode {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		f.write_str(self.as_str())
+		f.write_str(match self {
+			Self::Smoke => "smoke",
+			Self::Stress => "stress",
+		})
 	}
 }
 
@@ -72,8 +68,6 @@ impl std::str::FromStr for Mode {
 /// What the monitors hear from the runner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunEvent {
-	/// A phase started.
-	Phase(Phase),
 	/// A step started or ended: scrape now, so the window starts and ends on fresh samples.
 	StepEdge(u32),
 }
@@ -162,18 +156,13 @@ pub(super) async fn next<S: Submit>(
 	Ok(false)
 }
 
-pub(super) fn phase<S: Submit>(t: &mut Tracker<S>, io: &Io, p: Phase) -> Result<(), FileError> {
-	let _ = io.events.send(RunEvent::Phase(p));
-	t.set_phase(p, now_ms())
-}
-
 /// 1. Probes, one per block, must all land before any load; else the network is not healthy.
 pub async fn baseline<S: Submit>(
 	t: &mut Tracker<S>,
 	io: &mut Io,
 	opts: &RunOptions,
 ) -> Result<Baseline, RunError> {
-	phase(t, io, Phase::Baseline)?;
+	t.set_phase(Phase::Baseline, now_ms())?;
 	let deadline =
 		now_ms() + (opts.baseline_probes as u64 + 10) * (opts.block_interval_s * 1000.0) as u64;
 	let mut tick = interval(200);
@@ -232,7 +221,7 @@ pub async fn recover<S: Submit>(
 	opts: &RunOptions,
 	threshold_ms: Millis,
 ) -> Result<Recovery, RunError> {
-	phase(t, io, Phase::Recovery)?;
+	t.set_phase(Phase::Recovery, now_ms())?;
 	let stopped_at = now_ms();
 	let backlog_at_stop = t.outstanding().len() as u64;
 	eprintln!(
@@ -249,7 +238,7 @@ pub async fn recover<S: Submit>(
 		let now = now_ms();
 		t.tick(now)?;
 		back_at = back_at.or_else(|| {
-			recovered_at_with_rules(
+			recovered_at(
 				&t.probes,
 				&t.recovery_blocks,
 				threshold_ms,
@@ -273,19 +262,15 @@ pub async fn recover<S: Submit>(
 		}
 	}
 	let seconds = |at: Option<Millis>| at.map(|at| at.saturating_sub(stopped_at).div_ceil(1000));
+	let landed = format!(
+		"{} probes in a row landed within {} s",
+		opts.rules.probes_in_a_row,
+		secs(threshold_ms as f64)
+	);
 	let detail = match back_at {
-		Some(_) => format!(
-			"{} probes in a row landed within {} s",
-			opts.rules.probes_in_a_row,
-			secs(threshold_ms as f64)
-		),
+		Some(_) => landed,
 		None if t.recovery_blocks.is_empty() => format!("no new block in {} s", opts.recovery_s),
-		None => format!(
-			"after {} s no {} probes in a row landed within {} s",
-			opts.recovery_s,
-			opts.rules.probes_in_a_row,
-			secs(threshold_ms as f64)
-		),
+		None => format!("after {} s no {landed}", opts.recovery_s),
 	};
 	let r = Recovery {
 		measured: true,

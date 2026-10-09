@@ -1,34 +1,29 @@
 //! Transaction pool (outcomes.md): silent loss, stuck pool, clean refusals, pool work.
 
-use polkameter_files::registry::Outcome;
-use polkameter_files::{num, to_fixed};
+use polkameter_files::{num, registry::Outcome, to_fixed};
 use serde::Serialize;
 
-use crate::data::{CounterReset, RunData, Window, quantile};
-use crate::{Check, LIMITS, Status, Verdict};
+use crate::{
+	Check, LIMITS, Status, Verdict,
+	data::{COLLATOR, CounterReset, END_REASON, Label, Phase, RunData, Window, quantile},
+};
 
-const COLLATOR: (&str, &str) = ("job", "collator");
-
-/// Our flood txs not yet included, refused or expired, from the load tool's own counters.
+/// Our flood txs not yet included or refused, from the load tool's own counters.
 fn backlog(d: &RunData, t: f64) -> f64 {
 	let v = |name| d.at(name, &[], t).unwrap_or(0.0);
 	v("polkameter_tx_sent_total")
 		- v("polkameter_tx_included_total")
 		- v("polkameter_tx_rejected_total")
-		- v("polkameter_tx_expired_total")
 }
 
 /// Blocks that ended empty (`no_more_transactions`) while more than `min` of our txs waited and
 /// none of ours went in: the pool gave the builder nothing it had. A block of heavy txs also ends
 /// with `no_more_transactions` when the builder skipped every waiting tx that didn't fit; then
 /// some of ours went in, so it doesn't count.
-pub fn empty_while_waiting(d: &RunData, w: &Window, min: f64) -> f64 {
+fn empty_while_waiting(d: &RunData, w: &Window, min: f64) -> f64 {
 	let included = |t| d.at("polkameter_tx_included_total", &[], t).unwrap_or(0.0);
 	let mut n = 0.0;
-	for s in d.series(
-		"substrate_proposer_end_proposal_reason",
-		&[COLLATOR, ("reason", "no_more_transactions")],
-	) {
+	for s in d.series(END_REASON, &[COLLATOR, ("reason", "no_more_transactions")]) {
 		let pts: Vec<_> = s.points.iter().filter(|p| p.t >= w.start && p.t <= w.end).collect();
 		for pair in pts.windows(2) {
 			let (a, b) = (pair[0], pair[1]);
@@ -61,7 +56,7 @@ fn no_silent_loss(d: &RunData) -> Result<Verdict, CounterReset> {
 
 fn burst_drains(d: &RunData) -> Result<Verdict, CounterReset> {
 	let r = &d.summary.recovery;
-	let Some(rec) = d.phase("recovery").filter(|_| r.measured) else {
+	let Some(rec) = d.phase(Phase::Recovery).filter(|_| r.measured) else {
 		return Ok(Verdict::new(Status::NoResult, r.detail.clone()));
 	};
 	let empty = empty_while_waiting(d, &rec, LIMITS.pool_stuck_min_txs);
@@ -93,7 +88,7 @@ fn refusals_clean(d: &RunData) -> Result<Verdict, CounterReset> {
 	for s in d.series("polkameter_tx_rejected_total", &[]) {
 		let filter: Vec<(&str, &str)> =
 			s.labels.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-		let n = d.diff("polkameter_tx_rejected_total", &filter, &w)?.unwrap_or(0.0);
+		let n = d.increase("polkameter_tx_rejected_total", &filter, &w)?;
 		by_reason.push((s.labels.get("reason").cloned().unwrap_or_default(), n));
 	}
 	let no_code = by_reason.iter().filter(|(r, _)| r == "no code").fold(0.0, |a, x| a + x.1);
@@ -122,7 +117,7 @@ fn refusals_clean(d: &RunData) -> Result<Verdict, CounterReset> {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PoolWork {
-	window: String,
+	window: Label,
 	maintain_p95_s: Option<f64>,
 	backlog: f64,
 }

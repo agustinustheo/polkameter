@@ -4,12 +4,13 @@
 //! Errors here are the chain's, not ours: the caller decides whether one stops a setup or is a
 //! result of the run.
 
-use subxt::dynamic::{self, Value};
-use subxt::{OnlineClient, PolkadotConfig};
+use subxt::{OnlineClient, PolkadotConfig, dynamic};
 use subxt_rpcs::{RpcClient, rpc_params};
 
-use crate::reads::fetch;
-use crate::tx::{ChainInfo, tx_hash};
+use crate::{
+	reads::fetch,
+	tx::{ChainInfo, tx_hash},
+};
 
 /// subxt at a block.
 pub type AtBlock = subxt::client::ClientAtBlock<
@@ -45,12 +46,12 @@ pub enum ChainError {
 		detail: String,
 	},
 	/// `validate_transaction` refused a tx.
-	#[error("{what} is not valid: {kind} {code} (raw {raw})")]
+	#[error("{what} is not valid: {kind:?} {code} (raw {raw})")]
 	Invalid {
 		/// The tx.
 		what: String,
 		/// Invalid or Unknown.
-		kind: &'static str,
+		kind: Refusal,
 		/// Custom or variant code.
 		code: u8,
 		/// The first bytes of the answer.
@@ -59,6 +60,15 @@ pub enum ChainError {
 	/// Waited too long.
 	#[error("{0}")]
 	Timeout(String),
+}
+
+/// Why `validate_transaction` refused a tx: the runtime's `TransactionValidityError`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refusal {
+	/// The tx can never be valid.
+	Invalid,
+	/// The chain can't tell whether the tx is valid.
+	Unknown,
 }
 
 /// Whose fault an error is.
@@ -84,19 +94,12 @@ impl ChainError {
 	}
 }
 
-/// Our encoding no longer matches the runtime: an error of our tools, so the run stops.
-#[derive(Debug, thiserror::Error)]
-#[error("the runtime's tx extensions changed; ours: {ours:?}, live: {live:?}")]
-pub struct LayoutChanged {
-	ours: Vec<&'static str>,
-	live: Vec<String>,
-}
-
 pub(crate) fn read_any<E: std::fmt::Display>(what: &'static str) -> impl FnOnce(E) -> ChainError {
 	move |e| ChainError::Read { what, detail: e.to_string() }
 }
 
-pub(crate) fn decode_err<E: std::fmt::Display>(what: &'static str) -> impl FnOnce(E) -> ChainError {
+/// An answer that did not decode as our types: our view of the runtime is wrong.
+pub fn decode_err<E: std::fmt::Display>(what: &'static str) -> impl FnOnce(E) -> ChainError {
 	move |e| ChainError::Decode { what, detail: e.to_string() }
 }
 
@@ -105,8 +108,6 @@ pub(crate) fn decode_err<E: std::fmt::Display>(what: &'static str) -> impl FnOnc
 pub struct Client {
 	api: OnlineClient<PolkadotConfig>,
 	rpc: RpcClient,
-	/// Its WebSocket URL.
-	pub url: String,
 }
 
 impl Client {
@@ -116,7 +117,7 @@ impl Client {
 			.await
 			.map_err(|source| ChainError::Rpc { method: "connect", source })?;
 		let api = OnlineClient::from_rpc_client(rpc.clone()).await.map_err(read_any("metadata"))?;
-		Ok(Self { api, rpc, url: url.to_owned() })
+		Ok(Self { api, rpc })
 	}
 
 	/// A raw JSON-RPC call.
@@ -163,33 +164,13 @@ impl Client {
 		})
 	}
 
-	/// Checks the live extension list against our tx layout.
-	pub async fn check_extensions(
-		&self,
-		expected: &[&'static str],
-	) -> Result<Result<(), LayoutChanged>, ChainError> {
-		let at = self.finalized().await?;
-		let live: Vec<String> = at
-			.metadata_ref()
-			.extrinsic()
-			.transaction_extensions_to_use_for_encoding()
-			.map(|e| e.identifier().to_owned())
-			.collect();
-		let ours: Vec<&'static str> = expected.to_vec();
-		Ok(if live == ours { Ok(()) } else { Err(LayoutChanged { ours, live }) })
-	}
-
 	/// The running runtime's normal class limit (ref time, proof size): `System.BlockWeights`.
 	/// Read it here, never from the runtime source: live previewnet allows 1.5 s, `main` 1.7 s.
 	pub async fn normal_limit(&self) -> Result<(u64, u64), ChainError> {
-		#[derive(scale_decode::DecodeAsType)]
-		struct W {
-			ref_time: u64,
-			proof_size: u64,
-		}
+		// `Weight { ref_time, proof_size }` decodes as the tuple `(ref_time, proof_size)`.
 		#[derive(scale_decode::DecodeAsType)]
 		struct Class {
-			max_total: Option<W>,
+			max_total: Option<(u64, u64)>,
 		}
 		#[derive(scale_decode::DecodeAsType)]
 		struct PerClass {
@@ -204,7 +185,7 @@ impl Client {
 			.constants()
 			.entry(dynamic::constant::<BlockWeights>("System", "BlockWeights"))
 			.map_err(decode_err("System.BlockWeights"))?;
-		Ok(w.per_class.normal.max_total.map_or((0, 0), |m| (m.ref_time, m.proof_size)))
+		Ok(w.per_class.normal.max_total.unwrap_or_default())
 	}
 
 	/// The hash of block `number` on the node's canonical chain; `None` when the node doesn't
@@ -224,12 +205,11 @@ impl Client {
 
 	/// The parent hash of block `hash`.
 	pub async fn parent(&self, hash: [u8; 32]) -> Result<[u8; 32], ChainError> {
-		let header: serde_json::Value = self
-			.request("chain_getHeader", rpc_params![format!("0x{}", hex::encode(hash))])
-			.await?;
+		let header: serde_json::Value =
+			self.request("chain_getHeader", rpc_params![hex0x(hash)]).await?;
 		hex32(header["parentHash"].as_str().ok_or_else(|| ChainError::Read {
 			what: "header",
-			detail: format!("no parent hash for 0x{}", hex::encode(hash)),
+			detail: format!("no parent hash for {}", hex0x(hash)),
 		})?)
 	}
 
@@ -269,47 +249,10 @@ impl Client {
 		let mut stamps = Vec::new();
 		for n in (number.saturating_sub(60)..=number).rev() {
 			let Some(hash) = self.try_block_hash(n).await? else { break };
-			stamps.push(
-				fetch::<(), u64>(&self.at(hash).await?, "Timestamp", "Now", ())
-					.await?
-					.unwrap_or(0),
-			);
+			stamps
+				.push(fetch::<u64>(&self.at(hash).await?, "Timestamp", "Now").await?.unwrap_or(0));
 		}
 		Ok(stamps)
-	}
-
-	/// Encodes a call by pallet and call name, with metadata.
-	pub async fn call_data(
-		&self,
-		pallet: &str,
-		call: &str,
-		fields: Vec<Value>,
-	) -> Result<Vec<u8>, ChainError> {
-		let at = self.finalized().await?;
-		at.transactions()
-			.call_data(&dynamic::tx(pallet, call, fields))
-			.map_err(decode_err("call data"))
-	}
-
-	/// `Sudo.sudo(inner)`.
-	pub async fn sudo(&self, inner: &[u8]) -> Result<Vec<u8>, ChainError> {
-		let at = self.finalized().await?;
-		let md = at.metadata_ref();
-		let call = scale_value::scale::decode_as_type(
-			&mut &inner[..],
-			md.outer_enums().call_enum_ty(),
-			md.types(),
-		)
-		.map_err(decode_err("inner call"))?;
-		at.transactions()
-			.call_data(&dynamic::tx("Sudo", "sudo", vec![call.remove_context()]))
-			.map_err(decode_err("sudo call"))
-	}
-
-	/// The next nonce of `account`.
-	pub async fn nonce(&self, account: [u8; 32]) -> Result<u32, ChainError> {
-		let ss58 = subxt::utils::AccountId32(account).to_string();
-		self.request("system_accountNextIndex", rpc_params![ss58]).await
 	}
 
 	/// `TaggedTransactionQueue_validate_transaction` at the best block.
@@ -321,18 +264,14 @@ impl Client {
 		let out: String = self
 			.request(
 				"state_call",
-				rpc_params![
-					"TaggedTransactionQueue_validate_transaction",
-					format!("0x{}", hex::encode(arg)),
-					best
-				],
+				rpc_params!["TaggedTransactionQueue_validate_transaction", hex0x(arg), best],
 			)
 			.await?;
 		let out = hex::decode(out.trim_start_matches("0x")).map_err(read_any("validate answer"))?;
 		if out.first() == Some(&0) {
 			return Ok(());
 		}
-		let kind = if out.get(1) == Some(&0) { "Invalid" } else { "Unknown" };
+		let kind = if out.get(1) == Some(&0) { Refusal::Invalid } else { Refusal::Unknown };
 		let code = out.get(3).or(out.get(2)).copied().unwrap_or(0);
 		Err(ChainError::Invalid {
 			what: what.to_owned(),
@@ -344,15 +283,13 @@ impl Client {
 
 	/// `author_submitExtrinsic`; the node's hash.
 	pub async fn submit(&self, bytes: &[u8]) -> Result<String, ChainError> {
-		self.request("author_submitExtrinsic", rpc_params![format!("0x{}", hex::encode(bytes))])
-			.await
+		self.request("author_submitExtrinsic", rpc_params![hex0x(bytes)]).await
 	}
 
 	/// The raw extrinsics of a block.
 	pub async fn body(&self, hash: [u8; 32]) -> Result<Vec<Vec<u8>>, ChainError> {
-		let block: serde_json::Value = self
-			.request("chain_getBlock", rpc_params![format!("0x{}", hex::encode(hash))])
-			.await?;
+		let block: serde_json::Value =
+			self.request("chain_getBlock", rpc_params![hex0x(hash)]).await?;
 		let list = block["block"]["extrinsics"].as_array().ok_or_else(|| ChainError::Read {
 			what: "block body",
 			detail: "no extrinsics".into(),
@@ -376,6 +313,11 @@ impl Client {
 			})
 			.collect()
 	}
+}
+
+/// `0x` and the hex of `bytes`: how the RPC and our files write a hash.
+pub fn hex0x(bytes: impl AsRef<[u8]>) -> String {
+	format!("0x{}", hex::encode(bytes))
 }
 
 fn hex32(s: &str) -> Result<[u8; 32], ChainError> {
