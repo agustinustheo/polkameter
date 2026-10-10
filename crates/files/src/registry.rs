@@ -72,6 +72,16 @@ pub struct Metric<K, const N: usize> {
 	_kind: PhantomData<K>,
 }
 
+impl<K, const N: usize> Metric<K, N> {
+	/// A handle for a metric defined outside this registry, e.g. by a plugin. `N` must equal
+	/// `def.labels.len()`.
+	/// Part of the plugin API (used by out-of-tree plugins).
+	pub const fn new(def: Def) -> Self {
+		assert!(def.labels.len() == N, "label count does not match the definition");
+		Self { def, _kind: PhantomData }
+	}
+}
+
 macro_rules! polkameter_metrics {
     ($( $id:ident: $k:ident [$($label:literal),*] $(buckets $b:expr,)? $name:literal, $help:literal; )*) => {
         $(

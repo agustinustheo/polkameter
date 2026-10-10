@@ -30,6 +30,19 @@ pub struct PluginMetric {
 	pub buckets: Vec<f64>,
 }
 
+/// A plugin's declaration of one of its metrics, from the registry definition it writes.
+/// Part of the plugin API (used by out-of-tree plugins).
+impl From<&registry::Def> for PluginMetric {
+	fn from(def: &registry::Def) -> Self {
+		Self {
+			name: def.name.to_owned(),
+			kind: def.kind,
+			help: def.help.to_owned(),
+			buckets: def.buckets.to_vec(),
+		}
+	}
+}
+
 /// The samples read so far: (sample name, labels with `le`) -> time -> value.
 #[derive(Debug, Default)]
 struct Samples {

@@ -4,7 +4,10 @@
 //! Errors here are the chain's, not ours: the caller decides whether one stops a setup or is a
 //! result of the run.
 
-use subxt::{OnlineClient, PolkadotConfig, dynamic};
+use subxt::{
+	OnlineClient, PolkadotConfig,
+	dynamic::{self, Value},
+};
 use subxt_rpcs::{RpcClient, rpc_params};
 
 use crate::{
@@ -103,6 +106,15 @@ pub fn decode_err<E: std::fmt::Display>(what: &'static str) -> impl FnOnce(E) ->
 	move |e| ChainError::Decode { what, detail: e.to_string() }
 }
 
+/// Our encoding no longer matches the runtime: an error of our tools, so the run stops.
+/// Part of the plugin API (used by out-of-tree plugins).
+#[derive(Debug, thiserror::Error)]
+#[error("the runtime's tx extensions changed; ours: {ours:?}, live: {live:?}")]
+pub struct LayoutChanged {
+	ours: Vec<&'static str>,
+	live: Vec<String>,
+}
+
 /// A connected node.
 #[derive(Debug, Clone)]
 pub struct Client {
@@ -162,6 +174,23 @@ impl Client {
 			tx_version: field("transactionVersion")?,
 			genesis: hex32(&genesis)?,
 		})
+	}
+
+	/// Checks the live extension list against our tx layout.
+	/// Part of the plugin API (used by out-of-tree plugins).
+	pub async fn check_extensions(
+		&self,
+		expected: &[&'static str],
+	) -> Result<Result<(), LayoutChanged>, ChainError> {
+		let at = self.finalized().await?;
+		let live: Vec<String> = at
+			.metadata_ref()
+			.extrinsic()
+			.transaction_extensions_to_use_for_encoding()
+			.map(|e| e.identifier().to_owned())
+			.collect();
+		let ours: Vec<&'static str> = expected.to_vec();
+		Ok(if live == ours { Ok(()) } else { Err(LayoutChanged { ours, live }) })
 	}
 
 	/// The running runtime's normal class limit (ref time, proof size): `System.BlockWeights`.
@@ -249,10 +278,50 @@ impl Client {
 		let mut stamps = Vec::new();
 		for n in (number.saturating_sub(60)..=number).rev() {
 			let Some(hash) = self.try_block_hash(n).await? else { break };
-			stamps
-				.push(fetch::<u64>(&self.at(hash).await?, "Timestamp", "Now").await?.unwrap_or(0));
+			stamps.push(
+				fetch::<(), u64>(&self.at(hash).await?, "Timestamp", "Now", ())
+					.await?
+					.unwrap_or(0),
+			);
 		}
 		Ok(stamps)
+	}
+
+	/// Encodes a call by pallet and call name, with metadata.
+	/// Part of the plugin API (used by out-of-tree plugins).
+	pub async fn call_data(
+		&self,
+		pallet: &str,
+		call: &str,
+		fields: Vec<Value>,
+	) -> Result<Vec<u8>, ChainError> {
+		let at = self.finalized().await?;
+		at.transactions()
+			.call_data(&dynamic::tx(pallet, call, fields))
+			.map_err(decode_err("call data"))
+	}
+
+	/// `Sudo.sudo(inner)`.
+	/// Part of the plugin API (used by out-of-tree plugins).
+	pub async fn sudo(&self, inner: &[u8]) -> Result<Vec<u8>, ChainError> {
+		let at = self.finalized().await?;
+		let md = at.metadata_ref();
+		let call = scale_value::scale::decode_as_type(
+			&mut &inner[..],
+			md.outer_enums().call_enum_ty(),
+			md.types(),
+		)
+		.map_err(decode_err("inner call"))?;
+		at.transactions()
+			.call_data(&dynamic::tx("Sudo", "sudo", vec![call.remove_context()]))
+			.map_err(decode_err("sudo call"))
+	}
+
+	/// The next nonce of `account`.
+	/// Part of the plugin API (used by out-of-tree plugins).
+	pub async fn nonce(&self, account: [u8; 32]) -> Result<u32, ChainError> {
+		let ss58 = subxt::utils::AccountId32(account).to_string();
+		self.request("system_accountNextIndex", rpc_params![ss58]).await
 	}
 
 	/// `TaggedTransactionQueue_validate_transaction` at the best block.

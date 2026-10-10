@@ -12,7 +12,8 @@ pub mod report;
 use polkameter_files::{registry::Outcome, serde_name};
 use serde::{Deserialize, Serialize};
 
-pub use data::{CounterReset, RunData, Window, count_above, quantile};
+/// Part of the plugin API (used by out-of-tree plugins).
+pub use data::{CounterReset, Label, Phase, RunData, Window, count_above, quantile};
 pub use limits::LIMITS;
 pub use outcomes::all;
 

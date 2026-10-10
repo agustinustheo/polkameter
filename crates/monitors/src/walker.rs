@@ -1,6 +1,6 @@
 //! Follows finalized blocks for the recorders that must see every block (relay events,
 //! maintenance calls). Finality can jump several blocks at once; the walker visits each one by
-//! number.
+//! number, then calls `on_update` once with the newest finalized block (for state reads).
 //!
 //! A block that can't be read is a chain result: counted, in the problems once, and skipped.
 //! An answer that doesn't decode as our types is our error and ends the walk. Nodes run with
@@ -15,9 +15,33 @@ use tokio_util::sync::CancellationToken;
 
 use crate::MonitorError;
 
+/// A recorder the walker drives.
+/// Part of the plugin API (used by out-of-tree plugins).
+pub trait Walk: Send {
+	/// Its name in the problems list.
+	const NAME: &'static str;
+	/// Every finalized block, in order.
+	fn on_block(
+		&mut self,
+		number: u32,
+		hash: [u8; 32],
+	) -> impl Future<Output = Result<(), ChainError>> + Send;
+	/// Once per finalized update, at the newest block.
+	fn on_update(
+		&mut self,
+		_number: u32,
+		_hash: [u8; 32],
+	) -> impl Future<Output = Result<(), ChainError>> + Send {
+		async { Ok(()) }
+	}
+	/// After the last block: what it could not record.
+	fn finish(&mut self, _problems: &Problems) {}
+}
+
 struct Failures {
 	name: &'static str,
 	blocks: u32,
+	updates: u32,
 	problems: Problems,
 }
 
@@ -35,7 +59,18 @@ impl Failures {
 		Ok(())
 	}
 
-	/// After the last block: the count of blocks it could not read, when more than one.
+	fn update(&mut self, n: u32, e: &ChainError) -> Result<(), MonitorError> {
+		if e.fault() == Fault::Tool {
+			return Err(MonitorError::Tool(format!("{}: state at block {n}: {e}", self.name)));
+		}
+		self.updates += 1;
+		if self.updates == 1 {
+			self.problems
+				.record(format!("{}: state at block {n} could not be read ({e})", self.name));
+		}
+		Ok(())
+	}
+
 	fn finish(&self) {
 		if self.blocks > 1 {
 			self.problems.record(format!(
@@ -43,23 +78,23 @@ impl Failures {
 				self.name, self.blocks
 			));
 		}
+		if self.updates > 1 {
+			self.problems
+				.record(format!("{}: {} state reads failed", self.name, self.updates));
+		}
 	}
 }
 
-/// Walks finalized blocks of `client` until `stop`, calling `on_block(number, hash)` for each, in
-/// order; `name` names it in the problems list. The block seen last is walked before it returns.
-/// `Err` only for our own errors.
-pub async fn walk<F, Fut>(
+/// Walks finalized blocks of `client` with `w` until `stop`; the block seen last is walked
+/// before it returns. `Err` only for our own errors.
+/// Part of the plugin API (used by out-of-tree plugins).
+pub async fn walk<W: Walk>(
 	client: Client,
-	name: &'static str,
-	mut on_block: F,
+	mut w: W,
 	stop: CancellationToken,
 	problems: Problems,
-) -> Result<(), MonitorError>
-where
-	F: FnMut(u32, [u8; 32]) -> Fut,
-	Fut: Future<Output = Result<(), ChainError>> + Send,
-{
+) -> Result<(), MonitorError> {
+	let name = W::NAME;
 	let mut blocks = match client.api().stream_blocks().await {
 		Ok(b) => b,
 		Err(e) => {
@@ -67,7 +102,7 @@ where
 			return Ok(());
 		},
 	};
-	let mut failures = Failures { name, blocks: 0, problems: problems.clone() };
+	let mut failures = Failures { name, blocks: 0, updates: 0, problems: problems.clone() };
 	let mut last_done: Option<u32> = None;
 	let mut ended = false;
 	while !ended {
@@ -100,12 +135,15 @@ where
 		for n in from..=number {
 			let read = if n == number { Ok(hash) } else { client.block_hash(n).await };
 			let r = match read {
-				Ok(h) => on_block(n, h).await,
+				Ok(h) => w.on_block(n, h).await,
 				Err(e) => Err(e),
 			};
 			if let Err(e) = r {
 				failures.block(n, &e)?;
 			}
+		}
+		if let Err(e) = w.on_update(number, hash).await {
+			failures.update(number, &e)?;
 		}
 		last_done = Some(number);
 	}
@@ -113,5 +151,6 @@ where
 		problems.record(format!("{name}: the finalized block stream ended"));
 	}
 	failures.finish();
+	w.finish(&problems);
 	Ok(())
 }

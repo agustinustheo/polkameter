@@ -9,11 +9,11 @@
 //! | relay recorder  | inclusion, disputes and slots of each parachain | `chain.jsonl`   |
 //! | process sampler | the CPU and memory of the node under load      | `node.jsonl`    |
 //!
-//! Chain recorders walk finalized blocks ([`walker::walk`]) and send their series to the one task
-//! that owns `chain.jsonl` ([`chain_series`]). A plugin runs its own recorder the same way: the
-//! walk calls its block handler for every finalized block, and it writes to a series from
-//! [`chain_series::channel`]. The block follower is not here: the load tool drives it, because it
-//! matches our txs in each block.
+//! Chain recorders implement [`walker::Walk`] and run under [`walker::walk`], which visits every
+//! finalized block and reads state once per update. They send their series to the one task that
+//! owns `chain.jsonl` ([`chain_series`]). A plugin runs its own recorder the same way, writing to
+//! a series from [`chain_series::channel`] in its plugin directory. The block follower is not
+//! here: the load tool drives it, because it matches our txs in each block.
 
 pub mod chain_series;
 pub mod preflight;
@@ -23,6 +23,8 @@ pub mod scraper;
 pub mod topology;
 pub mod walker;
 
+/// Part of the plugin API (used by out-of-tree plugins).
+pub use chain_series::ChainSeries;
 pub use scraper::{Sample, Scraper, ScraperHandle};
 pub use topology::{Job, Target, load_targets};
 

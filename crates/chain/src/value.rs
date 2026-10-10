@@ -66,6 +66,18 @@ pub fn as_u64(v: &Value) -> Option<u64> {
 	}
 }
 
+/// 32 bytes, through any single-field wrappers.
+/// Part of the plugin API (used by out-of-tree plugins).
+pub fn as_bytes32(v: &Value) -> Option<[u8; 32]> {
+	let bytes: Vec<u8> = children(v)
+		.map(|b| as_u64(b).and_then(|n| u8::try_from(n).ok()))
+		.collect::<Option<_>>()?;
+	if bytes.len() == 32 {
+		return bytes.try_into().ok();
+	}
+	as_bytes32(only_child(v)?)
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -85,6 +97,7 @@ mod tests {
 		let event = Value::unnamed_composite([receipt, Value::u128(3)]);
 		let r = nth(&event, 0).unwrap();
 		assert_eq!(field(r, "para_id").and_then(as_u64), Some(1502));
+		assert_eq!(field(r, "commitments_hash").and_then(as_bytes32), Some([1u8; 32]));
 		assert_eq!(
 			as_u64(&Value::named_composite([("a", Value::u128(1)), ("b", Value::u128(2))])),
 			None,

@@ -8,20 +8,48 @@
 
 use std::{collections::HashMap, fmt, ops::AddAssign};
 
-use polkameter_files::{Series, Store, num, serde_name, summary::Summary};
+use polkameter_files::{Series, Store, num, summary::Summary};
 use serde::{Serialize, Serializer};
 
 /// Label filter: every pair must match.
 pub type Filter<'a> = &'a [(&'a str, &'a str)];
 
-/// A phase of the run that the checks read windows of, as the `polkameter_phase` gauge names it.
+/// A phase of the run, as the `polkameter_phase` gauge names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Phase {
 	/// Before the load.
 	Baseline,
+	/// The load's ramp steps.
+	Ramp,
 	/// After the load stopped.
 	Recovery,
+	/// The end of the run.
+	Done,
+}
+
+impl Phase {
+	const ALL: [Phase; 4] = [Phase::Baseline, Phase::Ramp, Phase::Recovery, Phase::Done];
+
+	/// The name the gauge writes: `baseline`, `ramp`, `recovery` or `done`.
+	pub fn name(self) -> &'static str {
+		match self {
+			Phase::Baseline => "baseline",
+			Phase::Ramp => "ramp",
+			Phase::Recovery => "recovery",
+			Phase::Done => "done",
+		}
+	}
+
+	fn from_name(name: &str) -> Option<Phase> {
+		Self::ALL.into_iter().find(|p| p.name() == name)
+	}
+}
+
+impl AsRef<str> for Phase {
+	fn as_ref(&self) -> &str {
+		self.name()
+	}
 }
 
 /// What a window is, for check details and summary.json: "step 3", "recovery", "run".
@@ -29,17 +57,28 @@ pub enum Phase {
 pub enum Label {
 	/// One ramp step.
 	Step(u32),
+	/// One phase of the run.
 	Phase(Phase),
 	/// The whole run.
 	Run,
+	/// A window a plugin names for its own check, e.g. "read".
+	Named(&'static str),
+}
+
+impl From<&'static str> for Label {
+	/// Part of the plugin API (used by out-of-tree plugins).
+	fn from(name: &'static str) -> Self {
+		Label::Named(name)
+	}
 }
 
 impl fmt::Display for Label {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
 			Label::Step(step) => write!(f, "step {step}"),
-			Label::Phase(phase) => f.write_str(&serde_name(phase)),
+			Label::Phase(phase) => f.write_str(phase.name()),
 			Label::Run => f.write_str("run"),
+			Label::Named(name) => f.write_str(name),
 		}
 	}
 }
@@ -221,10 +260,12 @@ impl RunData {
 		w
 	}
 
-	/// The window of a phase, from the `polkameter_phase` gauge.
-	pub fn phase(&self, phase: Phase) -> Option<Window> {
-		let name = serde_name(phase);
-		let s = *self.series("polkameter_phase", &[("phase", &name)]).first()?;
+	/// The window of a phase, from the `polkameter_phase` gauge. Takes a [`Phase`] or its name
+	/// (`"done"`); `None` for a name no phase has, or a phase the run did not record.
+	/// Part of the plugin API (used by out-of-tree plugins).
+	pub fn phase(&self, phase: impl AsRef<str>) -> Option<Window> {
+		let phase = Phase::from_name(phase.as_ref())?;
+		let s = *self.series("polkameter_phase", &[("phase", phase.name())]).first()?;
 		let on = s.points.iter().position(|p| p.value == 1.0)?;
 		let end = s.points[on + 1..].iter().find(|p| p.value == 0.0).or(s.points.last())?;
 		Some(Window { start: s.points[on].t, end: end.t, label: Label::Phase(phase) })
@@ -239,6 +280,38 @@ impl RunData {
 		let (start, end) =
 			ts.fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), t| (a.min(t), b.max(t)));
 		Window { start, end, label: Label::Run }
+	}
+
+	/// A gauge's lowest and highest value in `w`, summed over matching series (each series'
+	/// own extremes; one without a sample inside takes its value at the start).
+	/// Part of the plugin API (used by out-of-tree plugins).
+	pub fn gauge_range(&self, name: &str, filter: Filter<'_>, w: &Window) -> Option<(f64, f64)> {
+		let list = self.series(name, filter);
+		if list.is_empty() {
+			return None;
+		}
+		let (mut min, mut max) = (0.0, 0.0);
+		for s in list {
+			let inside: Vec<f64> = s
+				.points
+				.iter()
+				.filter(|p| p.t >= w.start && p.t <= w.end)
+				.map(|p| p.value)
+				.collect();
+			let values = if inside.is_empty() { vec![self.value_at(s, w.start)] } else { inside };
+			min += values.iter().copied().fold(f64::INFINITY, f64::min);
+			max += values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+		}
+		Some((min, max))
+	}
+
+	/// Every sample time of `name`, whatever the labels.
+	/// Part of the plugin API (used by out-of-tree plugins).
+	pub fn times(&self, name: &str) -> Vec<f64> {
+		self.series(name, &[])
+			.into_iter()
+			.flat_map(|s| s.points.iter().map(|p| p.t))
+			.collect()
 	}
 
 	/// The collator's blocks per end reason (short names) in `w`.

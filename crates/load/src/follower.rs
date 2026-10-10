@@ -222,8 +222,8 @@ async fn read(
 	let at = client.at(hash).await?;
 	let (body, weight, now, events) = tokio::join!(
 		client.body(hash),
-		fetch::<PerClass>(&at, "System", "BlockWeight"),
-		fetch::<u64>(&at, "Timestamp", "Now"),
+		fetch::<(), PerClass>(&at, "System", "BlockWeight", ()),
+		fetch::<(), u64>(&at, "Timestamp", "Now", ()),
 		events(&at),
 	);
 	let (body, timestamp) = (body?, now?.unwrap_or(0));

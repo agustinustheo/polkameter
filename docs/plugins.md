@@ -71,6 +71,15 @@ A plugin can watch the chain during a run and judge what it saw:
 
 The report keeps plugin results in `plugin-checks.json`, so `polkameter report RUN_DIRECTORY` reproduces the same summary offline.
 
+## Library crates for plugins
+
+An out-of-tree plugin may depend on these crates by path or by git revision. Every item below is part of the plugin API and carries the doc comment `/// Part of the plugin API (used by out-of-tree plugins).`, so a dead-code pass leaves it alone. Anything else in the crates is internal and may change.
+
+- `polkameter-chain`: `Client` (`connect`, `finalized`, `at`, `chain_info`, `check_extensions`, `call_data`, `sudo`, `nonce`, `validate`, `submit`, with `LayoutChanged` from the extension check); `fetch(at, pallet, entry, keys)` for a storage value (`()` keys for a plain one), `entries`, `has_prefix`, `calls`; `events`, whose `Event` has `pallet`, `name`, `extrinsic` and `fields`; `value::{field, nth, variant_name, as_u64, as_bytes32}`; `Keypair`, `Value`, `DecodeAsType`, `ChainInfo`, `tx_hash`; and the `scale_value_reexport` and `scale_decode_reexport` paths for derives.
+- `polkameter-monitors`: `ChainSeries` (`gauge`, `inc`, `observe`), from `chain_series::channel` and run by `chain_series::run`; a recorder implements `walker::Walk` (`NAME`, `on_block`, and optionally `on_update` for state reads and `finish`) and runs under `walker::walk`; `MonitorError`.
+- `polkameter-files`: `registry::Metric::new` with `Def` and `Kind` for a plugin's own metrics, `PluginMetric::from(&Def)` for its `metrics.json`, `Problems`, `RunDir`, `read_store`, `now_ms`, `Millis` and `num`.
+- `polkameter-checks`: `RunData` (`new`, `at`, `has`, `times`, `gauge_range`, `buckets`, `phase` with a `Phase` or its name such as `"done"`, `run`); `Window` with a `Label` (`Label::from("read")` names a window of your own); `CheckResult`, `Verdict`, `Status`, `CounterReset`, `quantile`.
+
 ## Plugin protocol 1
 
 One executable process lives for the run. Calls to each plugin are serialized; different plugins and workflows can run concurrently. Long preparation runs should write batches to artifacts. Plugins may retain state keyed by run, user and iteration. Process separation is a compatibility and lifecycle boundary; installed plugins are trusted code, not sandboxed.
