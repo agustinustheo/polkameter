@@ -11,7 +11,7 @@ homepage = "https://agustinustheodorus.com/polkameter/"
 rust-version = "1.93"
 
 [workspace.dependencies]
-subxt-rpcs = "0.50.3"
+subxt-rpcs = "0.51.1"
 polkameter = { path = "crates/cli", version = "0.2.0" }
 polkameter-chain = { path = "crates/chain", version = "0.2.0" }
 polkameter-checks = { path = "crates/checks", version = "0.2.0" }

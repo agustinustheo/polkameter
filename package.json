@@ -11,13 +11,13 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.12.1"
+    "@tauri-apps/api": "^2.12.2"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.1",
-    "jsdom": "^30.1.1",
+    "jsdom": "^30.1.2",
     "typescript": "^7.0.2",
-    "vite": "^8.3.1",
+    "vite": "^8.3.4",
     "vitest": "5.0.3"
   },
   "packageManager": "pnpm@10.32.1+sha512.a706938f0e89ac1456b6563eab4edf1d1faf3368d1191fc5c59790e96dc918e4456ab2e67d613de1043d2e8c81f87303e6b40d4ffeca9df15ef1ad567348f2be"
