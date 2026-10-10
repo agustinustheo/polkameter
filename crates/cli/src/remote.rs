@@ -213,14 +213,12 @@ pub async fn plugin_stop(
 ) -> Result<crate::plugin_application::Status, String> {
 	plugin_request(target, reqwest::Method::POST, &run_path(id, "/stop")?, None).await
 }
-#[cfg(feature = "desktop")]
 pub async fn plugin_preflight(
 	target: &RemoteRunnerTarget,
 	xml: String,
 ) -> Result<serde_json::Value, String> {
 	plugin_request(target, reqwest::Method::POST, "/preflight", Some(xml)).await
 }
-#[cfg(feature = "desktop")]
 pub async fn plugin_inspect(
 	target: &RemoteRunnerTarget,
 	xml: String,

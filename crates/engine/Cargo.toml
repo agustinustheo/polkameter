@@ -1,10 +1,17 @@
 [package]
 name = "polkameter-engine"
-version = "0.1.0"
-edition = "2024"
-license = "Apache-2.0"
+description = "The shared engine: plan parsing, plugin registry, execution, measurement and plots for the CLI and desktop app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+keywords = ["polkadot", "substrate", "load-testing"]
+categories = ["development-tools::testing"]
+
 [dependencies]
-polkameter-plugin-sdk = { path = "../plugin-sdk" }
+polkameter-plugin-sdk.workspace = true
 polkameter-chain.workspace = true
 polkameter-load.workspace = true
 polkameter-files.workspace = true

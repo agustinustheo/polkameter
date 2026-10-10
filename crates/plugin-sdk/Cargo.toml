@@ -1,8 +1,15 @@
 [package]
 name = "polkameter-plugin-sdk"
-version = "0.1.0"
-edition = "2024"
-license = "Apache-2.0"
+description = "The SDK for Polkameter plugins: the manifest, JSON-line protocol and setup helpers a plugin binary implements"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+keywords = ["polkadot", "substrate", "plugin"]
+categories = ["development-tools::testing"]
+
 [dependencies]
 anyhow.workspace = true
 serde.workspace = true

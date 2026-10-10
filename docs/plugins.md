@@ -11,10 +11,10 @@ The core works with any Polkadot SDK chain: it submits prepared extrinsics at a 
 
 ## Build and try it
 
-From the repository root, using Rust 1.93 or newer. The CLI builds without the desktop app, so it needs no frontend build:
+From the repository root, using Rust 1.93 or newer. The CLI has no desktop dependencies, so it needs no frontend build (or `cargo install polkameter` for the CLI alone):
 
 ```sh
-cargo build -p polkameter --no-default-features --bin polkameter
+cargo build -p polkameter --bin polkameter
 cargo build -p polkameter-example-plugin
 export POLKAMETER_PLUGIN_REGISTRY="$PWD/target/plugins.json"
 target/debug/polkameter plugin install target/debug/polkameter-example-plugin
@@ -23,7 +23,7 @@ target/debug/polkameter plugin inspect examples/plugin-workflow.polkameter.xml
 target/debug/polkameter run examples/plugin-workflow.polkameter.xml --output target/runs
 ```
 
-The example executable is a separate Cargo package depending on `polkameter-plugin-sdk`. A plugin can live in another repository and be installed without rebuilding the host. `plugin install` reads its manifest and pins its version and executable BLAKE2 hash. Reinstall after rebuilding an executable. XML cannot select an arbitrary executable path.
+The example executable is a separate Cargo package depending on `polkameter-plugin-sdk`. A plugin can live in another repository and be installed without rebuilding the host. Plugin authors depend on the SDK from crates.io, with `polkameter-plugin-sdk = "0.2"`, rather than from a git revision. `plugin install` reads its manifest and pins its version and executable BLAKE2 hash. Reinstall after rebuilding an executable. XML cannot select an arbitrary executable path.
 
 The registry defaults to `~/.config/polkameter/plugins.json`; `POLKAMETER_PLUGIN_REGISTRY` overrides it. On Windows, `USERPROFILE` is used if `HOME` is absent. `plugin credential PROFILE ENV_VAR` maps a credential profile to an environment variable, and `plugin topology ALIAS zombie.json` registers a network topology; plans name the profile and the alias, never the secret or the path.
 
@@ -73,7 +73,7 @@ The report keeps plugin results in `plugin-checks.json`, so `polkameter report R
 
 ## Library crates for plugins
 
-An out-of-tree plugin may depend on these crates by path or by git revision. Every item below is part of the plugin API and carries the doc comment `/// Part of the plugin API (used by out-of-tree plugins).`, so a dead-code pass leaves it alone. Anything else in the crates is internal and may change.
+An out-of-tree plugin may depend on these crates from crates.io (`polkameter-plugin-sdk = "0.2"`), by path or by git revision. Every item below is part of the plugin API and carries the doc comment `/// Part of the plugin API (used by out-of-tree plugins).`, so a dead-code pass leaves it alone. Anything else in the crates is internal and may change.
 
 - `polkameter-chain`: `Client` (`connect`, `finalized`, `at`, `chain_info`, `check_extensions`, `call_data`, `sudo`, `nonce`, `validate`, `submit`, with `LayoutChanged` from the extension check); `fetch(at, pallet, entry, keys)` for a storage value (`()` keys for a plain one), `entries`, `has_prefix`, `calls`; `events`, whose `Event` has `pallet`, `name`, `extrinsic` and `fields`; `value::{field, nth, variant_name, as_u64, as_bytes32}`; `Keypair`, `Value`, `DecodeAsType`, `ChainInfo`, `tx_hash`; and the `scale_value_reexport` and `scale_decode_reexport` paths for derives.
 - `polkameter-monitors`: `ChainSeries` (`gauge`, `inc`, `observe`), from `chain_series::channel` and run by `chain_series::run`; a recorder implements `walker::Walk` (`NAME`, `on_block`, and optionally `on_update` for state reads and `finish`) and runs under `walker::walk`; `MonitorError`.
@@ -122,7 +122,6 @@ polkameter run scenario.xml --remote http://127.0.0.1:9901 --remote-token-env AG
 cargo test --workspace
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo clippy -p polkameter --all-targets --no-default-features -- -D warnings
 pnpm test
 pnpm build
 ```

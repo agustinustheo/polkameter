@@ -389,7 +389,7 @@ mod tests {
 	/// The recorded smoke run, shared with the replay test. Its breaking point is cleared: the
 	/// verdict tests set their own.
 	fn summary() -> Summary {
-		let text = include_str!("../../../src-tauri/tests/fixtures/smoke-run/summary.json");
+		let text = include_str!("../../cli/tests/fixtures/smoke-run/summary.json");
 		let mut s: Summary = serde_json::from_str(text).expect("summary fixture");
 		s.breaking_point = None;
 		s

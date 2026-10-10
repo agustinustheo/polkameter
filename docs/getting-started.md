@@ -12,16 +12,17 @@ This page builds Polkameter, installs the example plugin and runs the example pl
 
 ## 1. Build
 
-The CLI builds without the desktop app, so it needs neither Node nor a frontend build:
+The CLI has no desktop dependencies, so it needs neither Node nor a frontend build. Install it from crates.io, or build this checkout:
 
 ```sh
-cargo build -p polkameter --no-default-features --bin polkameter
+cargo install polkameter                                 # the CLI, into ~/.cargo/bin
+cargo build -p polkameter --bin polkameter               # or, from this checkout
 cargo build -p polkameter-example-plugin
 ```
 
-This produces `target/debug/polkameter` (the CLI) and `target/debug/polkameter-example-plugin`. For a release CLI, add `--release` and use `target/release/` in the paths below.
+Building from this checkout produces `target/debug/polkameter` (the CLI) and `target/debug/polkameter-example-plugin`. For a release CLI, add `--release` and use `target/release/` in the paths below.
 
-The desktop app is the `desktop` feature of the same package, enabled by default. It embeds the frontend, so build the frontend first. Step 7 has the commands.
+The desktop app is the `polkameter-desktop` package in `src-tauri/`. It is not on crates.io: download it from [GitHub Releases](https://github.com/agustinustheo/polkameter/releases), or build it in step 7. It embeds the frontend, so build the frontend first.
 
 ## 2. Install the example plugin
 

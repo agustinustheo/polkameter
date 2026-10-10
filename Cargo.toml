@@ -4,17 +4,22 @@ members = ["src-tauri", "crates/*", "plugins/*"]
 
 [workspace.package]
 edition = "2024"
-version = "0.1.0"
+version = "0.2.0"
 license = "Apache-2.0"
-publish = false
+repository = "https://github.com/agustinustheo/polkameter"
+homepage = "https://agustinustheodorus.com/polkameter/"
+rust-version = "1.93"
 
 [workspace.dependencies]
 subxt-rpcs = "0.50.3"
-polkameter-files = { path = "crates/files" }
-polkameter-chain = { path = "crates/chain" }
-polkameter-monitors = { path = "crates/monitors" }
-polkameter-load = { path = "crates/load" }
-polkameter-checks = { path = "crates/checks" }
+polkameter = { path = "crates/cli", version = "0.2.0" }
+polkameter-chain = { path = "crates/chain", version = "0.2.0" }
+polkameter-checks = { path = "crates/checks", version = "0.2.0" }
+polkameter-engine = { path = "crates/engine", version = "0.2.0" }
+polkameter-files = { path = "crates/files", version = "0.2.0" }
+polkameter-load = { path = "crates/load", version = "0.2.0" }
+polkameter-monitors = { path = "crates/monitors", version = "0.2.0" }
+polkameter-plugin-sdk = { path = "crates/plugin-sdk", version = "0.2.0" }
 
 anyhow = "1"
 csv = "1.3"

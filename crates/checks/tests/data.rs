@@ -35,8 +35,7 @@ fn parse_samples(text: &str) -> Store {
 }
 
 fn summary() -> Summary {
-	serde_json::from_str(include_str!("../../../src-tauri/tests/fixtures/smoke-run/summary.json"))
-		.unwrap()
+	serde_json::from_str(include_str!("../../cli/tests/fixtures/smoke-run/summary.json")).unwrap()
 }
 
 #[test]
