@@ -1,20 +1,14 @@
 //! How fast to send, step by step and lane by lane. Each step is one window for the stop rules
 //! and the checks; the first failure ends the load.
 
-use crate::source::LoadSource;
+use crate::source::QueueSource;
 
 /// One load of a run: its own txs, rate and counts. The `call` names it in the load series.
 pub struct Lane {
 	/// `call` label, e.g. `Resources.set_statement_store_account`.
 	pub call: &'static str,
 	/// Its txs.
-	pub source: Box<dyn LoadSource>,
-}
-
-impl std::fmt::Debug for Lane {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		f.debug_struct("Lane").field("call", &self.call).finish_non_exhaustive()
-	}
+	pub source: QueueSource,
 }
 
 /// One step: how long, and the target rate of each lane.
@@ -36,25 +30,22 @@ pub struct Plan {
 impl Plan {
 	/// One lane: `start` tx/s, plus `step` every `interval_s`, for `steps` steps.
 	pub fn ramp(start: f64, step: f64, interval_s: u32, steps: u32) -> Self {
-		let steps = (0..steps)
-			.map(|k| StepPlan { seconds: interval_s, rates: vec![start + f64::from(k) * step] })
-			.collect();
-		Self { steps }
+		Self::one_lane(interval_s, steps, |k| start + f64::from(k) * step)
 	}
 
 	/// One lane: `start` tx/s, times `growth` every `interval_s`, for `steps` steps.
 	pub fn geometric(start: f64, growth: f64, interval_s: u32, steps: u32) -> Self {
+		Self::one_lane(interval_s, steps, |k| start * growth.powf(f64::from(k)))
+	}
+
+	/// `steps` steps of `interval_s` seconds, one lane at `rate(k)` tx/s in step `k`.
+	fn one_lane(interval_s: u32, steps: u32, rate: impl Fn(u32) -> f64) -> Self {
 		let steps = (0..steps)
-			.map(|k| StepPlan {
-				seconds: interval_s,
-				rates: vec![start * growth.powf(f64::from(k))],
-			})
+			.map(|k| StepPlan { seconds: interval_s, rates: vec![rate(k)] })
 			.collect();
 		Self { steps }
 	}
-}
 
-impl Plan {
 	/// Checks the plan before any setup: steps, one rate per lane in every step, no negative
 	/// rate. `lanes` is checked once the scenario built them.
 	pub fn check(&self, lanes: Option<usize>) -> Result<(), String> {

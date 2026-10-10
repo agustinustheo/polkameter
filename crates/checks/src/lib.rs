@@ -9,10 +9,11 @@ mod limits;
 mod outcomes;
 pub mod report;
 
-use polkameter_files::registry::Outcome;
+use polkameter_files::{registry::Outcome, serde_name};
 use serde::{Deserialize, Serialize};
 
-pub use data::{CounterReset, RunData, Window, count_above, quantile};
+/// Part of the plugin API (used by out-of-tree plugins).
+pub use data::{CounterReset, Label, Phase, RunData, Window, count_above, quantile};
 pub use limits::LIMITS;
 pub use outcomes::all;
 
@@ -31,19 +32,6 @@ pub enum Status {
 	/// The data is missing, or a node restarted in the window.
 	#[serde(rename = "no result")]
 	NoResult,
-}
-
-impl Status {
-	/// The name in summary.json and summary.md.
-	pub fn name(self) -> &'static str {
-		match self {
-			Status::Pass => "pass",
-			Status::Warn => "warn",
-			Status::Fail => "fail",
-			Status::Info => "info",
-			Status::NoResult => "no result",
-		}
-	}
 }
 
 /// What a check found.
@@ -114,7 +102,7 @@ pub fn run(checks: &[Check], data: &RunData) -> Vec<CheckResult> {
 	checks
 		.iter()
 		.map(|c| CheckResult {
-			outcome: c.outcome.name().to_owned(),
+			outcome: serde_name(c.outcome),
 			check: c.name.to_owned(),
 			verdict: (c.run)(data).unwrap_or_else(|reset| {
 				Verdict::new(Status::NoResult, format!("a node restarted: {reset}"))

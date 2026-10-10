@@ -12,6 +12,15 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 pub const PROTOCOL: u32 = 1;
 pub const MAX_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
 
+/// Lowercase hex BLAKE2-256 digest: the checksum format of artifacts, transactions and plugins.
+pub fn blake2_hex(bytes: &[u8]) -> String {
+	hex::encode(sp_crypto_hashing::blake2_256(bytes))
+}
+/// Hex text without its optional `0x` prefix.
+pub fn strip_0x(text: &str) -> &str {
+	text.trim_start_matches("0x")
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Schema {
@@ -37,37 +46,34 @@ impl From<Schema> for Field {
 }
 impl Schema {
 	pub fn validate(&self, value: &Value) -> Result<()> {
-		let valid = match self {
+		let accepted = match self {
+			Self::Json => return Ok(()),
+			Self::Array { items } => {
+				let array = value.as_array().ok_or_else(|| anyhow::anyhow!("expected array"))?;
+				return array.iter().try_for_each(|item| items.validate(item));
+			},
+			Self::Object { fields } => return validate_object(fields, value),
 			Self::String => value.is_string(),
 			Self::Number => value.is_number(),
 			Self::Integer => value.is_i64() || value.is_u64(),
 			Self::Boolean => value.is_boolean(),
-			Self::Json => true,
-			Self::Array { items } => {
-				let array = value.as_array().ok_or_else(|| anyhow::anyhow!("expected array"))?;
-				for item in array {
-					items.validate(item)?;
-				}
-				true
-			},
-			Self::Object { fields } => {
-				let object = value.as_object().ok_or_else(|| anyhow::anyhow!("expected object"))?;
-				for (key, field) in fields {
-					if let Some(value) = object.get(key) {
-						field.schema.validate(value)?;
-					} else {
-						ensure!(field.optional, "missing field {key}");
-					}
-				}
-				for key in object.keys() {
-					ensure!(fields.contains_key(key), "unknown field {key}");
-				}
-				true
-			},
 		};
-		ensure!(valid, "value does not match {self:?}");
+		ensure!(accepted, "value does not match {self:?}");
 		Ok(())
 	}
+}
+fn validate_object(fields: &BTreeMap<String, Field>, value: &Value) -> Result<()> {
+	let object = value.as_object().ok_or_else(|| anyhow::anyhow!("expected object"))?;
+	for (key, field) in fields {
+		match object.get(key) {
+			Some(value) => field.schema.validate(value)?,
+			None => ensure!(field.optional, "missing field {key}"),
+		}
+	}
+	for key in object.keys() {
+		ensure!(fields.contains_key(key), "unknown field {key}");
+	}
+	Ok(())
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -80,12 +86,32 @@ pub struct Operation {
 	pub read_only: bool,
 }
 impl Operation {
+	/// A state-changing operation over the given `(name, schema)` fields.
+	pub fn new(description: &str, inputs: &[(&str, Schema)], outputs: &[(&str, Schema)]) -> Self {
+		Self {
+			description: description.into(),
+			inputs: fields(inputs),
+			outputs: fields(outputs),
+			read_only: false,
+		}
+	}
+	/// Marks the operation as safe in live preflight.
+	pub fn read_only(mut self) -> Self {
+		self.read_only = true;
+		self
+	}
 	pub fn validate_inputs(&self, value: &Value) -> Result<()> {
-		Schema::Object { fields: self.inputs.clone() }.validate(value)
+		validate_object(&self.inputs, value)
 	}
 	pub fn validate_outputs(&self, value: &Value) -> Result<()> {
-		Schema::Object { fields: self.outputs.clone() }.validate(value)
+		validate_object(&self.outputs, value)
 	}
+}
+fn fields(fields: &[(&str, Schema)]) -> BTreeMap<String, Field> {
+	fields
+		.iter()
+		.map(|(name, schema)| ((*name).into(), Field::from(schema.clone())))
+		.collect()
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -113,6 +139,17 @@ pub struct Context {
 	pub user: Option<u32>,
 	pub iteration: Option<u32>,
 }
+impl Context {
+	/// Context for host work outside any workflow user or iteration.
+	pub fn host(run_id: impl Into<String>, artifact_dir: impl Into<PathBuf>) -> Self {
+		Self {
+			run_id: run_id.into(),
+			artifact_dir: artifact_dir.into(),
+			user: None,
+			iteration: None,
+		}
+	}
+}
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
@@ -130,6 +167,23 @@ pub struct Response {
 	pub id: u64,
 	pub result: Option<Value>,
 	pub error: Option<String>,
+}
+impl Response {
+	fn ok(id: u64, result: Value) -> Self {
+		Self { protocol: PROTOCOL, id, result: Some(result), error: None }
+	}
+	fn err(id: u64, error: impl Into<String>) -> Self {
+		Self { protocol: PROTOCOL, id, result: None, error: Some(error.into()) }
+	}
+	/// Checks the envelope against the request it answers and returns the result.
+	pub fn into_result(self, id: u64) -> Result<Value> {
+		ensure!(self.protocol == PROTOCOL && self.id == id, "plugin protocol/request ID mismatch");
+		match (self.result, self.error) {
+			(Some(result), None) => Ok(result),
+			(None, Some(error)) => bail!("plugin operation failed: {error}"),
+			_ => bail!("invalid plugin response"),
+		}
+	}
 }
 /// One process is retained for the run. The host serializes access to a plugin;
 /// user and iteration state must be keyed by the supplied context.
@@ -169,17 +223,10 @@ pub async fn serve(mut plugin: impl Plugin) -> Result<()> {
 			Ok(result)
 		}
 		.await;
-		let response = match result {
-			Ok(result) => {
-				Response { protocol: PROTOCOL, id: request.id, result: Some(result), error: None }
-			},
-			Err(error) => Response {
-				protocol: PROTOCOL,
-				id: request.id,
-				result: None,
-				error: Some(error.to_string()),
-			},
-		};
+		let response = result.map_or_else(
+			|error| Response::err(request.id, error.to_string()),
+			|result| Response::ok(request.id, result),
+		);
 		let encoded = serde_json::to_vec(&response)?;
 		ensure!(
 			encoded.len() <= MAX_MESSAGE_BYTES,
@@ -228,11 +275,7 @@ impl Artifact {
 		std::fs::create_dir_all(directory)?;
 		let bytes = serde_json::to_vec(value)?;
 		std::fs::write(directory.join(name), &bytes)?;
-		Ok(Self {
-			version: 1,
-			path: directory.join(name),
-			blake2: hex::encode(sp_crypto_hashing::blake2_256(&bytes)),
-		})
+		Ok(Self { version: 1, path: directory.join(name), blake2: blake2_hex(&bytes) })
 	}
 	pub fn read<T: serde::de::DeserializeOwned>(&self, directory: &Path) -> Result<T> {
 		ensure!(self.version == 1, "unsupported artifact version");
@@ -243,10 +286,7 @@ impl Artifact {
 		);
 		ensure!(std::fs::metadata(&path)?.len() <= 256 * 1024 * 1024, "artifact too large");
 		let bytes = std::fs::read(path)?;
-		ensure!(
-			hex::encode(sp_crypto_hashing::blake2_256(&bytes)) == self.blake2,
-			"artifact checksum mismatch"
-		);
+		ensure!(blake2_hex(&bytes) == self.blake2, "artifact checksum mismatch");
 		Ok(serde_json::from_slice(&bytes)?)
 	}
 }
@@ -260,19 +300,24 @@ pub struct PreparedTx {
 }
 impl PreparedTx {
 	pub fn new(bytes: &[u8], metadata: Value) -> Self {
-		Self {
-			bytes: hex::encode(bytes),
-			hash: hex::encode(sp_crypto_hashing::blake2_256(bytes)),
-			metadata,
-		}
+		Self { bytes: hex::encode(bytes), hash: blake2_hex(bytes), metadata }
 	}
 	pub fn decode(&self) -> Result<Vec<u8>> {
-		let bytes = hex::decode(self.bytes.trim_start_matches("0x"))?;
+		let bytes = hex::decode(strip_0x(&self.bytes))?;
 		ensure!(!bytes.is_empty(), "empty extrinsic");
-		if hex::encode(sp_crypto_hashing::blake2_256(&bytes)) != self.hash.trim_start_matches("0x")
-		{
+		if blake2_hex(&bytes) != strip_0x(&self.hash) {
 			bail!("transaction hash mismatch");
 		}
 		Ok(bytes)
 	}
+}
+/// Input of a load plan's `state-check` operation: a sample of the transactions the run finalized,
+/// with the plan's state reference. `hashes` and `at` are lowercase hex without `0x`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct StateCheckInput {
+	pub target: String,
+	pub state: Value,
+	pub hashes: Vec<String>,
+	pub at: String,
 }

@@ -2,10 +2,18 @@
 //! and `summary.md`. The collator table comes from the same series, so the summary and the checks
 //! read the same numbers, and `polkameter report <dir>` can write it all again later.
 
-use polkameter_files::summary::{ProbePhase, Rule, Summary};
-use polkameter_files::{BlockStats, FileError, FinalStep, RunDir, num, read_store, to_fixed};
+use polkameter_files::{
+	BlockStats, FileError, FinalStep, RunDir, num, read_store, serde_name,
+	summary::{ProbePhase, Rule, Summary},
+	to_fixed,
+};
+use serde::Serialize;
 
-use crate::{CheckResult, RunData, Status, Window, all, run};
+use crate::{
+	CheckResult, RunData, Status, Window, all,
+	data::{COLLATOR, END_REASON, Label, Phase, add_to, reasons_text},
+	run,
+};
 
 /// Runs every check on the run's files, appends the plugins' check results, and writes
 /// summary.json (with all checks) and summary.md.
@@ -30,7 +38,7 @@ pub fn write(
 }
 
 /// The whole summary.md.
-pub fn markdown(s: &Summary, finals: &[FinalStep], d: &RunData, checks: &[CheckResult]) -> String {
+fn markdown(s: &Summary, finals: &[FinalStep], d: &RunData, checks: &[CheckResult]) -> String {
 	format!(
 		"{}\n### Outcome checks\n\n{}\n",
 		render_summary(s, finals, d, checks),
@@ -39,7 +47,7 @@ pub fn markdown(s: &Summary, finals: &[FinalStep], d: &RunData, checks: &[CheckR
 }
 
 /// The checks table.
-pub fn render_checks(results: &[CheckResult]) -> String {
+fn render_checks(results: &[CheckResult]) -> String {
 	let mut lines = vec![
 		"| outcome | check | status | detail |".to_owned(),
 		"| --- | --- | --- | --- |".to_owned(),
@@ -49,7 +57,7 @@ pub fn render_checks(results: &[CheckResult]) -> String {
 			"| {} | {} | **{}** | {} |",
 			r.outcome,
 			r.check,
-			r.verdict.status.name(),
+			serde_name(r.verdict.status),
 			r.verdict.detail.replace('|', "\\|")
 		)
 	}));
@@ -65,8 +73,6 @@ fn row(cells: &[String]) -> String {
 	format!("| {} |", cells.join(" | "))
 }
 
-const COLLATOR: (&str, &str) = ("job", "collator");
-
 /// The collator in one step: mean build time, pool work, and why blocks ended.
 struct CollatorStep {
 	build_ms: Option<f64>,
@@ -79,7 +85,7 @@ struct CollatorStep {
 /// `None` without collator metrics, or when a counter went down (the node restarted).
 fn collator_step(d: &RunData, w: Option<&Window>) -> Option<CollatorStep> {
 	let w = w?;
-	if !d.has("substrate_proposer_end_proposal_reason", &[COLLATOR]) {
+	if !d.has(END_REASON, &[COLLATOR]) {
 		return None;
 	}
 	let at = |name: &str| d.at(name, &[COLLATOR], w.end);
@@ -117,27 +123,16 @@ fn block_cells(b: &BlockStats) -> Vec<String> {
 
 fn collator_cells(c: Option<&CollatorStep>) -> Vec<String> {
 	let why = match c {
-		Some(c) => {
-			let s = c
-				.end_reasons
-				.iter()
-				.map(|(k, v)| format!("{k} {}", num(*v)))
-				.collect::<Vec<_>>()
-				.join(", ");
-			if s.is_empty() { "-".into() } else { s }
-		},
+		Some(c) if c.end_reasons.is_empty() => "-".into(),
+		Some(c) => reasons_text(&c.end_reasons),
 		None => "no metrics".into(),
 	};
-	vec![
-		fmt(c.and_then(|c| c.build_ms), 0),
-		fmt(c.and_then(|c| c.validations), 0),
-		fmt(c.and_then(|c| c.waiting), 0),
-		fmt(c.and_then(|c| c.ready), 0),
-		why,
-	]
+	let cell = |value: fn(&CollatorStep) -> Option<f64>| fmt(c.and_then(value), 0);
+	vec![cell(|c| c.build_ms), cell(|c| c.validations), cell(|c| c.waiting), cell(|c| c.ready), why]
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "UPPERCASE")]
 enum OverallStatus {
 	Pass,
 	Warn,
@@ -145,15 +140,9 @@ enum OverallStatus {
 	Inconclusive,
 }
 
-impl OverallStatus {
-	fn name(self) -> &'static str {
-		match self {
-			Self::Pass => "PASS",
-			Self::Warn => "WARN",
-			Self::Fail => "FAIL",
-			Self::Inconclusive => "INCONCLUSIVE",
-		}
-	}
+/// A number from the run's thresholds, if the run has that rule.
+fn rule(s: &Summary, key: &str) -> Option<f64> {
+	s.rules.get(key).and_then(serde_json::Value::as_f64)
 }
 
 /// One top-level answer from the runner's stop, its performance measure and the outcome checks.
@@ -209,14 +198,15 @@ fn recovery_line(s: &Summary) -> String {
 fn loss_line(s: &Summary) -> String {
 	let l = &s.loss;
 	let mut out = format!(
-		"{} sent: {} included ({} failed in the block), {} refused, {} expired, {} still ready in the pool, **{} lost**",
+		"{} sent: {} finalized ({} failed after inclusion), {} refused, {} still ready in the pool, {} seen in a block but not verified final, **{} lost**, {} unknown",
 		l.sent,
 		l.included,
 		l.failed_in_block,
 		l.refused,
-		l.dropped,
 		fmt(l.in_pool.map(|x| x as f64), 0),
-		fmt(l.lost.map(|x| x as f64), 0)
+		l.unverified,
+		fmt(l.lost.map(|x| x as f64), 0),
+		l.unknown
 	);
 	if let Some(p) = &l.node_pool {
 		out += &format!(" (the node's mempool holds {} txs, {} of them ready)", p.mempool, p.ready);
@@ -253,7 +243,6 @@ fn step_row(f: &FinalStep) -> String {
 		to_fixed(f.p95_latency_ms as f64 / 1000.0, 1),
 		to_fixed(f.p95_reply_ms as f64 / 1000.0, 2),
 		f.rejected.to_string(),
-		f.dropped.to_string(),
 		f.failed_in_block.to_string(),
 	];
 	cells.extend(block_cells(&f.blocks));
@@ -264,10 +253,7 @@ fn step_row(f: &FinalStep) -> String {
 fn rpc_errors(steps: &[FinalStep]) -> Vec<(String, u64)> {
 	let mut errors: Vec<(String, u64)> = Vec::new();
 	for (k, v) in steps.iter().flat_map(|f| &f.errors) {
-		match errors.iter_mut().find(|(e, _)| e == k) {
-			Some((_, n)) => *n += v,
-			None => errors.push((k.clone(), *v)),
-		}
+		add_to(&mut errors, k.clone(), *v);
 	}
 	errors.sort_by(|a, b| b.1.cmp(&a.1));
 	errors
@@ -287,26 +273,11 @@ fn render_summary(s: &Summary, steps: &[FinalStep], d: &RunData, checks: &[Check
 			to_fixed(m.included_per_s, 0)
 		)
 	});
-	let min_included_pct = s
-		.rules
-		.get("minIncludedRatio")
-		.and_then(serde_json::Value::as_f64)
-		.map(|v| 100.0 * v)
-		.unwrap_or(90.0);
-	let max_latency_s = s
-		.rules
-		.get("maxP95LatencyMs")
-		.and_then(serde_json::Value::as_f64)
-		.map(|v| v / 1000.0)
-		.unwrap_or(10.0);
-	let max_refused_pct = s
-		.rules
-		.get("maxRefusedRatio")
-		.and_then(serde_json::Value::as_f64)
-		.map(|v| 100.0 * v)
-		.unwrap_or(1.0);
+	let min_included_pct = rule(s, "minIncludedRatio").map_or(90.0, |v| 100.0 * v);
+	let max_latency_s = rule(s, "maxP95LatencyMs").map_or(10.0, |v| v / 1000.0);
+	let max_refused_pct = rule(s, "maxRefusedRatio").map_or(1.0, |v| 100.0 * v);
 	let windows = d.steps();
-	let step_window = |k: u32| windows.iter().find(|w| w.label == format!("step {k}"));
+	let step_window = |k: u32| windows.iter().find(|w| w.label == Label::Step(k));
 	let mut lines: Vec<String> = vec![format!("### {}", s.scenario), String::new()];
 	if let Some(artifact) = &s.artifact {
 		lines.extend([
@@ -331,7 +302,7 @@ fn render_summary(s: &Summary, steps: &[FinalStep], d: &RunData, checks: &[Check
         String::new(),
         "#### Result".into(),
         String::new(),
-        format!("- **Verdict:** {}", overall_status(s, checks).name()),
+        format!("- **Verdict:** {}", serde_name(overall_status(s, checks))),
         format!("- **Failure onset** (first failed load step): {bp}"),
         format!("- **Max sustained:** {best}"),
         format!("- **Load stop:** {}: {}", s.stop.rule.name(), s.stop.detail),
@@ -343,12 +314,12 @@ fn render_summary(s: &Summary, steps: &[FinalStep], d: &RunData, checks: &[Check
         String::new(),
         "#### Load steps".into(),
         String::new(),
-        format!("| step | target tx/s | duration s | transactions sent | sent/s | included/s | included % | p50 s | p95 s (limit {}) | reply p95 s | refused | expired | failed | blocks | block gap s (mean / max) | max ours/block | max ref time % | max proof % |", to_fixed(max_latency_s, 1)),
-        format!("|{}", " ---: |".repeat(18)),
+        format!("| step | target tx/s | duration s | transactions sent | sent/s | included/s | included % | p50 s | p95 s (limit {}) | reply p95 s | refused | failed | blocks | block gap s (mean / max) | max ours/block | max ref time % | max proof % |", to_fixed(max_latency_s, 1)),
+        format!("|{}", " ---: |".repeat(17)),
     ]);
 	lines.extend(steps.iter().map(step_row));
 	let mut cells = vec!["recovery".to_owned()];
-	cells.extend(std::iter::repeat_n("-".to_owned(), 12));
+	cells.extend(std::iter::repeat_n("-".to_owned(), 11));
 	cells.extend(block_cells(&r.blocks));
 	lines.push(row(&cells));
 	lines.extend([
@@ -358,24 +329,21 @@ fn render_summary(s: &Summary, steps: &[FinalStep], d: &RunData, checks: &[Check
         "| step | max CPU % | max memory MiB | block build ms | pool validations (all) | validations waiting (all) | pool ready txs (all) | why blocks ended |".into(),
         format!("|{} --- |", " ---: |".repeat(7)),
     ]);
-	for f in steps {
-		let c = collator_step(d, step_window(f.step));
+	// One row per step, then one for recovery.
+	let windows = steps
+		.iter()
+		.map(|f| (f.step.to_string(), &f.node, step_window(f.step).cloned()))
+		.chain([("recovery".to_owned(), &r.node, d.phase(Phase::Recovery))]);
+	for (label, node, w) in windows {
+		let c = collator_step(d, w.as_ref());
 		let mut cells = vec![
-			f.step.to_string(),
-			fmt(f.node.max_cpu_pct.map(|x| x as f64), 0),
-			fmt(f.node.max_rss_mi_b.map(|x| x as f64), 0),
+			label,
+			fmt(node.max_cpu_pct.map(|x| x as f64), 0),
+			fmt(node.max_rss_mi_b.map(|x| x as f64), 0),
 		];
 		cells.extend(collator_cells(c.as_ref()));
 		lines.push(row(&cells));
 	}
-	let c = collator_step(d, d.phase("recovery").as_ref());
-	let mut cells = vec![
-		"recovery".to_owned(),
-		fmt(r.node.max_cpu_pct.map(|x| x as f64), 0),
-		fmt(r.node.max_rss_mi_b.map(|x| x as f64), 0),
-	];
-	cells.extend(collator_cells(c.as_ref()));
-	lines.push(row(&cells));
 	lines.push(String::new());
 	let probes: Vec<_> = r.probes.iter().filter(|p| p.phase == ProbePhase::Recovery).collect();
 	if !probes.is_empty() {
@@ -386,7 +354,7 @@ fn render_summary(s: &Summary, steps: &[FinalStep], d: &RunData, checks: &[Check
 					"{} s: {}",
 					to_fixed(p.sent_at_s, 0),
 					p.latency_ms.map_or_else(
-						|| p.outcome.name().to_owned(),
+						|| serde_name(p.outcome),
 						|l| format!("{} s", to_fixed(l as f64 / 1000.0, 1))
 					)
 				)
@@ -413,13 +381,18 @@ fn render_summary(s: &Summary, steps: &[FinalStep], d: &RunData, checks: &[Check
 
 #[cfg(test)]
 mod tests {
-	use polkameter_files::summary::{Artifact, BreakingPoint};
+	use polkameter_files::summary::{Artifact, BreakingPoint, Stop};
 
 	use super::*;
 	use crate::Verdict;
 
+	/// The recorded smoke run, shared with the replay test. Its breaking point is cleared: the
+	/// verdict tests set their own.
 	fn summary() -> Summary {
-		serde_json::from_str(include_str!("../tests/summary.json")).expect("summary fixture")
+		let text = include_str!("../../../src-tauri/tests/fixtures/smoke-run/summary.json");
+		let mut s: Summary = serde_json::from_str(text).expect("summary fixture");
+		s.breaking_point = None;
+		s
 	}
 
 	fn check(name: &str, status: Status) -> CheckResult {
@@ -432,42 +405,33 @@ mod tests {
 	}
 
 	#[test]
-	fn passing_checks_and_a_rate_cap_pass() {
-		assert_eq!(
-			overall_status(&summary(), &[check("monitors recorded everything", Status::Pass)]),
-			OverallStatus::Pass
-		);
-	}
-
-	#[test]
-	fn a_breaking_point_fails() {
-		let mut s = summary();
-		s.breaking_point = Some(BreakingPoint {
-			step: 1,
-			target_rate: 18.0,
-			measure: "latency".into(),
-			detail: "p95 27.3 s".into(),
-		});
-		assert_eq!(overall_status(&s, &[]), OverallStatus::Fail);
-	}
-
-	#[test]
-	fn ending_before_the_rate_cap_is_inconclusive() {
-		let mut s = summary();
-		s.stop = polkameter_files::summary::Stop::new(
-			Rule::BudgetUsedUp,
-			Some(1),
-			"no transactions left",
-		);
-		assert_eq!(overall_status(&s, &[]), OverallStatus::Inconclusive);
-	}
-
-	#[test]
-	fn a_failed_outcome_check_fails() {
-		assert_eq!(
-			overall_status(&summary(), &[check("relay slots (level 1)", Status::Fail)]),
-			OverallStatus::Fail
-		);
+	fn the_overall_status_follows_the_stop_the_breaking_point_and_the_checks() {
+		let plain: fn(&mut Summary) = |_| {};
+		let breaking: fn(&mut Summary) = |s| {
+			s.breaking_point = Some(BreakingPoint {
+				step: 1,
+				target_rate: 18.0,
+				measure: "latency".into(),
+				detail: "p95 27.3 s".into(),
+			})
+		};
+		let ended: fn(&mut Summary) =
+			|s| s.stop = Stop::new(Rule::BudgetUsedUp, Some(1), "no transactions left");
+		let optional = CheckResult { optional: true, ..check("x", Status::NoResult) };
+		let cases = [
+			(plain, vec![check("x", Status::Pass)], OverallStatus::Pass),
+			(plain, vec![check("x", Status::Fail)], OverallStatus::Fail),
+			(plain, vec![check("x", Status::Warn)], OverallStatus::Warn),
+			(plain, vec![check("x", Status::NoResult)], OverallStatus::Inconclusive),
+			(plain, vec![optional], OverallStatus::Pass),
+			(breaking, vec![], OverallStatus::Fail),
+			(ended, vec![], OverallStatus::Inconclusive),
+		];
+		for (edit, checks, want) in cases {
+			let mut s = summary();
+			edit(&mut s);
+			assert_eq!(overall_status(&s, &checks), want);
+		}
 	}
 
 	#[test]
@@ -505,28 +469,5 @@ mod tests {
 		assert!(md.contains("p95 send-to-inclusion latency exceeds 10.0 s"));
 		assert!(md.contains("p95 s (limit 10.0)"));
 		assert!(md.contains("| 0 | 15 | 60.0 | 900 |"));
-		assert!(!md.contains("wait for one transaction"));
-	}
-
-	#[test]
-	fn a_required_gap_is_inconclusive_but_an_optional_gap_is_not() {
-		assert_eq!(
-			overall_status(&summary(), &[check("monitors recorded everything", Status::NoResult)]),
-			OverallStatus::Inconclusive
-		);
-		let mut optional = check("a plugin check without data", Status::NoResult);
-		optional.optional = true;
-		assert_eq!(overall_status(&summary(), &[optional]), OverallStatus::Pass);
-	}
-
-	#[test]
-	fn warnings_warn() {
-		assert_eq!(
-			overall_status(
-				&summary(),
-				&[check("build time within the authoring deadline", Status::Warn)]
-			),
-			OverallStatus::Warn
-		);
 	}
 }

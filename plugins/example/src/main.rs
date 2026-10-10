@@ -4,68 +4,47 @@ use serde_json::{Value, json};
 struct Example;
 impl Plugin for Example {
 	fn manifest(&self) -> Manifest {
+		let operations = [
+			("crash", Operation::new("Exercise unexpected process exit", &[], &[]).read_only()),
+			(
+				"invalid-output",
+				Operation::new("Exercise output validation", &[], &[("value", Schema::Integer)])
+					.read_only(),
+			),
+			(
+				"fail-with-message",
+				Operation::new("Exercise error redaction", &[("message", Schema::String)], &[])
+					.read_only(),
+			),
+			(
+				"double",
+				Operation::new(
+					"Double a number without chain access",
+					&[("value", Schema::Integer)],
+					&[("value", Schema::Integer)],
+				)
+				.read_only(),
+			),
+			("fail", Operation::new("Exercise tool-failure handling", &[], &[]).read_only()),
+			(
+				"wait",
+				Operation::new(
+					"Exercise cancellation and deadlines",
+					&[("milliseconds", Schema::Integer)],
+					&[],
+				)
+				.read_only(),
+			),
+		];
 		Manifest {
 			id: "example".into(),
 			version: "0.1.0".into(),
 			protocol: PROTOCOL,
 			requirements: vec![],
-			operations: [
-				(
-					"crash".into(),
-					Operation {
-						description: "Exercise unexpected process exit".into(),
-						inputs: [].into(),
-						outputs: [].into(),
-						read_only: true,
-					},
-				),
-				(
-					"invalid-output".into(),
-					Operation {
-						description: "Exercise output validation".into(),
-						inputs: [].into(),
-						outputs: [("value".into(), Schema::Integer.into())].into(),
-						read_only: true,
-					},
-				),
-				(
-					"fail-with-message".into(),
-					Operation {
-						description: "Exercise error redaction".into(),
-						inputs: [("message".into(), Schema::String.into())].into(),
-						outputs: [].into(),
-						read_only: true,
-					},
-				),
-				(
-					"double".into(),
-					Operation {
-						description: "Double a number without chain access".into(),
-						inputs: [("value".into(), Schema::Integer.into())].into(),
-						outputs: [("value".into(), Schema::Integer.into())].into(),
-						read_only: true,
-					},
-				),
-				(
-					"fail".into(),
-					Operation {
-						description: "Exercise tool-failure handling".into(),
-						inputs: [].into(),
-						outputs: [].into(),
-						read_only: true,
-					},
-				),
-				(
-					"wait".into(),
-					Operation {
-						description: "Exercise cancellation and deadlines".into(),
-						inputs: [("milliseconds".into(), Schema::Integer.into())].into(),
-						outputs: [].into(),
-						read_only: true,
-					},
-				),
-			]
-			.into(),
+			operations: operations
+				.into_iter()
+				.map(|(name, operation)| (name.into(), operation))
+				.collect(),
 		}
 	}
 	async fn invoke(&mut self, operation: &str, inputs: Value, context: &Context) -> Result<Value> {
@@ -75,7 +54,11 @@ impl Plugin for Example {
 				std::process::exit(42)
 			},
 			"invalid-output" => Ok(json!({"value":"not an integer"})),
-			"fail-with-message" => bail!("{}", inputs["message"].as_str().unwrap_or("")),
+			"fail-with-message" => {
+				let message = inputs["message"].as_str().unwrap_or("");
+				eprintln!("{message}");
+				bail!("{message}")
+			},
 			"double" => Ok(
 				json!({"value": inputs["value"].as_i64().and_then(|n| n.checked_mul(2)).ok_or_else(|| anyhow::anyhow!("integer overflow"))?}),
 			),

@@ -5,18 +5,18 @@
 //!   filled in;
 //! - fetcher: reads each queued block (body, weight, timestamp, events) strictly in arrival
 //!   order and sends [`BlockEvent::Fetched`]. In order, so a source never sees a later block
-//!   (and expires txs) before the inclusions of an earlier one.
+//!   before the inclusions of an earlier one.
 
-use std::collections::HashSet;
-use std::future::Future;
+use std::{collections::HashSet, future::Future};
 
-use polkameter_chain::{ChainError, Client, DecodeAsType, events, fetch, tx_hash};
+use polkameter_chain::{
+	ChainError, Client, DecodeAsType, events, failed_extrinsics, fetch, hex0x, tx_hash,
+};
 use polkameter_files::{BlockRecord, Millis};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::now_ms;
-use crate::source::TxHash;
+use crate::{now_ms, source::TxHash};
 
 /// What the follower saw.
 #[derive(Debug)]
@@ -25,8 +25,6 @@ pub enum BlockEvent {
 	Head {
 		/// Number.
 		number: u32,
-		/// Hash.
-		hash: [u8; 32],
 		/// When it arrived.
 		seen_at: Millis,
 	},
@@ -34,8 +32,6 @@ pub enum BlockEvent {
 	Fetched {
 		/// The block.
 		record: BlockRecord,
-		/// Its hash.
-		hash: [u8; 32],
 		/// Every extrinsic's hash, and whether it has an `ExtrinsicFailed` event.
 		txs: Vec<(TxHash, bool)>,
 	},
@@ -52,19 +48,17 @@ pub enum BlockEvent {
 	Tool(String),
 }
 
-#[derive(DecodeAsType)]
+#[derive(DecodeAsType, Default)]
 #[decode_as_type(crate_path = "polkameter_chain::scale_decode_reexport")]
 struct Weight {
 	ref_time: u64,
 	proof_size: u64,
 }
 
-#[derive(DecodeAsType)]
+#[derive(DecodeAsType, Default)]
 #[decode_as_type(crate_path = "polkameter_chain::scale_decode_reexport")]
 struct PerClass {
 	normal: Weight,
-	operational: Weight,
-	mandatory: Weight,
 }
 
 /// The running runtime's normal class limit (ref time, proof size), from `System.BlockWeights`.
@@ -123,7 +117,7 @@ async fn heads(
 				Some(block) => match block {
 				Ok(b) if b.number() as u32 >= first && !seen.contains(&b.hash().0) => {
 					let (number, hash, seen_at) = (b.number() as u32, b.hash().0, now_ms());
-					let _ = out.send(BlockEvent::Head { number, hash, seen_at });
+					let _ = out.send(BlockEvent::Head { number, seen_at });
 					match fill_in(b.header().parent_hash.0, number, first, &seen, |h| client.parent(h)).await {
 						Ok(missing) => for (h, n) in missing {
 							seen.insert(h);
@@ -188,19 +182,13 @@ async fn fetcher(
 		.map(|(hash, number, seen_at, filled_in)| {
 			let client = client.clone();
 			async move {
-				(
-					hash,
-					number,
-					seen_at,
-					filled_in,
-					read(&client, hash, number, seen_at, limit).await,
-				)
+				(number, seen_at, filled_in, read(&client, hash, number, seen_at, limit).await)
 			}
 		})
 		.buffered(FETCH_AHEAD);
-	let mut last: Option<(u64, Millis)> = None; // (timestamp, seen_at) of the last best block
+	let mut last: Option<Millis> = None; // when the last best block arrived
 	loop {
-		let (hash, number, seen_at, filled_in, result) = tokio::select! {
+		let (number, seen_at, filled_in, result) = tokio::select! {
 			() = stop.cancelled() => return,
 			Some(r) = reads.next() => r,
 		};
@@ -209,11 +197,10 @@ async fn fetcher(
 				record.fetch_lag_ms = Some(now_ms().saturating_sub(seen_at));
 				record.filled_in = filled_in;
 				if !filled_in {
-					record.gap_ms = last.map(|(_, s)| seen_at.saturating_sub(s));
-					record.interval_ms = last.map(|(t, _)| record.timestamp as i64 - t as i64);
-					last = Some((record.timestamp, seen_at));
+					record.gap_ms = last.map(|s| seen_at.saturating_sub(s));
+					last = Some(seen_at);
 				}
-				let _ = out.send(BlockEvent::Fetched { record, hash, txs });
+				let _ = out.send(BlockEvent::Fetched { record, txs });
 			},
 			Err(e) if e.fault() == polkameter_chain::Fault::Tool => {
 				let _ = out.send(BlockEvent::Tool(format!("block {number}: {e}")));
@@ -231,7 +218,7 @@ async fn read(
 	number: u32,
 	seen_at: Millis,
 	limit: Limit,
-) -> Result<(BlockRecord, Vec<(TxHash, bool)>), polkameter_chain::ChainError> {
+) -> Result<(BlockRecord, Vec<(TxHash, bool)>), ChainError> {
 	let at = client.at(hash).await?;
 	let (body, weight, now, events) = tokio::join!(
 		client.body(hash),
@@ -240,30 +227,17 @@ async fn read(
 		events(&at),
 	);
 	let (body, timestamp) = (body?, now?.unwrap_or(0));
-	let w = weight?.unwrap_or(PerClass {
-		normal: Weight { ref_time: 0, proof_size: 0 },
-		operational: Weight { ref_time: 0, proof_size: 0 },
-		mandatory: Weight { ref_time: 0, proof_size: 0 },
-	});
-	let failed: HashSet<u32> = events?
-		.into_iter()
-		.filter(|e| e.0 == "System" && e.1 == "ExtrinsicFailed")
-		.filter_map(|e| e.2)
-		.collect();
+	let w = weight?.unwrap_or_default();
+	let failed = failed_extrinsics(&events?);
 	let pct = |v: u64, max: u64| if max == 0 { 0.0 } else { 100.0 * v as f64 / max as f64 };
 	let record = BlockRecord {
 		number,
-		hash: format!("0x{}", hex::encode(hash)),
+		hash: hex0x(hash),
 		seen_at,
 		timestamp,
 		extrinsics: body.len() as u32,
-		bytes: body.iter().map(|x| x.len() as u64).sum(),
-		normal_ref_time: w.normal.ref_time,
-		normal_proof_size: w.normal.proof_size,
 		normal_ref_time_pct: pct(w.normal.ref_time, limit.0),
 		normal_proof_pct: pct(w.normal.proof_size, limit.1),
-		operational_ref_time: w.operational.ref_time,
-		mandatory_ref_time: w.mandatory.ref_time,
 		..BlockRecord::default()
 	};
 	let txs = body
@@ -284,55 +258,42 @@ mod tests {
 		[n; 32]
 	}
 
-	/// Runs `fill_in` over a chain given as child -> parent, counting the parent reads.
+	/// Runs `fill_in` over a chain given as child -> parent.
 	fn fill(
 		chain: &HashMap<[u8; 32], [u8; 32]>,
 		parent: [u8; 32],
 		number: u32,
 		first: u32,
 		seen: &[[u8; 32]],
-	) -> (Vec<([u8; 32], u32)>, usize) {
+	) -> Vec<([u8; 32], u32)> {
 		let seen: HashSet<[u8; 32]> = seen.iter().copied().collect();
-		let mut reads = 0;
-		let out =
-			futures_util::FutureExt::now_or_never(fill_in(parent, number, first, &seen, |x| {
-				reads += 1;
-				std::future::ready(
-					chain
-						.get(&x)
-						.copied()
-						.ok_or(ChainError::Read { what: "test", detail: "no parent".into() }),
-				)
-			}))
-			.expect("ready")
-			.expect("walks");
-		(out, reads)
+		futures_util::FutureExt::now_or_never(fill_in(parent, number, first, &seen, |x| {
+			std::future::ready(
+				chain
+					.get(&x)
+					.copied()
+					.ok_or(ChainError::Read { what: "test", detail: "no parent".into() }),
+			)
+		}))
+		.expect("ready")
+		.expect("walks")
 	}
 
 	#[test]
 	fn a_reorg_fills_in_the_new_branch() {
 		// Read: 10 -> 11 -> 12. The node switches to 13' on 12' on 11' on 10, and announces 13'.
 		let chain = HashMap::from([(h(111), h(10)), (h(112), h(111))]);
-		let (out, reads) = fill(&chain, h(112), 13, 5, &[h(10), h(11), h(12)]);
+		let out = fill(&chain, h(112), 13, 5, &[h(10), h(11), h(12)]);
 		assert_eq!(out, [(h(111), 11), (h(112), 12)]);
-		assert_eq!(reads, 2);
-	}
-
-	#[test]
-	fn a_best_block_on_the_last_one_fills_in_nothing() {
-		let (out, reads) = fill(&HashMap::new(), h(12), 13, 5, &[h(12)]);
-		assert!(out.is_empty());
-		assert_eq!(reads, 0);
 	}
 
 	#[test]
 	fn the_walk_stops_at_the_first_block_followed() {
 		// The first best block followed is 5: nothing below it is read, its parent included.
-		let (out, _) = fill(&HashMap::new(), h(4), 5, 5, &[]);
-		assert!(out.is_empty());
+		assert!(fill(&HashMap::new(), h(4), 5, 5, &[]).is_empty());
+		// A best block on the last one already read fills in nothing.
+		assert!(fill(&HashMap::new(), h(12), 13, 5, &[h(12)]).is_empty());
 		let chain = HashMap::from([(h(6), h(5))]);
-		let (out, reads) = fill(&chain, h(6), 7, 5, &[]);
-		assert_eq!(out, [(h(5), 5), (h(6), 6)]);
-		assert_eq!(reads, 1);
+		assert_eq!(fill(&chain, h(6), 7, 5, &[]), [(h(5), 5), (h(6), 6)]);
 	}
 }

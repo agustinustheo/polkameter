@@ -1,12 +1,13 @@
 //! The tracker as a state machine: a fake sender, hand-made replies and block events, no network.
 
-use polkameter_files::summary::Outcome;
-use polkameter_files::{BlockRecord, RunDir};
-use polkameter_load::follower::BlockEvent;
-use polkameter_load::sender::Reply;
-use polkameter_load::submit::Submit;
-use polkameter_load::tracker::{Phase, Tracker};
-use polkameter_load::{Lane, QueueSource, Tx};
+use polkameter_files::{BlockRecord, RunDir, summary::Outcome};
+use polkameter_load::{
+	Lane, QueueSource, Tx,
+	follower::BlockEvent,
+	sender::Reply,
+	submit::Submit,
+	tracker::{Phase, Tracker},
+};
 
 #[derive(Default)]
 struct FakeSender {
@@ -29,7 +30,7 @@ fn tx(n: u8) -> Tx {
 
 fn tracker(name: &str, flood: Vec<Tx>, probes: Vec<Tx>) -> Tracker<FakeSender> {
 	let dir = RunDir::create(std::path::Path::new(env!("CARGO_TARGET_TMPDIR")), name).unwrap();
-	let lane = Lane { call: "Test.call", source: Box::new(QueueSource::new(flood, probes, "txs")) };
+	let lane = Lane { call: "Test.call", source: QueueSource::new(flood, probes, "txs") };
 	Tracker::new(
 		vec![lane],
 		FakeSender::default(),
@@ -42,11 +43,7 @@ fn tracker(name: &str, flood: Vec<Tx>, probes: Vec<Tx>) -> Tracker<FakeSender> {
 
 fn fetched(number: u32, seen_at: u64, txs: &[&Tx]) -> BlockEvent {
 	let record = BlockRecord { number, seen_at, ..Default::default() };
-	BlockEvent::Fetched {
-		record,
-		hash: [number as u8; 32],
-		txs: txs.iter().map(|t| (t.hash, false)).collect(),
-	}
+	BlockEvent::Fetched { record, txs: txs.iter().map(|t| (t.hash, false)).collect() }
 }
 
 #[test]
@@ -66,6 +63,8 @@ fn a_reply_after_inclusion_still_counts_and_a_late_refusal_is_ignored() {
 	});
 	let st = &t.steps[0][0];
 	assert_eq!((st.included, st.rejected), (2, 0), "included twice, the late refusal ignored");
+	assert!(!t.flood[&b.hash].refused, "a late refusal does not flag an included tx");
+	assert!(t.flood[&a.hash].accepted, "the accepted reply counts");
 	assert_eq!(st.reply_ms, vec![600, 700], "both reply times counted");
 	assert_eq!(st.blocks.len(), 1);
 	assert_eq!(st.blocks[0].ours, 2);
@@ -101,11 +100,9 @@ fn closed_connection_preserves_unknown_probe_until_observed() {
 	let mut t = tracker("probes", vec![], vec![tx(9), tx(10)]);
 	t.on_block(fetched(1, 100, &[]), 100).unwrap();
 	assert!(t.probes.is_empty(), "a fetched block sends no probe");
-	t.on_block(BlockEvent::Head { number: 2, hash: [2; 32], seen_at: 200 }, 200)
-		.unwrap();
+	t.on_block(BlockEvent::Head { number: 2, seen_at: 200 }, 200).unwrap();
 	assert_eq!(t.probes.len(), 1);
-	t.on_block(BlockEvent::Head { number: 3, hash: [3; 32], seen_at: 300 }, 300)
-		.unwrap();
+	t.on_block(BlockEvent::Head { number: 3, seen_at: 300 }, 300).unwrap();
 	assert_eq!(t.probes.len(), 1, "only baseline_probes = 1");
 	t.on_reply(Reply::Closed { connection: 0, by_node: true });
 	assert_eq!(t.probes[0].outcome, Outcome::Pending);

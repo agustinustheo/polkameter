@@ -1,0 +1,501 @@
+---
+layout: null
+title: Polkameter — slides
+---
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Polkameter — load and stress testing for Polkadot SDK chains</title>
+<link rel="icon" href="favicon.png" sizes="512x512" type="image/png">
+<link rel="apple-touch-icon" href="favicon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=DM+Serif+Display:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reset.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/white.css">
+<style>
+  /* Same system as the other decks: DM Serif Display headings, DM Sans body, JetBrains Mono labels,
+     stone neutrals. The accent is the Polkameter blue of the architecture diagrams. */
+  :root {
+    --bg: #fafaf9;
+    --surface: #ffffff;
+    --surface-2: #f5f5f4;
+    --border: #e7e5e4;
+    --border-strong: #d6d3d1;
+    --text: #1c1917;
+    --text-2: #57534e;
+    --text-3: #78716c;
+    --dark-bg: #0f0f0f;
+    --dark-surface: #1c1917;
+    --dark-border: #44403c;
+    --dark-text: #fafaf9;
+    --dark-text-2: #d6d3d1;
+    --accent: #2563eb;
+    --accent-soft: #eff6ff;
+    --accent-ink: #1e3a8a;
+    --fail: #d03b3b;
+    --fail-soft: #fbeaea;
+    --none: #c3c2b7;
+    --amber: #d97706;
+    --amber-soft: #fff7ed;
+    --green: #059669;
+    --green-soft: #ecfdf5;
+
+    --serif: "DM Serif Display", Georgia, serif;
+    --sans: "DM Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+
+    --r-background-color: var(--bg);
+    --r-main-color: var(--text);
+    --r-heading-color: var(--text);
+    --r-link-color: var(--text);
+    --r-link-color-hover: var(--text-2);
+    --r-main-font: var(--sans);
+    --r-heading-font: var(--serif);
+    --r-code-font: var(--mono);
+    --r-main-font-size: 28px;
+    --r-heading-text-transform: none;
+    --r-heading-font-weight: 400;
+    --r-heading-letter-spacing: -0.02em;
+    --r-heading-line-height: 1.12;
+    --r-progress-color: var(--accent);
+  }
+
+  .reveal .slides { text-align: left; }
+  .reveal .slides > section { padding: 0 8px; box-sizing: border-box; }
+  .reveal .slides > section.center { text-align: center; }
+  .reveal h1 { font-size: 2.9em; letter-spacing: -0.03em; line-height: 1.05; margin: 0 0 0.3em; }
+  .reveal h1 em, .reveal h2 em { font-style: italic; }
+  .reveal h2 { font-size: 1.8em; margin: 0 0 0.55em; max-width: 24em; }
+  .reveal p { margin: 0 0 0.6em; line-height: 1.45; }
+  .reveal b, .reveal strong { font-weight: 600; }
+  .reveal a { text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--border-strong); }
+  .reveal .muted { color: var(--text-2); }
+  .reveal .small { font-size: 0.7em; }
+  .reveal .tiny { font-size: 0.55em; color: var(--text-3); }
+
+  .reveal .kicker {
+    display: inline-block; margin: 0 0 1em; padding: 0.35em 0.8em; border-radius: 9999px;
+    border: 1px solid var(--border-strong); background: var(--surface); color: var(--text-2);
+    font: 500 0.5em/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase;
+  }
+
+  .reveal .dark, .reveal .dark h1, .reveal .dark h2 { color: var(--dark-text); }
+  .reveal .dark .muted { color: var(--dark-text-2); }
+  .reveal .dark .kicker { background: transparent; border-color: var(--dark-border); color: var(--dark-text-2); }
+  .reveal .dark a { color: var(--dark-text); text-decoration-color: var(--dark-border); }
+  .reveal .rule { width: 72px; height: 1px; background: var(--dark-border); margin: 1.1em auto; }
+  .reveal img.logo { width: 520px; height: auto; margin: 0 auto 0.6em; display: block; }
+
+  .deck-footer {
+    position: fixed; left: 32px; bottom: 18px; z-index: 30;
+    font: 500 11px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3);
+  }
+  .reveal .slide-number { background: transparent; color: var(--text-3); font: 500 12px/1 var(--mono); right: 32px; bottom: 18px; }
+  html.dark-slide .deck-footer, html.dark-slide .reveal .slide-number { color: #a8a29e; }
+  .reveal .slide-number a { text-decoration: none; color: inherit; }
+
+  .reveal ul { margin: 0 0 0 1.1em; }
+  .reveal li { margin: 0.4em 0; line-height: 1.4; }
+  .reveal li::marker { color: var(--text-3); }
+
+  /* Cards */
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .cards.four { grid-template-columns: repeat(4, 1fr); }
+  .cards.two { grid-template-columns: repeat(2, 1fr); }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 18px 20px 16px; }
+  .card h3 { font: 600 0.7em/1.3 var(--sans); margin: 0 0 0.35em; color: var(--text); text-transform: none; letter-spacing: 0; }
+  .card p { font-size: 0.56em; color: var(--text-2); margin: 0; }
+  .card .tag { font: 500 0.42em/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); margin-bottom: 0.7em; display: block; }
+  .card.accent { background: var(--accent-soft); border-color: #bfd3fb; }
+  .card.accent h3 { color: var(--accent-ink); }
+  .card.amber { background: var(--amber-soft); border-color: #f5d6a8; }
+  .card.green { background: var(--green-soft); border-color: #a7e3cc; }
+  .card .num { font: 400 1.55em/1 var(--serif); letter-spacing: -0.02em; color: var(--text); margin-bottom: 0.2em; }
+
+  /* Flow of phases */
+  .flow { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; margin: 0.4em 0 0.8em; }
+  .flow .node {
+    padding: 0.5em 0.85em; border-radius: 12px; background: var(--surface); border: 1px solid var(--border-strong);
+    font-size: 0.66em; font-weight: 500; white-space: nowrap;
+  }
+  .flow .node small { display: block; font: 500 0.66em/1.3 var(--mono); color: var(--text-3); letter-spacing: 0.04em; text-transform: uppercase; }
+  .flow .node.hot { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .flow .node.hot small { color: #dbe7fd; }
+  .flow .arrow { color: var(--text-3); font-size: 0.7em; }
+
+  /* Architecture layers */
+  .layers { display: grid; gap: 12px; }
+  .layer { display: grid; grid-template-columns: 170px 1fr; gap: 16px; align-items: stretch; }
+  .layer .name { font: 500 0.46em/1.3 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); align-self: center; }
+  .layer .row { display: grid; gap: 12px; }
+  .layer .box { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 10px 14px; }
+  .layer .box b { display: block; font-size: 0.62em; }
+  .layer .box span { display: block; font-size: 0.48em; color: var(--text-2); margin-top: 0.2em; }
+  .layer .box.accent { background: var(--accent-soft); border-color: #bfd3fb; }
+  .layer .box.accent b { color: var(--accent-ink); }
+
+  /* Code */
+  .reveal pre.xml {
+    width: 100%; box-shadow: none; margin: 0; font-size: 0.44em; line-height: 1.5;
+    background: var(--dark-surface); border-radius: 14px; padding: 0;
+  }
+  .reveal pre.xml code { padding: 18px 22px; max-height: 470px; color: var(--dark-text-2); background: transparent; border: 0; }
+  .reveal pre.xml .t { color: #93b4f7; }
+  .reveal pre.xml .a { color: #fbbf77; }
+  .reveal pre.xml .v { color: #86d4b4; }
+  .reveal pre.xml .c { color: #8a8580; }
+  .reveal code { font-family: var(--mono); font-size: 0.85em; padding: 0.1em 0.35em; border-radius: 4px; border: 1px solid var(--border); background: var(--surface); }
+  .reveal pre.cmd {
+    width: 100%; box-shadow: none; margin: 0 0 1em; font-size: 0.56em; line-height: 1.6;
+    background: var(--dark-surface); border-radius: 14px;
+  }
+  .reveal pre.cmd code { padding: 16px 22px; color: var(--dark-text); background: transparent; border: 0; max-height: none; }
+  .reveal pre.cmd .c { color: #8a8580; }
+
+  .split { display: grid; grid-template-columns: 1.25fr 1fr; gap: 36px; align-items: center; }
+  .split.even { grid-template-columns: 1fr 1fr; }
+  .side p { font-size: 0.62em; color: var(--text-2); }
+  .side ul { font-size: 0.62em; color: var(--text-2); }
+
+  /* Table */
+  .reveal table.nice { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 0.6em; margin: 0; }
+  .reveal table.nice th {
+    text-align: left; font: 500 0.72em/1.2 var(--mono); letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--text-3); border-bottom: 1px solid var(--border-strong); padding: 0.5em 0.8em;
+  }
+  .reveal table.nice td { padding: 0.5em 0.8em; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .reveal table.nice td:first-child { font-weight: 600; white-space: nowrap; }
+  .reveal table.nice td.why { color: var(--text-2); }
+  .reveal table.nice td.num { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--mono); font-size: 0.9em; }
+  .reveal table.nice tr:last-child td { border-bottom: 0; }
+
+  /* Loss accounting bar */
+  .ledger { display: flex; height: 54px; border-radius: 10px; overflow: hidden; margin: 0.4em 0 0.6em; }
+  .ledger div { display: flex; align-items: center; justify-content: center; font: 500 0.42em/1 var(--mono); letter-spacing: 0.04em; text-transform: uppercase; color: #fff; }
+  .ledger .inc { background: var(--accent); flex: 6; }
+  .ledger .fail { background: #7c8db5; flex: 1; }
+  .ledger .ref { background: var(--amber); flex: 1; }
+  .ledger .exp { background: var(--none); color: var(--text); flex: 1; }
+  .ledger .ready { background: #a8a29e; flex: 1; }
+  .ledger .lost { background: var(--fail); flex: 1; }
+
+  /* Verdict chips */
+  .verdicts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 0.6em; }
+  .verdict { border-radius: 16px; padding: 18px 20px; border: 1px solid var(--border); background: var(--surface); }
+  .verdict b { display: block; font: 400 1.3em/1 var(--serif); margin-bottom: 0.3em; }
+  .verdict p { font-size: 0.54em; color: var(--text-2); margin: 0; }
+  .verdict.pass b { color: var(--green); }
+  .verdict.fail { background: var(--fail-soft); border-color: #f2c9c9; }
+  .verdict.fail b { color: var(--fail); }
+  .verdict.inc b { color: var(--text-2); }
+  .verdicts.four { grid-template-columns: repeat(4, 1fr); }
+  .verdict.warn { background: var(--amber-soft); border-color: #f5d6a8; }
+  .verdict.warn b { color: var(--amber); }
+
+  /* Steps example */
+  .steps { display: grid; grid-template-columns: 110px 1fr 120px; gap: 10px 16px; align-items: center; margin: 0.3em 0 0.8em; }
+  .steps .name { font: 500 0.5em/1.2 var(--mono); color: var(--text-2); letter-spacing: 0.04em; text-transform: uppercase; }
+  .steps .track { height: 34px; border-radius: 8px; background: var(--surface-2); overflow: hidden; }
+  .steps .fill { height: 100%; background: var(--accent); }
+  .steps .fill.red { background: var(--fail); }
+  .steps .val { font: 400 1em/1 var(--serif); text-align: right; }
+  .steps .val.red { color: var(--fail); }
+
+  .reveal .callout { margin: 1em 0 0; padding: 0.9em 1.25em; border-radius: 12px; background: var(--surface-2); border: 1px solid var(--border); font-size: 0.58em; }
+  .reveal .callout.blue { background: var(--accent-soft); border-color: #bfd3fb; }
+
+  /* Wrap-up */
+  .three { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 1em; }
+  .three > div { background: var(--dark-surface); border: 1px solid var(--dark-border); border-radius: 16px; padding: 20px 22px; text-align: left; }
+  .three h3 { font: 500 0.46em/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: #a8a29e; margin: 0 0 0.9em; }
+  .three p { font-size: 0.6em; color: var(--dark-text); margin: 0; }
+  .quote { font: 400 1.25em/1.25 var(--serif); letter-spacing: -0.01em; color: var(--dark-text); margin: 0.7em 0 0.8em; }
+  .quote em { font-style: italic; color: var(--dark-text-2); }
+  .reveal kbd { font-family: var(--mono); font-size: 0.9em; padding: 0.05em 0.4em; border-radius: 4px; border: 1px solid var(--dark-border); }
+</style>
+</head>
+<body>
+<div class="deck-footer">Polkameter · October 2026</div>
+<div class="reveal"><div class="slides">
+
+<section class="center dark" data-background-color="#0f0f0f" data-state="dark-slide">
+  <img class="logo" src="../logo-dark.png" alt="Polkameter">
+  <h1>Load and stress testing<br><em>for Polkadot SDK chains</em></h1>
+  <div class="rule"></div>
+  <p class="muted">A JMeter-style workbench: an XML plan, runtime plugins and one Rust engine</p>
+  <p class="tiny" style="margin-top:2.2em"><a href="../">Documentation</a> · <a href="https://github.com/agustinustheo/polkameter">Source</a> · press <kbd>S</kbd> for speaker notes</p>
+  <aside class="notes">About 15 minutes. Why chains need their own load tool (2 min), what Polkameter is (2 min), one run end to end (4 min), how the result is judged (4 min), architecture and how to start (3 min).</aside>
+</section>
+
+<section>
+  <p class="kicker">The problem</p>
+  <h2>“Accepted” is not “included”</h2>
+  <div class="cards">
+    <div class="card"><span class="tag">HTTP load tools</span><h3>Count replies</h3><p>A 200 OK means the work is done. Throughput is requests per second and latency is time to reply.</p></div>
+    <div class="card accent"><span class="tag">A blockchain</span><h3>A reply is a promise</h3><p>The node accepts a transaction into its pool. It may be included later, refused, dropped, put on a fork that loses, or simply never seen again.</p></div>
+    <div class="card"><span class="tag">So we must</span><h3>Follow every transaction</h3><p>To the best block, to the finalized chain and back to the pool, and only then say how much the chain really carried.</p></div>
+  </div>
+  <p class="callout">The limits are also elsewhere: the transaction pool, block building time, finality and, for a parachain, the relay chain backing its blocks.</p>
+  <aside class="notes">The core idea of the tool. A generic load tester would report the submit rate. Polkameter reports what was included, how fast, and accounts for every transaction that was not.</aside>
+</section>
+
+<section>
+  <p class="kicker">What it is</p>
+  <h2>JMeter’s model, for Polkadot SDK chains</h2>
+  <div class="cards">
+    <div class="card"><span class="tag">Declarative</span><h3>An XML plan</h3><p>Steps, workflows, the load shape, monitors and thresholds. Validated before anything touches a chain.</p></div>
+    <div class="card amber"><span class="tag">Runtime-specific</span><h3>Plugins</h3><p>Separate executables that prepare transactions and check runtime state. The core never builds a runtime call.</p></div>
+    <div class="card accent"><span class="tag">Chain-agnostic</span><h3>One Rust engine</h3><p>Submits at a controlled rate, follows blocks, reconciles every transaction, scrapes nodes, judges the run.</p></div>
+  </div>
+  <div class="cards" style="margin-top:16px">
+    <div class="card"><span class="tag">Front end</span><h3><code>polkameter</code> CLI</h3><p>Headless, for CI and load machines. <code>--format json</code> for machines.</p></div>
+    <div class="card"><span class="tag">Front end</span><h3>Desktop app</h3><p>Tauri. Edits and runs the same plans.</p></div>
+    <div class="card"><span class="tag">Front end</span><h3>Remote agent</h3><p>Runs plans on a host with its own plugins and secrets, over TLS or a loopback tunnel.</p></div>
+  </div>
+  <aside class="notes">Three parts and three front ends. All three front ends drive the same engine, so a plan that validates on a laptop behaves the same on a remote load machine.</aside>
+</section>
+
+<section>
+  <p class="kicker">The plan</p>
+  <div class="split">
+<pre class="xml"><code><span class="c">&lt;?xml version="1.0" encoding="UTF-8"?&gt;</span>
+<span class="t">&lt;polkameter-plan</span> <span class="a">xmlns</span>=<span class="v">"https://polkameter.dev/schema/plan"</span>
+    <span class="a">version</span>=<span class="v">"1"</span> <span class="a">name</span>=<span class="v">"Plugin data flow"</span> <span class="a">timeout-ms</span>=<span class="v">"30000"</span><span class="t">&gt;</span>
+  <span class="t">&lt;plugins&gt;&lt;plugin</span> <span class="a">id</span>=<span class="v">"example"</span> <span class="a">version</span>=<span class="v">"0.1.0"</span> <span class="a">protocol</span>=<span class="v">"1"</span><span class="t">/&gt;&lt;/plugins&gt;</span>
+  <span class="t">&lt;setup&gt;</span>
+    <span class="t">&lt;step</span> <span class="a">id</span>=<span class="v">"seed"</span> <span class="a">use</span>=<span class="v">"example.double"</span><span class="t">&gt;</span>
+      <span class="t">&lt;input</span> <span class="a">name</span>=<span class="v">"value"</span> <span class="a">value</span>=<span class="v">"21"</span><span class="t">/&gt;</span>
+    <span class="t">&lt;/step&gt;</span>
+    <span class="t">&lt;step</span> <span class="a">id</span>=<span class="v">"copied"</span> <span class="a">use</span>=<span class="v">"core.echo"</span><span class="t">&gt;</span>
+      <span class="t">&lt;input</span> <span class="a">name</span>=<span class="v">"value"</span> <span class="a">ref</span>=<span class="v">"steps.seed.value"</span><span class="t">/&gt;</span>
+    <span class="t">&lt;/step&gt;</span>
+  <span class="t">&lt;/setup&gt;</span>
+  <span class="t">&lt;workflow</span> <span class="a">id</span>=<span class="v">"users"</span> <span class="a">users</span>=<span class="v">"3"</span> <span class="a">iterations</span>=<span class="v">"2"</span> <span class="a">concurrency</span>=<span class="v">"2"</span><span class="t">&gt;</span>
+    <span class="t">&lt;step</span> <span class="a">id</span>=<span class="v">"computed"</span> <span class="a">use</span>=<span class="v">"example.double"</span><span class="t">&gt;</span>
+      <span class="t">&lt;input</span> <span class="a">name</span>=<span class="v">"value"</span> <span class="a">ref</span>=<span class="v">"steps.copied.value"</span><span class="t">/&gt;</span>
+    <span class="t">&lt;/step&gt;</span>
+    <span class="t">&lt;step</span> <span class="a">id</span>=<span class="v">"verified"</span> <span class="a">use</span>=<span class="v">"core.assert-equal"</span><span class="t">&gt;</span>
+      <span class="t">&lt;input</span> <span class="a">name</span>=<span class="v">"actual"</span> <span class="a">ref</span>=<span class="v">"steps.computed.value"</span><span class="t">/&gt;</span>
+      <span class="t">&lt;input</span> <span class="a">name</span>=<span class="v">"expected"</span> <span class="a">value</span>=<span class="v">"84"</span><span class="t">/&gt;</span>
+    <span class="t">&lt;/step&gt;</span>
+  <span class="t">&lt;/workflow&gt;</span>
+<span class="t">&lt;/polkameter-plan&gt;</span></code></pre>
+    <div class="side">
+      <h2 style="font-size:1.35em">Plans say <em>what</em>, not how</h2>
+      <ul>
+        <li><code>use="plugin.operation"</code> picks a step from an installed plugin or <code>core</code>.</li>
+        <li>Inputs are a literal <code>value</code> or a <code>ref</code> to an earlier output: <code>steps.ID.OUTPUT</code>, <code>targets.ID</code>, <code>run.id</code>.</li>
+        <li>Forward references and unknown outputs fail before setup; malformed XML and unknown elements or attributes are reported with a line and column.</li>
+        <li>Plans name a credential profile and a topology alias, never a secret or a path.</li>
+      </ul>
+    </div>
+  </div>
+  <aside class="notes">This is the example plan that ships in the repository and runs without a chain. A real stress plan adds a load element with targets, rates or a ramp, monitors and thresholds.</aside>
+</section>
+
+<section>
+  <p class="kicker">One run</p>
+  <h2>Every run follows the same order</h2>
+  <div class="flow">
+    <div class="node"><small>1</small>Resolve plugins &amp; credentials</div><span class="arrow">→</span>
+    <div class="node"><small>2</small>Preflight &amp; calibrate</div><span class="arrow">→</span>
+    <div class="node"><small>3</small>Setup</div><span class="arrow">→</span>
+    <div class="node"><small>4</small>Workflows</div>
+  </div>
+  <div class="flow">
+    <span class="arrow">→</span>
+    <div class="node hot"><small>5a</small>Baseline</div><span class="arrow">→</span>
+    <div class="node hot"><small>5b</small>Load steps</div><span class="arrow">→</span>
+    <div class="node hot"><small>5c</small>Recovery</div><span class="arrow">→</span>
+    <div class="node hot"><small>5d</small>Finality wait &amp; reconcile</div>
+  </div>
+  <div class="flow">
+    <span class="arrow">→</span>
+    <div class="node"><small>6</small>Evaluate</div><span class="arrow">→</span>
+    <div class="node"><small>7</small>Report &amp; checks</div><span class="arrow">→</span>
+    <div class="node"><small>8</small>Teardown, always</div>
+  </div>
+  <p class="callout blue">Blue is the <b>measured load</b>. Setup time is excluded from it. Teardown runs even when preflight, setup, a workflow or the load fails.</p>
+  <aside class="notes">Preflight is read-only: it checks installed plugins, required metrics and calibrates the block interval. The measured part has four stages. Baseline sends a few probes before load to know the normal latency. Recovery keeps probing after the load stops until a run of probes lands in time again.</aside>
+</section>
+
+<section>
+  <p class="kicker">The load</p>
+  <h2>Step the rate up, find the onset</h2>
+  <div class="split even">
+    <div>
+      <div class="steps">
+        <div class="name">step 0</div><div class="track"><div class="fill" style="width:20%"></div></div><div class="val">2 tx/s</div>
+        <div class="name">step 1</div><div class="track"><div class="fill" style="width:40%"></div></div><div class="val">4 tx/s</div>
+        <div class="name">step 2</div><div class="track"><div class="fill" style="width:60%"></div></div><div class="val">6 tx/s</div>
+        <div class="name">step n</div><div class="track"><div class="fill red" style="width:100%"></div></div><div class="val red">onset</div>
+      </div>
+      <p class="tiny">Fixed rates, a linear ramp (<code>step</code>) or a geometric one (<code>growth</code>). Prepared transactions go out over several WebSocket connections.</p>
+    </div>
+    <div class="side">
+      <p><b>A step fails</b> by default when:</p>
+      <ul>
+        <li>fewer than <b>90%</b> of its transactions are included,</li>
+        <li>p95 send-to-inclusion latency exceeds <b>10 s</b>, or</li>
+        <li>more than <b>1%</b> of submissions are refused.</li>
+      </ul>
+      <p>The first failed step is the <b>failure onset</b>; the last good one is the <b>max sustained</b> rate. Stalled blocks or finality, or a flood of pool refusals, stop the load early. The limits are <code>&lt;thresholds&gt;</code> attributes.</p>
+    </div>
+  </div>
+  <aside class="notes">Other stop rules: block production stalls, finality stalls, block gaps over twice the expected interval, and the load tool itself not keeping up, which ends the run without blaming the chain.</aside>
+</section>
+
+<section>
+  <p class="kicker">Loss accounting</p>
+  <h2>Every transaction is accounted for</h2>
+  <div class="ledger">
+    <div class="inc">included</div><div class="ref">refused</div><div class="ready">still ready</div><div class="fail">unknown</div><div class="lost">lost</div>
+  </div>
+  <div class="cards">
+    <div class="card"><h3>Tracked live</h3><p>Replies and best blocks, per transaction, while the load runs. The pool is read once the load and recovery are over.</p></div>
+    <div class="card accent"><h3>Reconciled on finality</h3><p>After the finality wait every transaction is checked against the finalized chain: those the tracker missed, those only on a fork and those moved to another block.</p></div>
+    <div class="card"><h3>Lost means lost</h3><p>Accepted, in no block, with no error and not in the pool. A healthy chain must show zero.</p></div>
+  </div>
+  <aside class="notes">This is what makes the result trustworthy. The statuses are exclusive, so the counts add up to the number sent. A transaction that failed inside its block still counts as included and is flagged as failed. The pool check is “no silent loss”.</aside>
+</section>
+
+<section>
+  <p class="kicker">Monitors</p>
+  <h2>Watching the nodes, not just the client</h2>
+  <div class="cards">
+    <div class="card"><span class="tag">Nodes</span><h3>Prometheus scraper</h3><p>Collator and validator metrics from the network’s topology: block build time, pool validations, ready transactions and why blocks ended.</p></div>
+    <div class="card accent"><span class="tag">Parachains</span><h3>Relay observer</h3><p>Follows the relay chain for the parachain’s slots: offered, backed, included, timed out, and disputes.</p></div>
+    <div class="card"><span class="tag">Node under load</span><h3>Process sampler</h3><p>CPU and memory of the node process that receives the load, sampled with <code>ps</code>.</p></div>
+  </div>
+  <p class="callout">Each monitor writes its own raw file. The checks read the recorded series afterwards, so <code>polkameter report</code> can judge a run again from its files alone.</p>
+  <aside class="notes">Monitors are configured by the plan’s monitors element: a topology alias registered on this host, the para id and the relay target. Plugins can add observers and checks too.</aside>
+</section>
+
+<section>
+  <p class="kicker">The verdict</p>
+  <h2>Outcome checks turn series into a verdict</h2>
+  <table class="nice">
+    <tr><th>Outcome</th><th>Checks</th></tr>
+    <tr><td>Block production</td><td class="why">why blocks end · build time within the authoring deadline</td></tr>
+    <tr><td>Pool</td><td class="why">no silent loss · the burst drains · refusals are clean · pool work leaves time for blocks</td></tr>
+    <tr><td>PVF</td><td class="why">relay slots · no timed-out candidates or disputes · PVF time on validators · collation funnel</td></tr>
+    <tr><td>Run</td><td class="why">monitors recorded everything</td></tr>
+    <tr><td>Plugins</td><td class="why">their own checks, returned from evaluate steps (required or optional)</td></tr>
+  </table>
+  <div class="verdicts four">
+    <div class="verdict pass"><b>Pass</b><p>The rate cap was reached and no check failed or warned.</p></div>
+    <div class="verdict warn"><b>Warn</b><p>Nothing failed, but a check raised a warning.</p></div>
+    <div class="verdict fail"><b>Fail</b><p>A load step broke a response criterion, or a check failed.</p></div>
+    <div class="verdict inc"><b>Inconclusive</b><p>The load stopped early without a failure onset, or a required check had no result.</p></div>
+  </div>
+  <aside class="notes">The verdict is in the report; the exit code is separate. In smoke mode a monitor problem or a required check without a result makes the process exit nonzero, which is what CI wants.</aside>
+</section>
+
+<section>
+  <p class="kicker">A real report</p>
+  <h2>A smoke run, as Polkameter wrote it</h2>
+  <div class="split even">
+    <table class="nice">
+      <tr><th>Step</th><th class="num">tx/s</th><th class="num">Sent</th><th class="num">Incl. %</th><th class="num">p95 s</th></tr>
+      <tr><td>0</td><td class="num">2</td><td class="num">60</td><td class="num">100.0</td><td class="num" style="color:var(--fail)">23.1</td></tr>
+      <tr><td>1</td><td class="num">4</td><td class="num">120</td><td class="num">100.0</td><td class="num">6.0</td></tr>
+      <tr><td>2</td><td class="num">6</td><td class="num">180</td><td class="num">100.0</td><td class="num">6.2</td></tr>
+    </table>
+    <div class="side">
+      <p><b style="color:var(--fail)">Verdict: FAIL.</b> Failure onset at step 0: p95 send to best block was 23.1 s against a 10 s limit.</p>
+      <p><b>Loss check:</b> 360 sent, 360 included, 0 refused, <b>0 lost</b>, all confirmed on the finalized chain.</p>
+      <p><b>Recovery:</b> back 1 s after the load stopped; a backlog of 37 drained in 7 s.</p>
+    </div>
+  </div>
+  <p class="callout">Everything was included, yet the run fails on latency at the very first step. The report says <em>which</em> criterion failed and <em>where</em>.</p>
+  <aside class="notes">These numbers come from the smoke run kept in the repository as a test fixture; the replay test recomputes its checks and loss figures from the raw files.</aside>
+</section>
+
+<section>
+  <p class="kicker">Architecture</p>
+  <h2>Small crates around one engine</h2>
+  <div class="layers">
+    <div class="layer"><div class="name">Front ends</div><div class="row" style="grid-template-columns:repeat(3,1fr)">
+      <div class="box"><b>CLI</b><span>validate · preflight · run · report · plugin · agent</span></div>
+      <div class="box"><b>Desktop</b><span>Tauri app on the same engine</span></div>
+      <div class="box"><b>Remote agent</b><span>authenticated HTTP runner</span></div></div></div>
+    <div class="layer"><div class="name">Orchestration</div><div class="row">
+      <div class="box accent"><b>engine</b><span>plan parsing and validation, plugin host, step executor, measurement wiring, artifacts</span></div></div></div>
+    <div class="layer"><div class="name">Measurement</div><div class="row" style="grid-template-columns:repeat(4,1fr)">
+      <div class="box"><b>load</b><span>sender, tracker, follower, rate plan, stop rules, recovery, loss</span></div>
+      <div class="box"><b>monitors</b><span>scraper, relay, process, topology, preflight</span></div>
+      <div class="box"><b>checks</b><span>outcome checks and the report</span></div>
+      <div class="box"><b>chain</b><span>typed RPC reads and submission</span></div></div></div>
+    <div class="layer"><div class="name">Contracts</div><div class="row" style="grid-template-columns:repeat(2,1fr)">
+      <div class="box"><b>files</b><span>the run directory, metric registry, recorded series</span></div>
+      <div class="box"><b>plugin-sdk</b><span>JSON protocol over stdio for plugin authors</span></div></div></div>
+  </div>
+  <aside class="notes">Dependencies point downward. files is the on-disk contract shared by the writers (load, monitors) and the reader (checks), which is why a run can be judged again offline.</aside>
+</section>
+
+<section>
+  <p class="kicker">Plugins</p>
+  <h2>Runtime knowledge lives outside the core</h2>
+  <div class="split even">
+    <div class="cards two">
+      <div class="card"><h3>Manifest</h3><p>Operations with typed input and output schemas, requirements (capabilities, RPC, metrics).</p></div>
+      <div class="card"><h3>Protocol</h3><p>JSON requests and responses over stdin and stdout. Any language can implement it.</p></div>
+      <div class="card accent"><h3>Pinned</h3><p><code>plugin install</code> records the version and a BLAKE2 hash of the executable.</p></div>
+      <div class="card"><h3>Scoped</h3><p>Credentials and topologies are mapped per host; plans only name them.</p></div>
+    </div>
+    <div class="side">
+      <p>A plugin prepares the transactions a load submits, checks the state they should leave, and can return its own outcome checks.</p>
+      <p>The core does the rest: rate control, tracking, reconciliation, monitoring and the verdict, the same way for every chain.</p>
+      <p class="tiny">The example plugin in <code>plugins/example</code> uses <code>polkameter-plugin-sdk</code> and runs without a chain.</p>
+    </div>
+  </div>
+  <aside class="notes">The People chain plugin lives in the polkadot-pop-e2e repository and is installed without rebuilding Polkameter. A modified executable no longer matches its pin and is refused.</aside>
+</section>
+
+<section>
+  <p class="kicker">Getting started</p>
+  <h2>From a clone to a run directory</h2>
+<pre class="cmd"><code><span class="c"># the CLI only, without the desktop app</span>
+cargo build -p polkameter --no-default-features --bin polkameter
+cargo build -p polkameter-example-plugin
+
+polkameter plugin install target/debug/polkameter-example-plugin
+polkameter validate examples/plugin-workflow.polkameter.xml
+polkameter run examples/plugin-workflow.polkameter.xml --output runs
+polkameter report runs/run-&lt;id&gt;</code></pre>
+  <div class="cards four">
+    <div class="card"><h3><code>samples.jtl</code></h3><p>JMeter CSV of every step.</p></div>
+    <div class="card"><h3><code>events.jsonl</code></h3><p>The run as events.</p></div>
+    <div class="card"><h3><code>summary.md</code></h3><p>The report above, plus <code>summary.json</code>.</p></div>
+    <div class="card"><h3><code>transactions.jsonl</code></h3><p>Every transaction’s fate.</p></div>
+  </div>
+  <aside class="notes">scripts/local-fork-run.sh runs a plan on a fresh local Zombienet network. In CI, smoke mode exits nonzero when a monitor fails or a required check has no result.</aside>
+</section>
+
+<section class="center dark" data-background-color="#0f0f0f" data-state="dark-slide">
+  <p class="kicker">In one sentence</p>
+  <p class="quote">Polkameter pushes a chain until it breaks,<br><em>and accounts for every transaction on the way.</em></p>
+  <div class="three">
+    <div><h3>Honest</h3><p>Inclusion, not submission. Reconciled on the finalized chain.</p></div>
+    <div><h3>Repeatable</h3><p>One XML plan, one engine, offline re-judging from the files.</p></div>
+    <div><h3>Chain-agnostic</h3><p>Runtime knowledge in plugins, installed and pinned per host.</p></div>
+  </div>
+  <p class="tiny"><a href="../">Documentation</a> · <a href="https://github.com/agustinustheo/polkameter">github.com/agustinustheo/polkameter</a></p>
+  <aside class="notes">Questions. The docs site has the full plan reference, the result files and the CLI.</aside>
+</section>
+
+</div></div>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/notes/notes.js"></script>
+<script>
+  Reveal.initialize({
+    hash: true, slideNumber: "c/t", width: 1280, height: 720, margin: 0.05, center: true, controls: false,
+    transition: "fade", transitionSpeed: "fast", backgroundTransition: "fade", plugins: [RevealNotes]
+  });
+</script>
+</body>
+</html>

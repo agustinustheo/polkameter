@@ -30,26 +30,8 @@ pub enum Outcome {
 	Pvf,
 	/// Drain, loss, refusals, pool work.
 	Pool,
-	/// Fork depth and settling.
-	Forks,
-	/// Declared weight against measured time.
-	Weights,
 	/// The run itself.
 	Run,
-}
-
-impl Outcome {
-	/// The name in summary.json and summary.md.
-	pub fn name(self) -> &'static str {
-		match self {
-			Outcome::BlockProduction => "block production",
-			Outcome::Pvf => "pvf",
-			Outcome::Pool => "pool",
-			Outcome::Forks => "forks",
-			Outcome::Weights => "weights",
-			Outcome::Run => "run",
-		}
-	}
 }
 
 /// One metric definition.
@@ -93,6 +75,7 @@ pub struct Metric<K, const N: usize> {
 impl<K, const N: usize> Metric<K, N> {
 	/// A handle for a metric defined outside this registry, e.g. by a plugin. `N` must equal
 	/// `def.labels.len()`.
+	/// Part of the plugin API (used by out-of-tree plugins).
 	pub const fn new(def: Def) -> Self {
 		assert!(def.labels.len() == N, "label count does not match the definition");
 		Self { def, _kind: PhantomData }
@@ -122,7 +105,6 @@ polkameter_metrics! {
 	TX_REJECTED: Counter ["call", "reason"] "polkameter_tx_rejected_total", "Txs the node refused at submit, by error.";
 	TX_INCLUDED: Counter ["call"] "polkameter_tx_included_total", "Our txs seen in a best block.";
 	TX_FAILED: Counter ["call"] "polkameter_tx_failed_total", "Our included txs with an ExtrinsicFailed event.";
-	TX_EXPIRED: Counter ["call"] "polkameter_tx_expired_total", "Our txs not in a block after their mortality ended.";
 	TX_INCLUSION: Histogram ["call"] buckets &[0.5, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 18.0, 24.0, 36.0, 60.0, 120.0],
 		"polkameter_tx_inclusion_seconds", "Time from send to the first best block with the tx.";
 	SCRAPE_FAILED: Counter ["job", "instance"] "polkameter_scrape_failed_total", "Scrapes of a node's /metrics that failed (no answer, timeout, HTTP error).";
@@ -138,208 +120,44 @@ const COLLATOR: &[&str] = &["collator"];
 const RELAY_IN_COLLATOR: &[&str] = &["collator-relay"];
 const VALIDATOR: &[&str] = &["validator"];
 
-const fn node(
-	name: &'static str,
-	kind: Kind,
-	labels: &'static [&'static str],
-	from: &'static [&'static str],
-	help: &'static str,
-) -> Def {
-	Def { name, kind, help, labels, buckets: &[], from }
+macro_rules! node_metrics {
+    ($( $name:literal, $k:ident, [$($label:literal),*], $from:ident, $help:literal; )*) => {
+        /// Every node metric we read, checked against the node's `# TYPE` in the preflight.
+        pub const NODE_METRICS: &[Def] = &[$(
+            Def { name: $name, kind: Kind::$k, help: $help, labels: &[$($label),*], buckets: &[], from: $from },
+        )*];
+    };
 }
 
-/// Every node metric we read, checked against the node's `# TYPE` in the preflight.
-pub const NODE_METRICS: &[Def] = &[
-	node(
-		"substrate_proposer_end_proposal_reason",
-		Kind::Counter,
-		&["reason"],
-		COLLATOR,
-		"Why a block stopped taking txs: no_more_transactions, hit_deadline, hit_block_size_limit, hit_block_weight_limit, transactions_forbidden.",
-	),
-	node(
-		"substrate_proposer_block_constructed",
-		Kind::Histogram,
-		&[],
-		COLLATOR,
-		"Time to build a block.",
-	),
-	node(
-		"polkadot_pvf_execution_time",
-		Kind::Histogram,
-		&[],
-		VALIDATOR,
-		"PVF execution time, for all parachains together and without a backing/approval split. Buckets go up to 12 s.",
-	),
-	node(
-		"polkadot_pvf_execution_queued_time",
-		Kind::Histogram,
-		&[],
-		VALIDATOR,
-		"Time a PVF execution job waits before a worker takes it, for all parachains together. It grows under load and adds to the time until backing.",
-	),
-	node(
-		"polkadot_parachain_candidate_validation_pov_size",
-		Kind::Histogram,
-		&["compressed"],
-		VALIDATOR,
-		"PoV size per validated candidate, for all parachains together. Buckets stop at 8 MiB (16 KiB times 2^9), below the 10 MiB limit; the exact size is the parachain's System.BlockWeight.proof_size.",
-	),
-	node(
-		"polkadot_parachain_candidate_backing_candidates_seconded_total",
-		Kind::Counter,
-		&[],
-		VALIDATOR,
-		"Candidates this validator seconded, for all parachains together.",
-	),
-	node(
-		"polkadot_parachain_provisioner_backable_vs_in_block",
-		Kind::Histogram,
-		&[],
-		VALIDATOR,
-		"Backable candidates the relay block author left out of its block (backable minus backed in the block).",
-	),
-	node(
-		"polkadot_parachain_collations_generated_total",
-		Kind::Counter,
-		&[],
-		RELAY_IN_COLLATOR,
-		"Collations the collator generated.",
-	),
-	node(
-		"polkadot_parachain_collation_advertisements_made_total",
-		Kind::Counter,
-		&[],
-		RELAY_IN_COLLATOR,
-		"Collation advertisements sent to validators.",
-	),
-	node(
-		"polkadot_parachain_collations_sent_requested_total",
-		Kind::Counter,
-		&[],
-		RELAY_IN_COLLATOR,
-		"Collations validators asked for.",
-	),
-	node(
-		"polkadot_parachain_collations_sent_total",
-		Kind::Counter,
-		&[],
-		RELAY_IN_COLLATOR,
-		"Collations sent to validators (PoV delivered).",
-	),
-	node(
-		"polkadot_parachain_collation_backing_latency",
-		Kind::Histogram,
-		&[],
-		RELAY_IN_COLLATOR,
-		"Relay blocks from a collation's relay parent until it is backed. Its count is the collations backed.",
-	),
-	node(
-		"polkadot_parachain_collation_inclusion_latency",
-		Kind::Histogram,
-		&[],
-		RELAY_IN_COLLATOR,
-		"Relay blocks from backed to included; 1 is normal, more means availability is slow. Its count is the collations included.",
-	),
-	node(
-		"polkadot_parachain_collation_expired",
-		Kind::Histogram,
-		&["state"],
-		RELAY_IN_COLLATOR,
-		"Collations that expired, by the last state they reached: advertised (delivery), fetched (validation or backing), backed (availability).",
-	),
-	node(
-		"polkadot_parachain_validation_requests_total",
-		Kind::Counter,
-		&["validity"],
-		VALIDATOR,
-		"Candidate validations, valid or invalid.",
-	),
-	node(
-		"polkadot_parachain_candidate_disputes_total",
-		Kind::Counter,
-		&[],
-		VALIDATOR,
-		"Disputes raised.",
-	),
-	node(
-		"substrate_sub_txpool_unwatched_txs",
-		Kind::Gauge,
-		&[],
-		COLLATOR,
-		"Unwatched txs in the pool (ours are sent with author_submitExtrinsic, so they count here).",
-	),
-	node(
-		"substrate_ready_transactions_number",
-		Kind::Gauge,
-		&[],
-		COLLATOR,
-		"Txs in the ready queue.",
-	),
-	node(
-		"substrate_sub_txpool_validations_scheduled",
-		Kind::Counter,
-		&[],
-		COLLATOR,
-		"Txs scheduled for validation.",
-	),
-	node(
-		"substrate_sub_txpool_validations_finished",
-		Kind::Counter,
-		&[],
-		COLLATOR,
-		"Txs that finished validation.",
-	),
-	node(
-		"substrate_sub_txpool_timing_event_dropped",
-		Kind::Histogram,
-		&[],
-		COLLATOR,
-		"Time from submit to the Dropped event. Its count is the number of dropped txs.",
-	),
-	node(
-		"substrate_sub_txpool_timing_event_invalid",
-		Kind::Histogram,
-		&[],
-		COLLATOR,
-		"Time from submit to the Invalid event. Its count is the number of invalid txs.",
-	),
-	node(
-		"substrate_sub_txpool_maintain_duration_seconds",
-		Kind::Histogram,
-		&[],
-		COLLATOR,
-		"Pool maintenance time per block.",
-	),
-	node(
-		"substrate_number_leaves",
-		Kind::Gauge,
-		&[],
-		COLLATOR,
-		"Known chain leaves; more than 1 means there is a fork.",
-	),
-	node(
-		"substrate_block_height",
-		Kind::Gauge,
-		&["status"],
-		COLLATOR,
-		"Best, finalized and sync target block number. Best minus finalized is the finality lag.",
-	),
-	node(
-		"substrate_sub_txpool_timing_event_retracted",
-		Kind::Histogram,
-		&[],
-		COLLATOR,
-		"Time from submit to the Retracted event (the tx's block left the best chain).",
-	),
-	node(
-		"substrate_sub_txpool_resubmitted_retracted_txs_total",
-		Kind::Counter,
-		&[],
-		COLLATOR,
-		"Txs put back into the pool from retracted blocks.",
-	),
-];
+node_metrics! {
+	"substrate_proposer_end_proposal_reason", Counter, ["reason"], COLLATOR, "Why a block stopped taking txs: no_more_transactions, hit_deadline, hit_block_size_limit, hit_block_weight_limit, transactions_forbidden.";
+	"substrate_proposer_block_constructed", Histogram, [], COLLATOR, "Time to build a block.";
+	"polkadot_pvf_execution_time", Histogram, [], VALIDATOR, "PVF execution time, for all parachains together and without a backing/approval split. Buckets go up to 12 s.";
+	"polkadot_pvf_execution_queued_time", Histogram, [], VALIDATOR, "Time a PVF execution job waits before a worker takes it, for all parachains together. It grows under load and adds to the time until backing.";
+	"polkadot_parachain_candidate_validation_pov_size", Histogram, ["compressed"], VALIDATOR, "PoV size per validated candidate, for all parachains together. Buckets stop at 8 MiB (16 KiB times 2^9), below the 10 MiB limit; the exact size is the parachain's System.BlockWeight.proof_size.";
+	"polkadot_parachain_candidate_backing_candidates_seconded_total", Counter, [], VALIDATOR, "Candidates this validator seconded, for all parachains together.";
+	"polkadot_parachain_provisioner_backable_vs_in_block", Histogram, [], VALIDATOR, "Backable candidates the relay block author left out of its block (backable minus backed in the block).";
+	"polkadot_parachain_collations_generated_total", Counter, [], RELAY_IN_COLLATOR, "Collations the collator generated.";
+	"polkadot_parachain_collation_advertisements_made_total", Counter, [], RELAY_IN_COLLATOR, "Collation advertisements sent to validators.";
+	"polkadot_parachain_collations_sent_requested_total", Counter, [], RELAY_IN_COLLATOR, "Collations validators asked for.";
+	"polkadot_parachain_collations_sent_total", Counter, [], RELAY_IN_COLLATOR, "Collations sent to validators (PoV delivered).";
+	"polkadot_parachain_collation_backing_latency", Histogram, [], RELAY_IN_COLLATOR, "Relay blocks from a collation's relay parent until it is backed. Its count is the collations backed.";
+	"polkadot_parachain_collation_inclusion_latency", Histogram, [], RELAY_IN_COLLATOR, "Relay blocks from backed to included; 1 is normal, more means availability is slow. Its count is the collations included.";
+	"polkadot_parachain_collation_expired", Histogram, ["state"], RELAY_IN_COLLATOR, "Collations that expired, by the last state they reached: advertised (delivery), fetched (validation or backing), backed (availability).";
+	"polkadot_parachain_validation_requests_total", Counter, ["validity"], VALIDATOR, "Candidate validations, valid or invalid.";
+	"polkadot_parachain_candidate_disputes_total", Counter, [], VALIDATOR, "Disputes raised.";
+	"substrate_sub_txpool_unwatched_txs", Gauge, [], COLLATOR, "Unwatched txs in the pool (ours are sent with author_submitExtrinsic, so they count here).";
+	"substrate_ready_transactions_number", Gauge, [], COLLATOR, "Txs in the ready queue.";
+	"substrate_sub_txpool_validations_scheduled", Counter, [], COLLATOR, "Txs scheduled for validation.";
+	"substrate_sub_txpool_validations_finished", Counter, [], COLLATOR, "Txs that finished validation.";
+	"substrate_sub_txpool_timing_event_dropped", Histogram, [], COLLATOR, "Time from submit to the Dropped event. Its count is the number of dropped txs.";
+	"substrate_sub_txpool_timing_event_invalid", Histogram, [], COLLATOR, "Time from submit to the Invalid event. Its count is the number of invalid txs.";
+	"substrate_sub_txpool_maintain_duration_seconds", Histogram, [], COLLATOR, "Pool maintenance time per block.";
+	"substrate_number_leaves", Gauge, [], COLLATOR, "Known chain leaves; more than 1 means there is a fork.";
+	"substrate_block_height", Gauge, ["status"], COLLATOR, "Best, finalized and sync target block number. Best minus finalized is the finality lag.";
+	"substrate_sub_txpool_timing_event_retracted", Histogram, [], COLLATOR, "Time from submit to the Retracted event (the tx's block left the best chain).";
+	"substrate_sub_txpool_resubmitted_retracted_txs_total", Counter, [], COLLATOR, "Txs put back into the pool from retracted blocks.";
+}
 
 /// The definition of a node or stress family.
 pub fn def(family: &str) -> Option<&'static Def> {

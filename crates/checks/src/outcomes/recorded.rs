@@ -2,8 +2,10 @@
 
 use polkameter_files::registry::Outcome;
 
-use crate::data::{CounterReset, RunData};
-use crate::{Check, Status, Verdict};
+use crate::{
+	Check, Status, Verdict,
+	data::{CounterReset, RunData},
+};
 
 fn monitors_recorded_everything(d: &RunData) -> Result<Verdict, CounterReset> {
 	let problems = &d.summary.problems;

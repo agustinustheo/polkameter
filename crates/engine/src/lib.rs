@@ -6,4 +6,6 @@ pub mod plugins;
 pub mod artifacts;
 mod machine;
 pub mod measurement;
+mod plots;
 mod wiring;
+mod xml;

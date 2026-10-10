@@ -4,8 +4,8 @@
 use std::{io::Write, path::PathBuf, sync::Arc, time::Duration};
 
 use clap::{Parser, Subcommand, ValueEnum};
-use polkameter_engine::{plan::Plan, plugins::Registry};
-use serde_json::{json, Value};
+use polkameter_engine::{execute::Outcome, plan::Plan, plugins::Registry};
+use serde_json::{Value, json};
 
 use crate::remote::{self, RemoteRunnerTarget};
 
@@ -161,7 +161,7 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 	match cli.command {
 		Command::Plugin { command } => plugin_command(command).await,
 		Command::Validate { plan, format } => {
-			let plan = load(&plan)?;
+			let (_, plan) = load(&plan)?;
 			write_result(
 				format,
 				&json!({"event":"validation","valid":true,"plan":plan.name}),
@@ -170,7 +170,7 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 			Ok(0)
 		},
 		Command::Preflight { plan, credential_env, format } => {
-			let plan = load(&plan)?;
+			let (_, plan) = load(&plan)?;
 			let registry = registry(&plan, credential_env)?;
 			let result = polkameter_engine::execute::preflight(&plan, &registry)
 				.await
@@ -179,15 +179,15 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 			Ok(0)
 		},
 		Command::Run { plan: path, output, credential_env, remote, remote_token_env, format } => {
-			let plan = load(&path)?;
+			let (xml, plan) = load(&path)?;
 			match remote {
 				Some(endpoint) => {
-					let xml = std::fs::read_to_string(path)
-						.map_err(|e| CliError::Invalid(e.to_string()))?;
 					run_plugin_remote(remote_target(endpoint, remote_token_env)?, xml, format).await
 				},
 				None => {
-					let output = output.expect("clap requires --output when --remote is absent");
+					let output = output.ok_or_else(|| {
+						CliError::Invalid("--output is required without --remote".into())
+					})?;
 					let registry = registry(&plan, credential_env)?;
 					run_local(plan, registry, output, format).await
 				},
@@ -198,9 +198,11 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 	}
 }
 
-fn load(path: &std::path::Path) -> Result<Plan, CliError> {
+/// The plan's XML, which remote runs send as-is, and its parsed form.
+fn load(path: &std::path::Path) -> Result<(String, Plan), CliError> {
 	let xml = std::fs::read_to_string(path).map_err(|e| CliError::Invalid(e.to_string()))?;
-	Plan::parse(&xml).map_err(|e| CliError::Invalid(e.to_string()))
+	let plan = Plan::parse(&xml).map_err(|e| CliError::Invalid(e.to_string()))?;
+	Ok((xml, plan))
 }
 
 /// This host's registry; `credential_env` replaces the profile of the plan's only credential.
@@ -239,21 +241,23 @@ async fn run_local(
 	});
 	let result = polkameter_engine::execute::run(plan, registry, &output, cancel, sink).await;
 	interrupt.abort();
-	let outcome = result
-		.and_then(crate::plugin_application::finalize_report)
-		.map_err(|e| CliError::Runtime(e.to_string()))?;
+	let outcome = result.map_err(|e| CliError::Runtime(e.to_string()))?;
+	write_artifact_written(format, "Run", &outcome);
+	Ok(outcome.exit_code)
+}
+
+/// Reports a finished run's artifacts; `label` opens the human-readable line.
+fn write_artifact_written(format: OutputFormat, label: &str, outcome: &Outcome) {
 	write_result(
 		format,
 		&json!({"event":"artifact-written","outcome":outcome}),
-		format!("Run {}. Artifacts: {}", outcome.state, outcome.artifact_dir.display()),
+		format!("{label} {}. Artifacts: {}", outcome.state, outcome.artifact_dir.display()),
 	);
-	Ok(outcome.exit_code)
 }
 
 fn report(path: PathBuf, format: OutputFormat) -> Result<i32, CliError> {
 	let runtime = |e: anyhow::Error| CliError::Runtime(e.to_string());
-	polkameter_engine::artifacts::write_samples(&path).map_err(runtime)?;
-	crate::report::write(&path).map_err(CliError::Runtime)?;
+	polkameter_engine::artifacts::write_outputs(&path).map_err(runtime)?;
 	if path.join("summary.json").is_file() {
 		polkameter_engine::measurement::check(&path).map_err(runtime)?;
 	}
@@ -313,7 +317,6 @@ fn write_json_line(value: &Value) {
 }
 
 async fn plugin_command(command: PluginCommand) -> Result<i32, CliError> {
-	use polkameter_engine::plugins::Registry;
 	let result = async {
 		let path = Registry::path()?;
 		let mut registry = Registry::read(&path)?;
@@ -331,11 +334,7 @@ async fn plugin_command(command: PluginCommand) -> Result<i32, CliError> {
 			},
 			PluginCommand::Inspect { scenario } => {
 				let xml = std::fs::read_to_string(scenario)?;
-				polkameter_engine::execute::inspect(
-					&polkameter_engine::plan::Plan::parse(&xml)?,
-					&registry,
-				)
-				.await?
+				polkameter_engine::execute::inspect(&Plan::parse(&xml)?, &registry).await?
 			},
 			PluginCommand::Credential { profile, env } => {
 				registry.credentials.insert(profile, env);
@@ -372,15 +371,7 @@ async fn run_plugin_remote(
 			remote::plugin_status(&started.id, &target).await.map_err(CliError::Runtime)?;
 		if status.state != "running" {
 			if let Some(outcome) = status.outcome {
-				write_result(
-					format,
-					&json!({"event":"artifact-written","outcome":outcome}),
-					format!(
-						"Remote run {}. Artifacts: {}",
-						outcome.state,
-						outcome.artifact_dir.display()
-					),
-				);
+				write_artifact_written(format, "Remote run", &outcome);
 				return Ok(outcome.exit_code);
 			}
 			return Err(CliError::Runtime(

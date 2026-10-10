@@ -15,18 +15,17 @@
 //!
 //! The ramp also ends without a failure on: rate cap, budget used up, generator limit, smoke error.
 
-use polkameter_files::summary::{BreakingPoint, Class, FailureMode, Loss, Rule, Stop};
-use polkameter_files::to_fixed;
-use polkameter_files::{FinalStep, Millis};
+use polkameter_files::{
+	FinalStep, Millis,
+	summary::{BreakingPoint, Class, FailureMode, Loss, Rule, Stop},
+	to_fixed,
+};
 use serde::Serialize;
 
-use crate::steps::{StepStats, final_step};
-
-type Ms = Millis;
-
-fn stop(rule: Rule, step: Option<u32>, detail: impl Into<String>) -> Stop {
-	Stop::new(rule, step, detail)
-}
+use crate::{
+	source::QueueSource,
+	steps::{StepStats, final_step},
+};
 
 /// The thresholds.
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -34,19 +33,19 @@ fn stop(rule: Rule, step: Option<u32>, detail: impl Into<String>) -> Stop {
 #[allow(missing_docs)]
 pub struct Rules {
 	pub min_included_ratio: f64,
-	pub max_p95_latency_ms: Ms,
+	pub max_p95_latency_ms: Millis,
 	pub max_refused_ratio: f64,
 	pub pool_refuses_ratio: f64,
-	pub max_submit_reply_ms: Ms,
+	pub max_submit_reply_ms: Millis,
 	pub max_block_gap_factor: f64,
-	pub stall_ms: Ms,
-	pub finality_stall_ms: Ms,
+	pub stall_ms: Millis,
+	pub finality_stall_ms: Millis,
 	pub min_send_ratio: f64,
 	/// A send tick later than this means the load tool itself was paused.
-	pub max_tick_gap_ms: Ms,
+	pub max_tick_gap_ms: Millis,
 	pub probes_in_a_row: usize,
 	pub recovered_block_gap_factor: f64,
-	pub finality_wait_ms: Ms,
+	pub finality_wait_ms: Millis,
 }
 
 /// The rules.
@@ -76,10 +75,7 @@ pub fn secs(ms: impl Into<f64>) -> String {
 }
 
 /// The first response measure a finished step violates: (measure, detail).
-pub fn measure_violation_with_rules(
-	f: &FinalStep,
-	rules: &Rules,
-) -> Option<(&'static str, String)> {
+pub fn measure_violation(f: &FinalStep, rules: &Rules) -> Option<(&'static str, String)> {
 	if f.sent == 0 {
 		return None;
 	}
@@ -104,15 +100,15 @@ pub struct LiveState {
 	/// The step.
 	pub step: u32,
 	/// Now.
-	pub now: Ms,
+	pub now: Millis,
 	/// Connections the node closed.
 	pub closed_by_node: usize,
 	/// Connections opened.
 	pub connections: usize,
 	/// Last new best block.
-	pub last_block_at: Ms,
+	pub last_block_at: Millis,
 	/// Last new finalized block.
-	pub last_finalized_at: Ms,
+	pub last_finalized_at: Millis,
 	/// Best number.
 	pub best: u32,
 	/// Finalized number.
@@ -122,18 +118,18 @@ pub struct LiveState {
 }
 
 /// A failure that shows during a step.
-pub fn live_failure_with_rules(s: &LiveState, rules: &Rules) -> Option<Stop> {
-	let ago = |t: Ms| (s.now.saturating_sub(t) as f64 / 1000.0).round();
+pub fn live_failure(s: &LiveState, rules: &Rules) -> Option<Stop> {
+	let ago = |t: Millis| (s.now.saturating_sub(t) as f64 / 1000.0).round();
 	let step = Some(s.step);
 	if s.closed_by_node > 0 {
-		return Some(stop(
+		return Some(Stop::new(
 			Rule::NodeDown,
 			step,
 			format!("the node closed {} of {} RPC connections", s.closed_by_node, s.connections),
 		));
 	}
 	if s.now.saturating_sub(s.last_block_at) > rules.stall_ms {
-		return Some(stop(
+		return Some(Stop::new(
 			Rule::Stall,
 			step,
 			format!("no new best block for {} s", ago(s.last_block_at)),
@@ -146,25 +142,16 @@ pub fn live_failure_with_rules(s: &LiveState, rules: &Rules) -> Option<Stop> {
 			s.best,
 			s.finalized
 		);
-		return Some(stop(Rule::FinalityStall, step, detail));
+		return Some(Stop::new(Rule::FinalityStall, step, detail));
 	}
 	(!s.smoke_problems.is_empty())
-		.then(|| stop(Rule::SmokeError, step, s.smoke_problems.join("; ")))
-}
-
-/// What the step rules need to know about the source.
-#[derive(Debug, Clone)]
-pub struct SourceState {
-	/// No tx left.
-	pub exhausted: bool,
-	/// Why, for the stop detail.
-	pub starved_reason: String,
+		.then(|| Stop::new(Rule::SmokeError, step, s.smoke_problems.join("; ")))
 }
 
 /// The rules checked at the end of each step for one lane, on it and on the step before (settled by now).
-pub fn check_step_with_rules(
+pub fn check_step(
 	steps: &[StepStats],
-	source: &SourceState,
+	source: &QueueSource,
 	unsent_kib: u64,
 	block_ms: f64,
 	rules: &Rules,
@@ -174,7 +161,7 @@ pub fn check_step_with_rules(
 	for f in prev.iter().chain([&cur]) {
 		if f.sent > 0 && f.rejected_ratio > rules.pool_refuses_ratio {
 			let top = f.errors.iter().max_by_key(|(_, n)| **n).map_or("?", |(k, _)| k.as_str());
-			return Some(stop(
+			return Some(Stop::new(
 				Rule::PoolRefuses,
 				Some(f.step),
 				format!(
@@ -187,7 +174,7 @@ pub fn check_step_with_rules(
 	}
 	let step = Some(cur.step);
 	if cur.p95_reply_ms > rules.max_submit_reply_ms {
-		return Some(stop(
+		return Some(Stop::new(
 			Rule::PoolIntake,
 			step,
 			format!(
@@ -197,7 +184,7 @@ pub fn check_step_with_rules(
 		));
 	}
 	if cur.max_oldest_pending_ms > rules.max_submit_reply_ms {
-		return Some(stop(
+		return Some(Stop::new(
 			Rule::PoolIntake,
 			step,
 			format!("a submit waited {} s for a reply", secs(cur.max_oldest_pending_ms as f64)),
@@ -210,24 +197,24 @@ pub fn check_step_with_rules(
 			to_fixed(cur.sent_per_s, 0),
 			cur.target_rate
 		);
-		return Some(stop(Rule::PoolIntake, step, detail));
+		return Some(Stop::new(Rule::PoolIntake, step, detail));
 	}
 	if let Some(gap) = cur
 		.blocks
 		.mean_block_gap_ms
 		.filter(|g| *g > rules.max_block_gap_factor * block_ms)
 	{
-		return Some(stop(
+		return Some(Stop::new(
 			Rule::SlowBlocks,
 			step,
 			format!("a block every {} s, against {} s at the start", secs(gap), secs(block_ms)),
 		));
 	}
-	if source.exhausted || (slow_send && cur.starved_ticks > 0) {
-		return Some(stop(Rule::BudgetUsedUp, step, source.starved_reason.clone()));
+	if source.exhausted() || (slow_send && cur.starved_ticks > 0) {
+		return Some(Stop::new(Rule::BudgetUsedUp, step, source.starved_reason()));
 	}
 	slow_send.then(|| {
-		stop(
+		Stop::new(
 			Rule::GeneratorLimit,
 			step,
 			format!("sent {} of {} tx/s", to_fixed(cur.sent_per_s, 0), cur.target_rate),
@@ -236,9 +223,9 @@ pub fn check_step_with_rules(
 }
 
 /// From the final numbers, after recovery: the first step that violated a measure.
-pub fn breaking_point_with_rules(finals: &[FinalStep], rules: &Rules) -> Option<BreakingPoint> {
+pub fn breaking_point(finals: &[FinalStep], rules: &Rules) -> Option<BreakingPoint> {
 	finals.iter().find_map(|f| {
-		let (measure, detail) = measure_violation_with_rules(f, rules)?;
+		let (measure, detail) = measure_violation(f, rules)?;
 		Some(BreakingPoint {
 			step: f.step,
 			target_rate: f.target_rate,
@@ -256,13 +243,7 @@ pub fn failure_modes(stop: &Stop, loss: &Loss, finals: &[FinalStep]) -> Vec<Fail
 			.iter()
 			.find(|f| Some(f.step) == stop.step)
 			.map_or(String::from("?"), |f| f.target_rate.to_string());
-		modes.push(FailureMode {
-			class,
-			what: format!(
-				"{} at {rate} tx/s",
-				serde_json::to_value(stop.rule).expect("rule").as_str().unwrap_or("?")
-			),
-		});
+		modes.push(FailureMode { class, what: format!("{} at {rate} tx/s", stop.rule.name()) });
 	}
 	if loss.failed_in_block > 0 {
 		modes.push(FailureMode {
@@ -295,6 +276,7 @@ pub fn failure_modes(stop: &Stop, loss: &Loss, finals: &[FinalStep]) -> Vec<Fail
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::source::Tx;
 
 	/// A 10 s step at 100 tx/s that sent everything; `f` changes what a case needs.
 	fn step(k: u32, f: impl FnOnce(&mut StepStats)) -> StepStats {
@@ -313,21 +295,21 @@ mod tests {
 		st
 	}
 
-	fn source() -> SourceState {
-		SourceState { exhausted: false, starved_reason: "no coins".into() }
+	fn source() -> QueueSource {
+		QueueSource::new(vec![Tx::new(vec![1])], vec![], "coins")
 	}
 
 	#[test]
 	fn marks_the_first_violated_measure() {
-		assert_eq!(measure_violation_with_rules(&final_step(&step(0, |_| ()), None), &RULES), None);
+		assert_eq!(measure_violation(&final_step(&step(0, |_| ()), None), &RULES), None);
 		assert_eq!(
-			measure_violation_with_rules(&final_step(&step(0, |s| s.included = 800), None), &RULES)
+			measure_violation(&final_step(&step(0, |s| s.included = 800), None), &RULES)
 				.unwrap()
 				.0,
 			"included"
 		);
 		assert_eq!(
-			measure_violation_with_rules(
+			measure_violation(
 				&final_step(&step(0, |s| s.latencies_ms = vec![11_000]), None),
 				&RULES
 			)
@@ -336,7 +318,7 @@ mod tests {
 			"latency"
 		);
 		assert_eq!(
-			measure_violation_with_rules(&final_step(&step(0, |s| s.rejected = 20), None), &RULES)
+			measure_violation(&final_step(&step(0, |s| s.rejected = 20), None), &RULES)
 				.unwrap()
 				.0,
 			"refused"
@@ -352,7 +334,7 @@ mod tests {
 			}),
 			step(1, |_| ()),
 		];
-		let stop = check_step_with_rules(&steps, &source(), 0, 6_000.0, &RULES).unwrap();
+		let stop = check_step(&steps, &source(), 0, 6_000.0, &RULES).unwrap();
 		assert_eq!(
 			(stop.rule, stop.step, stop.class),
 			(Rule::PoolRefuses, Some(0), Some(Class::Graceful))
@@ -366,14 +348,13 @@ mod tests {
 			.map(|gap| polkameter_files::BlockRecord { gap_ms: Some(gap), ..Default::default() })
 			.to_vec();
 		let stop =
-			check_step_with_rules(&[step(0, |s| s.blocks = blocks)], &source(), 0, 6_000.0, &RULES)
-				.unwrap();
+			check_step(&[step(0, |s| s.blocks = blocks)], &source(), 0, 6_000.0, &RULES).unwrap();
 		assert_eq!((stop.rule, stop.class), (Rule::SlowBlocks, Some(Class::Hard)));
 	}
 
 	#[test]
 	fn ends_without_a_failure_when_the_load_tool_cant_keep_up() {
-		let stop = check_step_with_rules(
+		let stop = check_step(
 			&[step(0, |s| {
 				s.sent = 500;
 				s.included = 500;
@@ -385,7 +366,7 @@ mod tests {
 		)
 		.unwrap();
 		assert_eq!((stop.rule, stop.class), (Rule::GeneratorLimit, None));
-		let stop = check_step_with_rules(
+		let stop = check_step(
 			&[step(0, |s| {
 				s.sent = 500;
 				s.included = 500;

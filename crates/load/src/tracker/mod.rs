@@ -7,15 +7,13 @@ mod blocks;
 
 use std::collections::HashMap;
 
-use polkameter_files::registry::{PHASE, STEP, TX_REJECTED, TX_SENT};
-use polkameter_files::summary::{Outcome, Probe};
-use polkameter_files::{BlockRecord, FileError, JsonlWriter, Millis, SeriesWriter};
+use polkameter_files::{
+	BlockRecord, FileError, JsonlWriter, Millis, SeriesWriter,
+	registry::{PHASE, STEP, TX_REJECTED, TX_SENT},
+	summary::{Outcome, Probe},
+};
 
-use crate::plan::Lane;
-use crate::sender::Reply;
-use crate::source::{Settled, TxHash};
-use crate::steps::StepStats;
-use crate::submit::Submit;
+use crate::{plan::Lane, sender::Reply, source::TxHash, steps::StepStats, submit::Submit};
 
 /// The phases of a run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,17 +39,24 @@ impl Phase {
 	}
 }
 
+/// What a tx was sent as.
+#[derive(Debug, Clone, Copy)]
+enum Kind {
+	/// A flood tx, counted in step `step` of its lane.
+	Flood { step: usize },
+	/// A baseline or recovery probe: `probes[index]`.
+	Probe { index: usize },
+}
+
 #[derive(Debug)]
 struct Sent {
 	lane: usize,
-	/// `None` for a probe.
-	step: Option<usize>,
-	probe: Option<usize>,
+	kind: Kind,
 	sent_at: Millis,
 }
 
 /// A flood tx as sent, kept to the end for the loss check.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct FloodTx {
 	/// The step that sent it.
 	pub step: usize,
@@ -63,8 +68,6 @@ pub struct FloodTx {
 	pub accepted: bool,
 	/// Explicit RPC refusal.
 	pub refused: bool,
-	/// The source declared this transaction expired.
-	pub expired: bool,
 	/// Reply and observed inclusion latency.
 	pub reply_ms: Option<u64>,
 	/// Send to first observed inclusion.
@@ -77,7 +80,7 @@ pub struct FloodTx {
 struct Request {
 	hash: TxHash,
 	lane: usize,
-	step: Option<usize>,
+	kind: Kind,
 	sent_at: Millis,
 	connection: usize,
 }
@@ -121,14 +124,6 @@ pub struct Tracker<S> {
 	pub unreadable: Vec<String>,
 	phases: Vec<(Millis, Phase)>,
 	baseline_probes: usize,
-}
-
-impl<S> std::fmt::Debug for Tracker<S> {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		f.debug_struct("Tracker")
-			.field("sent", &self.sent.len())
-			.finish_non_exhaustive()
-	}
 }
 
 impl<S: Submit> Tracker<S> {
@@ -228,13 +223,12 @@ impl<S: Submit> Tracker<S> {
 
 	/// Sends one flood tx of `lane`; false when it has none ready or every connection is backed up.
 	pub fn send_next(&mut self, lane: usize, now: Millis) -> bool {
-		let Some(tx) = self.lanes[lane].source.next() else {
+		let Some(tx) = self.lanes[lane].source.next_tx() else {
 			self.current(lane).starved_ticks += 1;
 			return false;
 		};
 		let step = self.steps[lane].len() - 1;
-		if !self.submit(lane, tx.hash, &tx.bytes, Some(step), None, now) {
-			self.lanes[lane].source.settled(&tx.hash, Settled::Rejected);
+		if !self.submit(lane, tx.hash, &tx.bytes, Kind::Flood { step }, now) {
 			self.current(lane).backpressure_ticks += 1;
 			return false;
 		}
@@ -247,42 +241,26 @@ impl<S: Submit> Tracker<S> {
 		self.steps[lane].last_mut().expect("a step runs")
 	}
 
-	pub(super) fn submit(
-		&mut self,
-		lane: usize,
-		hash: TxHash,
-		bytes: &[u8],
-		step: Option<usize>,
-		probe: Option<usize>,
-		now: Millis,
-	) -> bool {
+	fn submit(&mut self, lane: usize, hash: TxHash, bytes: &[u8], kind: Kind, now: Millis) -> bool {
 		let id = self.next_id;
 		self.next_id += 1;
 		let Some(connection) = self.sender.submit(id, bytes) else { return false };
-		self.requests.insert(id, Request { hash, lane, step, sent_at: now, connection });
-		if let Some(step) = step {
-			self.flood.insert(
-				hash,
-				FloodTx {
-					step,
-					sent_at: now,
-					bytes: bytes.to_vec(),
-					accepted: false,
-					refused: false,
-					expired: false,
-					reply_ms: None,
-					inclusion_ms: None,
-					failed_in_block: false,
-				},
-			);
+		self.requests.insert(id, Request { hash, lane, kind, sent_at: now, connection });
+		if let Kind::Flood { step } = kind {
+			let flood = FloodTx { step, sent_at: now, bytes: bytes.to_vec(), ..Default::default() };
+			self.flood.insert(hash, flood);
 		}
-		self.sent.insert(hash, Sent { lane, step, probe, sent_at: now });
+		self.sent.insert(hash, Sent { lane, kind, sent_at: now });
 		true
 	}
 
-	/// Flood txs sent and not yet included, refused or expired.
+	/// Flood txs sent and not yet included or refused.
 	pub fn outstanding(&self) -> Vec<TxHash> {
-		self.sent.iter().filter(|(_, s)| s.probe.is_none()).map(|(h, _)| *h).collect()
+		self.sent
+			.iter()
+			.filter(|(_, s)| matches!(s.kind, Kind::Flood { .. }))
+			.map(|(h, _)| *h)
+			.collect()
 	}
 
 	/// How long the oldest unanswered submit has waited.
@@ -315,50 +293,47 @@ impl<S: Submit> Tracker<S> {
 			Reply::Closed { connection, by_node } => return self.on_closed(connection, by_node),
 		};
 		let Some(req) = self.requests.remove(&id) else { return };
-		if let Some(k) = req.step {
-			self.steps[req.lane][k].reply_ms.push(at.saturating_sub(req.sent_at));
+		if let Kind::Flood { step } = req.kind {
+			self.steps[req.lane][step].reply_ms.push(at.saturating_sub(req.sent_at));
 		}
 		if let Some(tx) = self.flood.get_mut(&req.hash) {
 			tx.reply_ms = Some(at.saturating_sub(req.sent_at));
-			tx.accepted = refusal.is_none();
-			tx.refused = refusal.is_some();
 		}
-		let Some((code, error)) = refusal else { return };
-		let Some(sent) = self.sent.get(&req.hash) else { return }; // already included: ignore
-		let probe = sent.probe;
-		self.reject(req.hash);
-		if probe.is_some() {
+		let Some((code, error)) = refusal else {
+			if let Some(tx) = self.flood.get_mut(&req.hash) {
+				tx.accepted = true;
+			}
+			return;
+		};
+		// Already included: the refusal is ignored, and does not flag the tx.
+		if self.sent.remove(&req.hash).is_none() {
 			return;
 		}
-		let st = &mut self.steps[req.lane][req.step.expect("flood tx")];
-		st.rejected += 1;
-		let key: String = format!("{code} {error}").trim().chars().take(160).collect();
-		*st.errors.entry(key).or_default() += 1;
-		self.load
-			.inc(&TX_REJECTED, [self.lanes[req.lane].call, &code.to_string()], 1.0, at);
+		if let Some(tx) = self.flood.get_mut(&req.hash) {
+			tx.refused = true;
+		}
+		match req.kind {
+			Kind::Probe { index } => self.probes[index].outcome = Outcome::Refused,
+			Kind::Flood { step } => {
+				let st = &mut self.steps[req.lane][step];
+				st.rejected += 1;
+				let key: String = format!("{code} {error}").trim().chars().take(160).collect();
+				*st.errors.entry(key).or_default() += 1;
+				self.load.inc(
+					&TX_REJECTED,
+					[self.lanes[req.lane].call, &code.to_string()],
+					1.0,
+					at,
+				);
+			},
+		}
 	}
 
 	fn on_closed(&mut self, connection: usize, by_node: bool) {
 		self.closed_by_node += usize::from(by_node);
-		let lost: Vec<u64> = self
-			.requests
-			.iter()
-			.filter(|(_, r)| r.connection == connection)
-			.map(|(id, _)| *id)
-			.collect();
-		for id in lost {
-			self.requests.remove(&id);
-			// An interrupted request has an unknown outcome. Keep observing its hash;
-			// calling it refused here would conceal possible chain inclusion or loss.
-		}
-	}
-
-	pub(super) fn reject(&mut self, hash: TxHash) {
-		let Some(sent) = self.sent.remove(&hash) else { return };
-		self.lanes[sent.lane].source.settled(&hash, Settled::Rejected);
-		if let Some(p) = sent.probe {
-			self.probes[p].outcome = Outcome::Refused;
-		}
+		// An interrupted request has an unknown outcome. Keep observing its hash;
+		// calling it refused here would conceal possible chain inclusion or loss.
+		self.requests.retain(|_, r| r.connection != connection);
 	}
 
 	/// Writes out the files and gives the sender back to be closed.

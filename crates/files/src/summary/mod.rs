@@ -4,6 +4,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::serde_name;
+
 mod after;
 
 pub use after::{
@@ -52,32 +54,10 @@ pub enum Rule {
 	SmokeError,
 }
 
-impl Class {
-	/// The name in summary.json and summary.md.
-	pub fn name(self) -> &'static str {
-		match self {
-			Class::Graceful => "graceful",
-			Class::Hard => "hard",
-			Class::Silent => "silent",
-		}
-	}
-}
-
 impl Rule {
 	/// The name in summary.json and summary.md.
-	pub fn name(self) -> &'static str {
-		match self {
-			Rule::PoolRefuses => "pool refuses",
-			Rule::PoolIntake => "pool intake",
-			Rule::SlowBlocks => "slow blocks",
-			Rule::Stall => "stall",
-			Rule::FinalityStall => "finality stall",
-			Rule::NodeDown => "node down",
-			Rule::RateCap => "rate cap",
-			Rule::BudgetUsedUp => "budget used up",
-			Rule::GeneratorLimit => "generator limit",
-			Rule::SmokeError => "smoke error",
-		}
+	pub fn name(self) -> String {
+		serde_name(self)
 	}
 
 	/// The failure class; `None` for an end that is not a failure.
@@ -170,8 +150,6 @@ pub struct Runner {
 	pub cpus: usize,
 	/// CPU model.
 	pub cpu_model: Option<String>,
-	/// Memory.
-	pub mem_gi_b: u64,
 }
 
 /// The isolated component exercised by a polkameter-test scenario.

@@ -1,12 +1,13 @@
 //! PVF (outcomes.md): level 1 counts the observed parachain's relay slots on chain and decides
 //! pass or fail; level 2 reads the validators (all parachains together) for timing and causes.
 
-use polkameter_files::registry::Outcome;
-use polkameter_files::{num, to_fixed};
+use polkameter_files::{num, registry::Outcome, to_fixed};
 use serde::Serialize;
 
-use crate::data::{CounterReset, RunData, Window, count_above, quantile};
-use crate::{Check, LIMITS, Status, Verdict};
+use crate::{
+	Check, LIMITS, Status, Verdict,
+	data::{COLLATOR, CounterReset, Label, Phase, RunData, Window, count_above, quantile},
+};
 
 const VALIDATOR: (&str, &str) = ("job", "validator");
 const FUNNEL: (&str, &str) = ("job", "collator-relay");
@@ -41,13 +42,12 @@ pub struct Slots {
 fn slots(d: &RunData, w: &Window) -> Result<Slots, CounterReset> {
 	let para = para(d);
 	let para = ("para", para.as_str());
-	let diff =
-		|name: &str, filter: &[(&str, &str)]| d.diff(name, filter, w).map(|v| v.unwrap_or(0.0));
-	let offered = diff("polkameter_para_slots_total", &[para])?;
-	let included = diff("polkameter_para_included_total", &[para])?;
-	let timed_out = diff("polkameter_para_timed_out_total", &[para])?;
-	let relay_blocks = diff("polkameter_relay_finalized_blocks_total", &[])?;
-	let built = diff("substrate_proposer_block_constructed_count", &[("job", "collator")])?;
+	let increase = |name: &str, filter: &[(&str, &str)]| d.increase(name, filter, w);
+	let offered = increase("polkameter_para_slots_total", &[para])?;
+	let included = increase("polkameter_para_included_total", &[para])?;
+	let timed_out = increase("polkameter_para_timed_out_total", &[para])?;
+	let relay_blocks = increase("polkameter_relay_finalized_blocks_total", &[])?;
+	let built = increase("substrate_proposer_block_constructed_count", &[COLLATOR])?;
 	let missed = (offered - included).max(0.0);
 	let not_built = missed.min((offered - built).max(0.0));
 	Ok(Slots {
@@ -63,7 +63,7 @@ fn slots(d: &RunData, w: &Window) -> Result<Slots, CounterReset> {
 
 #[derive(Serialize)]
 struct WindowSlots {
-	window: String,
+	window: Label,
 	#[serde(flatten)]
 	slots: Slots,
 	extra: f64,
@@ -78,9 +78,10 @@ fn worst_violation(windows: &[WindowSlots]) -> Option<&WindowSlots> {
 
 fn relay_slots(d: &RunData) -> Result<Verdict, CounterReset> {
 	let para = para(d);
-	let (Some(base), true) =
-		(d.phase("baseline"), d.has("polkameter_para_slots_total", &[("para", para.as_str())]))
-	else {
+	let (Some(base), true) = (
+		d.phase(Phase::Baseline),
+		d.has("polkameter_para_slots_total", &[("para", para.as_str())]),
+	) else {
 		return Ok(Verdict::new(Status::NoResult, "no relay recorder data"));
 	};
 	let idle = slots(d, &base)?;
@@ -129,10 +130,9 @@ fn relay_slots(d: &RunData) -> Result<Verdict, CounterReset> {
 fn no_timeouts_or_disputes(d: &RunData) -> Result<Verdict, CounterReset> {
 	let w = d.run();
 	let para = para(d);
-	let timed_out = d
-		.diff("polkameter_para_timed_out_total", &[("para", para.as_str())], &w)?
-		.unwrap_or(0.0);
-	let relay = d.diff("polkameter_relay_dispute_total", &[], &w)?.unwrap_or(0.0);
+	let timed_out =
+		d.increase("polkameter_para_timed_out_total", &[("para", para.as_str())], &w)?;
+	let relay = d.increase("polkameter_relay_dispute_total", &[], &w)?;
 	let raised = d.diff("polkadot_parachain_candidate_disputes_total", &[VALIDATOR], &w)?;
 	if !d.has("polkameter_relay_finalized_blocks_total", &[]) {
 		return Ok(Verdict::new(Status::NoResult, "no relay recorder data"));
@@ -150,7 +150,7 @@ fn no_timeouts_or_disputes(d: &RunData) -> Result<Verdict, CounterReset> {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PvfWindow {
-	window: String,
+	window: Label,
 	runs: f64,
 	over2s: f64,
 	p95_s: Option<f64>,
@@ -175,20 +175,18 @@ fn pvf_time(d: &RunData) -> Result<Verdict, CounterReset> {
 			over2s: count_above(exec.as_ref(), timeout).unwrap_or(0.0),
 			p95_s: quantile(exec.as_ref(), 0.95),
 			queue_p95_s: quantile(queued.as_ref(), 0.95),
-			invalid: d
-				.diff(
-					"polkadot_parachain_validation_requests_total",
-					&[VALIDATOR, ("validity", "invalid")],
-					&w,
-				)?
-				.unwrap_or(0.0),
+			invalid: d.increase(
+				"polkadot_parachain_validation_requests_total",
+				&[VALIDATOR, ("validity", "invalid")],
+				&w,
+			)?,
 			window: w.label,
 		});
 	}
-	let slow: Vec<&str> = windows
+	let slow: Vec<String> = windows
 		.iter()
 		.filter(|s| s.over2s > 0.0 || s.invalid > 0.0)
-		.map(|s| s.window.as_str())
+		.map(|s| s.window.to_string())
 		.collect();
 	let mut by_p95: Vec<&PvfWindow> = windows.iter().collect();
 	by_p95.sort_by(|a, b| b.p95_s.unwrap_or(0.0).total_cmp(&a.p95_s.unwrap_or(0.0)));
@@ -198,7 +196,7 @@ fn pvf_time(d: &RunData) -> Result<Verdict, CounterReset> {
 			"no run over {} s; highest p95 {} s in {}, queue p95 {} s",
 			num(timeout),
 			worst.and_then(|w| w.p95_s).map_or("-".into(), num),
-			worst.map_or("-", |w| w.window.as_str()),
+			worst.map_or("-".to_owned(), |w| w.window.to_string()),
 			worst.and_then(|w| w.queue_p95_s).map_or("-".into(), num)
 		)
 	} else {
@@ -218,17 +216,14 @@ fn collation_funnel(d: &RunData) -> Result<Verdict, CounterReset> {
 	}
 	let w = d.run();
 	let expired = |state: &str| {
-		d.diff("polkadot_parachain_collation_expired_count", &[FUNNEL, ("state", state)], &w)
-			.map(|v| v.unwrap_or(0.0))
+		d.increase("polkadot_parachain_collation_expired_count", &[FUNNEL, ("state", state)], &w)
 	};
 	let (advertised, fetched, backed) =
 		(expired("advertised")?, expired("fetched")?, expired("backed")?);
-	let inc_n = d
-		.diff("polkadot_parachain_collation_inclusion_latency_count", &[FUNNEL], &w)?
-		.unwrap_or(0.0);
-	let inc_sum = d
-		.diff("polkadot_parachain_collation_inclusion_latency_sum", &[FUNNEL], &w)?
-		.unwrap_or(0.0);
+	let inc_n =
+		d.increase("polkadot_parachain_collation_inclusion_latency_count", &[FUNNEL], &w)?;
+	let inc_sum =
+		d.increase("polkadot_parachain_collation_inclusion_latency_sum", &[FUNNEL], &w)?;
 	let latency = if inc_n > 0.0 { Some(inc_sum / inc_n) } else { None };
 	let any = advertised + fetched + backed > 0.0;
 	let status = if any || latency.unwrap_or(1.0) > 1.5 { Status::Warn } else { Status::Pass };
@@ -275,9 +270,9 @@ pub const CHECKS: &[Check] = &[
 mod tests {
 	use super::*;
 
-	fn window(name: &str, offered: f64, missed: f64) -> WindowSlots {
+	fn window(window: Label, offered: f64, missed: f64) -> WindowSlots {
 		WindowSlots {
-			window: name.into(),
+			window,
 			slots: Slots {
 				relay_blocks: 1.0,
 				offered,
@@ -293,7 +288,8 @@ mod tests {
 
 	#[test]
 	fn the_worst_violating_window_is_reported() {
-		let windows = [window("step 1", 30.0, 3.0), window("recovery", 15.0, 9.0)];
-		assert_eq!(worst_violation(&windows).unwrap().window, "recovery");
+		let windows =
+			[window(Label::Step(1), 30.0, 3.0), window(Label::Phase(Phase::Recovery), 15.0, 9.0)];
+		assert_eq!(worst_violation(&windows).unwrap().window, Label::Phase(Phase::Recovery));
 	}
 }

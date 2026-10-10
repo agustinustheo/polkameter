@@ -11,9 +11,11 @@
 
 use std::collections::BTreeMap;
 
-use crate::records::{Millis, Sample, SeriesRecord};
-use crate::registry::{Def, Metric, kind};
-use crate::{FileError, JsonlWriter};
+use crate::{
+	FileError, JsonlWriter,
+	records::{Millis, Sample, SeriesRecord},
+	registry::{Def, Metric, kind},
+};
 
 const FLUSH_EVERY_MS: Millis = 1_000;
 
@@ -36,56 +38,7 @@ fn labels(names: &[&str], values: &[String]) -> BTreeMap<String, String> {
 }
 
 fn owned<const N: usize>(values: [&str; N]) -> Vec<String> {
-	values.iter().map(|v| (*v).to_owned()).collect()
-}
-
-/// One write to a series, made by a typed handle where it happens and applied by the writer's
-/// owner ([`SeriesWriter::apply`]): so a file can have one owner while several tasks record.
-#[derive(Debug, Clone)]
-pub struct SeriesOp {
-	def: Def,
-	values: Vec<String>,
-	what: What,
-	t: Millis,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum What {
-	Gauge(f64),
-	Inc(f64),
-	Observe(f64),
-}
-
-impl SeriesOp {
-	/// Sets a gauge.
-	pub fn gauge<const N: usize>(
-		m: &Metric<kind::Gauge, N>,
-		values: [&str; N],
-		value: f64,
-		t: Millis,
-	) -> Self {
-		Self { def: m.def, values: owned(values), what: What::Gauge(value), t }
-	}
-
-	/// Adds `by` to a counter.
-	pub fn inc<const N: usize>(
-		m: &Metric<kind::Counter, N>,
-		values: [&str; N],
-		by: f64,
-		t: Millis,
-	) -> Self {
-		Self { def: m.def, values: owned(values), what: What::Inc(by), t }
-	}
-
-	/// Observes one value of a histogram.
-	pub fn observe<const N: usize>(
-		m: &Metric<kind::Histogram, N>,
-		values: [&str; N],
-		v: f64,
-		t: Millis,
-	) -> Self {
-		Self { def: m.def, values: owned(values), what: What::Observe(v), t }
-	}
+	values.iter().map(|s| s.to_string()).collect()
 }
 
 impl SeriesWriter {
@@ -102,10 +55,16 @@ impl SeriesWriter {
 		value: f64,
 		t: Millis,
 	) -> Result<(), FileError> {
-		self.apply(&SeriesOp::gauge(m, values, value, t))
+		self.flush()?;
+		self.out.write(&SeriesRecord {
+			t,
+			name: m.def.name.to_owned(),
+			labels: labels(m.def.labels, &owned(values)),
+			sample: Sample::Value { value },
+		})
 	}
 
-	/// Adds `by` to a counter.
+	/// Adds `by` to a counter. Nothing is written until the next flush.
 	pub fn inc<const N: usize>(
 		&mut self,
 		m: &Metric<kind::Counter, N>,
@@ -113,10 +72,13 @@ impl SeriesWriter {
 		by: f64,
 		t: Millis,
 	) {
-		let _ = self.apply(&SeriesOp::inc(m, values, by, t)); // nothing is written before a flush
+		let p = self.pending(&m.def, &owned(values), t, || Sample::Value { value: 0.0 });
+		if let Sample::Value { value } = &mut p.record.sample {
+			*value += by;
+		}
 	}
 
-	/// Observes one value of a histogram.
+	/// Observes one value of a histogram. Nothing is written until the next flush.
 	pub fn observe<const N: usize>(
 		&mut self,
 		m: &Metric<kind::Histogram, N>,
@@ -124,48 +86,18 @@ impl SeriesWriter {
 		v: f64,
 		t: Millis,
 	) {
-		let _ = self.apply(&SeriesOp::observe(m, values, v, t)); // nothing is written before a flush
-	}
-
-	/// Applies one write. Only a gauge writes at once (after whatever is pending).
-	pub fn apply(&mut self, op: &SeriesOp) -> Result<(), FileError> {
-		let (def, t) = (&op.def, op.t);
-		match op.what {
-			What::Gauge(value) => {
-				self.flush()?;
-				let labels = labels(def.labels, &op.values);
-				self.out.write(&SeriesRecord {
-					t,
-					name: def.name.to_owned(),
-					labels,
-					sample: Sample::Value { value },
-				})
-			},
-			What::Inc(by) => {
-				let p = self.pending(def, &op.values, t, || Sample::Value { value: 0.0 });
-				if let Sample::Value { value } = &mut p.record.sample {
-					*value += by;
+		let bounds = m.def.buckets;
+		let p = self.pending(&m.def, &owned(values), t, || Sample::Histogram {
+			buckets: vec![0.0; bounds.len() + 1],
+			sum: 0.0,
+		});
+		if let Sample::Histogram { buckets, sum } = &mut p.record.sample {
+			for (count, bound) in buckets.iter_mut().zip(bounds.iter().chain([&f64::INFINITY])) {
+				if v <= *bound {
+					*count += 1.0;
 				}
-				Ok(())
-			},
-			What::Observe(v) => {
-				let bounds = def.buckets;
-				let p = self.pending(def, &op.values, t, || Sample::Histogram {
-					buckets: vec![0.0; bounds.len() + 1],
-					sum: 0.0,
-				});
-				if let Sample::Histogram { buckets, sum } = &mut p.record.sample {
-					for (count, bound) in
-						buckets.iter_mut().zip(bounds.iter().chain([&f64::INFINITY]))
-					{
-						if v <= *bound {
-							*count += 1.0;
-						}
-					}
-					*sum += v;
-				}
-				Ok(())
-			},
+			}
+			*sum += v;
 		}
 	}
 

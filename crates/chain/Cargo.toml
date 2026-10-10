@@ -1,13 +1,12 @@
 [package]
 name = "polkameter-chain"
-description = "A Polkadot SDK node over RPC: typed reads, events, submission and the extension layout guard"
+description = "A Polkadot SDK node over RPC: typed reads, events and submission"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 publish.workspace = true
 
 [dependencies]
-parity-scale-codec.workspace = true
 sp-crypto-hashing.workspace = true
 hex.workspace = true
 serde_json.workspace = true

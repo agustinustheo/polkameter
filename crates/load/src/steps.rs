@@ -24,8 +24,6 @@ pub struct StepStats {
 	pub failed_in_block: u64,
 	/// Refused by the node.
 	pub rejected: u64,
-	/// Expired unseen.
-	pub dropped: u64,
 	/// Send to best block, per included tx.
 	pub latencies_ms: Vec<Millis>,
 	/// Send to submit reply.
@@ -64,7 +62,6 @@ pub fn block_stats(blocks: &[BlockRecord]) -> BlockStats {
 		max_ours_per_block: blocks.iter().map(|b| b.ours).max().unwrap_or(0),
 		max_normal_ref_time_pct: blocks.iter().map(|b| b.normal_ref_time_pct).fold(0.0, f64::max),
 		max_normal_proof_pct: blocks.iter().map(|b| b.normal_proof_pct).fold(0.0, f64::max),
-		max_block_bytes: blocks.iter().map(|b| b.bytes).max().unwrap_or(0),
 	}
 }
 
@@ -90,7 +87,6 @@ pub fn final_step(st: &StepStats, lane: Option<&str>) -> FinalStep {
 		failed_in_block: st.failed_in_block,
 		rejected: st.rejected,
 		rejected_ratio: ratio(st.rejected, st.sent, 0.0),
-		dropped: st.dropped,
 		p50_latency_ms: percentile(&st.latencies_ms, 50.0),
 		p95_latency_ms: percentile(&st.latencies_ms, 95.0),
 		p95_reply_ms: percentile(&st.reply_ms, 95.0),
@@ -100,5 +96,18 @@ pub fn final_step(st: &StepStats, lane: Option<&str>) -> FinalStep {
 		backpressure_ticks: st.backpressure_ticks,
 		blocks: block_stats(&st.blocks),
 		node: NodeMax::default(),
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::percentile;
+
+	#[test]
+	fn percentile_is_nearest_rank() {
+		assert_eq!(percentile(&[1, 5, 9, 100], 95.0), 100);
+		assert_eq!(percentile(&[1, 5, 9, 100], 50.0), 9);
+		assert_eq!(percentile(&[9, 1, 100, 5], 0.0), 1);
+		assert_eq!(percentile(&[], 95.0), 0);
 	}
 }

@@ -3,23 +3,22 @@
 use polkameter_files::registry::Outcome;
 use serde::Serialize;
 
-use crate::data::{CounterReset, RunData, count_above, quantile};
-use crate::{Check, LIMITS, Status, Verdict};
+use crate::{
+	Check, LIMITS, Status, Verdict,
+	data::{
+		COLLATOR, CounterReset, END_REASON, Label, RunData, count_above, quantile, reasons_text,
+	},
+};
 
-const COLLATOR: (&str, &str) = ("job", "collator");
-const END_REASON: &str = "substrate_proposer_end_proposal_reason";
 const BUILD_TIME: &str = "substrate_proposer_block_constructed";
 
 fn text(r: &[(String, f64)]) -> String {
-	if r.is_empty() {
-		return "no blocks".into();
-	}
-	r.iter().map(|(k, n)| format!("{k} {n}")).collect::<Vec<_>>().join(", ")
+	if r.is_empty() { "no blocks".into() } else { reasons_text(r) }
 }
 
 #[derive(Serialize)]
 struct Reasons {
-	window: String,
+	window: Label,
 	#[serde(serialize_with = "as_map")]
 	reasons: Vec<(String, f64)>,
 }
@@ -62,7 +61,7 @@ fn why_blocks_end(d: &RunData) -> Result<Verdict, CounterReset> {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BuildTime {
-	window: String,
+	window: Label,
 	blocks: f64,
 	p95_s: Option<f64>,
 	over: f64,
@@ -90,7 +89,7 @@ fn build_time(d: &RunData) -> Result<Verdict, CounterReset> {
 	let close: Vec<_> = windows
 		.iter()
 		.filter(|s| s.over > 0.0 || s.p95_s == Some(2.5))
-		.map(|s| s.window.as_str())
+		.map(|s| s.window.to_string())
 		.collect();
 	let (status, detail) = match failed {
 		Some(f) => (

@@ -16,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 use crate::MonitorError;
 
 /// A recorder the walker drives.
+/// Part of the plugin API (used by out-of-tree plugins).
 pub trait Walk: Send {
 	/// Its name in the problems list.
 	const NAME: &'static str;
@@ -86,6 +87,7 @@ impl Failures {
 
 /// Walks finalized blocks of `client` with `w` until `stop`; the block seen last is walked
 /// before it returns. `Err` only for our own errors.
+/// Part of the plugin API (used by out-of-tree plugins).
 pub async fn walk<W: Walk>(
 	client: Client,
 	mut w: W,

@@ -1,8 +1,10 @@
 //! `results/<run id>/`: one directory per run, JSON lines appended as the run goes.
 
-use std::fs::{self, File, OpenOptions};
-use std::io::{BufWriter, Write};
-use std::path::{Path, PathBuf};
+use std::{
+	fs::{self, File, OpenOptions},
+	io::{BufWriter, Write},
+	path::{Path, PathBuf},
+};
 
 use serde::Serialize;
 

@@ -1,8 +1,7 @@
 //! Window math and one check on a few hand-written samples.
 
-use polkameter_checks::{RunData, Status, count_above, quantile};
-use polkameter_files::parse_samples;
-use polkameter_files::summary::Summary;
+use polkameter_checks::{RunData, Status};
+use polkameter_files::{Point, Series, Store, parse_sample_line, summary::Summary};
 
 const SAMPLES: &str = r#"# TYPE polkameter_step gauge
 polkameter_step{instance="load-tool",job="stress"} 0 100.000
@@ -21,24 +20,23 @@ substrate_proposer_block_constructed_bucket{instance="c",job="collator",le="+Inf
 # EOF
 "#;
 
-fn summary() -> Summary {
-	let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/summary.json"))
-		.unwrap();
-	serde_json::from_str(&text).unwrap()
+/// Parses `name{labels} value timestamp` lines (`#` lines are skipped) into a store.
+fn parse_samples(text: &str) -> Store {
+	let mut store = Store::new();
+	for p in text.lines().filter_map(parse_sample_line) {
+		let point = Point { t: p.t.unwrap_or(0.0) * 1000.0, value: p.value };
+		let series = store.entry(p.name).or_default();
+		match series.iter_mut().find(|s| s.labels == p.labels) {
+			Some(s) => s.points.push(point),
+			None => series.push(Series { labels: p.labels, points: vec![point] }),
+		}
+	}
+	store
 }
 
-#[test]
-fn steps_and_buckets() {
-	let d = RunData::new(parse_samples(SAMPLES), summary());
-	let steps = d.steps();
-	assert_eq!(steps.iter().map(|w| w.label.as_str()).collect::<Vec<_>>(), ["step 0", "step 1"]);
-	let b = d
-		.buckets("substrate_proposer_block_constructed", &[("job", "collator")], &steps[1])
+fn summary() -> Summary {
+	serde_json::from_str(include_str!("../../../src-tauri/tests/fixtures/smoke-run/summary.json"))
 		.unwrap()
-		.unwrap();
-	assert_eq!(b, vec![(1.0, 0.0), (2.5, 1.0), (f64::INFINITY, 5.0)]);
-	assert_eq!(quantile(Some(&b), 0.95), Some(f64::INFINITY));
-	assert_eq!(count_above(Some(&b), 2.5), Some(4.0));
 }
 
 #[test]

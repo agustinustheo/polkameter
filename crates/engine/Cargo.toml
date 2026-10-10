@@ -17,6 +17,5 @@ tokio.workspace = true
 tokio-util.workspace = true
 hex.workspace = true
 sp-crypto-hashing.workspace = true
-quick-xml = { version = "0.41", features = ["serialize"] }
-csv = "1.3"
+csv.workspace = true
 subxt-rpcs.workspace = true
