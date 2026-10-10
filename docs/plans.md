@@ -1,7 +1,4 @@
----
-title: Plans
-description: The XML plan reference, covering elements, attributes, references, validation and parser rules
----
+# Plans
 
 A plan is one XML document in the namespace `https://polkameter.dev/schema/plan`. It names the plugins it uses, the targets and credential profiles, the steps to run, the load profile, the monitors and the stop thresholds. It never contains a secret, an executable path or a topology path. Those are configured on the host where the plan runs.
 
@@ -33,7 +30,7 @@ polkameter-plan
 | `xmlns` | URI | yes | none | Must be `https://polkameter.dev/schema/plan` |
 | `name` | string | yes | none | The scenario title, used in the report |
 | `version` | integer | yes | none | Must be `1` |
-| `mode` | `stress` or `smoke` | no | `stress` | Smoke mode also fails on monitor problems and on required checks without a result. See [results]({{ '/results.html' | relative_url }}) |
+| `mode` | `stress` or `smoke` | no | `stress` | Smoke mode also fails on monitor problems and on required checks without a result. See [results](results.md) |
 | `timeout-ms` | integer above 0 | no | `3600000` | Deadline for the run from plugin start-up to the report. Teardown has its own 30 second limit |
 
 ## plugins and plugin
@@ -154,7 +151,7 @@ If a required metric is missing, the run stops before setup. Wrong-type metrics 
 
 ## thresholds
 
-Thresholds override the defaults in `crates/load/src/rules.rs`. Each value is written to `summary.json` under `rules`. The meaning of each measure is in [results]({{ '/results.html#stop-rules-and-thresholds' | relative_url }}).
+Thresholds override the defaults in `crates/load/src/rules.rs`. Each value is written to `summary.json` under `rules`. The meaning of each measure is in [results](results.md#stop-rules-and-thresholds).
 
 | Attribute | Type | Default | Constraint | Governs |
 | --- | --- | --- | --- | --- |
@@ -173,7 +170,7 @@ Thresholds override the defaults in `crates/load/src/rules.rs`. Each value is wr
 
 ## evaluate
 
-Evaluate steps run after measurement and before the report. An operation whose outputs include `checks` contributes its checks to the report. [Plugins]({{ '/plugins.html' | relative_url }}) describes the check format.
+Evaluate steps run after measurement and before the report. An operation whose outputs include `checks` contributes its checks to the report. [Plugins](plugins.md) describes the check format.
 
 ## Reference syntax
 

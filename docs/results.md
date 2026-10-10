@@ -1,7 +1,4 @@
----
-title: Results and verdicts
-description: The run directory, the verdict model, stop rules, loss accounting, outcome checks and exit codes
----
+# Results and verdicts
 
 A run writes a directory of raw files and two summaries. This page explains what each file holds, how the verdict is reached, and what each stop rule and check measures.
 
@@ -67,7 +64,7 @@ A ramp moves through its steps until a stop rule fires. Response measures are ch
 
 The graceful and hard classes end the ramp as failures. Stops with class "none" end it without a failure, and the verdict decides what they mean.
 
-The ratio thresholds accept values above 0 and at most 1. The factors and durations must be above 0. The effective values are in `summary.json` under `rules`. Set them in the plan's [`<thresholds>`]({{ '/plans.html#thresholds' | relative_url }}).
+The ratio thresholds accept values above 0 and at most 1. The factors and durations must be above 0. The effective values are in `summary.json` under `rules`. Set them in the plan's [`<thresholds>`](plans.md#thresholds).
 
 Two fields in `summary.json` answer the main questions:
 
@@ -129,11 +126,11 @@ The checks run on the recorded series. Each belongs to an outcome. The `summary.
 
 The limits are in `crates/checks/src/limits.rs`. They are placeholders until the load target and budgets are agreed.
 
-Plugins add checks through evaluate steps. Their results are listed after the built-in ones and count toward the verdict. [Plugins]({{ '/plugins.html#plugin-observers-and-checks' | relative_url }}) describes them.
+Plugins add checks through evaluate steps. Their results are listed after the built-in ones and count toward the verdict. [Plugins](plugins.md#plugin-observers-and-checks) describes them.
 
 ## Exit codes
 
-`polkameter run` exits with the outcome's exit code. The table covers the CLI commands. [CLI]({{ '/cli.html' | relative_url }}) lists every command.
+`polkameter run` exits with the outcome's exit code. The table covers the CLI commands. [CLI](cli.md) lists every command.
 
 | Code | Meaning |
 | --- | --- |

@@ -1,7 +1,4 @@
----
-title: Architecture
-description: The Polkameter crates, what each one owns, and how a run flows through them
----
+# Architecture
 
 Polkameter is a Cargo workspace. The three front ends (the CLI, the desktop app and the remote agent) all call one engine. The engine plans and executes a run. Measurement, monitors and checks are separate crates that communicate through files in the run directory, so each part can run as its own process or be tested without a chain.
 
@@ -49,13 +46,13 @@ The CLI and the remote agent are the `polkameter` package in `crates/cli`, which
 
 The engine turns a plan into a run. It is shared by all three front ends.
 
-- **Plan.** `plan::Plan` is the XML plan, parsed by the hand-written reader in `xml.rs` (the engine depends on no XML crate) and validated. `Step`, `Workflow`, `Load` and `Thresholds` are its main parts. See [Plans]({{ '/plans.html' | relative_url }}).
+- **Plan.** `plan::Plan` is the XML plan, parsed by the hand-written reader in `xml.rs` (the engine depends on no XML crate) and validated. `Step`, `Workflow`, `Load` and `Thresholds` are its main parts. See [Plans](plans.md).
 - **Registry.** `plugins::Registry` records the installed plugins, their pinned versions and BLAKE2 hashes, the credential profiles and topology aliases of this host, and the capabilities the provisioner declared. It is stored in `~/.config/polkameter/plugins.json` unless `POLKAMETER_PLUGIN_REGISTRY` is set.
 - **Plugin host.** `plugins::Plugins` starts one process per installed plugin for the duration of a run and sends it operations.
 - **Executor.** `execute::run` creates the run directory and runs the phases. `execute::preflight` and `execute::inspect` run the read-only parts without starting a run. The run's result is `execute::Outcome`, written as `execution.json`.
 - **Measurement wiring.** `measurement::run` connects the load to the chain and the monitors, runs the load phases and reconciles the transactions. `measurement::report` writes the checks.
 
-It writes `plan.json`, `resolved-plan.json`, `resolved-targets.json`, `calibration.json`, `events.jsonl`, `execution.json`, `samples.jtl` and, when there is a fallback, `summary.md`. Through measurement it also writes `steps.jsonl`, `lost.jsonl`, `transactions.jsonl`, `summary.json` and `plugin-checks.json`. [Results and verdicts]({{ '/results.html' | relative_url }}) describes each file.
+It writes `plan.json`, `resolved-plan.json`, `resolved-targets.json`, `calibration.json`, `events.jsonl`, `execution.json`, `samples.jtl` and, when there is a fallback, `summary.md`. Through measurement it also writes `steps.jsonl`, `lost.jsonl`, `transactions.jsonl`, `summary.json` and `plugin-checks.json`. [Results and verdicts](results.md) describes each file.
 
 ### load (`crates/load`, `polkameter-load`)
 
@@ -103,7 +100,7 @@ The evaluator. It reads a finished run's series and `summary.json`, runs every c
 - `RunData` does the window arithmetic: each load step and the recovery phase become windows over the series.
 - `Check` is one named check of one outcome, and `Verdict` is its status, a one-line detail and optional numbers. `Status` is `pass`, `warn`, `fail`, `info` or `no result`.
 - `LIMITS` holds the limits the checks compare against. They are placeholders until the budgets are agreed.
-- `outcomes/` has one file per outcome: `block_production`, `pvf`, `pool` and `recorded`. [Results and verdicts]({{ '/results.html' | relative_url }}) lists every check.
+- `outcomes/` has one file per outcome: `block_production`, `pvf`, `pool` and `recorded`. [Results and verdicts](results.md) lists every check.
 - `report::write` runs the checks, appends the plugin checks, and writes `summary.json` and `summary.md`.
 
 ### plugin-sdk (`crates/plugin-sdk`, `polkameter-plugin-sdk`)
@@ -116,7 +113,7 @@ The versioned protocol between the host and a plugin, and the library plugins ar
 - `Context` carries the run ID, the run's artifact directory, and the user and iteration indices.
 - `Artifact` and `PreparedTx` are the references for large outputs and for prepared transactions. A `PreparedTx` carries its bytes and their BLAKE2 hash.
 
-The protocol is described in the [plugins guide]({{ '/plugins.html' | relative_url }}#plugin-protocol-1). `plugins/example` is a complete plugin that exercises it.
+The protocol is described in the [plugins guide](plugins.md#plugin-protocol-1). `plugins/example` is a complete plugin that exercises it.
 
 ## How a run flows
 
@@ -157,4 +154,4 @@ sequenceDiagram
   E->>C: Outcome and exit code
 ```
 
-The phases run in this order. An error in preflight, setup, a workflow or an evaluate step ends the run with `state` set to `failed` and exit code 1. A stop rule that fires during measurement is not an error: it is recorded in `summary.json`, and the report is still written. [Results and verdicts]({{ '/results.html' | relative_url }}) explains which results fail a run and which only change the verdict.
+The phases run in this order. An error in preflight, setup, a workflow or an evaluate step ends the run with `state` set to `failed` and exit code 1. A stop rule that fires during measurement is not an error: it is recorded in `summary.json`, and the report is still written. [Results and verdicts](results.md) explains which results fail a run and which only change the verdict.
