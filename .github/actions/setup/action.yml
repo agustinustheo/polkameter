@@ -21,7 +21,7 @@ runs:
       with:
         node-version: 22
         cache: pnpm
-    - uses: dtolnay/rust-toolchain@master
+    - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
       if: inputs.toolchain != ''
       with:
         toolchain: ${{ inputs.toolchain }}

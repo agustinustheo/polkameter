@@ -1,0 +1,15 @@
+[advisories]
+ignore = [
+    # glib 0.18 via tauri/gtk on Linux: VariantStrIter is never used; no fixed glib 0.18 release.
+    "RUSTSEC-2024-0429",
+    # proc-macro-error 1.x via gtk macros: build-time only, unmaintained, no fix upstream.
+    "RUSTSEC-2024-0370",
+    # proc-macro-error2 via subxt-macro: build-time only, unmaintained, no fix upstream.
+    "RUSTSEC-2026-0173",
+    # smallstr via scale-info-legacy (subxt): unmaintained, no replacement in the dependency tree.
+    "RUSTSEC-2026-0215",
+    # lru via smoldot-light: optional lightclient feature, not built by polkameter.
+    "RUSTSEC-2026-0253",
+    # libsecp256k1 via smoldot: optional lightclient feature, not built by polkameter.
+    "RUSTSEC-2025-0161",
+]
