@@ -1,7 +1,4 @@
----
-title: Getting started
-description: Build Polkameter, install the example plugin and run the example plan
----
+# Getting started
 
 This page builds Polkameter, installs the example plugin and runs the example plan. The example needs no chain.
 
@@ -50,7 +47,7 @@ target/debug/polkameter run examples/plugin-workflow.polkameter.xml --output tar
 
 The example plan has a setup step and one workflow with 3 users and 2 iterations. Setup calls `example.double` on 21, which returns 42, and copies the result with `core.echo`. Each workflow iteration doubles 42 to 84 and asserts that the value equals 84. A failed assertion makes the run fail with exit code 1.
 
-The full plan is in [`examples/plugin-workflow.polkameter.xml`](https://github.com/agustinustheo/polkameter/blob/main/examples/plugin-workflow.polkameter.xml). [Plans]({{ '/plans.html' | relative_url }}) explains each element.
+The full plan is in [`examples/plugin-workflow.polkameter.xml`](https://github.com/agustinustheo/polkameter/blob/main/examples/plugin-workflow.polkameter.xml). [Plans](plans.md) explains each element.
 
 ## 4. Read the run directory
 
@@ -66,7 +63,7 @@ The run directory is `target/runs/run-<timestamp>-<pid>-<sequence>/`. For a plan
 | `summary.md` | A short status: the plan name, the state and any error |
 | `plugins/example/stderr.log` | The plugin's standard error |
 
-A plan with a `<load>` adds the measurement files, `summary.json` and `transactions.jsonl`. Every run has plots. [Results and verdicts]({{ '/results.html' | relative_url }}) lists them all.
+A plan with a `<load>` adds the measurement files, `summary.json` and `transactions.jsonl`. Every run has plots. [Results and verdicts](results.md) lists them all.
 
 ## 5. Regenerate the report
 
@@ -98,5 +95,5 @@ pnpm tauri dev
 
 ## Next steps
 
-- Run a plan against a live Zombienet network with [`scripts/local-fork-run.sh`](https://github.com/agustinustheo/polkameter/blob/main/scripts/local-fork-run.sh). The [plugins guide]({{ '/plugins.html' | relative_url }}#running-on-a-local-network) describes its environment variables.
-- Read [Architecture]({{ '/architecture.html' | relative_url }}) to see how the crates fit together.
+- Run a plan against a live Zombienet network with [`scripts/local-fork-run.sh`](https://github.com/agustinustheo/polkameter/blob/main/scripts/local-fork-run.sh). The [plugins guide](plugins.md#running-on-a-local-network) describes its environment variables.
+- Read [Architecture](architecture.md) to see how the crates fit together.

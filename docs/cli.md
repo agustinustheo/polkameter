@@ -1,8 +1,3 @@
----
-title: CLI
-description: Every polkameter command and flag, the remote agent, and its security rules
----
-
 The `polkameter` binary validates, preflights and runs plans, reports on finished runs, manages plugins on the host, and serves a remote agent. Run `polkameter --help` for the command list, or `polkameter COMMAND --help` for one command.
 
 ## Commands
@@ -69,7 +64,7 @@ The registry is a JSON file. It defaults to `~/.config/polkameter/plugins.json`,
 polkameter validate PLAN [--format human|json]
 ```
 
-Parses the plan and checks its structure: IDs, references, limits and the shape of each step. It does not start plugins or connect to a chain. An invalid plan exits with code 2. [Plans]({{ '/plans.html#validation-rules' | relative_url }}) lists the rules.
+Parses the plan and checks its structure: IDs, references, limits and the shape of each step. It does not start plugins or connect to a chain. An invalid plan exits with code 2. [Plans](plans.md#validation-rules) lists the rules.
 
 ## preflight
 
@@ -101,7 +96,7 @@ Runs the plan. A local run writes a new run directory under `--output`. A remote
 
 Ctrl-C stops a local run. The run writes what it has and exits with code 130. With `--remote`, Ctrl-C asks the agent to stop the run, then waits for its outcome.
 
-The exit codes are in [results]({{ '/results.html#exit-codes' | relative_url }}).
+The exit codes are in [results](results.md#exit-codes).
 
 ## report
 

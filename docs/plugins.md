@@ -1,9 +1,6 @@
----
-title: Plugins
-description: Writing and installing plugins, the plan execution order, measured load, monitors, checks and the plugin protocol
----
-
 # XML plans and Rust plugins
+
+New to plugins? [Writing a plugin](custom-plugins.md) builds one for your own runtime, using the People chain plugin as a worked example.
 
 Polkameter uses JMeter's separation between declarative plans and executable components. It remains a Rust engine; the plan is a Polkameter XML schema, not arbitrary JMeter JMX or a Java plugin interface.
 
