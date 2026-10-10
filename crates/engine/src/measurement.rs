@@ -418,7 +418,7 @@ mod tests {
 			("smoke all pass", Mode::Smoke, false, Status::Pass, Status::Pass, 0),
 		] {
 			let mut summary: Summary = serde_json::from_str(include_str!(
-				"../../../src-tauri/tests/fixtures/smoke-run/summary.json"
+				"../../cli/tests/fixtures/smoke-run/summary.json"
 			))
 			.unwrap();
 			summary.problems = if problem { vec!["monitor scrape failed".into()] } else { vec![] };

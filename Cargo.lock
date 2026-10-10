@@ -3892,7 +3892,7 @@ dependencies = [
 
 [[package]]
 name = "polkameter"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3900,18 +3900,15 @@ dependencies = [
  "flate2",
  "polkameter-engine",
  "reqwest",
- "rfd",
  "serde",
  "serde_json",
- "tauri",
- "tauri-build",
  "tokio",
  "tokio-util",
 ]
 
 [[package]]
 name = "polkameter-chain"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "frame-decode",
  "hex",
@@ -3929,7 +3926,7 @@ dependencies = [
 
 [[package]]
 name = "polkameter-checks"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "polkameter-files",
  "serde",
@@ -3938,8 +3935,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "polkameter-desktop"
+version = "0.2.0"
+dependencies = [
+ "polkameter",
+ "polkameter-engine",
+ "rfd",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+]
+
+[[package]]
 name = "polkameter-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "csv",
@@ -3960,7 +3969,7 @@ dependencies = [
 
 [[package]]
 name = "polkameter-example-plugin"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "polkameter-engine",
@@ -3972,7 +3981,7 @@ dependencies = [
 
 [[package]]
 name = "polkameter-files"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3981,7 +3990,7 @@ dependencies = [
 
 [[package]]
 name = "polkameter-load"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "futures-util",
  "hex",
@@ -3997,7 +4006,7 @@ dependencies = [
 
 [[package]]
 name = "polkameter-monitors"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "futures-util",
@@ -4014,7 +4023,7 @@ dependencies = [
 
 [[package]]
 name = "polkameter-plugin-sdk"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "hex",

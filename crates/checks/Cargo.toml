@@ -1,10 +1,14 @@
 [package]
 name = "polkameter-checks"
-description = "The evaluator: outcome checks over a run's recorded series"
-edition.workspace = true
+description = "The Polkameter evaluator: outcome checks over a run's recorded series"
 version.workspace = true
+edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+keywords = ["polkadot", "substrate", "load-testing"]
+categories = ["development-tools::testing"]
 
 [dependencies]
 polkameter-files.workspace = true

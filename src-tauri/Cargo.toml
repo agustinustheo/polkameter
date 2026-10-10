@@ -1,51 +1,21 @@
 [package]
-name = "polkameter"
-version = "0.1.2"
-description = "A JMeter-inspired Polkadot SDK stress testing workbench"
-homepage = "https://github.com/agustinustheo/polkameter"
-repository = "https://github.com/agustinustheo/polkameter"
-documentation = "https://github.com/agustinustheo/polkameter#readme"
-keywords = ["polkadot", "substrate", "load-testing", "stress-testing"]
-categories = ["command-line-utilities", "development-tools::testing"]
-edition.workspace = true
-rust-version = "1.93"
-license = "Apache-2.0"
-autobins = false
-
-[features]
-default = ["desktop"]
-# The Tauri desktop app. Without it the crate builds only the headless CLI and agent.
-desktop = ["dep:tauri", "dep:rfd", "dep:tauri-build"]
-
-[lib]
-name = "polkameter_lib"
-crate-type = ["rlib"]
-
-[[bin]]
-name = "polkameter"
-path = "src/cli_main.rs"
-
-[[bin]]
 name = "polkameter-desktop"
-path = "src/main.rs"
-required-features = ["desktop"]
+description = "The Polkameter desktop app: edits, previews and runs XML plans with the same engine as the CLI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
 
 [build-dependencies]
-tauri-build = { version = "2.6.3", features = [], optional = true }
+tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
-polkameter-engine = { path = "../crates/engine" }
+polkameter.workspace = true
+polkameter-engine.workspace = true
 
-anyhow.workspace = true
-axum = "0.8"
-clap = { version = "4", features = ["derive"] }
-reqwest = { version = "0.13", features = ["json"] }
-rfd = { version = "0.15", optional = true }
-serde.workspace = true
+rfd = "0.15"
 serde_json.workspace = true
-tauri = { version = "2.12", features = [], optional = true }
-tokio.workspace = true
-tokio-util.workspace = true
-
-[dev-dependencies]
-flate2 = "1"
+tauri = { version = "2.12", features = [] }

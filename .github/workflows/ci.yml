@@ -38,7 +38,6 @@ jobs:
       - run: cargo +${{ env.RUST_VERSION }} fmt --all -- --check
       - run: cargo +${{ env.RUST_VERSION }} test --workspace
       - run: cargo +${{ env.RUST_VERSION }} clippy --workspace --all-targets -- -D warnings
-      - run: cargo +${{ env.RUST_VERSION }} clippy -p polkameter --all-targets --no-default-features -- -D warnings
       - name: Verify the example plans
         run: |
           for plan in examples/*.polkameter.xml; do
@@ -47,9 +46,11 @@ jobs:
           done
       - name: CLI smoke
         run: |
-          cargo +${{ env.RUST_VERSION }} build -p polkameter --no-default-features --bin polkameter
+          cargo +${{ env.RUST_VERSION }} build -p polkameter --bin polkameter
           cargo +${{ env.RUST_VERSION }} build -p polkameter-example-plugin
           tests/cli-smoke.sh
+      - name: Package the crates for crates.io
+        run: cargo +${{ env.RUST_VERSION }} publish --workspace --exclude polkameter-desktop --exclude polkameter-example-plugin --dry-run --locked
 
   desktop-build:
     name: Desktop build (${{ matrix.name }})

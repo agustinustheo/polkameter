@@ -33,15 +33,15 @@ flowchart LR
 
 ## Front ends
 
-The CLI, the desktop app and the remote agent are all in the `polkameter` package under `src-tauri/`. The CLI's modules do not call Tauri APIs, but they are built into the same library crate as the desktop app.
+The CLI and the remote agent are the `polkameter` package in `crates/cli`, which publishes to crates.io and has no Tauri dependency. The desktop app is `polkameter-desktop` in `src-tauri/`, which depends on the `polkameter` library for the run lifecycle and the remote client. It is distributed through GitHub Releases, not crates.io.
 
 | Front end | Source | Role |
 | --- | --- | --- |
-| CLI (`polkameter`) | `src-tauri/src/cli.rs`, entry point `src-tauri/src/cli_main.rs` | Commands for plugins, validation, preflight, runs, reports and the agent |
-| Desktop app (`polkameter-desktop`) | `src-tauri/src/main.rs`, with the TypeScript frontend in the repository's `src/` | Edits plans, derives input editors from plugin manifests and runs them |
-| Remote agent | `src-tauri/src/remote.rs` | An HTTP API that starts and stops runs on a worker host |
+| CLI (`polkameter`) | `crates/cli/src/cli.rs`, entry point `crates/cli/src/main.rs` | Commands for plugins, validation, preflight, runs, reports and the agent |
+| Desktop app (`polkameter-desktop`) | `src-tauri/src/main.rs` and `desktop.rs`, with the TypeScript frontend in the repository's `src/` | Edits plans, derives input editors from plugin manifests and runs them |
+| Remote agent | `crates/cli/src/remote.rs` | An HTTP API that starts and stops runs on a worker host |
 
-`src-tauri/src/plugin_application.rs` holds the run lifecycle for the desktop app and the agent: starting a run in the background, reporting its status and phase, and stopping it. `crates/engine/src/plots.rs` writes the SVG plots, as the run finishes and as `polkameter report` runs.
+`crates/cli/src/plugin_application.rs` holds the run lifecycle for the desktop app and the agent: starting a run in the background, reporting its status and phase, and stopping it. `crates/engine/src/plots.rs` writes the SVG plots, as the run finishes and as `polkameter report` runs.
 
 ## Crates
 

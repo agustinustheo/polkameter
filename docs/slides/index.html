@@ -459,8 +459,9 @@ title: Polkameter — slides
 <section>
   <p class="kicker">Getting started</p>
   <h2>From a clone to a run directory</h2>
-<pre class="cmd"><code><span class="c"># the CLI only, without the desktop app</span>
-cargo build -p polkameter --no-default-features --bin polkameter
+<pre class="cmd"><code><span class="c"># the CLI only: from crates.io, or from this checkout</span>
+cargo install polkameter
+cargo build -p polkameter --bin polkameter
 cargo build -p polkameter-example-plugin
 
 polkameter plugin install target/debug/polkameter-example-plugin

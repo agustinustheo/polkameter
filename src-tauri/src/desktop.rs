@@ -1,6 +1,6 @@
 //! The Tauri desktop shell: its window, its commands and the plan file dialogs.
 
-use crate::{plugin_application, remote};
+use polkameter::{plugin_application, remote};
 use tauri::{Emitter, Manager};
 
 pub fn run() {

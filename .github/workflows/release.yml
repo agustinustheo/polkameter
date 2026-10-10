@@ -43,7 +43,7 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - run: corepack pnpm install --frozen-lockfile
       - run: corepack pnpm tauri build --bundles ${{ matrix.bundles }}
-      - run: cargo +${{ env.RUST_VERSION }} build --release --manifest-path src-tauri/Cargo.toml --no-default-features --bin polkameter
+      - run: cargo +${{ env.RUST_VERSION }} build --release -p polkameter --bin polkameter
       - uses: actions/upload-artifact@v7
         with:
           name: polkameter-${{ matrix.name }}
@@ -52,6 +52,27 @@ jobs:
             target/release/polkameter
             target/release/polkameter.exe
           if-no-files-found: error
+
+  crates-io:
+    name: Publish crates to crates.io
+    needs: bundle
+    if: github.event_name == 'push'
+    environment: crates-io
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          apt-packages: ""
+      - name: Check the tag matches the workspace version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          test "${{ github.ref_name }}" = "v$version"
+      - name: Publish the crates
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo +${{ env.RUST_VERSION }} publish --workspace --exclude polkameter-desktop --exclude polkameter-example-plugin --locked
 
   publish:
     name: Publish GitHub release

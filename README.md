@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.png">
-    <img src="docs/logo-light.png" alt="Polkameter" width="380">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/agustinustheo/polkameter/main/docs/logo-dark.png">
+    <img src="https://raw.githubusercontent.com/agustinustheo/polkameter/main/docs/logo-light.png" alt="Polkameter" width="380">
   </picture>
 </p>
 
@@ -16,12 +16,22 @@ Polkameter is a load-testing tool for Polkadot SDK chains, modeled on JMeter: an
 
 It runs both ways: a headless `polkameter` CLI for CI and remote load machines, and a Tauri desktop app that edits and runs the same plans. Both drive the same Rust engine.
 
-## Build
+## Install
+
+The command line tool is on crates.io (Rust 1.93 or newer), and it has no desktop dependencies:
 
 ```sh
-cargo build --release -p polkameter --no-default-features --bin polkameter   # the CLI, without the desktop app
-corepack pnpm install && corepack pnpm build    # the frontend, only for the desktop app
-corepack pnpm tauri dev                         # the desktop app
+cargo install polkameter
+```
+
+The desktop app is not on crates.io. Download it from [GitHub Releases](https://github.com/agustinustheo/polkameter/releases), with an AppImage or deb for Linux, a dmg for macOS and an installer for Windows.
+
+To build from source, build the CLI and, for the desktop app, the frontend first:
+
+```sh
+cargo build --release -p polkameter --bin polkameter   # the CLI
+corepack pnpm install && corepack pnpm build           # the frontend, only for the desktop app
+corepack pnpm tauri dev                                # the desktop app, in development
 ```
 
 ## Command line
@@ -49,7 +59,7 @@ polkameter run plan.polkameter.xml --remote http://127.0.0.1:9901 --remote-token
 
 ## Plans, plugins and results
 
-[The plugin guide](docs/plugins.md) describes the plan format, the execution order, measured load, monitors, plugin observers and checks, the plugin protocol and the result files. [The schema](schemas/polkameter-plan.xsd) defines the XML and [the example](examples/plugin-workflow.polkameter.xml) runs without a chain. `scripts/local-fork-run.sh` runs a plan on a fresh local Zombienet network.
+[The plugin guide](https://github.com/agustinustheo/polkameter/blob/main/docs/plugins.md) describes the plan format, the execution order, measured load, monitors, plugin observers and checks, the plugin protocol and the result files. [The schema](https://github.com/agustinustheo/polkameter/blob/main/schemas/polkameter-plan.xsd) defines the XML and [the example](https://github.com/agustinustheo/polkameter/blob/main/examples/plugin-workflow.polkameter.xml) runs without a chain. `scripts/local-fork-run.sh` runs a plan on a fresh local Zombienet network.
 
 Each run directory holds `samples.jtl` (JMeter CSV), `events.jsonl`, `execution.json`, plots and, for a measured load, `transactions.jsonl`, raw node scrapes, `summary.json` and `summary.md`.
 
@@ -59,9 +69,9 @@ Each run directory holds `samples.jtl` (JMeter CSV), `events.jsonl`, `execution.
 corepack pnpm test
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo clippy -p polkameter --all-targets --no-default-features -- -D warnings
 cargo test --workspace
-cargo build -p polkameter --no-default-features --bin polkameter
+cargo build -p polkameter --bin polkameter
+cargo publish --workspace --exclude polkameter-desktop --exclude polkameter-example-plugin --dry-run
 cargo build -p polkameter-example-plugin
 tests/cli-smoke.sh
 ```
