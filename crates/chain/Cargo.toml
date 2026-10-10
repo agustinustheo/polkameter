@@ -16,7 +16,7 @@ hex.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-subxt = "=0.50.3"
+subxt = "=0.51.1"
 subxt-rpcs = "=0.50.3"
 subxt-signer = { version = "=0.50.3", default-features = false, features = ["sr25519", "std"] }
 scale-value = "0.18.1"
