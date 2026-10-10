@@ -13,23 +13,24 @@ permissions:
   security-events: write
 
 jobs:
-  analyze:
-    name: Analyze ${{ matrix.name }}
+  javascript-typescript:
+    name: Analyze JavaScript and TypeScript
     runs-on: ubuntu-22.04
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: JavaScript and TypeScript
-            language: javascript-typescript
-          - name: Rust
-            language: rust
     steps:
       - uses: actions/checkout@v7
       - uses: github/codeql-action/init@v4
         with:
-          languages: ${{ matrix.language }}
+          languages: javascript-typescript
           build-mode: none
       - uses: github/codeql-action/analyze@v4
+
+  rust:
+    name: Analyze Rust
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: github/codeql-action/init@v4
         with:
-          category: /language:${{ matrix.language }}
+          languages: rust
+          build-mode: none
+      - uses: github/codeql-action/analyze@v4
