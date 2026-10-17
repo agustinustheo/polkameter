@@ -12,4 +12,6 @@ ignore = [
     "RUSTSEC-2026-0253",
     # libsecp256k1 via smoldot: optional lightclient feature, not built by polkameter.
     "RUSTSEC-2025-0161",
+    # ruzstd 0.8 via smoldot: optional lightclient feature, not built by polkameter.
+    "RUSTSEC-2026-0344",
 ]
