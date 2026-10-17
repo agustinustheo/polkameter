@@ -1,99 +1,208 @@
 # Getting started
 
-This page builds Polkameter, installs the example plugin and runs the example plan. The example needs no chain.
+You will build the CLI, run the example plan and read its results. You need no chain.
 
-## Prerequisites
+## 1. Check your Rust version
 
-- Rust 1.93 or newer. CI pins 1.93.0.
-- For the desktop app only: Node 22 and pnpm. `package.json` pins pnpm 10.32.1, and `corepack pnpm` uses that version. The desktop app also needs the Tauri 2 system dependencies for your platform.
-
-## 1. Build
-
-The CLI has no desktop dependencies, so it needs neither Node nor a frontend build. Install it from crates.io, or build this checkout:
+PolkaMeter needs Rust 1.93 or newer:
 
 ```sh
-cargo install polkameter                                 # the CLI, into ~/.cargo/bin
-cargo build -p polkameter --bin polkameter               # or, from this checkout
+rustc --version
+```
+
+```text
+rustc 1.92.0 (ded5c06cf 2025-12-08)
+```
+
+With Rust 1.92, the build stops before it compiles anything:
+
+```sh
+cargo build -p polkameter --bin polkameter
+```
+
+```text
+error: rustc 1.92.0 is not supported by the following packages:
+  polkameter@0.2.0 requires rustc 1.93
+  polkameter@0.2.0 requires rustc 1.93
+  polkameter-chain@0.2.0 requires rustc 1.93
+  polkameter-checks@0.2.0 requires rustc 1.93
+  polkameter-engine@0.2.0 requires rustc 1.93
+  polkameter-files@0.2.0 requires rustc 1.93
+  polkameter-load@0.2.0 requires rustc 1.93
+  polkameter-monitors@0.2.0 requires rustc 1.93
+  polkameter-plugin-sdk@0.2.0 requires rustc 1.93
+```
+
+Run `rustup update` to get the latest stable Rust, then check the version again with `rustc --version`.
+
+## 2. Build the CLI and the example plugin
+
+Clone [the repository](https://github.com/agustinustheo/polkameter) and open the checkout. Run both commands from its root:
+
+```sh
+cargo build -p polkameter --bin polkameter
 cargo build -p polkameter-example-plugin
 ```
 
-Building from this checkout produces `target/debug/polkameter` (the CLI) and `target/debug/polkameter-example-plugin`. For a release CLI, add `--release` and use `target/release/` in the paths below.
+```text
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.22s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s
+```
 
-The desktop app is the `polkameter-desktop` package in `src-tauri/`. It is not on crates.io: download it from [GitHub Releases](https://github.com/agustinustheo/polkameter/releases), or build it in step 7. It embeds the frontend, so build the frontend first.
+On a first build, cargo prints a `Compiling` line for each crate before the `Finished` line. The builds produce `target/debug/polkameter` and `target/debug/polkameter-example-plugin`. Put the first one on your `PATH` for this shell:
 
-## 2. Install the example plugin
+```sh
+export PATH="$PWD/target/debug:$PATH"
+which polkameter
+```
 
-Plugins are recorded in a registry file. For this walkthrough, keep it inside `target/`:
+```text
+~/polkameter/target/debug/polkameter
+```
+
+The `export` lasts only for the current shell. Run it again in a new terminal.
+
+To put `polkameter` in `~/.cargo/bin` instead, run `cargo install --locked --git https://github.com/agustinustheo/polkameter polkameter`. You still need the checkout for the example plugin and plan.
+
+## 3. Install the example plugin
+
+PolkaMeter records installed plugins in a registry file. Keep it under `target/` for now:
 
 ```sh
 export POLKAMETER_PLUGIN_REGISTRY="$PWD/target/plugins.json"
-target/debug/polkameter plugin install target/debug/polkameter-example-plugin
-target/debug/polkameter plugin list
+polkameter plugin install target/debug/polkameter-example-plugin
 ```
 
-`plugin install` reads the plugin's manifest and records its version and the BLAKE2 hash of its executable. Reinstall after rebuilding the plugin, because the hash changes. Without `POLKAMETER_PLUGIN_REGISTRY`, the registry is `~/.config/polkameter/plugins.json`.
+```text
+Installed plugin example 0.1.0 (6 operations) from ~/polkameter/target/debug/polkameter-example-plugin
+```
 
-## 3. Validate, inspect and run the example plan
+Check what the registry holds:
 
 ```sh
-target/debug/polkameter validate examples/plugin-workflow.polkameter.xml
-target/debug/polkameter plugin inspect examples/plugin-workflow.polkameter.xml
-target/debug/polkameter run examples/plugin-workflow.polkameter.xml --output target/runs
+polkameter plugin list
 ```
 
-- `validate` parses and checks the plan. It does not connect to a chain or start plugins.
-- `plugin inspect` resolves the installed manifests against the plan and prints what it needs. It does not connect to a chain or submit anything.
-- `run` executes the plan and writes a new run directory under `target/runs`.
+```text
+{
+  "example": {
+...
+    "executable": "~/polkameter/target/debug/polkameter-example-plugin",
+    "version": "0.1.0"
+  }
+}
+```
 
-The example plan has a setup step and one workflow with 3 users and 2 iterations. Setup calls `example.double` on 21, which returns 42, and copies the result with `core.echo`. Each workflow iteration doubles 42 to 84 and asserts that the value equals 84. A failed assertion makes the run fail with exit code 1.
+PolkaMeter refuses to run a plugin whose file changed since you installed it. Install it again after rebuilding the plugin.
 
-The full plan is in [`examples/plugin-workflow.polkameter.xml`](https://github.com/agustinustheo/polkameter/blob/main/examples/plugin-workflow.polkameter.xml). [Plans](plans.md) explains each element.
+## 4. Validate and run the example plan
 
-## 4. Read the run directory
+```sh
+polkameter validate examples/plugin-workflow.polkameter.xml
+```
 
-The run directory is `target/runs/run-<timestamp>-<pid>-<sequence>/`. For a plan without a `<load>`, it holds:
+```text
+Plan is structurally valid. Preflight checks the installed plugins.
+```
 
-| File | Contents |
+```sh
+polkameter run examples/plugin-workflow.polkameter.xml --output target/runs
+```
+
+```text
+Phase: preflight
+Phase: setup
+Phase: workflow
+Phase: teardown
+Run completed. Artifacts: ~/polkameter/target/runs/run-1792254543387-3002-1
+```
+
+The setup step calls `example.double` on 21, which returns 42, and `core.echo` copies that value. Each of the 3 users runs 2 iterations of the workflow. In each iteration, `example.double` doubles 42 to 84, and `core.assert-equal` fails the run unless the result is 84.
+
+## 5. Read the run directory
+
+Each run writes to its own directory, named `run-<timestamp>-<pid>-<sequence>`. Replace `<run>` below with the name after `Artifacts:`:
+
+```sh
+ls target/runs/<run>
+```
+
+```text
+events.jsonl
+execution.json
+plan.json
+plots
+plugins
+resolved-plan.json
+samples.jtl
+summary.md
+```
+
+```sh
+cat target/runs/<run>/summary.md
+```
+
+```markdown
+# Plugin data flow
+
+Status: completed
+
+All configured steps completed.
+```
+
+These four files matter most at first:
+
+| File | What it tells you |
 | --- | --- |
-| `plan.json` | The plan as parsed |
-| `resolved-plan.json` | The installed plugin manifests and checksums, and the CLI's own hash |
-| `events.jsonl` | Every event of the run, one JSON object per line |
-| `execution.json` | The outcome: `state`, `exit_code` and `error` |
-| `samples.jtl` | A JMeter CSV with one row per finished step |
-| `summary.md` | A short status: the plan name, the state and any error |
-| `plugins/example/stderr.log` | The plugin's standard error |
+| `summary.md` | The status, and the error if the run failed. Start here. |
+| `execution.json` | The outcome: `state`, `exit_code` and `error`. |
+| `samples.jtl` | One CSV row for each step that ran, in JMeter's format. |
+| `events.jsonl` | Every event of the run, one JSON object per line. |
 
-A plan with a `<load>` adds the measurement files, `summary.json` and `transactions.jsonl`. Every run has plots. [Results and verdicts](results.md) lists them all.
+The [run directory](results.md) page describes the other files.
 
-## 5. Regenerate the report
+## 6. Break it
 
-`polkameter report` rebuilds a run's outputs from the files in a run directory. For a run with a `<load>`, it rebuilds the checks, `summary.json`, `summary.md`, `samples.jtl` and the plots. For a run without one, it rewrites `samples.jtl` and the plots:
+Make a copy of the plan that expects the wrong answer, 85 instead of 84:
 
 ```sh
-target/debug/polkameter report target/runs/run-<timestamp>-<pid>-<sequence>
+sed 's/value="84"/value="85"/' examples/plugin-workflow.polkameter.xml > target/broken.polkameter.xml
 ```
 
-Use it on a copied run directory to reproduce a result on another machine.
-
-## 6. Run the smoke test
-
-`tests/cli-smoke.sh` runs the CLI end to end without a chain. It validates and runs the example plan locally, regenerates its report, checks that a failed assertion exits nonzero, and runs the plan through a loopback remote agent. It uses the binaries from step 1:
+Run the broken plan and print its exit code:
 
 ```sh
-tests/cli-smoke.sh
+polkameter run target/broken.polkameter.xml --output target/runs
+echo $?
 ```
 
-## 7. Desktop app (optional)
+```text
+Phase: preflight
+Phase: setup
+Phase: workflow
+Phase: teardown
+Run failed. Artifacts: ~/polkameter/target/runs/run-…
+1
+```
 
-The desktop app needs the frontend built before the Rust build embeds it:
+The terminal says only that the run failed. The error is in `summary.md`:
 
 ```sh
-pnpm install --frozen-lockfile
-pnpm build
-pnpm tauri dev
+cat target/runs/<run>/summary.md
 ```
+
+```markdown
+# Plugin data flow
+
+Status: failed
+
+assertion verified failed
+```
+
+Exit code `1` means the run ended in the `failed` state. [Exit codes](cli.md#exit-codes) lists every code.
 
 ## Next steps
 
-- Run a plan against a live Zombienet network with [`scripts/local-fork-run.sh`](https://github.com/agustinustheo/polkameter/blob/main/scripts/local-fork-run.sh). The [plugins guide](plugins.md#running-on-a-local-network) describes its environment variables.
-- Read [Architecture](architecture.md) to see how the crates fit together.
+- [Run a load test](load-test.md): point a plan at a chain and measure it.
+- [Write a plugin](writing-a-plugin.md): supply the steps your runtime needs.
+- [Plans](plans.md): every element of the plan XML.

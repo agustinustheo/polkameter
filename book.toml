@@ -17,3 +17,7 @@ additional-js = ["mermaid-init.js"]
 
 [preprocessor.mermaid]
 command = "mdbook-mermaid"
+
+[output.html.redirect]
+"/custom-plugins.html" = "writing-a-plugin.html"
+"/architecture.html" = "how-it-works.html"

@@ -12,86 +12,65 @@
   <a href="https://github.com/agustinustheo/polkameter/stargazers"><img src="https://img.shields.io/github/stars/agustinustheo/polkameter?style=flat-square" alt="Stars"></a>
 </p>
 
-Polkameter is a load-testing tool for Polkadot SDK chains, modeled on JMeter: an XML plan composes steps, and installed plugins supply the runtime-specific operations. Polkameter submits the transactions a plugin prepares at a controlled rate, measures a baseline and recovery, reconciles every transaction against the finalized chain and the ready pool, scrapes the nodes, observes the relay for a parachain, and writes JMeter-compatible results.
+PolkaMeter is a load-testing tool for Polkadot SDK chains, modeled on JMeter. An XML plan lists the steps, and installed plugins supply the chain-specific operations. PolkaMeter submits the transactions a plugin prepares at a controlled rate, measures the chain before and after the load, checks every transaction against the finalized chain, and writes a verdict with JMeter-compatible results.
 
-It runs both ways: a headless `polkameter` CLI for CI and remote load machines, and a Tauri desktop app that edits and runs the same plans. Both drive the same Rust engine.
+## Quick start
 
-## Install
-
-The command line tool is on crates.io (Rust 1.93 or newer), and it has no desktop dependencies:
+Install the CLI. It needs Rust 1.93 or newer:
 
 ```sh
-cargo install polkameter
+cargo install --locked --git https://github.com/agustinustheo/polkameter polkameter
 ```
 
-The desktop app is not on crates.io. Download it from [GitHub Releases](https://github.com/agustinustheo/polkameter/releases), with an AppImage or deb for Linux, a dmg for macOS and an installer for Windows.
-
-To build from source, build the CLI and, for the desktop app, the frontend first:
+From a checkout of this repository, build the example plugin and install it. The example needs no chain:
 
 ```sh
-cargo build --release -p polkameter --bin polkameter   # the CLI
-corepack pnpm install && corepack pnpm build           # the frontend, only for the desktop app
-corepack pnpm tauri dev                                # the desktop app, in development
+cargo build -p polkameter-example-plugin
+export POLKAMETER_PLUGIN_REGISTRY="$PWD/target/plugins.json"
+polkameter plugin install target/debug/polkameter-example-plugin
 ```
 
-## Command line
+Then validate, inspect and run the example plan:
 
 ```sh
-# Install a plugin; its manifest is read and its executable checksum pinned.
-polkameter plugin install path/to/plugin
-
-# Map a plan's credential profile and topology alias to this host.
-polkameter plugin credential previewnet-sudo POLKAMETER_SETUP_SURI
-polkameter plugin topology previewnet path/to/zombie.json
-
-# Validate offline, preflight against the chain, run, and regenerate a report.
-polkameter validate plan.polkameter.xml
-polkameter preflight plan.polkameter.xml
-polkameter run plan.polkameter.xml --output runs
-polkameter report runs/run-<id>
-
-# Run on a remote agent that has its own plugins and credentials.
-polkameter agent serve --bind 127.0.0.1:9901 --output-root /data/runs
-polkameter run plan.polkameter.xml --remote http://127.0.0.1:9901 --remote-token-env AGENT_TOKEN
+polkameter validate examples/plugin-workflow.polkameter.xml
+polkameter plugin inspect examples/plugin-workflow.polkameter.xml
+polkameter run examples/plugin-workflow.polkameter.xml --output target/runs
 ```
 
-`--format json` prints machine-readable events. A run exits nonzero on a tool or setup failure, a failed assertion, or, in smoke mode, a monitor problem or a required check without a result.
+The run writes a run directory under `target/runs`.
 
 ## GitHub Action
 
-The repository's `action.yml` builds the CLI from the pinned ref, runs a plan and fails the job when the plan fails. It uploads the run directory as an artifact and writes its `summary.md` to the job summary.
+Run a plan in GitHub Actions without installing anything first. The action builds the CLI, runs the plan, uploads the run directory and ends the job with the CLI's exit code.
 
 ```yaml
-jobs:
-  load-test:
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v7
-      - uses: agustinustheo/polkameter@<ref>   # a tag or commit SHA
-        with:
-          plan: plans/transfers.polkameter.xml
-          credentials: previewnet-sudo=POLKAMETER_SETUP_SURI
-        env:
-          POLKAMETER_SETUP_SURI: ${{ secrets.SETUP_SURI }}
+- uses: actions/checkout@v7
+- uses: agustinustheo/polkameter@<ref>   # a tag or commit SHA
+  with:
+    plan: plans/transfers.polkameter.xml
+    credentials: previewnet-sudo=POLKAMETER_SETUP_SURI
+  env:
+    POLKAMETER_SETUP_SURI: ${{ secrets.SETUP_SURI }}
 ```
 
-Inputs: `plan` (required), `plugins`, `credentials`, `topologies`, `capabilities`, `output` (`polkameter-runs`), `upload` (`true`), `artifact-name` (`polkameter-run`) and `toolchain` (`1.93.0`). Outputs: `run-dir` and `exit-code`. Secrets go in the step's `env:`, never in `with:`.
+[Run PolkaMeter in CI](https://agustinustheodorus.com/polkameter/ci.html) lists every input and output.
 
-## Plans, plugins and results
+## Documentation
 
-[The plugin guide](https://github.com/agustinustheo/polkameter/blob/main/docs/plugins.md) describes the plan format, the execution order, measured load, monitors, plugin observers and checks, the plugin protocol and the result files. [The schema](https://github.com/agustinustheo/polkameter/blob/main/schemas/polkameter-plan.xsd) defines the XML and [the example](https://github.com/agustinustheo/polkameter/blob/main/examples/plugin-workflow.polkameter.xml) runs without a chain. `scripts/local-fork-run.sh` runs a plan on a fresh local Zombienet network.
+The documentation site has the getting-started tutorial, the plan, CLI and results references, and the plugin guide: <https://agustinustheodorus.com/polkameter/>
 
-Each run directory holds `samples.jtl` (JMeter CSV), `events.jsonl`, `execution.json`, plots and, for a measured load, `transactions.jsonl`, raw node scrapes, `summary.json` and `summary.md`.
+## Development
 
-## Checks
+Run these from a checkout, with Rust 1.93 or newer, as CI does:
 
 ```sh
-corepack pnpm test
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 cargo build -p polkameter --bin polkameter
-cargo publish --workspace --exclude polkameter-desktop --exclude polkameter-example-plugin --dry-run
 cargo build -p polkameter-example-plugin
 tests/cli-smoke.sh
 ```
+
+`tests/cli-smoke.sh` uses the two binaries built above. It runs the example plan locally and through a loopback remote agent.

@@ -1,158 +1,329 @@
-The `polkameter` binary validates, preflights and runs plans, reports on finished runs, manages plugins on the host, and serves a remote agent. Run `polkameter --help` for the command list, or `polkameter COMMAND --help` for one command.
+# CLI reference
 
-## Commands
+`polkameter` validates, preflights and runs plans, reports on runs, manages plugins and serves a remote agent. Run `polkameter COMMAND --help` for one command's flags. Errors: see [Troubleshooting](troubleshooting.md).
 
-| Command | Purpose |
-| --- | --- |
-| [`plugin`](#plugin) | Install plugins, map credentials and topologies, and record capabilities on this host |
-| [`validate`](#validate) | Parse and check a plan without connecting to a chain |
-| [`preflight`](#preflight) | Check the installed plugins and the chain, and run the read-only preflight steps |
-| [`run`](#run) | Run a plan locally, or through a remote agent |
-| [`report`](#report) | Rebuild the checks, summaries and plots of a run directory |
-| [`agent serve`](#agent-serve) | Serve remote runs on this host |
+## validate
 
-Options that take a value are written `--flag VALUE`. `--format` takes `human` (the default) or `json`.
+Checks a plan's structure without starting plugins or connecting to a chain. [Plans](plans.md#validation-rules) lists the rules.
 
-## Output format
+```sh
+polkameter validate [--format human|json] PLAN
+```
 
-With `--format json`, `validate`, `preflight`, `run` and `report` print one JSON object per line, on standard output. The human format prints a short line, and `run` also prints its phases to standard error.
-
-Events of a local run are the same objects written to the run's `events.jsonl`. Each has a `version` (2) and a `timestamp` in milliseconds:
-
-| Event | Fields | Meaning |
+| Name | Default | Meaning |
 | --- | --- | --- |
-| `phase` | `phase`, and `id` in a workflow | The run entered a phase: `preflight`, `setup`, `workflow`, `measurement`, `baseline`, `load`, `recovery`, `reconciliation`, `checks` or `teardown` |
-| `step-started` | `step`, `operation`, `user`, `iteration` | A step began. `user` and `iteration` are null outside a workflow |
-| `step-progress` | `step`, `elapsedMs` | A long step is still running |
-| `step-finished` | `step`, `user`, `iteration`, `elapsedMs`, `success`, `error` | A step ended. `error` is null on success |
-| `cleanup-failed` | `error` | A teardown step failed |
-| `completed` | `outcome` | The run ended |
+| `PLAN` | none | The plan file |
+| `--format` | `human` | `human` or `json`. See [output formats](#output-formats) |
 
-The CLI adds its own final line. A local run prints `artifact-written` with the outcome. A remote run prints only that line, because the agent does not stream events. `validate` prints `validation`, and `report` prints `report` with the summary text.
+From the repository root:
 
-```json
-{"event":"validation","valid":true,"plan":"Plugin data flow"}
+```sh
+polkameter validate examples/plugin-workflow.polkameter.xml
+```
+
+```text
+Plan is structurally valid. Preflight checks the installed plugins.
+```
+
+## preflight
+
+Checks each operation against its plugin's manifest and the evidence the plugins require. It also checks the chain and runs the read-only preflight steps, submitting nothing. A plan with a load also measures the block interval. Install plugins first: [`plugin install`](#plugin-install).
+
+```sh
+polkameter preflight [--credential-env ENV_VAR] [--format human|json] PLAN
+```
+
+| Name | Default | Meaning |
+| --- | --- | --- |
+| `PLAN` | none | The plan file |
+| `--credential-env` | none | Reads the only credential from this variable. The plan must declare exactly one |
+| `--format` | `human` | `human` or `json` |
+
+```sh
+polkameter preflight examples/plugin-workflow.polkameter.xml
+```
+
+```text
+Preflight passed.
+```
+
+## run
+
+Runs a plan. A local run writes a run directory under `--output`. A remote run sends the plan's XML to an agent, which runs it and keeps the run directory there.
+
+```sh
+polkameter run [--output DIR] [--credential-env ENV_VAR] [--format human|json] PLAN
+polkameter run --remote URL --remote-token-env ENV_VAR [--format human|json] PLAN
+```
+
+| Name | Required | Meaning |
+| --- | --- | --- |
+| `PLAN` | yes | The plan file |
+| `--output DIR` | yes, unless `--remote` | The artifact root |
+| `--credential-env` | no | Reads the only credential from this variable. Not allowed with `--remote` |
+| `--remote URL` | no | The agent's endpoint. See [remote agent](#remote-agent) |
+| `--remote-token-env` | with `--remote` | The variable that holds the agent's bearer token |
+| `--format` | no | `human` (default) or `json`. See [output formats](#output-formats) |
+
+Ctrl-C stops a local run, keeping what it wrote. With `--remote`, Ctrl-C asks the agent to stop the run and waits for the outcome.
+
+```sh
+polkameter run examples/plugin-workflow.polkameter.xml --output runs
+```
+
+```text
+Phase: preflight
+...
+Run completed. Artifacts: ~/polkameter/runs/run-1792255021142-12303-1
+```
+
+Phase lines go to standard error. The last line, on standard output, names the run directory.
+
+## report
+
+Rebuilds a run's outputs from its files without running the plan.
+
+```sh
+polkameter report [--format human|json] ARTIFACT_DIRECTORY
+```
+
+| Name | Default | Meaning |
+| --- | --- | --- |
+| `ARTIFACT_DIRECTORY` | none | The run directory |
+| `--format` | `human` | `human` or `json`. See [output formats](#output-formats) |
+
+With a `<load>`, it rebuilds the built-in and plugin checks, `summary.json`, `summary.md`, `samples.jtl` and `plots/`. Without one, it rewrites `samples.jtl` and `plots/`. The directory must hold `execution.json` and `summary.md`. The human format prints the summary.
+
+`report` exits 0 when the rebuild succeeds, even if the outcome is `failed`. Check the `Status:` line or `execution.json`'s `state`.
+
+```sh
+polkameter report runs/run-1792255021142-12303-1
+```
+
+```text
+# Plugin data flow
+
+Status: completed
+...
 ```
 
 ## plugin
 
+Installs plugins and sets this host's credential profiles, topologies and capabilities. A plan names these; the host holds the values. `install` prints one line. The other subcommands print pretty JSON. None of them take `--format`.
+
+The registry is a JSON file; [Environment variables](#environment-variables) sets its path. See [Plugins](plugins.md) and [writing a plugin](writing-a-plugin.md).
+
+### plugin install
+
+Records the plugin's ID, version and BLAKE2 hash. Install it again after each rebuild: PolkaMeter refuses to run a plugin whose file has changed.
+
 ```sh
 polkameter plugin install EXECUTABLE
+```
+
+| Argument | Meaning |
+| --- | --- |
+| `EXECUTABLE` | The plugin executable |
+
+```sh
+polkameter plugin install target/debug/polkameter-example-plugin
+```
+
+```text
+Installed plugin example 0.1.0 (6 operations) from ~/polkameter/target/debug/polkameter-example-plugin
+```
+
+### plugin list
+
+Lists the installed plugins.
+
+```sh
 polkameter plugin list
-polkameter plugin inspect SCENARIO
-polkameter plugin credential PROFILE ENV
+```
+
+```json
+{
+  "example": {
+    "blake2": "2037888f190d19169cab991cd38c690a88a2c11a15bc982b1eb796fbe6c7d493",
+    ...
+```
+
+### plugin inspect
+
+Starts the plan's plugins and checks each operation against its manifest. It prints the manifests, evidence, targets, monitor requirements and metric catalog, and submits nothing.
+
+```sh
+polkameter plugin inspect PLAN
+```
+
+| Argument | Meaning |
+| --- | --- |
+| `PLAN` | The plan file. The help text calls it `SCENARIO` |
+
+```sh
+polkameter plugin inspect examples/plugin-workflow.polkameter.xml
+```
+
+```json
+{
+  "metricCatalog": [
+    ...
+```
+
+### plugin credential
+
+Maps a plan's credential profile to an environment variable on this host. The registry stores the variable's name, not its value. PolkaMeter reads the variable at the start of a run. An unset or empty variable fails the run.
+
+```sh
+polkameter plugin credential <PROFILE> <ENV>
+```
+
+| Argument | Meaning |
+| --- | --- |
+| `PROFILE` | The profile the plan's `<credential>` names |
+| `ENV_VAR` | The environment variable that holds the secret |
+
+```sh
+polkameter plugin credential sudo SUDO_SEED
+```
+
+```json
+{
+  "configured": true
+}
+```
+
+### plugin topology
+
+Registers a Zombienet `zombie.json` under the alias that `<monitors topology="…">` names. The path is stored as an absolute path. A path that does not exist fails with exit code 2.
+
+```sh
 polkameter plugin topology NAME PATH
+```
+
+| Argument | Meaning |
+| --- | --- |
+| `NAME` | The alias that the plan's `<monitors>` uses |
+| `PATH` | The topology file |
+
+```sh
+polkameter plugin topology zombie ./zombie.json
+```
+
+```json
+{
+  "configured": true
+}
+```
+
+### plugin capability
+
+Records a capability the network provisioner supplies. Preflight checks that a plugin's required capabilities are recorded.
+
+```sh
 polkameter plugin capability NAME
 ```
 
-Plugin commands always print pretty JSON.
-
-| Subcommand | Arguments | Effect |
-| --- | --- | --- |
-| `install` | `EXECUTABLE`: the plugin executable | Reads the plugin's manifest and records its ID, version and the BLAKE2 hash of the executable. Reinstall after rebuilding the plugin |
-| `list` | none | Lists the installed plugins |
-| `inspect` | `SCENARIO`: a plan file | Starts the plan's plugins, checks each operation against its manifest, and prints the manifests, the evidence the plugins require, the plan's targets, the monitor requirements and the node metric catalog. It does not connect to a chain or submit anything |
-| `credential` | `PROFILE`, `ENV`: the environment variable | Maps a credential profile named in a plan to an environment variable on this host |
-| `topology` | `NAME`, `PATH`: the topology file. The plan refers to it by `NAME` | Registers a Zombienet `zombie.json` under an alias. The plan names the alias, and the path is stored as an absolute path |
-| `capability` | `NAME` | Records a capability that the network provisioner supplies. A plugin can require it as evidence |
-
-The registry is a JSON file. It defaults to `~/.config/polkameter/plugins.json`, and the `POLKAMETER_PLUGIN_REGISTRY` environment variable overrides the path. On Windows, `USERPROFILE` is used if `HOME` is not set.
-
-## validate
-
-```sh
-polkameter validate PLAN [--format human|json]
-```
-
-Parses the plan and checks its structure: IDs, references, limits and the shape of each step. It does not start plugins or connect to a chain. An invalid plan exits with code 2. [Plans](plans.md#validation-rules) lists the rules.
-
-## preflight
-
-```sh
-polkameter preflight PLAN [--credential-env ENV_VAR] [--format human|json]
-```
-
-Starts the plan's plugins and checks each operation against its manifest. It then checks the evidence the plugins require, such as a capability, an RPC method or a metric, and runs the plan's read-only preflight steps against the chain. For a plan with a load, it also measures the block interval. It exits with code 3 when preflight fails.
-
-| Flag | Meaning |
+| Argument | Meaning |
 | --- | --- |
-| `--credential-env ENV_VAR` | Reads the plan's credential from this environment variable instead of the profile on this host. The plan must declare exactly one credential |
-
-## run
+| `NAME` | The capability name, as the plugin requires it |
 
 ```sh
-polkameter run PLAN --output DIR [--credential-env ENV_VAR] [--format human|json]
-polkameter run PLAN --remote URL --remote-token-env ENV_VAR [--format human|json]
+polkameter plugin capability zombienet
 ```
 
-Runs the plan. A local run writes a new run directory under `--output`. A remote run sends the plan's XML to an agent, which runs it on its own host, with its own plugins and credentials.
-
-| Flag | Required | Meaning |
-| --- | --- | --- |
-| `--output DIR` | Yes, unless `--remote` is given | The directory the run directory is created in |
-| `--credential-env ENV_VAR` | No | As for `preflight`. Cannot be combined with `--remote` |
-| `--remote URL` | No | The agent's endpoint: `https://`, or `http://` to a loopback address through a tunnel. See [remote agent](#remote-agent) |
-| `--remote-token-env ENV_VAR` | With `--remote` | The environment variable that holds the agent's bearer token |
-
-Ctrl-C stops a local run. The run writes what it has and exits with code 130. With `--remote`, Ctrl-C asks the agent to stop the run, then waits for its outcome.
-
-The exit codes are in [results](results.md#exit-codes).
-
-## report
-
-```sh
-polkameter report ARTIFACT_DIRECTORY [--format human|json]
+```json
+{
+  "configured": true
+}
 ```
-
-Rebuilds the run's outputs from its files. For a run with a `<load>`, it rebuilds the built-in and plugin checks, `summary.json`, `summary.md`, `samples.jtl` and the plots under `plots/`. For a run without one, it rewrites `samples.jtl` and the plots. The directory must hold `execution.json` and `summary.md`. The human format prints the summary. It exits with code 0 when it succeeds.
 
 ## agent serve
+
+Starts the remote agent on this host. It runs plans that clients send with `polkameter run --remote`, using its own plugins, credentials and topologies.
 
 ```sh
 polkameter agent serve [--bind ADDR] [--token-env ENV_VAR] [--output-root DIR]
 ```
 
-Starts the remote agent on this host.
-
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--bind ADDR` | `127.0.0.1:9901` | The address to listen on. It must be a loopback address |
-| `--token-env ENV_VAR` | `POLKAMETER_AGENT_TOKEN` | The environment variable that holds the bearer token. It must be set and not empty |
-| `--output-root DIR` | `target/polkameter-agent-runs` | Where the agent creates the run directories |
+| `--bind ADDR` | `127.0.0.1:9901` | The address to listen on, which must be loopback |
+| `--token-env` | `POLKAMETER_AGENT_TOKEN` | The variable that holds the bearer token, which must be set and not empty. There is no flag for the token itself |
+| `--output-root DIR` | `target/polkameter-agent-runs` | Where run directories go. Relative paths start from the agent's working directory |
 
-The agent refuses to start on a non-loopback address. Put it behind an SSH tunnel or a TLS-terminating proxy if clients need to reach it from another host.
+The agent does not serve TLS; remote clients need an SSH tunnel or TLS proxy.
 
-## Remote agent
+Check the agent. `/health` needs no token:
 
-Every route except `/health` requires `Authorization: Bearer TOKEN`, and a missing or wrong token gets `401 Unauthorized`. Requests and responses are JSON. A plan is sent as `{"xml": "..."}`.
+```sh
+POLKAMETER_AGENT_TOKEN=docs-demo-token polkameter agent serve --bind 127.0.0.1:9901 &
+curl http://127.0.0.1:9901/health
+```
+
+```text
+{"status":"ok"}
+```
+
+### Remote agent
+
+Every route except `/health` needs `Authorization: Bearer TOKEN`. A missing or wrong token gets `401 Unauthorized`. Requests and responses are JSON; a plan is sent as `{"xml": "..."}`.
 
 | Method and path | Purpose |
 | --- | --- |
-| `GET /health` | Liveness. Returns `{"status":"ok"}` and needs no token |
-| `GET /plugins` | The protocol version and the installed plugins, with their versions and hashes |
-| `POST /inspect` | The same check as `plugin inspect`, for a plan |
-| `POST /preflight` | The same check as `preflight`, for a plan |
-| `POST /runs` | Starts a run. Returns its status, including the run ID |
-| `GET /runs/{id}` | The run's state, phase and, once it ends, its outcome |
+| `GET /health` | Liveness |
+| `GET /plugins` | Protocol version and installed plugins |
+| `POST /inspect`, `POST /preflight` | Same checks as `plugin inspect` and `preflight` |
+| `POST /runs` | Starts a run. Returns its status and run ID |
+| `GET /runs/{id}` | State, phase, and the outcome once it ends |
 | `POST /runs/{id}/stop` | Stops a running run |
 
-The client accepts only run IDs made of letters, digits, `-`, `_` and `.`, up to 128 characters, before it sends them.
+The client checks each run ID: at most 128 characters, from letters, digits, `-`, `_` and `.`.
 
-Security rules:
+- **Transport.** The client accepts `https://`, or `http://` only for `127.0.0.1`, `localhost` or `[::1]` with an explicit port.
+- **Trust.** The bearer token grants full execution trust. A plan holding it can use every plugin, credential profile and topology on the agent, and name any endpoint in its `<targets>`. Installed plugins are not sandboxed, so use a separate agent and token for each trust domain.
+- **Wire.** Only plan XML is sent, never executable paths or secrets.
 
-- **Transport.** A client accepts an `https://` endpoint, or an `http://` endpoint only when the host is `127.0.0.1`, `localhost` or `[::1]`, with an explicit port. The loopback case is for an SSH tunnel. Any other plain-HTTP endpoint is refused.
-- **Trust.** The bearer token grants full execution trust on that agent: every credential profile, topology and plugin configured there can be used by any plan that holds the token, and a plan can name any endpoint in its `<targets>`. Use a separate agent, and a separate token, for each trust domain.
-- **What crosses the wire.** A client sends plan XML. It never sends executable paths or secret values. Plugins, credentials and topologies are configured on the agent, with `polkameter plugin`.
-- **Plugins.** Installed plugins are trusted code and are not sandboxed.
-- **Artifacts.** A remote run's files stay on the agent, under its `--output-root`. The final line of `run --remote` gives the path on the agent.
+[Run on a remote machine](remote-runs.md) covers setup and what the agent refuses.
 
-A worker and a client, sharing one token:
+## Exit codes
+
+| Code | Meaning | Typical cause |
+| --- | --- | --- |
+| `0` | A command succeeded, or a run ended `completed` | Nothing to fix |
+| `1` | A run ended `failed`, or a `report` or remote request failed | A plugin crashed or errored, a deadline or assertion failed, a credential was unavailable, or the agent refused a request. A smoke-mode load run also exits 1 on a monitor problem or a missing required check |
+| `2` | Invalid input or usage | A malformed or invalid plan, a bad flag or argument, an unreadable registry, or a wrong remote endpoint or token variable |
+| `3` | Preflight failed | A plugin not installed, a checksum or version mismatch, an operation missing from its manifest, a preflight step that can change state, no calibration answer from the chain, or an unregistered `<monitors>` alias |
+| `130` | Stopped | Ctrl-C (SIGINT) during a local run, or a stopped remote run |
+
+A `run` never exits with `3`. A preflight failure inside a run makes it `failed`, with exit code 1.
+
+A stress-mode load run exits `0` whatever its verdict. Read the verdict in [reading the results](reading-results.md).
+
+## Environment variables
+
+| Variable | Read by | Effect |
+| --- | --- | --- |
+| `POLKAMETER_PLUGIN_REGISTRY` | Commands that use installed plugins | Path of the plugin registry (JSON). Default: `~/.config/polkameter/plugins.json` |
+| `HOME`, `USERPROFILE` | The default registry path | Home directory for the default path. `USERPROFILE` is used if `HOME` is unset. If neither is set, set `POLKAMETER_PLUGIN_REGISTRY` |
+| `POLKAMETER_NODE_PID` | Load runs with `<monitors>` | The node's process ID, for CPU and memory. If unset, PolkaMeter finds the process on the RPC port with `lsof`, then `ss`. If none is found, no CPU or memory is recorded |
+| `POLKAMETER_AGENT_TOKEN` | `agent serve` | Default name of the token variable, used when `--token-env` is not given |
+
+Plugins start with a cleared environment. Only `PATH`, `TMPDIR`, `TEMP`, `SYSTEMROOT`, `SSL_CERT_FILE` and `SSL_CERT_DIR` are passed on. A plugin receives credential values only as step inputs.
+
+## Output formats
+
+With `--format json`, `validate`, `preflight`, `run` and `report` print one JSON object per line on standard output.
 
 ```sh
-# On the worker. The agent reads its token from POLKAMETER_AGENT_TOKEN:
-polkameter agent serve --bind 127.0.0.1:9901 --output-root /data/runs
-
-# On the client, through an SSH tunnel to the worker's port 9901.
-# AGENT_TOKEN holds the same token as the worker's POLKAMETER_AGENT_TOKEN:
-polkameter run scenario.xml --remote http://127.0.0.1:9901 --remote-token-env AGENT_TOKEN
+polkameter validate examples/plugin-workflow.polkameter.xml --format json
 ```
+
+```json
+{"event":"validation","plan":"Plugin data flow","valid":true}
+```
+
+- **Errors** go to standard error as `Polkameter: <message>`, even with `--format json`.
+- **Load runs** also print `stop:`, `loss check:` and `smoke:` lines, and the summary, to standard error.
+
+The CLI adds a final line: `artifact-written` for `run`, `validation` for `validate`, `report` for `report`, with the summary text. A remote run prints only `artifact-written`, because the agent does not stream events. Fields are in [events.jsonl](results.md#eventsjsonl).
