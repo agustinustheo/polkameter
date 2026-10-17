@@ -52,6 +52,7 @@ runs:
     - uses: Swatinem/rust-cache@v2
       with:
         workspaces: ${{ github.action_path }} -> target
+        key: polkameter-action
     - name: Build PolkaMeter
       shell: bash
       env:
