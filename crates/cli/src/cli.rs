@@ -317,13 +317,22 @@ fn write_json_line(value: &Value) {
 }
 
 async fn plugin_command(command: PluginCommand) -> Result<i32, CliError> {
+	let mut installed = None;
 	let result = async {
 		let path = Registry::path()?;
 		let mut registry = Registry::read(&path)?;
 		let changed = !matches!(&command, PluginCommand::List | PluginCommand::Inspect { .. });
 		let result = match command {
 			PluginCommand::Install { executable } => {
-				serde_json::to_value(registry.install(&executable).await?)?
+				let manifest = registry.install(&executable).await?;
+				let location = registry.plugins[&manifest.id].executable.display();
+				installed = Some(format!(
+					"Installed plugin {} {} ({} operations) from {location}",
+					manifest.id,
+					manifest.version,
+					manifest.operations.len()
+				));
+				serde_json::to_value(&manifest)?
 			},
 			PluginCommand::List => serde_json::to_value(&registry.plugins)?,
 			PluginCommand::Capability { name } => {
@@ -352,10 +361,13 @@ async fn plugin_command(command: PluginCommand) -> Result<i32, CliError> {
 	}
 	.await
 	.map_err(|e| CliError::Invalid(e.to_string()))?;
-	println!(
-		"{}",
-		serde_json::to_string_pretty(&result).map_err(|e| CliError::Runtime(e.to_string()))?
-	);
+	match installed {
+		Some(line) => println!("{line}"),
+		None => println!(
+			"{}",
+			serde_json::to_string_pretty(&result).map_err(|e| CliError::Runtime(e.to_string()))?
+		),
+	}
 	Ok(0)
 }
 async fn run_plugin_remote(
