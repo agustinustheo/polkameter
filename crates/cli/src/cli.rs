@@ -3,6 +3,7 @@
 
 use std::{io::Write, path::PathBuf, sync::Arc, time::Duration};
 
+use anyhow::Context as _;
 use clap::{Parser, Subcommand, ValueEnum};
 use polkameter_engine::{execute::Outcome, plan::Plan, plugins::Registry};
 use serde_json::{Value, json};
@@ -200,7 +201,8 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 
 /// The plan's XML, which remote runs send as-is, and its parsed form.
 fn load(path: &std::path::Path) -> Result<(String, Plan), CliError> {
-	let xml = std::fs::read_to_string(path).map_err(|e| CliError::Invalid(e.to_string()))?;
+	let xml = std::fs::read_to_string(path)
+		.map_err(|e| CliError::Invalid(format!("cannot read plan {}: {e}", path.display())))?;
 	let plan = Plan::parse(&xml).map_err(|e| CliError::Invalid(e.to_string()))?;
 	Ok((xml, plan))
 }
@@ -256,18 +258,22 @@ fn write_artifact_written(format: OutputFormat, label: &str, outcome: &Outcome) 
 }
 
 fn report(path: PathBuf, format: OutputFormat) -> Result<i32, CliError> {
-	let runtime = |e: anyhow::Error| CliError::Runtime(e.to_string());
-	polkameter_engine::artifacts::write_outputs(&path).map_err(runtime)?;
+	let runtime = |e: anyhow::Error| CliError::Runtime(format!("{e:#}"));
+	polkameter_engine::artifacts::write_outputs(&path)
+		.with_context(|| format!("cannot read run directory {}", path.display()))
+		.map_err(runtime)?;
 	if path.join("summary.json").is_file() {
 		polkameter_engine::measurement::check(&path).map_err(runtime)?;
 	}
+	let execution = path.join("execution.json");
 	let outcome: polkameter_engine::execute::Outcome = serde_json::from_slice(
-		&std::fs::read(path.join("execution.json"))
-			.map_err(|e| CliError::Runtime(e.to_string()))?,
+		&std::fs::read(&execution)
+			.map_err(|e| CliError::Runtime(format!("cannot read {}: {e}", execution.display())))?,
 	)
 	.map_err(|e| CliError::Runtime(e.to_string()))?;
-	let summary = std::fs::read_to_string(path.join("summary.md"))
-		.map_err(|e| CliError::Runtime(e.to_string()))?;
+	let summary_path = path.join("summary.md");
+	let summary = std::fs::read_to_string(&summary_path)
+		.map_err(|e| CliError::Runtime(format!("cannot read {}: {e}", summary_path.display())))?;
 	write_result(format, &json!({"event":"report","outcome":outcome,"summary":summary}), summary);
 	Ok(0)
 }
@@ -342,7 +348,8 @@ async fn plugin_command(command: PluginCommand) -> Result<i32, CliError> {
 				json!({"configured":true})
 			},
 			PluginCommand::Inspect { scenario } => {
-				let xml = std::fs::read_to_string(scenario)?;
+				let xml = std::fs::read_to_string(&scenario)
+					.with_context(|| format!("cannot read plan {}", scenario.display()))?;
 				polkameter_engine::execute::inspect(&Plan::parse(&xml)?, &registry).await?
 			},
 			PluginCommand::Credential { profile, env } => {
@@ -350,7 +357,10 @@ async fn plugin_command(command: PluginCommand) -> Result<i32, CliError> {
 				json!({"configured":true})
 			},
 			PluginCommand::Topology { name, path } => {
-				registry.topologies.insert(name, path.canonicalize()?);
+				let path = path
+					.canonicalize()
+					.with_context(|| format!("cannot read topology {}", path.display()))?;
+				registry.topologies.insert(name, path);
 				json!({"configured":true})
 			},
 		};
@@ -360,7 +370,7 @@ async fn plugin_command(command: PluginCommand) -> Result<i32, CliError> {
 		Ok::<_, anyhow::Error>(result)
 	}
 	.await
-	.map_err(|e| CliError::Invalid(e.to_string()))?;
+	.map_err(|e| CliError::Invalid(format!("{e:#}")))?;
 	match installed {
 		Some(line) => println!("{line}"),
 		None => println!(
@@ -442,6 +452,15 @@ mod tests {
 		assert!(directory.join("summary.md").is_file());
 		assert_eq!(replayed["loss"], recorded["loss"]);
 		std::fs::remove_dir_all(directory).unwrap();
+	}
+
+	#[test]
+	fn missing_plan_error_names_the_file_and_keeps_the_cause() {
+		let Err(error) = load(std::path::Path::new("does/not/exist.xml")) else {
+			panic!("a missing plan loaded");
+		};
+		let cause = std::fs::read_to_string("does/not/exist.xml").unwrap_err();
+		assert_eq!(error.to_string(), format!("cannot read plan does/not/exist.xml: {cause}"));
 	}
 
 	#[test]

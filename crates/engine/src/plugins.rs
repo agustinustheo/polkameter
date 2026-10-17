@@ -71,7 +71,9 @@ impl Registry {
 		Ok(())
 	}
 	pub async fn install(&mut self, executable: &Path) -> Result<Manifest> {
-		let executable = executable.canonicalize()?;
+		let executable = executable
+			.canonicalize()
+			.with_context(|| format!("cannot read plugin executable {}", executable.display()))?;
 		let context = Context::host("inspect", std::env::temp_dir());
 		let mut process = Process::spawn(&executable, &context, None)?;
 		let manifest = process.describe(&context).await?;
