@@ -1,147 +1,262 @@
-# Results and verdicts
+# Run directory
 
-A run writes a directory of raw files and two summaries. This page explains what each file holds, how the verdict is reached, and what each stop rule and check measures.
+A run writes a directory of raw files. [Read the results](reading-results.md) explains how to interpret them. A plan with a `<load>` element is a load test; other plans write fewer files.
 
 ## The run directory
 
-Each run creates a directory named `run-<milliseconds>-<pid>-<sequence>` inside the output directory: the `--output` of `polkameter run`, the `--output-root` of a remote agent, or the desktop app's `runs` folder. Which files appear depends on the plan. A plan without a `<load>` produces only the first group.
+Example plan, no load test (plot files trimmed):
 
-| File | Written by | Contents |
+```text
+run-1792253315025-76883-1/
+  events.jsonl
+  execution.json
+  plan.json
+  plots/                      throughput.svg, latency-percentiles.svg, failure-breakdown.svg
+  plugins/example/stderr.log
+  resolved-plan.json
+  samples.jtl
+  summary.md
+```
+
+The name is `run-<milliseconds>-<pid>-<sequence>`, created in `--output`, or `--output-root` on a remote agent. A run never reuses a directory.
+
+## Files in every run
+
+| File | Contents |
+| --- | --- |
+| `execution.json` | How the run ended. |
+| `summary.md` | No load test: plan name, state, and error or `All configured steps completed.` Load test: the full report. |
+| `events.jsonl` | Every event, one JSON object per line. |
+| `plan.json` | The plan as parsed. |
+| `resolved-plan.json` | Plugin manifests and registry records, `<monitors>` settings, CLI version and BLAKE2 hash. |
+| `samples.jtl` | JMeter CSV: a row per step, and per transaction in a load test. |
+| `plots/*.svg` | Samples per second; p50, p95, p99 of `elapsed`; failed samples by `responseCode`. |
+| `plugins/<id>/stderr.log` | Standard error of each plugin started. |
+
+No file stores a credential value. Where a plugin or error would echo one, the file shows `[redacted]`.
+
+## Files in a load test
+
+| File | Contents | Needs |
 | --- | --- | --- |
-| `plan.json` | engine | The plan as parsed |
-| `resolved-plan.json` | engine | Plugin manifests and checksums, the topology, and the CLI's engine version and hash |
-| `resolved-targets.json` | engine | With monitors: the scrape targets resolved from the topology |
-| `calibration.json` | engine | With a load: the configured and measured block interval, and the 25% tolerance |
-| `events.jsonl` | engine | Every event of the run, one JSON object per line, each with `version` 2 and a timestamp |
-| `execution.json` | engine | The outcome: `state`, `exit_code`, `error` and the artifact directory |
-| `samples.jtl` | engine | JMeter CSV: one row per finished step, and with a load one row per transaction |
-| `summary.md` | report | The report: verdict, stress method, result, load steps and checks |
-| `summary.json` | report | The same summary as data, including the checks and the rules used |
-| `plugin-checks.json` | engine | Checks returned by evaluate steps |
-| `plots/*.svg` | engine (run and report) | `throughput.svg`, `latency-percentiles.svg` and `failure-breakdown.svg` |
-| `steps.jsonl` | measurement | One record per step and lane: target rate, sent, included, refused, p50 and p95 latency, and the node's peak CPU and memory |
-| `transactions.jsonl` | measurement | One record per submitted transaction, with its status and block |
-| `lost.jsonl` | measurement | One record per lost transaction. The first 1000 are listed one by one, the rest only counted |
-| `load.jsonl` | load tool | The load tool's own series: the `polkameter_*` counters and gauges |
-| `blocks.jsonl` | load tool | One record per best block the tool saw, with the gap since the previous one |
-| `chain.jsonl` | monitors | The relay recorder's series for the observed parachain |
-| `scrapes.jsonl` | monitors | Raw `/metrics` scrapes of every node. A node that did not answer has an `error` |
-| `node.jsonl` | monitors | The node's CPU and memory, sampled while it runs |
-| `plugins/<id>/` | plugins | `stderr.log`, and any `series.jsonl` and `metrics.json` a plugin observer wrote |
+| `calibration.json` | Configured and measured block interval; 25% tolerance. | |
+| `summary.json` | The summary as data. | |
+| `steps.jsonl` | Per step and lane: target rate, sent, included, refused, p50 and p95 latency, node CPU and memory. | |
+| `load.jsonl` | The load tool's `polkameter_*` metrics. | |
+| `blocks.jsonl` | Each best block, and the gap since the previous one. | |
+| `transactions.jsonl` | Each sent transaction and its [status](#loss-accounting). | |
+| `lost.jsonl` | Each lost transaction, the first 1000. `loss.lost` holds the full count. Empty if none. | |
+| `plugin-checks.json` | Checks from evaluate steps. Empty if none. | |
+| `resolved-targets.json` | Scrape targets resolved from the topology, and its hash. | `<monitors>` |
+| `scrapes.jsonl` | Raw `/metrics` per node; `error` if a node did not answer. | `<monitors>` to hold records |
+| `chain.jsonl` | The relay recorder's series for the observed parachain. | `<monitors>` to hold records |
+| `node.jsonl` | Node CPU and memory during the load. | `POLKAMETER_NODE_PID`, or the node's RPC port listening |
+| `plugins/<id>/series.jsonl`, `metrics.json` | A plugin's series and metric declarations. | A plugin that records metrics |
 
-`summary.json` and `summary.md` are written twice: once when the measurement ends, so plugin checks can read them, and again when the report adds the checks. `polkameter report` writes them again from the files alone.
+## execution.json
 
-## The verdict
+Written after teardown.
 
-Each measured run ends with one of four verdicts, shown as **Verdict** in `summary.md`. The first matching rule decides.
+| Field | Meaning |
+| --- | --- |
+| `artifact_dir` | Absolute path of the run directory. |
+| `exit_code` | The code the `run` command returns. |
+| `state` | How the run ended, as below. |
+| `error` | Error text, redacted. `null` if none. |
 
-1. **FAIL** if any of these is true: the ramp ended on a graceful or hard failure; a failure mode was recorded (a lost transaction, a transaction that failed after inclusion, or an included transaction that left no state); a breaking point was found; or any check failed.
-2. **INCONCLUSIVE** if the ramp ended on something other than rate cap, which means budget used up, generator limit or smoke error. The chain was not pushed to its limit, so the run tells you nothing. Also INCONCLUSIVE if the ramp reached rate cap but a required check has no result.
-3. **WARN** if the ramp reached rate cap and some check warned.
-4. **PASS** otherwise.
+| `state` | `exit_code` | When |
+| --- | --- | --- |
+| `completed` | `0` | No error. |
+| `completed_with_failures` | `1` | Smoke mode only: monitor problem, or required check with no result. Stress runs never reach it. |
+| `stopped` | `130` | Ctrl-C, or a remote stop request. |
+| `failed` | `1` | Any error, including a failed `core.assert-equal` step and a report that could not be written. |
 
-Individual checks use five statuses: `pass`, `warn`, `fail`, `info` (a number to read, not judged) and `no result` (the data is missing, or a node restarted inside the window).
+## summary.md
 
-## Stop rules and thresholds
+Sections of a load test's `summary.md`:
 
-A ramp moves through its steps until a stop rule fires. Response measures are checked on every step. The first one that a step violates is the **breaking point**, and the ramp continues. Failures end the ramp.
+| Section | Contents |
+| --- | --- |
+| `### <plan name>`, `#### Artifact under test`, `#### Stress method` | Title; what the transactions exercise; the method and step criteria. |
+| `#### Result` | Verdict; Failure onset (`breakingPoint`); Max sustained (`maxSustained`); Load stop (`stop`); Recovery (`recovery`); Loss check (`loss`). |
+| `#### Load steps` | One row per step, then one for recovery. |
+| Collator metrics | Per step and recovery: node CPU and memory, block build time, pool work, why blocks ended. |
+| Recovery probes | Probes sent after the load, and when each landed. |
+| `### Outcome checks` | One row per check: outcome, check, status, detail. |
 
-| Rule | Class | Fires when | Default | Threshold attribute |
-| --- | --- | --- | --- | --- |
-| Breaking point: included | none | Share of a step's transactions included is below the minimum | 90% | `min-included-ratio` |
-| Breaking point: latency | none | p95 time from send to a best block is above the maximum | 10 s | `max-p95-latency-ms` |
-| Breaking point: refused | none | Share of a step's submissions refused is above the maximum | 1% | `max-refused-ratio` |
-| Pool refuses | graceful | Share refused in this step or the one before is above the limit | 10% | `pool-refuses-ratio` |
-| Pool intake | graceful | p95 submit reply is above the limit, or a submit waited that long, or the node stopped reading submissions | 5 s | `max-submit-reply-ms` |
-| Slow blocks | hard | Mean block gap is more than the factor times the block interval measured at the start | 2.0 | `max-block-gap-factor` |
-| Stall | hard | No new best block for this long | 30 s | `stall-ms` |
-| Finality stall | hard | No new finalized block for this long | 60 s | `finality-stall-ms` |
-| Node down | hard | The node closed an RPC connection | none | none |
-| Rate cap | none | All steps ran. The ramp finished | none | none |
-| Budget used up | none | The prepared transactions ran out | none | none |
-| Generator limit | none | The load tool could not send at the target rate | 95% | `min-send-ratio` |
-| Smoke error | none | A monitor problem, in smoke mode only | none | none |
+## summary.json
 
-The graceful and hard classes end the ramp as failures. Stops with class "none" end it without a failure, and the verdict decides what they mean.
+The measurement writes `summary.json` first, so plugin checks can read it. The report rewrites it with the checks added, and writes `summary.md` only then. A plan without a load test writes no `summary.json`.
 
-The ratio thresholds accept values above 0 and at most 1. The factors and durations must be above 0. The effective values are in `summary.json` under `rules`. Set them in the plan's [`<thresholds>`](plans.md#thresholds).
-
-Two fields in `summary.json` answer the main questions:
-
-- `breakingPoint`: the first step that violated a response measure, with its target rate, the measure (`included`, `latency` or `refused`) and the detail.
-- `maxSustained`: the step before the breaking point, with its target rate and the transactions per second the chain included. With no breaking point, it is the last step.
-
-`stop` records the rule that ended the load, the step, and its class.
-
-## Recovery
-
-After the load, the run sends one probe per block with no load on the chain, until the probes land in time again. A probe is in time when it is included within the recovery threshold. The threshold is the larger of twice the slowest baseline probe and twice the block interval. The chain has recovered at the first of `probes-in-a-row` consecutive in-time probes, provided the blocks from that probe on average no more than `recovered-block-gap-factor` times the block interval apart.
-
-The run then drains the block follower for up to 30 seconds. `summary.json` records `recovery.recovered`, `recovery.seconds`, the backlog at the stop and at the end, the drain time, and the node's peak CPU and memory during recovery.
+| Key | Holds |
+| --- | --- |
+| `schemaVersion` | Layout version, `1`. |
+| `scenario`, `runId`, `mode` | Plan name, run ID, `smoke` or `stress`. |
+| `artifact`, `params`, `budget`, `setupSeconds`, `extra` | Artifact, plan options, prepared transactions, setup time, chain genesis and transaction and node versions. |
+| `rules` | Effective thresholds, camel case (`minIncludedRatio`). |
+| `stop` | `rule`, `detail`, `step`, `class`. |
+| `breakingPoint` | `step`, `targetRate`, `measure` (`included`, `latency` or `refused`), `detail`. `null` if none. |
+| `maxSustained` | `step`, `targetRate`, `includedPerS` of the step before. The last step if none. |
+| `failureModes` | `class` and `what` per failure. See [Failure modes](#failure-modes). |
+| `recovery` | `measured`, `recovered`, `seconds`, `backlogAtStop`, `backlogAtEnd`, `drainedSeconds`, `drainPerS`, `probes`, `blocks`, `node`. |
+| `loss` | Transaction counts. See [Loss accounting](#loss-accounting). |
+| `baseline` | `probes`, `p50Ms`, `maxMs` of the probes before the load. |
+| `problems` | What the monitors could not record. |
+| `network`, `runner` | Node URL, parachain ID, runtime spec version, block interval; CPU count and model. |
+| `steps` | Number of load steps. |
+| `checks` | `outcome`, `check`, `status`, `detail`, `numbers` if any. `"optional": true` on optional checks only. |
 
 ## Loss accounting
 
-After recovery the run waits for the chain to finalize past the last block that holds one of its transactions, up to `finality-wait-ms`. It then classifies every transaction. Each one gets exactly one status in `transactions.jsonl`.
+Each sent transaction gets the first status below that holds.
 
 | Status | Meaning |
 | --- | --- |
-| `finalized` | Included in a finalized block. `failedInFinalizedBlock` says whether its dispatch failed |
-| `in_pool` | Accepted, and still ready in the node's pool |
-| `refused` | The node refused it |
-| `lost` | Accepted or seen in a best block, but in no finalized block, not refused, and not ready in the pool. Only decided once the finalized chain and the pool were read |
-| `unverified` | Seen in a best block, but finality was not verified: the wait timed out, or the finalized chain could not be walked |
-| `unknown` | Not enough evidence: no reply and no inclusion, or the pool or the finalized chain could not be read |
+| `finalized` | In a finalized block the run read. `failedInFinalizedBlock` says if dispatch failed. |
+| `in_pool` | Ready in the node's pool. |
+| `refused` | Refused by the node at submit. |
+| `lost` | Accepted or seen in a best block, in no finalized block, not refused, not ready in the pool. Decided only after the finalized chain and pool are read. |
+| `unverified` | In a best block, finality not verified: the wait timed out, or the chain could not be walked. |
+| `unknown` | No evidence: no reply or inclusion, or the chain or pool is unreadable. |
 
-The statuses partition `sent`. `unknown` and `unverified` are never counted as `lost`. The `loss` object in `summary.json` holds the totals: `sent`, `accepted`, `included` (finalized), `failedInBlock` (failed in a best or finalized block), `refused`, `inPool`, `lost`, `unverified` and `unknown`. A `null` `inPool` or `lost` was not counted, and its transactions fall under the other statuses. It also holds the counts read from the finalized chain (`onChain`), and the node's own mempool and ready-pool counts (`nodePool`).
+The `loss` object in `summary.json`:
 
-Lost transactions produce one failure mode of class `silent`, with their count: they were accepted and no error came back. Transactions that failed after inclusion produce one failure mode of class `hard`.
+| Field | Meaning |
+| --- | --- |
+| `sent` | Transactions sent; the statuses add up to it. |
+| `accepted` | Submits with a successful RPC reply, not dispatch successes. |
+| `included` | In a finalized block the walk read. |
+| `failedInBlock` | Failed in a best or finalized block. |
+| `refused`, `unverified`, `unknown` | Count of each status. |
+| `inPool`, `lost` | Count of each. `null` if the pool or chain is unreadable. |
+| `onChain` | Finalized blocks walked; `missed`, `onlyOnFork`, `moved` against the tracker. |
+| `nodePool` | The node's mempool and ready counts after the run. |
+| `finalized` | Last block with a run transaction, the finalized block at the wait's end, and whether it finalized in time. |
+| `state` | Chain-state check of 100 included transactions: `checked`, `missing`, `detail`. Only with a state check. |
+| `note` | Why something is missing. |
+
+## Stop rules and thresholds
+
+Breaking-point rules record a result, and the load goes on. The other rules end the load.
+
+| Rule: trigger | Kind | Default | Plan attribute |
+| --- | --- | --- | --- |
+| **Included**: included share below the minimum | breaking point | 90% | `min-included-ratio` |
+| **Latency**: p95 send to best block above the maximum | breaking point | 10 s | `max-p95-latency-ms` |
+| **Refused**: refused share above the maximum | breaking point | 1% | `max-refused-ratio` |
+| **Pool refuses**: refused share above the limit, this step or the last | graceful | 10% | `pool-refuses-ratio` |
+| **Pool intake**: p95 submit reply above the limit, or one submit waited that long, or node stopped reading submits | graceful | 5 s | `max-submit-reply-ms` |
+| **Slow blocks**: mean block gap above factor times `block-interval-seconds` | hard | 2.0 | `max-block-gap-factor` |
+| **Stall**: no new best block for this long | hard | 30 s | `stall-ms` |
+| **Finality stall**: no new finalized block for this long | hard | 60 s | `finality-stall-ms` |
+| **Node down**: node closed an RPC connection | hard | none | none |
+| **Rate cap**: every step ran | none | none | none |
+| **Budget used up**: prepared transactions ran out, or a short step had nothing to send | none | none | none |
+| **Generator limit**: sent share of target rate below minimum, or the load tool paused over 5 s between sends | none | 95%; 5 s between sends (fixed) | `min-send-ratio` |
+| **Smoke error**: monitor problem, smoke mode only | none | none | none |
+
+Ratios accept values above 0 up to 1. Factors and durations must be above 0. Set them in the plan's [`<thresholds>`](plans.md#thresholds).
+
+## Recovery
+
+After the load, the run sends one probe per block, with no load on the chain.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `recovery-seconds` | 900 | Probe budget after the load stops. |
+| `probes-in-a-row` | 3 | Consecutive in-time probes needed. |
+| `recovered-block-gap-factor` | 1.5 | Largest mean block gap, in block intervals, that counts as recovered. |
+| `finality-wait-ms` | 180000 | Longest wait to finalize past the last run transaction's block. |
+
+A probe is in time if it lands within the larger of twice the slowest baseline probe and twice the block interval. The chain has recovered at the first run of in-time probes that meets `probes-in-a-row`, if the blocks from that run on average stay within the factor. Probing stops at recovery or when the budget runs out. The block follower then drains for up to 30 seconds.
 
 ## Failure modes
 
-`failureModes` in `summary.json` lists the failures of a run, each with a class.
+| Class | Meaning | Recorded when |
+| --- | --- | --- |
+| `graceful` | The node refuses or delays transactions, and keeps producing blocks. | Load ended on pool refuses or pool intake. |
+| `hard` | Block production or finality degrades for everyone. | Load ended on slow blocks, a stall, a finality stall or node down; or a transaction failed after inclusion. |
+| `silent` | A transaction is gone with no error, or left no state. | A transaction is lost, or an included one left no state. |
 
-| Class | Meaning |
-| --- | --- |
-| `graceful` | The node refuses or delays transactions and keeps producing blocks |
-| `hard` | Block production or finality degrades for everyone |
-| `silent` | A transaction is gone with no error, or landed and left no state |
+## Checks
 
-## Outcome checks
+Checks run on the recorded series, in this order. A check whose metric the node does not export returns `no result`.
 
-The checks run on the recorded series. Each belongs to an outcome. The `summary.md` table lists them in this order. Checks that need a metric the node does not export return `no result`.
+| Outcome: check | Judges | Status |
+| --- | --- | --- |
+| block production: why blocks end | Why each block ended: weight, size, deadline, or no more transactions. | `info` |
+| block production: build time within the authoring deadline | Build time against 2 s. | `warn`: a block over 2.5 s, or p95 at 2.5 s. `fail`: over 5% of blocks above 2.5 s. |
+| pvf: relay slots (level 1) | Slots missed above idle: not built, not backed, timed out. | `fail`: a window misses over one slot above idle. |
+| pvf: no timed-out candidates or disputes | Timed-out candidates; relay disputes. | `fail` if any. |
+| pvf: PVF time on validators (level 2, all parachains) | Validation time. | `warn`: a validation over 2 s, or an invalid result. |
+| pvf: collation funnel | Collations expired after advertisement, fetch or backing; mean backing-to-inclusion time. | `warn`: any expired, or mean over 1.5 relay blocks. |
+| pool: no silent loss | Accepted transactions in no block, without error. | `fail` if any. `no result` if the pool cannot be listed. |
+| pool: the burst drains | Probes in time, backlog drained, no empty block while over 10 transactions waited. | `fail` unless all three hold. |
+| pool: refusals are clean | Refusals by reason. | `fail`: no code. `warn`: run stopped at pool intake. |
+| pool: pool work leaves time for blocks | Pool maintenance p95; validation backlog. | `fail`: p95 over half the block interval. `warn`: over 1000 waiting for validation. |
+| run: monitors recorded everything | Monitor problems. | `warn` if any. |
 
-| Outcome | Check | What it judges | Status |
-| --- | --- | --- | --- |
-| block production | why blocks end | Why the collator ended each block in each window (weight, size, deadline or no more transactions) | `info` |
-| block production | build time within the authoring deadline | Block build time against the 2 s authoring deadline | `warn` when a window has a block over 2.5 s or a p95 at 2.5 s. `fail` when more than 5% of its blocks took over 2.5 s |
-| pvf | relay slots (level 1) | Slots offered to the observed parachain that it missed, above its idle rate, split into not built, not backed and timed out | `fail` when a window misses more than one slot above idle |
-| pvf | no timed-out candidates or disputes | Candidates of the parachain that timed out, and disputes on the relay | `fail` if any |
-| pvf | PVF time on validators (level 2) | Validation execution time on the validators, for all parachains | `warn` when a window has a validation over 2 s, or an invalid result |
-| pvf | collation funnel | Collations that expired after advertisement, fetch, or backing, and the mean time from backing to inclusion | `warn` if any expired, or the mean is over 1.5 relay blocks |
-| pool | no silent loss | Transactions accepted, in no block, and without an error | `fail` if any. `no result` if the pool could not be listed |
-| pool | the burst drains | Whether probes came back in time, the backlog drained, and no block ended empty while more than 10 of the run's transactions waited | `fail` unless all three hold |
-| pool | refusals are clean | Refusals by reason | `fail` on refusals with no code. `warn` when the run stopped at pool intake |
-| pool | pool work leaves time for blocks | Pool maintenance p95 against half the block interval, and the validation backlog | `fail` when the p95 is over half the block interval. `warn` when more than 1000 transactions wait for validation |
-| run | monitors recorded everything | Whether any monitor reported a problem | `warn` if any did |
+Statuses: `pass` (no problem found), `warn` (a `WARN` verdict unless the verdict is `FAIL`), `fail` (a `FAIL` verdict), `info` (a number to read, not judged), `no result` (data missing, or a node restarted inside the window).
 
-The limits are in `crates/checks/src/limits.rs`. They are placeholders until the load target and budgets are agreed.
+The limits are in `crates/checks/src/limits.rs`; they are placeholders until the load target and budgets are agreed. Plugin checks come after the built-in ones and count toward the verdict the same way. An `optional` plugin check with no result does not make the verdict `INCONCLUSIVE`.
 
-Plugins add checks through evaluate steps. Their results are listed after the built-in ones and count toward the verdict. [Plugins](plugins.md#plugin-observers-and-checks) describes them.
+## Verdict
+
+One verdict is written as `- **Verdict:**` in `summary.md`. The first matching row decides.
+
+| Order | Verdict | When |
+| --- | --- | --- |
+| 1 | `FAIL` | The stop rule has a class (`graceful` or `hard`); `failureModes` is not empty; there is a breaking point; or any check is `fail`. |
+| 2 | `INCONCLUSIVE` | The stop rule is not `rate cap`, or a required check has `no result`. Checks are required unless marked `optional`. |
+| 3 | `WARN` | Any check is `warn`. |
+| 4 | `PASS` | Otherwise. |
+
+Plans without `<load>` have no verdict. Neither `execution.json` nor `summary.json` has a verdict key.
+
+## samples.jtl
+
+One header row, then 13 columns.
+
+| Column | Step rows | Transaction rows (load test) |
+| --- | --- | --- |
+| `timeStamp` | Event time, in milliseconds | `sentAt` |
+| `elapsed` | `elapsedMs` of the step | `inclusionMs`, or `replyMs` without inclusion |
+| `label` | `step:<step id>` | `load:step:<step index>` |
+| `responseCode` | `STEP_OK` or `STEP_FAILED` | Transaction status |
+| `responseMessage` | Step error, or empty | Transaction hash |
+| `threadName` | `user:<n>:iteration:<n>`, or `null` outside a workflow | `load` |
+| `success` | `true` if the step succeeded | `true` if finalized and not failed |
+| `bytes`, `sentBytes` | `0` | `0` |
+| `Latency` | `0` | `replyMs` |
+| `Connect` | `0` | `0` |
+| `allThreads`, `grpThreads` | `1` | `1` |
+
+## events.jsonl
+
+Each event has a `timestamp` in milliseconds and `version` `2`. Credentials are redacted.
+
+| `event` | Fields | When |
+| --- | --- | --- |
+| `phase` | `phase`, and `id` for a workflow | Each phase start: `preflight`, `setup`, `workflow`, `teardown`. A load test adds, in order, `measurement`, `baseline`, `load`, `recovery`, `reconciliation` and `checks`. |
+| `step-started` | `step`, `operation`, `user`, `iteration` | A step starts. |
+| `step-progress` | `step`, `elapsedMs` | Every 5 seconds while a step runs. |
+| `step-finished` | `step`, `elapsedMs`, `success`, `error`, `user`, `iteration` | A step ends. |
+| `cleanup-failed` | `error` | A teardown step failed. |
+| `completed` | `outcome` | The run ended, with the same outcome as `execution.json`. |
+
+`--format json` adds `artifact-written`, `report` and `validation` lines, which are not written to `events.jsonl`.
 
 ## Exit codes
 
-`polkameter run` exits with the outcome's exit code. The table covers the CLI commands. [CLI](cli.md) lists every command.
+Each command's exit code, and what sets it, is in the [CLI reference](cli.md#exit-codes).
 
-| Code | Meaning |
+## Rebuilding a report
+
+`polkameter report <run directory>` rebuilds the files from the raw data and prints `summary.md`. It needs `execution.json` and `summary.md`.
+
+| Plan | Rewrites |
 | --- | --- |
-| `0` | The run completed. In stress mode this is true whatever the verdict. `report` also exits 0 on success |
-| `1` | The run failed: an error in preflight, setup, a workflow or an evaluate step, or a failed assertion. Also a smoke-mode failure: a monitor problem, or a required check with no result. Also any other runtime error |
-| `2` | The plan or the arguments are invalid, or a `plugin` subcommand failed |
-| `3` | Preflight failed. Only `polkameter preflight` returns this |
-| `130` | The run was stopped with Ctrl-C |
+| Without `<load>` | `samples.jtl` and the plots |
+| With `<load>` | Also the checks, `summary.json` and `summary.md` |
 
-In stress mode, a run that finds a breaking point or a failed check exits `0` and records the result in the verdict. Smoke mode is for CI: it exits `1` when monitors fail or a required check has no result. A failed `core.assert-equal` step makes the run fail with exit `1` in both modes.
-
-## Reading a result offline
-
-`polkameter report <run directory>` rebuilds `samples.jtl`, the plots, the checks, `summary.json` and `summary.md` from the raw files. The result is the same as the original run's, so a run can be copied to another machine and checked there. The report needs `execution.json` and `summary.md` in the directory.
+The result comes only from the files, so you can copy a run directory to another machine and report it there.
