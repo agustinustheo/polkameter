@@ -332,11 +332,11 @@ async fn plugin_command(command: PluginCommand) -> Result<i32, CliError> {
 			PluginCommand::Install { executable } => {
 				let manifest = registry.install(&executable).await?;
 				let location = registry.plugins[&manifest.id].executable.display();
+				let count = manifest.operations.len();
+				let noun = if count == 1 { "operation" } else { "operations" };
 				installed = Some(format!(
-					"Installed plugin {} {} ({} operations) from {location}",
-					manifest.id,
-					manifest.version,
-					manifest.operations.len()
+					"Installed plugin {} {} ({count} {noun}) from {location}",
+					manifest.id, manifest.version
 				));
 				serde_json::to_value(&manifest)?
 			},
