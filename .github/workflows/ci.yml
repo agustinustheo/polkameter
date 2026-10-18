@@ -76,3 +76,22 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - run: corepack pnpm install --frozen-lockfile
       - run: corepack pnpm tauri build --debug --no-bundle
+
+  action:
+    name: Action
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - run: cargo +${{ env.RUST_VERSION }} build -p polkameter-example-plugin
+      - uses: ./
+        id: plan
+        with:
+          plan: examples/plugin-workflow.polkameter.xml
+          plugins: target/debug/polkameter-example-plugin
+      - name: Assert the example plan passed
+        env:
+          EXIT_CODE: ${{ steps.plan.outputs.exit-code }}
+        run: test "$EXIT_CODE" = 0

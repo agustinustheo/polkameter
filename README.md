@@ -57,6 +57,26 @@ polkameter run plan.polkameter.xml --remote http://127.0.0.1:9901 --remote-token
 
 `--format json` prints machine-readable events. A run exits nonzero on a tool or setup failure, a failed assertion, or, in smoke mode, a monitor problem or a required check without a result.
 
+## GitHub Action
+
+The repository's `action.yml` builds the CLI from the pinned ref, runs a plan and fails the job when the plan fails. It uploads the run directory as an artifact and writes its `summary.md` to the job summary.
+
+```yaml
+jobs:
+  load-test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: agustinustheo/polkameter@<ref>   # a tag or commit SHA
+        with:
+          plan: plans/transfers.polkameter.xml
+          credentials: previewnet-sudo=POLKAMETER_SETUP_SURI
+        env:
+          POLKAMETER_SETUP_SURI: ${{ secrets.SETUP_SURI }}
+```
+
+Inputs: `plan` (required), `plugins`, `credentials`, `topologies`, `capabilities`, `output` (`polkameter-runs`), `upload` (`true`), `artifact-name` (`polkameter-run`) and `toolchain` (`1.93.0`). Outputs: `run-dir` and `exit-code`. Secrets go in the step's `env:`, never in `with:`.
+
 ## Plans, plugins and results
 
 [The plugin guide](https://github.com/agustinustheo/polkameter/blob/main/docs/plugins.md) describes the plan format, the execution order, measured load, monitors, plugin observers and checks, the plugin protocol and the result files. [The schema](https://github.com/agustinustheo/polkameter/blob/main/schemas/polkameter-plan.xsd) defines the XML and [the example](https://github.com/agustinustheo/polkameter/blob/main/examples/plugin-workflow.polkameter.xml) runs without a chain. `scripts/local-fork-run.sh` runs a plan on a fresh local Zombienet network.
