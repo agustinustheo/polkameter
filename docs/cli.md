@@ -4,14 +4,14 @@
 
 ## --version
 
-Prints the installed version and exits 0. `-V` is the short form.
+Prints `polkameter <version>` and exits 0. `<version>` is the version of the build you installed. `-V` is the short form.
 
 ```sh
 polkameter --version
 ```
 
 ```text
-polkameter 0.2.0
+polkameter <version>
 ```
 
 ## validate
