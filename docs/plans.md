@@ -221,7 +221,9 @@ Children: `rate` (one or more) or `ramp` (exactly one). Give one or the other, n
 | `recovery-seconds` | integer | no | `900` | 0 to 86400 | How long recovery may last before the run gives up |
 | `block-interval-seconds` | number | no | `6.0` | at least 0.1 | The block time the plan expects. Preflight compares it with the measured block time |
 
-`state-check` and `state-ref` must appear together. The CLI checks this pairing; XSD 1.0 cannot express dependencies between attributes. The state check receives `target`, `state`, `hashes` and `at`, and returns `checked`, `missing` and `detail`.
+`state-check` and `state-ref` must appear together.
+
+The state check receives `target`, `state`, `hashes` and `at`, and returns `checked`, `missing` and `detail`.
 
 If the measured block time differs from `block-interval-seconds` by more than 25%, the run stops before setup. The measurement is written to `calibration.json`.
 
@@ -260,7 +262,9 @@ Children: none.
 | `steps` | integer | yes | none | 1 to 10000 | The number of steps |
 | `seconds` | integer | yes | none | at least 1 | How long each step runs |
 
-Give exactly one of `step` or `growth`. XSD 1.0 choices apply to child elements, so the CLI checks these exclusive attributes. The CLI also expands the ramp and rejects any rate that is negative or not finite.
+Give exactly one of `step` or `growth`.
+
+Every rate in the expanded ramp must be finite and at least 0.
 
 ```xml
 <ramp start="2" step="2" steps="3" seconds="30"/>
@@ -278,7 +282,7 @@ Children: `metric`, zero or more. Needs a `<load>`.
 | `relay-target` | identifier | yes | none | a declared `targets` ID | The relay chain endpoint that the relay recorder reads |
 | `para-id` | integer | yes | none | 0 to 4294967295 | The parachain whose collators are scraped and whose relay slots are judged |
 
-Zero is accepted because the SDK's [`ParaId` is an unsigned 32-bit integer](https://docs.rs/polkadot-parachain-primitives/22.0.0/src/polkadot_parachain_primitives/primitives.rs.html). Its system range includes 0 through 1999; the public range starts at 2000. Plan validation does not check whether the ID is registered on your relay chain.
+Plan validation does not check whether `para-id` is registered on your relay chain. See [Plan validation](how-it-works.md#plan-validation) for the accepted range.
 
 ```xml
 <monitors topology="test-network" relay-target="relay" para-id="2000">
@@ -375,7 +379,7 @@ Children: none.
 | `ref` | reference | one of `ref` or `value` | none | a reference | A value from the [References](#references) table |
 | `value` | literal | one of `ref` or `value` | none | | A literal. It parses as JSON when it can, and is otherwise a string |
 
-Give exactly one of `ref` or `value`. The CLI checks these exclusive attributes because XSD 1.0 cannot express this rule.
+Give exactly one of `ref` or `value`.
 
 Literals are not evaluated. For quotes inside a JSON string, use XML escaping, for example `value="[&quot;a&quot;]"`.
 
@@ -434,9 +438,17 @@ The parser and validator run on every command that reads a plan. `polkameter val
 - `<` in an attribute value, and duplicate attributes;
 - unknown elements and attributes, and missing required attributes.
 
-Numeric attributes may have spaces around the value. Integer limits also follow their storage type: durations in milliseconds use 1 to 18446744073709551615; durations in seconds and workflow iterations use 1 to 4294967295 unless a smaller limit is listed. Native-size counters such as `probes-in-a-row` use the host's unsigned integer limit (18446744073709551615 on a 64-bit host).
+Numeric attributes may have spaces around the value. Numbers must be finite.
 
-Numbers must be finite. Attribute strings are taken exactly as written; an empty `input` name, metric name, metric role or topology alias passes `validate`, while preflight checks the operation inputs, metrics and topology.
+| Integer attribute | Range, unless a smaller limit is listed |
+| --- | --- |
+| Durations in milliseconds | 1 to 18446744073709551615 |
+| Durations in seconds and workflow iterations | 1 to 4294967295 |
+| `probes-in-a-row` | 1 to the host's unsigned integer limit; 18446744073709551615 on a 64-bit host |
+
+Attribute strings are taken exactly as written.
+
+An empty `input` name, metric name, metric role or topology alias passes `validate`. Preflight checks the operation inputs, metrics and topology.
 
 **Structure** checks:
 
@@ -453,19 +465,20 @@ Numbers must be finite. Attribute strings are taken exactly as written; an empty
 
 **Chain checks** happen during preflight. They need a reachable chain. They check that the manifests' required evidence is present (a provisioner capability, an RPC method or a metric), and that the block interval matches the chain when there is a load.
 
-**Schema coverage.** The [XSD 1.0 schema](https://github.com/agustinustheo/polkameter/blob/main/schemas/polkameter-plan.xsd) checks required attributes, value limits, identifiers, operation syntax, unique IDs and target references. It accepts sections in any order and applies the same attribute defaults as the CLI. CI validates every example plan and every complete documentation plan against both the schema and `polkameter validate` with `tests/validate-plans.py`.
+Run `polkameter validate` alongside the [XSD 1.0 schema](https://github.com/agustinustheo/polkameter/blob/main/schemas/polkameter-plan.xsd). See [Plan validation](how-it-works.md#plan-validation) for schema coverage.
 
-Always run `polkameter validate` as well. The schema annotations identify rules that need CLI validation:
-
-| Rule | CLI check beyond XSD 1.0 |
+| Rule | CLI requirement beyond the schema |
 | --- | --- |
-| Exclusive attributes | Exactly one of input `ref`/`value` and ramp `step`/`growth` |
+| Exclusive attributes | Exactly one of input `ref` or `value`, and ramp `step` or `growth` |
 | Paired attributes | Load `state-check` and `state-ref` appear together |
-| Section counts | Every root child except `workflow` appears at most once. The schema uses a repeated choice to allow any section order and repeated workflows; XSD 1.0 `xs:all` cannot repeat workflows |
-| References and providers | Output references exist in the current phase and scope; operation providers are declared. Monitors need a load |
+| Section counts | Every root child except `workflow` appears at most once |
+| References | References name values available in the current phase and scope |
+| Operation providers | Plugins used by operations are declared |
+| Monitors | A load is present |
 | Expanded ramps | Every generated rate is finite and at least 0 |
-| Host limits | Native-size counters also fit the host's unsigned integer type; the schema uses the 64-bit limit |
-| Parsing | File size, depth, declarations and processing instructions follow the parser limits above. The CLI requires the default namespace on the root and unprefixed element names; XSD validates namespace identity |
+| Host limits | Counters fit the host's unsigned integer type |
+| Parsing | File size, depth, declarations and processing instructions follow the limits above |
+| Namespaces | The root declares the default namespace; element names have no prefix |
 
 ### Errors
 
