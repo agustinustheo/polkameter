@@ -90,7 +90,7 @@ The measurement writes `summary.json` first, so plugin checks can read it. The r
 
 A plan without a load test writes no `summary.json`, so it has no verdict. Older summaries and the initial summary before checks have no `verdict` key.
 
-The `verdict` object from the recorded smoke fixture, regenerated with `polkameter report`:
+The `verdict` object in `summary.json` after running `polkameter report /tmp/polkameter-smoke-run` on a copy of `crates/cli/tests/fixtures/smoke-run` (with `scrapes.jsonl.gz` expanded to `scrapes.jsonl`):
 
 ```json
 {
@@ -226,7 +226,7 @@ One verdict is written as `- **Verdict:**` in `summary.md`. The first matching r
 | 3 | `WARN` | Any check is `warn`. |
 | 4 | `PASS` | Otherwise. |
 
-Plans without `<load>` have no verdict. Neither `execution.json` nor `summary.json` has a verdict key.
+`execution.json` has no verdict key. Completed load reports include the verdict in `summary.json`. Plans without `<load>` have no verdict and produce no `summary.json`.
 
 ## samples.jtl
 

@@ -440,6 +440,29 @@ mod tests {
 	}
 
 	#[test]
+	fn recorded_fail_report_changes_exit_code_only_when_opted_in() {
+		// Replay the exit policy with the real report's summary and checks, without replacing
+		// verdicts or inventing failures. The CLI replay test separately regenerates these checks
+		// from the raw recorded files; `report` itself has no --fail-on-verdict option.
+		let summary: Summary =
+			serde_json::from_str(include_str!("../../cli/tests/fixtures/smoke-run/summary.json"))
+				.unwrap();
+		let checks: Vec<CheckResult> =
+			serde_json::from_value(summary.checks.clone().unwrap()).unwrap();
+		assert!(checks.iter().any(|check| {
+			check.check == "relay slots (level 1)" && check.verdict.status == Status::Fail
+		}));
+		assert_eq!(
+			polkameter_checks::report::overall_status(&summary, &checks),
+			polkameter_files::summary::OverallStatus::Fail
+		);
+		for mode in [Mode::Smoke, Mode::Stress] {
+			assert_eq!(exit_code(mode, &summary, &checks, false), 0);
+			assert_eq!(exit_code(mode, &summary, &checks, true), 1);
+		}
+	}
+
+	#[test]
 	fn report_writes_the_same_fail_verdict_with_either_exit_policy() {
 		let root =
 			std::env::temp_dir().join(format!("polkameter-verdict-report-{}", std::process::id()));

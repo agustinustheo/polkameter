@@ -81,7 +81,17 @@ Set `fail-on: verdict` on the action step to fail the job when the load verdict 
 
 The action passes `--fail-on-verdict` to the CLI. It still uploads artifacts when the verdict fails. `WARN` and `INCONCLUSIVE` do not trigger this policy, and a plan without a load test has no verdict to fail on.
 
-With the default `fail-on: error`, a stress-mode load run exits `0` even when its verdict is `FAIL`. Use the `verdict` output to inspect the result in later steps; use `if: always()` if the action failed.
+With the default `fail-on: error`, a stress-mode load run exits `0` even when its verdict is `FAIL`. A later step can inspect the `verdict` output even when the action failed:
+
+```yaml
+      - name: Show the load verdict
+        if: always() && steps.load.outputs.run-dir != ''
+        env:
+          VERDICT: ${{ steps.load.outputs.verdict }}
+          EXIT_CODE: ${{ steps.load.outputs.exit-code }}
+        run: |
+          echo "PolkaMeter exited $EXIT_CODE; verdict: ${VERDICT:-unavailable}"
+```
 
 ## What the job keeps
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Exercises the CLI end to end without a chain: install the example plugin, validate and run its
 # plan locally and through a loopback remote agent, regenerate the report, and check that a
-# failed assertion exits nonzero. Build first: cargo build -p polkameter --bin polkameter
+# failed assertion exits nonzero. Also replay a recorded load report and check the action's
+# verdict extraction. Build first: cargo build -p polkameter --bin polkameter
 # and cargo build -p polkameter-example-plugin.
 set -euo pipefail
 
@@ -25,10 +26,18 @@ for file in events.jsonl execution.json samples.jtl summary.md plots/throughput.
 	[ -s "$run/$file" ] || { echo "missing $file" >&2; exit 1; }
 done
 
+# Assertion failures exit 1 under the default policy; this plan has no load verdict.
 sed 's/name="expected" value="84"/name="expected" value="85"/' "$plan" > "$work/failing.xml"
 code=0
-"$cli" run "$work/failing.xml" --output "$work/failing" --fail-on-verdict > /dev/null 2>&1 || code=$?
+"$cli" run "$work/failing.xml" --output "$work/failing" > /dev/null 2>&1 || code=$?
 [ "$code" -eq 1 ] || { echo "a failed assertion exited $code, expected 1" >&2; exit 1; }
+
+# Exercise the action's jq expression on a real FAIL report, not the shell-test stub.
+mkdir "$work/recorded"
+cp crates/cli/tests/fixtures/smoke-run/*.json crates/cli/tests/fixtures/smoke-run/*.jsonl "$work/recorded/"
+gzip -dc crates/cli/tests/fixtures/smoke-run/scrapes.jsonl.gz > "$work/recorded/scrapes.jsonl"
+"$cli" report "$work/recorded" --format json > "$work/recorded.json" 2> "$work/report.log"
+[ "$(jq -r '.verdict.result // empty' "$work/recorded/summary.json")" = FAIL ]
 
 port=$((20000 + RANDOM % 20000))
 export POLKAMETER_AGENT_TOKEN=smoke-token

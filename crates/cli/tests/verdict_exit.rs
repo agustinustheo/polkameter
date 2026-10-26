@@ -27,6 +27,8 @@ async fn run_flag_is_sent_to_the_agent_and_returns_its_exit_code() {
 			.route(
 				"/runs/test",
 				get(move || async move {
+					// This agent hard-codes the exit code to test CLI/remote plumbing only.
+					// The engine's recorded-report test covers the real verdict exit policy.
 					let state =
 						if fail_on_verdict { "completed_with_failures" } else { "completed" };
 					Json(json!({"id":"test", "state":state, "outcome":{

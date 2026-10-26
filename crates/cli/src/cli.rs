@@ -53,7 +53,8 @@ enum Command {
 		/// Environment variable for the plan's only credential, instead of its configured profile.
 		#[arg(long, conflicts_with = "remote")]
 		credential_env: Option<String>,
-		/// Exit 1 when the load test's overall verdict is FAIL.
+		/// Exit 1 when a load test's verdict is FAIL. By default, verdicts do not affect the exit
+		/// code; runtime and smoke-mode failures still exit 1. Plans without a load test are unaffected.
 		#[arg(long)]
 		fail_on_verdict: bool,
 		/// Remote runner endpoint. It must use HTTPS or be a loopback HTTP tunnel.
