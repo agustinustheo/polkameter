@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use crate::remote::{self, RemoteRunnerTarget};
 
 #[derive(Debug, Parser)]
-#[command(name = "polkameter", about = "Headless Polkadot SDK load testing")]
+#[command(name = "polkameter", version, about = "Headless Polkadot SDK load testing")]
 struct Cli {
 	#[command(subcommand)]
 	command: Command,
