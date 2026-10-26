@@ -34,6 +34,34 @@ flowchart TD
 
 The run as a whole has a deadline, the plan's `timeout-ms`, one hour by default. An error in preflight, setup, a workflow or an evaluate step ends the run as `failed`. A stop rule that fires during the load is a result, not an error, so the report is still written.
 
+## Plan validation
+
+The [plan schema](https://github.com/agustinustheo/polkameter/blob/main/schemas/polkameter-plan.xsd) gives XML editors checks without running PolkaMeter. It checks required attributes, value limits and identifiers. It also checks operation syntax, unique IDs and target references, and supplies the same attribute defaults as the CLI.
+
+The schema uses XML Schema Definition version 1.0 (XSD 1.0), which cannot express every plan rule. Run `polkameter validate` as well; it checks the plan without starting a plugin or contacting a chain. The [plan reference](plans.md#validation-rules) lists the requirements.
+
+### Why some checks need the CLI
+
+XSD 1.0 can choose between child elements, but cannot require exactly one of two attributes or make one attribute depend on another. The CLI therefore checks that an input has exactly one of `ref` or `value`, and a ramp exactly one of `step` or `growth`. It also checks that load `state-check` and `state-ref` appear together.
+
+Plan sections can appear in any order, and workflows can repeat. XSD 1.0's unordered group, `xs:all`, cannot repeat a workflow, so the schema instead allows a repeated choice of sections. That also allows duplicate singleton sections through the schema; the CLI rejects them.
+
+A schema can check each ramp attribute, but cannot calculate every generated rate. The CLI expands the ramp and rejects negative or non-finite rates. It also checks reference availability in each phase and scope, declared operation providers, and that monitors have a load to watch.
+
+Some limits depend on the parser or the host. The schema uses the 64-bit unsigned limit for native-size counters, while the CLI checks the host's limit.
+
+The CLI limits file size and nesting depth. It accepts comments and a leading XML declaration, and rejects other declarations and processing instructions.
+
+The CLI requires a default namespace with unprefixed element names. The schema checks namespace identity instead, so it can accept prefixed names that the CLI rejects.
+
+### Why parachain ID zero is accepted
+
+Zero is accepted because the SDK's [`ParaId` is an unsigned 32-bit integer](https://docs.rs/polkadot-parachain-primitives/22.0.0/src/polkadot_parachain_primitives/primitives.rs.html). Its system range includes 0 through 1999; the public range starts at 2000. Plan validation checks this numeric range without contacting the relay chain, so it cannot tell whether an ID is registered there.
+
+### Keeping the schema and CLI aligned
+
+CI runs `tests/validate-plans.py` against every example plan and every complete documentation plan. Each case runs both xmllint and `polkameter validate`, with boundary cases for agreement and the intentional gaps above. Rejection cases pin the diagnostic so an unrelated error cannot hide a missed rule.
+
 ## Why every transaction gets one status
 
 After the load, PolkaMeter checks each transaction against two sources: the finalized chain and the node's ready pool. The first status that holds wins, in this order: `finalized`, `in_pool`, `refused`, `lost`, `unverified` and `unknown`.

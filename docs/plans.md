@@ -92,7 +92,7 @@ The next example adds targets, credentials, a load test, monitors and thresholds
 
 The root element. Its `name` appears in the report.
 
-Children, in this order (the [schema](https://github.com/agustinustheo/polkameter/blob/main/schemas/polkameter-plan.xsd) requires this order):
+Children, in any order:
 
 | Element | Occurs | Section |
 | --- | --- | --- |
@@ -108,7 +108,7 @@ Children, in this order (the [schema](https://github.com/agustinustheo/polkamete
 | `evaluate` | optional | [evaluate](#evaluate) |
 | `teardown` | optional | [teardown](#teardown) |
 
-Each element appears at most once, except `workflow`.
+Each element appears at most once, except `workflow`. Execution follows the phases in the table, regardless of where you place their sections in the XML. Steps within a phase run in their written order.
 
 | Attribute | Type | Required | Default | Limits | Meaning |
 | --- | --- | --- | --- | --- | --- |
@@ -221,7 +221,9 @@ Children: `rate` (one or more) or `ramp` (exactly one). Give one or the other, n
 | `recovery-seconds` | integer | no | `900` | 0 to 86400 | How long recovery may last before the run gives up |
 | `block-interval-seconds` | number | no | `6.0` | at least 0.1 | The block time the plan expects. Preflight compares it with the measured block time |
 
-`state-check` and `state-ref` must appear together. The state check receives `target`, `state`, `hashes` and `at`, and returns `checked`, `missing` and `detail`.
+`state-check` and `state-ref` must appear together.
+
+The state check receives `target`, `state`, `hashes` and `at`, and returns `checked`, `missing` and `detail`.
 
 If the measured block time differs from `block-interval-seconds` by more than 25%, the run stops before setup. The measurement is written to `calibration.json`.
 
@@ -248,17 +250,21 @@ Children: none.
 
 ### ramp
 
-A load that rises at each step. It starts at `start` and changes by `step` or `growth` for each of its `steps`.
+A load that changes at each step. It starts at `start` and changes by `step` or `growth` for each of its `steps`.
 
 Children: none.
 
 | Attribute | Type | Required | Default | Limits | Meaning |
 | --- | --- | --- | --- | --- | --- |
-| `start` | number | yes | none | above 0 | The rate of the first step, in transactions per second |
+| `start` | number | yes | none | finite; above 0 | The rate of the first step, in transactions per second |
 | `step` | number | one of `step` or `growth` | none | finite | Adds this many transactions per second at each step. No rate may fall below 0 |
-| `growth` | number | one of `step` or `growth` | none | above 0 | Multiplies the rate by this factor at each step |
+| `growth` | number | one of `step` or `growth` | none | finite; above 0 | Multiplies the rate by this factor at each step |
 | `steps` | integer | yes | none | 1 to 10000 | The number of steps |
 | `seconds` | integer | yes | none | at least 1 | How long each step runs |
+
+Give exactly one of `step` or `growth`.
+
+Every rate in the expanded ramp must be finite and at least 0.
 
 ```xml
 <ramp start="2" step="2" steps="3" seconds="30"/>
@@ -274,7 +280,9 @@ Children: `metric`, zero or more. Needs a `<load>`.
 | --- | --- | --- | --- | --- | --- |
 | `topology` | string | yes | none | an alias registered with `polkameter plugin topology` | The topology alias on this host |
 | `relay-target` | identifier | yes | none | a declared `targets` ID | The relay chain endpoint that the relay recorder reads |
-| `para-id` | integer | yes | none | 0 to 4294967295. The schema requires 1 or more | The parachain whose collators are scraped and whose relay slots are judged |
+| `para-id` | integer | yes | none | 0 to 4294967295 | The parachain whose collators are scraped and whose relay slots are judged |
+
+Plan validation does not check whether `para-id` is registered on your relay chain. See [Plan validation](how-it-works.md#plan-validation) for the accepted range.
 
 ```xml
 <monitors topology="test-network" relay-target="relay" para-id="2000">
@@ -371,6 +379,8 @@ Children: none.
 | `ref` | reference | one of `ref` or `value` | none | a reference | A value from the [References](#references) table |
 | `value` | literal | one of `ref` or `value` | none | | A literal. It parses as JSON when it can, and is otherwise a string |
 
+Give exactly one of `ref` or `value`.
+
 Literals are not evaluated. For quotes inside a JSON string, use XML escaping, for example `value="[&quot;a&quot;]"`.
 
 ```xml
@@ -392,7 +402,7 @@ A `ref` names one of the values below. A reference to anything else is rejected 
 | `user.index` | The user's index, from 0 | Inside `workflow` steps |
 | `iteration.index` | The iteration's index, from 0 | Inside `workflow` steps |
 
-- A reference must name a value declared earlier in the plan. Forward references are rejected.
+- A reference must name a value available in its execution phase. Phase order follows the table above, regardless of section order in the XML. Within a phase, forward step references are rejected.
 - Setup outputs are copied into every user and iteration of each workflow.
 - A workflow step's outputs are visible only to later steps in the same iteration. They do not reach another user, iteration or workflow.
 - Evaluate and teardown steps can reference preflight and setup outputs. They cannot reference workflow outputs.
@@ -428,7 +438,17 @@ The parser and validator run on every command that reads a plan. `polkameter val
 - `<` in an attribute value, and duplicate attributes;
 - unknown elements and attributes, and missing required attributes.
 
-Numeric attributes may have spaces around the value. Attribute strings are taken exactly as written.
+Numeric attributes may have spaces around the value. Numbers must be finite.
+
+| Integer attribute | Range, unless a smaller limit is listed |
+| --- | --- |
+| Durations in milliseconds | 1 to 18446744073709551615 |
+| Durations in seconds and workflow iterations | 1 to 4294967295 |
+| `probes-in-a-row` | 1 to the host's unsigned integer limit; 18446744073709551615 on a 64-bit host |
+
+Attribute strings are taken exactly as written.
+
+An empty `input` name, metric name, metric role or topology alias passes `validate`. Preflight checks the operation inputs, metrics and topology.
 
 **Structure** checks:
 
@@ -445,10 +465,20 @@ Numeric attributes may have spaces around the value. Attribute strings are taken
 
 **Chain checks** happen during preflight. They need a reachable chain. They check that the manifests' required evidence is present (a provisioner capability, an RPC method or a metric), and that the block interval matches the chain when there is a load.
 
-**Schema differences.** `schemas/polkameter-plan.xsd` checks the same structure, and CI runs it with `xmllint`. The two checks disagree in two places:
+Run `polkameter validate` alongside the [XSD 1.0 schema](https://github.com/agustinustheo/polkameter/blob/main/schemas/polkameter-plan.xsd). See [Plan validation](how-it-works.md#plan-validation) for schema coverage.
 
-- The schema requires children in the order listed under [polkameter-plan](#polkameter-plan). `polkameter validate` accepts them in any order.
-- The schema requires `para-id` to be 1 or more. `polkameter validate` accepts 0.
+| Rule | CLI requirement beyond the schema |
+| --- | --- |
+| Exclusive attributes | Exactly one of input `ref` or `value`, and ramp `step` or `growth` |
+| Paired attributes | Load `state-check` and `state-ref` appear together |
+| Section counts | Every root child except `workflow` appears at most once |
+| References | References name values available in the current phase and scope |
+| Operation providers | Plugins used by operations are declared |
+| Monitors | A load is present |
+| Expanded ramps | Every generated rate is finite and at least 0 |
+| Host limits | Counters fit the host's unsigned integer type |
+| Parsing | File size, depth, declarations and processing instructions follow the limits above |
+| Namespaces | The root declares the default namespace; element names have no prefix |
 
 ### Errors
 
