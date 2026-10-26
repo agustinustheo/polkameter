@@ -38,16 +38,16 @@ jobs:
       - run: cargo +${{ env.RUST_VERSION }} fmt --all -- --check
       - run: cargo +${{ env.RUST_VERSION }} test --workspace
       - run: cargo +${{ env.RUST_VERSION }} clippy --workspace --all-targets -- -D warnings
+      - name: Verify schema, example plans and documentation plans
+        run: |
+          cargo +${{ env.RUST_VERSION }} build -p polkameter --bin polkameter
+          python3 tests/validate-plans.py
       - name: Audit dependencies
         run: |
           cargo install cargo-audit --locked --version 0.22.2
           cargo audit
-      - name: Verify the example plans
-        run: |
-          for plan in examples/*.polkameter.xml; do
-            xmllint --noout --schema schemas/polkameter-plan.xsd "$plan"
-            cargo +${{ env.RUST_VERSION }} run -p polkameter --bin polkameter -- validate "$plan" --format json
-          done
+      - name: Action shell tests
+        run: python3 tests/action-smoke.py
       - name: CLI smoke
         run: |
           cargo +${{ env.RUST_VERSION }} build -p polkameter --bin polkameter
@@ -91,7 +91,11 @@ jobs:
         with:
           plan: examples/plugin-workflow.polkameter.xml
           plugins: target/debug/polkameter-example-plugin
+          fail-on: verdict
       - name: Assert the example plan passed
         env:
           EXIT_CODE: ${{ steps.plan.outputs.exit-code }}
-        run: test "$EXIT_CODE" = 0
+          VERDICT: ${{ steps.plan.outputs.verdict }}
+        run: |
+          test "$EXIT_CODE" = 0
+          test -z "$VERDICT"

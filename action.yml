@@ -24,6 +24,10 @@ inputs:
     description: Artifact root, relative to the workspace. The run creates one run-* directory inside it.
     required: false
     default: polkameter-runs
+  fail-on:
+    description: 'Failure policy: error (default) or verdict (also fail on a FAIL load verdict).'
+    required: false
+    default: error
   upload:
     description: Upload the run directory as a workflow artifact.
     required: false
@@ -41,17 +45,31 @@ outputs:
     description: The run directory, relative to the workspace.
     value: ${{ steps.run.outputs.run-dir }}
   exit-code:
-    description: The exit code of polkameter run. 0 passed, 1 failed checks or assertions, other values are errors.
+    description: 'The exit code of polkameter run. See "What fails the job" in docs/ci.md.'
     value: ${{ steps.run.outputs.exit-code }}
+  verdict:
+    description: Load verdict (PASS, WARN, FAIL or INCONCLUSIVE), or empty when no verdict was written.
+    value: ${{ steps.run.outputs.verdict }}
 runs:
   using: composite
   steps:
+    - name: Validate failure policy
+      shell: bash
+      env:
+        FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        case "$FAIL_ON" in
+          error|verdict) ;;
+          *) echo "::error::fail-on must be error or verdict"; exit 2 ;;
+        esac
     - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
       with:
         toolchain: ${{ inputs.toolchain }}
     - uses: Swatinem/rust-cache@v2
       with:
-        workspaces: ${{ github.action_path }} -> target
+        # A target dir of its own, so restoring the cache never overwrites the
+        # caller's target/ when the action runs from the same checkout (uses: ./).
+        workspaces: ${{ github.action_path }} -> .polkameter-action-target
         key: polkameter-action
     - name: Build PolkaMeter
       shell: bash
@@ -59,8 +77,8 @@ runs:
         TOOLCHAIN: ${{ inputs.toolchain }}
       run: |
         cargo +"$TOOLCHAIN" build --locked --release -p polkameter --bin polkameter \
-          --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml" --target-dir "$GITHUB_ACTION_PATH/target"
-        echo "$GITHUB_ACTION_PATH/target/release" >> "$GITHUB_PATH"
+          --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml" --target-dir "$GITHUB_ACTION_PATH/.polkameter-action-target"
+        echo "$GITHUB_ACTION_PATH/.polkameter-action-target/release" >> "$GITHUB_PATH"
     - name: Run the plan
       id: run
       shell: bash
@@ -71,7 +89,13 @@ runs:
         TOPOLOGIES: ${{ inputs.topologies }}
         CAPABILITIES: ${{ inputs.capabilities }}
         OUTPUT: ${{ inputs.output }}
+        FAIL_ON: ${{ inputs.fail-on }}
       run: |
+        run_args=("$PLAN" --output "$OUTPUT")
+        if [ "$FAIL_ON" = verdict ]; then
+          run_args+=(--fail-on-verdict)
+        fi
+
         # Prints the non-blank lines of $1 with surrounding spaces removed.
         lines() { printf '%s\n' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d'; }
         export POLKAMETER_PLUGIN_REGISTRY="$RUNNER_TEMP/polkameter/plugins.json"
@@ -95,16 +119,24 @@ runs:
         mkdir -p "$OUTPUT"
         find "$OUTPUT" -mindepth 1 -maxdepth 1 -type d -name 'run-*' | sort > "$RUNNER_TEMP/runs-before.txt"
         code=0
-        polkameter run "$PLAN" --output "$OUTPUT" || code=$?
+        polkameter run "${run_args[@]}" || code=$?
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
         run_dir=$(find "$OUTPUT" -mindepth 1 -maxdepth 1 -type d -name 'run-*' | sort | comm -13 "$RUNNER_TEMP/runs-before.txt" -)
         if [ "$(printf '%s\n' "$run_dir" | grep -c .)" -ne 1 ]; then
           echo "::error::Expected one new run directory in $OUTPUT"
           exit 1
         fi
-
-        cat "$run_dir/summary.md" >> "$GITHUB_STEP_SUMMARY"
         echo "run-dir=$run_dir" >> "$GITHUB_OUTPUT"
-        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+
+        verdict=""
+        if [ -f "$run_dir/summary.json" ]; then
+          if ! verdict=$(jq -r '.verdict.result // empty' "$run_dir/summary.json"); then
+            echo "::warning::Could not read verdict from $run_dir/summary.json"
+            verdict=""
+          fi
+        fi
+        echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+        cat "$run_dir/summary.md" >> "$GITHUB_STEP_SUMMARY"
     - name: Upload the run
       if: always() && inputs.upload == 'true' && steps.run.outputs.run-dir
       uses: actions/upload-artifact@v7

@@ -164,6 +164,27 @@ pub struct Artifact {
 	pub context: String,
 }
 
+/// The report's overall verdict, shared by JSON, Markdown and the exit policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum OverallStatus {
+	/// The rate cap was reached and all required checks have results.
+	Pass,
+	/// A check warned, without any failure or missing required result.
+	Warn,
+	/// A stop, failure mode, response measure or check failed.
+	Fail,
+	/// The rate cap was not reached, or a required check has no result.
+	Inconclusive,
+}
+
+/// The overall answer; evidence remains in the summary's existing fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunVerdict {
+	/// The same status printed in `summary.md`.
+	pub result: OverallStatus,
+}
+
 /// `summary.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -214,4 +235,7 @@ pub struct Summary {
 	/// Check results (the report adds them).
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub checks: Option<Value>,
+	/// Overall verdict, added with the final checks; absent in older or unfinished summaries.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub verdict: Option<RunVerdict>,
 }

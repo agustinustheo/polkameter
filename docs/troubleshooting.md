@@ -127,6 +127,12 @@ Polkameter: cannot read run directory target/no-such-run: No such file or direct
 
 ## Remote runs
 
+### remote agent does not support --fail-on-verdict; update the agent
+
+**Cause:** The client requested `--fail-on-verdict`, but the agent does not advertise support. The client stops before starting the run.
+
+**Fix:** Update the agent to the same PolkaMeter ref as the client. Or omit the flag to use the agent's default exit policy.
+
 ### remote runner returned 401 Unauthorized: missing or invalid bearer token
 
 **Cause:** The client's token does not match the agent's token.

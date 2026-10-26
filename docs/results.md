@@ -67,7 +67,7 @@ Written after teardown.
 | `state` | `exit_code` | When |
 | --- | --- | --- |
 | `completed` | `0` | No error. |
-| `completed_with_failures` | `1` | Smoke mode only: monitor problem, or required check with no result. Stress runs never reach it. |
+| `completed_with_failures` | `1` | A `FAIL` verdict with `--fail-on-verdict`, or a smoke-mode monitor problem or required check with no result. |
 | `stopped` | `130` | Ctrl-C, or a remote stop request. |
 | `failed` | `1` | Any error, including a failed `core.assert-equal` step and a report that could not be written. |
 
@@ -86,11 +86,22 @@ Sections of a load test's `summary.md`:
 
 ## summary.json
 
-The measurement writes `summary.json` first, so plugin checks can read it. The report rewrites it with the checks added, and writes `summary.md` only then. A plan without a load test writes no `summary.json`.
+The measurement writes `summary.json` first, so plugin checks can read it. The report rewrites it with the checks and verdict added, and writes `summary.md` only then.
+
+A plan without a load test writes no `summary.json`, so it has no verdict. Older summaries and the initial summary before checks have no `verdict` key.
+
+The `verdict` object in `summary.json` after running `polkameter report /tmp/polkameter-smoke-run` on a copy of `crates/cli/tests/fixtures/smoke-run` (with `scrapes.jsonl.gz` expanded to `scrapes.jsonl`):
+
+```json
+{
+  "result": "FAIL"
+}
+```
 
 | Key | Holds |
 | --- | --- |
-| `schemaVersion` | Layout version, `1`. |
+| `schemaVersion` | Layout version, `1`. Existing fields keep their layout. |
+| `verdict` | `result`: `PASS`, `WARN`, `FAIL` or `INCONCLUSIVE`, matching `summary.md`. Present after the report adds the checks. |
 | `scenario`, `runId`, `mode` | Plan name, run ID, `smoke` or `stress`. |
 | `artifact`, `params`, `budget`, `setupSeconds`, `extra` | Artifact, plan options, prepared transactions, setup time, chain genesis and transaction and node versions. |
 | `rules` | Effective thresholds, camel case (`minIncludedRatio`). |
@@ -105,6 +116,10 @@ The measurement writes `summary.json` first, so plugin checks can read it. The r
 | `network`, `runner` | Node URL, parachain ID, runtime spec version, block interval; CPU count and model. |
 | `steps` | Number of load steps. |
 | `checks` | `outcome`, `check`, `status`, `detail`, `numbers` if any. `"optional": true` on optional checks only. |
+
+The verdict uses the existing stop, failure modes, breaking point and checks. `breakingPoint` gives the failure onset; `maxSustained` gives the preceding step. Reasons remain in `stop.detail`, `breakingPoint.detail`, `failureModes` and `checks`, without copies inside `verdict`.
+
+[Read the results](reading-results.md#did-it-pass) lists the verdict rules. `--fail-on-verdict` changes the run's exit policy only; it does not change these rules.
 
 ## Loss accounting
 
@@ -211,7 +226,7 @@ One verdict is written as `- **Verdict:**` in `summary.md`. The first matching r
 | 3 | `WARN` | Any check is `warn`. |
 | 4 | `PASS` | Otherwise. |
 
-Plans without `<load>` have no verdict. Neither `execution.json` nor `summary.json` has a verdict key.
+`execution.json` has no verdict key. Completed load reports include the verdict in `summary.json`. Plans without `<load>` have no verdict and produce no `summary.json`.
 
 ## samples.jtl
 

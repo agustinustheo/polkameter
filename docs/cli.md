@@ -2,6 +2,18 @@
 
 `polkameter` validates, preflights and runs plans, reports on runs, manages plugins and serves a remote agent. Run `polkameter COMMAND --help` for one command's flags. Errors: see [Troubleshooting](troubleshooting.md).
 
+## --version
+
+Prints `polkameter <version>` and exits 0. `<version>` is the version of the build you installed. `-V` is the short form.
+
+```sh
+polkameter --version
+```
+
+```text
+polkameter <version>
+```
+
 ## validate
 
 Checks a plan's structure without starting plugins or connecting to a chain. [Plans](plans.md#validation-rules) lists the rules.
@@ -52,8 +64,8 @@ Preflight passed.
 Runs a plan. A local run writes a run directory under `--output`. A remote run sends the plan's XML to an agent, which runs it and keeps the run directory there.
 
 ```sh
-polkameter run [--output DIR] [--credential-env ENV_VAR] [--format human|json] PLAN
-polkameter run --remote URL --remote-token-env ENV_VAR [--format human|json] PLAN
+polkameter run [--output DIR] [--credential-env ENV_VAR] [--fail-on-verdict] [--format human|json] PLAN
+polkameter run --remote URL --remote-token-env ENV_VAR [--fail-on-verdict] [--format human|json] PLAN
 ```
 
 | Name | Required | Meaning |
@@ -61,9 +73,12 @@ polkameter run --remote URL --remote-token-env ENV_VAR [--format human|json] PLA
 | `PLAN` | yes | The plan file |
 | `--output DIR` | yes, unless `--remote` | The artifact root |
 | `--credential-env` | no | Reads the only credential from this variable. Not allowed with `--remote` |
+| `--fail-on-verdict` | no | Default off. Exit `1` on a `FAIL` load verdict after writing the report and running teardown. Other verdicts and plans without a load test keep their existing exit behavior |
 | `--remote URL` | no | The agent's endpoint. See [remote agent](#remote-agent) |
 | `--remote-token-env` | with `--remote` | The variable that holds the agent's bearer token |
 | `--format` | no | `human` (default) or `json`. See [output formats](#output-formats) |
+
+With `--remote`, the agent applies `--fail-on-verdict` and records the exit code in its run directory. If the agent does not support the flag, the client refuses to start the run; update the agent first.
 
 Ctrl-C stops a local run, keeping what it wrote. With `--remote`, Ctrl-C asks the agent to stop the run and waits for the outcome.
 
@@ -283,6 +298,8 @@ curl http://127.0.0.1:9901/health
 
 Every route except `/health` needs `Authorization: Bearer TOKEN`. A missing or wrong token gets `401 Unauthorized`. Requests and responses are JSON; a plan is sent as `{"xml": "..."}`.
 
+`POST /runs` also accepts `"options": {"failOnVerdict": true}`; the default is `false`. `GET /plugins` advertises support as `"runOptions": {"failOnVerdict": true}`.
+
 | Method and path | Purpose |
 | --- | --- |
 | `GET /health` | Liveness |
@@ -305,14 +322,14 @@ The client checks each run ID: at most 128 characters, from letters, digits, `-`
 | Code | Meaning | Typical cause |
 | --- | --- | --- |
 | `0` | A command succeeded, or a run ended `completed` | Nothing to fix |
-| `1` | A run ended `failed`, or a `report` or remote request failed | A plugin crashed or errored, a deadline or assertion failed, a credential was unavailable, or the agent refused a request. A smoke-mode load run also exits 1 on a monitor problem or a missing required check |
+| `1` | A run ended `failed` or `completed_with_failures`, or a `report` or remote request failed | A plugin crashed or errored, a deadline or assertion failed, a credential was unavailable, or the agent refused a request. A smoke-mode load run also exits 1 on a monitor problem or a missing required check. With `--fail-on-verdict`, a `FAIL` verdict also exits 1 |
 | `2` | Invalid input or usage | A malformed or invalid plan, a bad flag or argument, an unreadable registry, or a wrong remote endpoint or token variable |
 | `3` | Preflight failed | A plugin not installed, a checksum or version mismatch, an operation missing from its manifest, a preflight step that can change state, no calibration answer from the chain, or an unregistered `<monitors>` alias |
 | `130` | Stopped | Ctrl-C (SIGINT) during a local run, or a stopped remote run |
 
 A `run` never exits with `3`. A preflight failure inside a run makes it `failed`, with exit code 1.
 
-A stress-mode load run exits `0` whatever its verdict. Read the verdict in [reading the results](reading-results.md).
+By default, a stress-mode load run exits `0` whatever its verdict. Add `--fail-on-verdict` to exit `1` on `FAIL`. This uses the existing failed-run code; `WARN` and `INCONCLUSIVE` do not trigger it. See [reading the results](reading-results.md).
 
 ## Environment variables
 
