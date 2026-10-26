@@ -51,7 +51,9 @@ runs:
         toolchain: ${{ inputs.toolchain }}
     - uses: Swatinem/rust-cache@v2
       with:
-        workspaces: ${{ github.action_path }} -> target
+        # A target dir of its own, so restoring the cache never overwrites the
+        # caller's target/ when the action runs from the same checkout (uses: ./).
+        workspaces: ${{ github.action_path }} -> .polkameter-action-target
         key: polkameter-action
     - name: Build PolkaMeter
       shell: bash
@@ -59,8 +61,8 @@ runs:
         TOOLCHAIN: ${{ inputs.toolchain }}
       run: |
         cargo +"$TOOLCHAIN" build --locked --release -p polkameter --bin polkameter \
-          --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml" --target-dir "$GITHUB_ACTION_PATH/target"
-        echo "$GITHUB_ACTION_PATH/target/release" >> "$GITHUB_PATH"
+          --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml" --target-dir "$GITHUB_ACTION_PATH/.polkameter-action-target"
+        echo "$GITHUB_ACTION_PATH/.polkameter-action-target/release" >> "$GITHUB_PATH"
     - name: Run the plan
       id: run
       shell: bash
