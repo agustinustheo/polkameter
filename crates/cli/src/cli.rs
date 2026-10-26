@@ -6,7 +6,7 @@ use std::{io::Write, path::PathBuf, sync::Arc, time::Duration};
 use anyhow::Context as _;
 use clap::{Parser, Subcommand, ValueEnum};
 use polkameter_engine::{
-	execute::{Outcome, RunOptions},
+	execute::{Outcome, RunOptions, RunState},
 	plan::Plan,
 	plugins::Registry,
 };
@@ -271,17 +271,96 @@ async fn run_local(
 	.await;
 	interrupt.abort();
 	let outcome = result.map_err(|e| CliError::Runtime(e.to_string()))?;
-	write_artifact_written(format, "Run", &outcome);
+	write_artifact_written(format, RunLocation::Local, &outcome);
 	Ok(outcome.exit_code)
 }
 
-/// Reports a finished run's artifacts; `label` opens the human-readable line.
-fn write_artifact_written(format: OutputFormat, label: &str, outcome: &Outcome) {
+/// Where a run executed, which decides how its result lines are worded.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RunLocation {
+	Local,
+	Remote,
+}
+
+/// Reports a finished run's artifacts. A failed run also prints its reason to standard error in
+/// both formats.
+fn write_artifact_written(format: OutputFormat, location: RunLocation, outcome: &Outcome) {
+	let label = match location {
+		RunLocation::Local => "Run",
+		RunLocation::Remote => "Remote run",
+	};
 	write_result(
 		format,
 		&json!({"event":"artifact-written","outcome":outcome}),
 		format!("{label} {}. Artifacts: {}", outcome.state, outcome.artifact_dir.display()),
 	);
+	if let Some(reason) = failure_reason(location, outcome) {
+		eprintln!("Polkameter: {reason}");
+	}
+}
+
+/// Longest reason, in characters, that the failure line prints. `execution.json` keeps it all.
+const MAX_REASON_CHARS: usize = 300;
+
+/// The one-line reason for a failed run, naming the file that holds the details.
+fn failure_reason(location: RunLocation, outcome: &Outcome) -> Option<String> {
+	if outcome.state != RunState::Failed {
+		return None;
+	}
+	let error = one_line(outcome.error.as_deref().unwrap_or("no reason recorded"));
+	let execution = outcome.artifact_dir.join("execution.json");
+	Some(match location {
+		RunLocation::Local => {
+			format!("run failed: {error} (details in {})", execution.display())
+		},
+		RunLocation::Remote => {
+			format!("remote run failed: {error} (details in {} on the agent)", execution.display())
+		},
+	})
+}
+
+/// `text` made safe for one terminal line. CSI escape sequences (colours, cursor movement) are
+/// removed, line breaks become ` ⏎ `, and other control characters, including the ESC of any other
+/// escape sequence, and bidirectional-override characters are escaped as `\u{…}`. The rendered
+/// line is cut to at most [`MAX_REASON_CHARS`] characters, never inside an escape, followed by `…`.
+fn one_line(text: &str) -> String {
+	let mut line = String::new();
+	let mut length = 0;
+	let mut chars = text.trim().chars().peekable();
+	while let Some(c) = chars.next() {
+		let piece = match c {
+			// CSI sequence: ESC [ parameters final-byte.
+			'\u{1b}' if chars.peek() == Some(&'[') => {
+				chars.next();
+				for c in chars.by_ref() {
+					if ('\u{40}'..='\u{7e}').contains(&c) {
+						break;
+					}
+				}
+				continue;
+			},
+			'\r' | '\n' => {
+				if c == '\r' && chars.peek() == Some(&'\n') {
+					chars.next();
+				}
+				" ⏎ ".to_owned()
+			},
+			c if c.is_control()
+				|| matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') =>
+			{
+				c.escape_unicode().to_string()
+			},
+			c => c.to_string(),
+		};
+		let piece_length = piece.chars().count();
+		if length + piece_length > MAX_REASON_CHARS {
+			line.push('…');
+			break;
+		}
+		line.push_str(&piece);
+		length += piece_length;
+	}
+	line
 }
 
 fn report(path: PathBuf, format: OutputFormat) -> Result<i32, CliError> {
@@ -423,7 +502,7 @@ async fn run_plugin_remote(
 			remote::plugin_status(&started.id, &target).await.map_err(CliError::Runtime)?;
 		if status.state != "running" {
 			if let Some(outcome) = status.outcome {
-				write_artifact_written(format, "Remote run", &outcome);
+				write_artifact_written(format, RunLocation::Remote, &outcome);
 				return Ok(outcome.exit_code);
 			}
 			return Err(CliError::Runtime(
@@ -496,6 +575,78 @@ mod tests {
 		};
 		let cause = std::fs::read_to_string("does/not/exist.xml").unwrap_err();
 		assert_eq!(error.to_string(), format!("cannot read plan does/not/exist.xml: {cause}"));
+	}
+
+	#[test]
+	fn only_failed_runs_have_a_failure_reason() {
+		let outcome = |state, error: Option<&str>| Outcome {
+			artifact_dir: PathBuf::from("runs/run-1"),
+			exit_code: 1,
+			state,
+			error: error.map(Into::into),
+		};
+		let execution = std::path::Path::new("runs/run-1").join("execution.json");
+		let local = |state, error| failure_reason(RunLocation::Local, &outcome(state, error));
+		assert_eq!(
+			local(RunState::Failed, Some("assertion check failed")),
+			Some(format!(
+				"run failed: assertion check failed (details in {})",
+				execution.display()
+			))
+		);
+		assert_eq!(
+			failure_reason(RunLocation::Remote, &outcome(RunState::Failed, Some("boom"))),
+			Some(format!(
+				"remote run failed: boom (details in {} on the agent)",
+				execution.display()
+			))
+		);
+		assert_eq!(
+			local(RunState::Failed, None),
+			Some(format!("run failed: no reason recorded (details in {})", execution.display()))
+		);
+		assert_eq!(local(RunState::Completed, None), None);
+		assert_eq!(local(RunState::CompletedWithFailures, None), None);
+		assert_eq!(local(RunState::Stopped, Some("run cancelled")), None);
+	}
+
+	#[test]
+	fn failure_reasons_fit_on_one_safe_line() {
+		assert_eq!(
+			one_line("plugin failed:\nfirst line\r\nsecond line\n"),
+			"plugin failed: ⏎ first line ⏎ second line"
+		);
+		assert_eq!(
+			one_line("\u{1b}[31mred\u{1b}[0m \u{1b}]0;title\u{7} tab\there \u{202e}txt"),
+			"red \\u{1b}]0;title\\u{7} tab\\u{9}here \\u{202e}txt"
+		);
+		let long = "x".repeat(100_000);
+		let line = one_line(&long);
+		assert_eq!(line, format!("{}…", "x".repeat(MAX_REASON_CHARS)));
+		assert_eq!(one_line(&"x".repeat(MAX_REASON_CHARS)), "x".repeat(MAX_REASON_CHARS));
+		assert_eq!(one_line("été 🚀"), "été 🚀");
+		// The cap applies to the rendered line and never cuts an escape in half.
+		let escaped = one_line(&"\u{202e}".repeat(1_000));
+		assert_eq!(escaped, format!("{}…", "\\u{202e}".repeat(MAX_REASON_CHARS / 8)));
+		assert!(escaped.chars().count() <= MAX_REASON_CHARS + 1);
+		let mixed = one_line(&"a\u{1}\n".repeat(1_000));
+		// Each repeat renders as 9 characters; after 33 of them and an `a` (298), `\u{1}` no
+		// longer fits whole.
+		assert_eq!(mixed, format!("{}a…", "a\\u{1} ⏎ ".repeat(33)));
+		assert!(mixed.chars().count() <= MAX_REASON_CHARS + 1);
+		let reason = failure_reason(
+			RunLocation::Local,
+			&Outcome {
+				artifact_dir: PathBuf::from("runs/run-1"),
+				exit_code: 1,
+				state: RunState::Failed,
+				error: Some(format!("a\nb\u{1b}[1m{long}")),
+			},
+		)
+		.unwrap();
+		assert!(!reason.contains('\n') && !reason.contains('\u{1b}'));
+		assert!(reason.starts_with("run failed: a ⏎ bxxx"));
+		assert!(reason.len() < MAX_REASON_CHARS + 100);
 	}
 
 	#[test]

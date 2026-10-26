@@ -29,8 +29,9 @@ done
 # Assertion failures exit 1 under the default policy; this plan has no load verdict.
 sed 's/name="expected" value="84"/name="expected" value="85"/' "$plan" > "$work/failing.xml"
 code=0
-"$cli" run "$work/failing.xml" --output "$work/failing" > /dev/null 2>&1 || code=$?
+"$cli" run "$work/failing.xml" --output "$work/failing" > /dev/null 2> "$work/failing.err" || code=$?
 [ "$code" -eq 1 ] || { echo "a failed assertion exited $code, expected 1" >&2; exit 1; }
+grep -q '^Polkameter: run failed: assertion verified failed (details in ' "$work/failing.err"
 
 # Exercise the action's jq expression on a real FAIL report, not the shell-test stub.
 mkdir "$work/recorded"

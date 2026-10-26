@@ -94,6 +94,20 @@ Run completed. Artifacts: ~/polkameter/runs/run-1792255021142-12303-1
 
 Phase lines go to standard error. The last line, on standard output, names the run directory.
 
+If the run fails, PolkaMeter also prints the reason on standard error, in both formats. The exit code is 1 and the run directory is kept. Here, a plugin process exited in the middle of a step:
+
+```text
+Phase: preflight
+Phase: setup
+Phase: teardown
+Run failed. Artifacts: ~/polkameter/runs/run-1792994214466-72728-1
+Polkameter: run failed: plugin exited before responding (details in ~/polkameter/runs/run-1792994214466-72728-1/execution.json)
+```
+
+The reason stays on one line. Colour and cursor codes are removed, and line breaks show as `⏎`. Other control characters, including the start of other terminal escape sequences such as a window title, are shown escaped, like `\u{1b}`. The printed reason is cut at 300 characters with `…`, and `execution.json` keeps the full text.
+
+A failed remote run prints `Polkameter: remote run failed: <reason> (details in <run directory>/execution.json on the agent)`. The run directory is on the agent host. See [Troubleshooting](troubleshooting.md#run-failed--details-in-executionjson) for the reasons.
+
 ## report
 
 Rebuilds a run's outputs from its files without running the plan.
@@ -340,7 +354,8 @@ polkameter validate examples/plugin-workflow.polkameter.xml --format json
 {"event":"validation","plan":"Plugin data flow","valid":true}
 ```
 
-- **Errors** go to standard error as `Polkameter: <message>`, even with `--format json`.
+- **Errors** go to standard error as `Polkameter: <message>`, even with `--format json`. A failed run adds `Polkameter: run failed: <reason> (details in …)` there.
+- **Standard output** keeps only JSON lines. A failed run's full reason is the `error` field of the `completed` and `artifact-written` outcomes.
 - **Load runs** also print `stop:`, `loss check:` and `smoke:` lines, and the summary, to standard error.
 
 The CLI adds a final line: `artifact-written` for `run`, `validation` for `validate`, `report` for `report`, with the summary text. A remote run prints only `artifact-written`, because the agent does not stream events. Fields are in [events.jsonl](results.md#eventsjsonl).

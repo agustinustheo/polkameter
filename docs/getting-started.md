@@ -182,10 +182,11 @@ Phase: setup
 Phase: workflow
 Phase: teardown
 Run failed. Artifacts: ~/polkameter/target/runs/run-…
+Polkameter: run failed: assertion verified failed (details in ~/polkameter/target/runs/run-…/execution.json)
 1
 ```
 
-The terminal says only that the run failed. The error is in `summary.md`:
+The last line before the exit code gives the reason: the step `verified` found a different value. The run directory keeps the same error in `summary.md`:
 
 ```sh
 cat target/runs/<run>/summary.md
