@@ -19,9 +19,9 @@ Run failed. Artifacts: ~/polkameter/target/runs/run-…
 Polkameter: run failed: assertion verified failed (details in ~/polkameter/target/runs/run-…/execution.json)
 ```
 
-**Cause:** The run started, but a step, a plugin or a deadline failed it. The text after `run failed:` is the reason. Many reasons have their own entry on this page, such as [`assertion <id> failed`](#assertion--failed). `run` exits `1` and keeps the run directory. A remote run prints `remote run failed:` and names the run directory on the agent.
+**Cause:** The run started, but a step, a plugin or a deadline failed it. The text after `run failed:` is the reason. Many reasons have their own entry on this page, such as [`assertion <id> failed`](#assertion--failed).
 
-**Fix:** Find the reason on this page. `summary.md` and `execution.json` in the run directory hold the same error. The step that failed is in `events.jsonl`, as a `step-finished` event with `"success":false`.
+**Fix:** Find the reason on this page. `execution.json` in the run directory holds the full error. If a step failed, `events.jsonl` names it in a `step-finished` event with `"success":false`. A failure outside a step, such as a missing plugin or the plan's deadline, has no such event, so read `execution.json`.
 
 ## Plans
 
