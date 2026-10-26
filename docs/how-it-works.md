@@ -68,11 +68,11 @@ After the load, PolkaMeter checks each transaction against two sources: the fina
 
 So the counts add up to the number of transactions sent. A transaction is `lost` only when both sources were read and neither holds it. Without the walk of the finalized chain, a transaction that a reorg moved would look lost. Anything the run could not check becomes `unknown` or `unverified`, so a failed read cannot create a loss.
 
-## Why stress mode exits 0
+## Why stress mode exits 0 by default
 
-A stress run measures where the chain stops keeping up, and finding that point is its job. So the exit code reports whether PolkaMeter finished without an error of its own. A breaking point, a `FAIL` verdict or a failed check goes into the verdict and `summary.md`. None of them changes the exit code.
+A stress run measures where the chain stops keeping up, and finding that point is its job. By default, the exit code reports whether PolkaMeter finished without an error of its own. A breaking point, a `FAIL` verdict or a failed check goes into `summary.json` and `summary.md` without changing the default exit code.
 
-Smoke mode is the CI gate. It ends the load at the first monitor problem, and it exits `1` on a monitor problem or on a required check with no result. To fail a stress job on its verdict, read `summary.md` in the job.
+Smoke mode ends the load at the first monitor problem, and it exits `1` on a monitor problem or on a required check with no result. To also exit `1` on a `FAIL` verdict in either mode, use `polkameter run --fail-on-verdict`, or set `fail-on: verdict` on the [GitHub Action](ci.md#what-fails-the-job).
 
 ## For contributors
 

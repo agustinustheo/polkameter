@@ -4,7 +4,7 @@ A load run writes its answers to `summary.md` in its run directory. The examples
 
 ## Did it pass?
 
-The verdict is on the `- **Verdict:**` line of `summary.md`. The first rule that matches decides it:
+The verdict is on the `- **Verdict:**` line of `summary.md` and in `summary.json` at `verdict.result`. The first rule that matches decides it:
 
 - **FAIL:** the load ended on a graceful or hard stop, a failure mode was recorded, a breaking point was found, or a check failed.
 - **INCONCLUSIVE:** the load ended on budget used up, generator limit or smoke error, or every step ran but a required check has no result. The chain was not pushed to its limit, so the run tells you little.
@@ -24,11 +24,11 @@ Three separate things tell you how a run ended:
 
 | Question | Where to look | Example |
 | --- | --- | --- |
-| Did the chain pass the test? | Verdict in `summary.md` | `FAIL` |
+| Did the chain pass the test? | Verdict in `summary.md`, or `verdict.result` in `summary.json` | `FAIL` |
 | Why did the load stop? | `Load stop:` in `summary.md`, or `stop` in `summary.json` | `rate cap: all 3 steps ran` |
 | Did the run finish without an error? | Exit code, and `state` in `execution.json` | `0`, `completed` |
 
-> **Warning:** Exit code `0` does not mean the test passed. In stress mode, a run with verdict `FAIL` still completes with exit code `0`. Read the verdict. A smoke-mode plan (`mode="smoke"`) also exits `1` on a monitor problem or a required check with no result.
+> **Warning:** Exit code `0` does not mean the test passed. By default, a stress-mode run with verdict `FAIL` still completes with exit code `0`. Use [`--fail-on-verdict`](cli.md#run), or [`fail-on: verdict`](ci.md#what-fails-the-job) in the action, to make `FAIL` exit `1`. A smoke-mode plan (`mode="smoke"`) also exits `1` on a monitor problem or a required check with no result.
 
 The outcome checks table at the end of `summary.md` gives each check a status: `pass`, `warn`, `fail`, `info` or `no result`. In the example, the relay slots check failed. A failed check makes the verdict FAIL, as a breaking point does.
 

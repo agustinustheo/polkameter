@@ -5,7 +5,11 @@ use std::{io::Write, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::Context as _;
 use clap::{Parser, Subcommand, ValueEnum};
-use polkameter_engine::{execute::Outcome, plan::Plan, plugins::Registry};
+use polkameter_engine::{
+	execute::{Outcome, RunOptions},
+	plan::Plan,
+	plugins::Registry,
+};
 use serde_json::{Value, json};
 
 use crate::remote::{self, RemoteRunnerTarget};
@@ -49,6 +53,10 @@ enum Command {
 		/// Environment variable for the plan's only credential, instead of its configured profile.
 		#[arg(long, conflicts_with = "remote")]
 		credential_env: Option<String>,
+		/// Exit 1 when a load test's verdict is FAIL. By default, verdicts do not affect the exit
+		/// code; runtime and smoke-mode failures still exit 1. Plans without a load test are unaffected.
+		#[arg(long)]
+		fail_on_verdict: bool,
 		/// Remote runner endpoint. It must use HTTPS or be a loopback HTTP tunnel.
 		#[arg(long)]
 		remote: Option<String>,
@@ -179,18 +187,33 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 			write_result(format, &result, "Preflight passed.".into());
 			Ok(0)
 		},
-		Command::Run { plan: path, output, credential_env, remote, remote_token_env, format } => {
+		Command::Run {
+			plan: path,
+			output,
+			credential_env,
+			remote,
+			remote_token_env,
+			fail_on_verdict,
+			format,
+		} => {
 			let (xml, plan) = load(&path)?;
+			let options = RunOptions { fail_on_verdict };
 			match remote {
 				Some(endpoint) => {
-					run_plugin_remote(remote_target(endpoint, remote_token_env)?, xml, format).await
+					run_plugin_remote(
+						remote_target(endpoint, remote_token_env)?,
+						xml,
+						format,
+						options,
+					)
+					.await
 				},
 				None => {
 					let output = output.ok_or_else(|| {
 						CliError::Invalid("--output is required without --remote".into())
 					})?;
 					let registry = registry(&plan, credential_env)?;
-					run_local(plan, registry, output, format).await
+					run_local(plan, registry, output, format, options).await
 				},
 			}
 		},
@@ -226,6 +249,7 @@ async fn run_local(
 	registry: Registry,
 	output: PathBuf,
 	format: OutputFormat,
+	options: RunOptions,
 ) -> Result<i32, CliError> {
 	let cancel = tokio_util::sync::CancellationToken::new();
 	let signal = cancel.clone();
@@ -241,7 +265,10 @@ async fn run_local(
 			eprintln!("Phase: {}", event["phase"].as_str().unwrap_or("unknown"));
 		}
 	});
-	let result = polkameter_engine::execute::run(plan, registry, &output, cancel, sink).await;
+	let result = polkameter_engine::execute::run_with_options(
+		plan, registry, &output, cancel, sink, options,
+	)
+	.await;
 	interrupt.abort();
 	let outcome = result.map_err(|e| CliError::Runtime(e.to_string()))?;
 	write_artifact_written(format, "Run", &outcome);
@@ -384,8 +411,11 @@ async fn run_plugin_remote(
 	target: RemoteRunnerTarget,
 	xml: String,
 	format: OutputFormat,
+	options: RunOptions,
 ) -> Result<i32, CliError> {
-	let started = remote::plugin_start(&target, xml).await.map_err(CliError::Runtime)?;
+	let started = remote::plugin_start_with_options(&target, xml, options)
+		.await
+		.map_err(CliError::Runtime)?;
 	let mut interrupt = Box::pin(tokio::signal::ctrl_c());
 	let mut stopped = false;
 	loop {
@@ -449,7 +479,12 @@ mod tests {
 				.collect::<Vec<_>>()
 		};
 		assert_eq!(verdicts(&replayed), verdicts(&recorded));
-		assert!(directory.join("summary.md").is_file());
+		assert_eq!(replayed["verdict"]["result"], "FAIL");
+		assert!(
+			std::fs::read_to_string(directory.join("summary.md"))
+				.unwrap()
+				.contains("- **Verdict:** FAIL")
+		);
 		assert_eq!(replayed["loss"], recorded["loss"]);
 		std::fs::remove_dir_all(directory).unwrap();
 	}
@@ -468,6 +503,19 @@ mod tests {
 		let parses = |args: &[&str]| Cli::try_parse_from([&["polkameter"], args].concat()).is_ok();
 		assert!(parses(&["validate", "plan.xml"]));
 		assert!(parses(&["run", "plan.xml", "--output", "runs"]));
+		let cli = Cli::try_parse_from([
+			"polkameter",
+			"run",
+			"plan.xml",
+			"--output",
+			"runs",
+			"--fail-on-verdict",
+		])
+		.unwrap();
+		assert!(matches!(cli.command, Command::Run { fail_on_verdict: true, .. }));
+		let cli =
+			Cli::try_parse_from(["polkameter", "run", "plan.xml", "--output", "runs"]).unwrap();
+		assert!(matches!(cli.command, Command::Run { fail_on_verdict: false, .. }));
 		assert!(parses(&["agent", "serve"]));
 		assert!(!parses(&["run", "plan.xml"]));
 		assert!(!parses(&["run", "plan.xml", "--output", "runs", "--remote-token-env", "T"]));

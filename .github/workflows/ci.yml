@@ -46,6 +46,8 @@ jobs:
         run: |
           cargo install cargo-audit --locked --version 0.22.2
           cargo audit
+      - name: Action shell tests
+        run: python3 tests/action-smoke.py
       - name: CLI smoke
         run: |
           cargo +${{ env.RUST_VERSION }} build -p polkameter --bin polkameter
@@ -89,7 +91,11 @@ jobs:
         with:
           plan: examples/plugin-workflow.polkameter.xml
           plugins: target/debug/polkameter-example-plugin
+          fail-on: verdict
       - name: Assert the example plan passed
         env:
           EXIT_CODE: ${{ steps.plan.outputs.exit-code }}
-        run: test "$EXIT_CODE" = 0
+          VERDICT: ${{ steps.plan.outputs.verdict }}
+        run: |
+          test "$EXIT_CODE" = 0
+          test -z "$VERDICT"
