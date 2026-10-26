@@ -42,12 +42,10 @@ jobs:
         run: |
           cargo install cargo-audit --locked --version 0.22.2
           cargo audit
-      - name: Verify the example plans
+      - name: Verify schema, example plans and documentation plans
         run: |
-          for plan in examples/*.polkameter.xml; do
-            xmllint --noout --schema schemas/polkameter-plan.xsd "$plan"
-            cargo +${{ env.RUST_VERSION }} run -p polkameter --bin polkameter -- validate "$plan" --format json
-          done
+          cargo +${{ env.RUST_VERSION }} build -p polkameter --bin polkameter
+          python3 tests/validate-plans.py
       - name: CLI smoke
         run: |
           cargo +${{ env.RUST_VERSION }} build -p polkameter --bin polkameter
