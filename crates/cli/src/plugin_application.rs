@@ -44,6 +44,17 @@ pub async fn start(
 	state: Arc<State>,
 	sink: execute::EventSink,
 ) -> Result<Status, String> {
+	start_with_options(xml, root, state, sink, execute::RunOptions::default()).await
+}
+
+/// Starts a run with an explicit exit policy on the host that writes its artifacts.
+pub async fn start_with_options(
+	xml: String,
+	root: String,
+	state: Arc<State>,
+	sink: execute::EventSink,
+	options: execute::RunOptions,
+) -> Result<Status, String> {
 	let (plan, registry) = resolve(&xml).map_err(|e| e.to_string())?;
 	let mut status = state.status.lock().await;
 	if status.state == "running" {
@@ -76,7 +87,8 @@ pub async fn start(
 		// A panic in the run, or in its event sink, ends this inner task and surfaces as a
 		// JoinError.
 		let result = tokio::spawn(async move {
-			execute::run(plan, registry, Path::new(&root), token, progress).await
+			execute::run_with_options(plan, registry, Path::new(&root), token, progress, options)
+				.await
 		})
 		.await
 		.unwrap_or_else(|_| Err(anyhow::anyhow!("run task panicked; see host/plugin diagnostics")));

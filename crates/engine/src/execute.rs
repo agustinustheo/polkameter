@@ -373,6 +373,15 @@ async fn calibrate(plan: &Plan, directory: &Path) -> Result<Option<Value>> {
 	Ok(Some(calibration))
 }
 
+/// Opt-in run exit policies. Defaults preserve the original run behavior.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunOptions {
+	/// Return exit code 1 when the load report's overall verdict is FAIL.
+	#[serde(default)]
+	pub fail_on_verdict: bool,
+}
+
 /// Runs a plan in a new directory under `root`. Phases: preflight, setup, workflows, measurement,
 /// evaluate, then teardown, which runs whenever the plugins started. The outcome is written to the
 /// run directory and returned; its exit code is 130 when the run was cancelled.
@@ -382,6 +391,18 @@ pub async fn run(
 	root: &Path,
 	cancel: CancellationToken,
 	sink: EventSink,
+) -> Result<Outcome> {
+	run_with_options(plan, registry, root, cancel, sink, RunOptions::default()).await
+}
+
+/// Runs a plan with explicit exit policies, persisted in the outcome after teardown.
+pub async fn run_with_options(
+	plan: Plan,
+	registry: Registry,
+	root: &Path,
+	cancel: CancellationToken,
+	sink: EventSink,
+	options: RunOptions,
 ) -> Result<Outcome> {
 	plan.validate()?;
 	// A new `run-…` directory under `root`: a run never reuses one.
@@ -407,6 +428,7 @@ pub async fn run(
 		cancel,
 		log,
 		started: Instant::now(),
+		options,
 	};
 	let result = Box::pin(run.execute(credentials)).await;
 	run.outcome(result)
@@ -421,6 +443,7 @@ struct Run<'a> {
 	cancel: CancellationToken,
 	log: Log,
 	started: Instant,
+	options: RunOptions,
 }
 
 impl Run<'_> {
@@ -514,7 +537,7 @@ impl Run<'_> {
 					checks_error = Some(e);
 					Vec::new()
 				});
-				measurement::report(&dir, measured, &checks)?
+				measurement::report(&dir, measured, &checks, self.options.fail_on_verdict)?
 			},
 			None => 0,
 		};

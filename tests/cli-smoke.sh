@@ -17,18 +17,18 @@ trap '[ -n "$agent" ] && kill "$agent" 2>/dev/null; rm -rf "$work"' EXIT
 "$cli" validate "$plan" --format json | grep -q '"valid":true'
 "$cli" preflight "$plan" --format json > /dev/null
 
-"$cli" run "$plan" --output "$work/local" --format json > "$work/local.json"
+"$cli" run "$plan" --output "$work/local" --fail-on-verdict --format json > "$work/local.json"
 run=$(ls -d "$work"/local/run-*)
+[ ! -e "$run/summary.json" ]
 "$cli" report "$run" --format json | grep -q '"exit_code":0'
 for file in events.jsonl execution.json samples.jtl summary.md plots/throughput.svg; do
 	[ -s "$run/$file" ] || { echo "missing $file" >&2; exit 1; }
 done
 
 sed 's/name="expected" value="84"/name="expected" value="85"/' "$plan" > "$work/failing.xml"
-if "$cli" run "$work/failing.xml" --output "$work/failing" > /dev/null 2>&1; then
-	echo "a failed assertion exited zero" >&2
-	exit 1
-fi
+code=0
+"$cli" run "$work/failing.xml" --output "$work/failing" --fail-on-verdict > /dev/null 2>&1 || code=$?
+[ "$code" -eq 1 ] || { echo "a failed assertion exited $code, expected 1" >&2; exit 1; }
 
 port=$((20000 + RANDOM % 20000))
 export POLKAMETER_AGENT_TOKEN=smoke-token
@@ -39,5 +39,5 @@ for _ in $(seq 1 50); do
 	sleep 0.2
 done
 "$cli" run "$plan" --remote "http://127.0.0.1:$port" --remote-token-env POLKAMETER_AGENT_TOKEN \
-	--format json | grep -q '"exit_code":0'
+	--fail-on-verdict --format json | grep -q '"exit_code":0'
 echo "CLI smoke passed"

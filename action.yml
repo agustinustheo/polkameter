@@ -24,6 +24,10 @@ inputs:
     description: Artifact root, relative to the workspace. The run creates one run-* directory inside it.
     required: false
     default: polkameter-runs
+  fail-on:
+    description: 'Failure policy: error (default) or verdict (also fail on a FAIL load verdict).'
+    required: false
+    default: error
   upload:
     description: Upload the run directory as a workflow artifact.
     required: false
@@ -41,8 +45,11 @@ outputs:
     description: The run directory, relative to the workspace.
     value: ${{ steps.run.outputs.run-dir }}
   exit-code:
-    description: The exit code of polkameter run. 0 passed, 1 failed checks or assertions, other values are errors.
+    description: The exit code of polkameter run. 0 completed, 1 runtime failure or failed verdict when opted in; see the CLI exit codes.
     value: ${{ steps.run.outputs.exit-code }}
+  verdict:
+    description: Load verdict (PASS, WARN, FAIL or INCONCLUSIVE), or empty when no verdict was written.
+    value: ${{ steps.run.outputs.verdict }}
 runs:
   using: composite
   steps:
@@ -71,7 +78,15 @@ runs:
         TOPOLOGIES: ${{ inputs.topologies }}
         CAPABILITIES: ${{ inputs.capabilities }}
         OUTPUT: ${{ inputs.output }}
+        FAIL_ON: ${{ inputs.fail-on }}
       run: |
+        run_args=("$PLAN" --output "$OUTPUT")
+        case "$FAIL_ON" in
+          error) ;;
+          verdict) run_args+=(--fail-on-verdict) ;;
+          *) echo "::error::fail-on must be error or verdict"; exit 2 ;;
+        esac
+
         # Prints the non-blank lines of $1 with surrounding spaces removed.
         lines() { printf '%s\n' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d'; }
         export POLKAMETER_PLUGIN_REGISTRY="$RUNNER_TEMP/polkameter/plugins.json"
@@ -95,13 +110,18 @@ runs:
         mkdir -p "$OUTPUT"
         find "$OUTPUT" -mindepth 1 -maxdepth 1 -type d -name 'run-*' | sort > "$RUNNER_TEMP/runs-before.txt"
         code=0
-        polkameter run "$PLAN" --output "$OUTPUT" || code=$?
+        polkameter run "${run_args[@]}" || code=$?
         run_dir=$(find "$OUTPUT" -mindepth 1 -maxdepth 1 -type d -name 'run-*' | sort | comm -13 "$RUNNER_TEMP/runs-before.txt" -)
         if [ "$(printf '%s\n' "$run_dir" | grep -c .)" -ne 1 ]; then
           echo "::error::Expected one new run directory in $OUTPUT"
           exit 1
         fi
 
+        verdict=""
+        if [ -f "$run_dir/summary.json" ]; then
+          verdict=$(jq -r '.verdict.result // empty' "$run_dir/summary.json")
+        fi
+        echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
         cat "$run_dir/summary.md" >> "$GITHUB_STEP_SUMMARY"
         echo "run-dir=$run_dir" >> "$GITHUB_OUTPUT"
         echo "exit-code=$code" >> "$GITHUB_OUTPUT"

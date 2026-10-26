@@ -231,6 +231,7 @@ pub async fn run(
 		runner: machine::runner(),
 		steps: run_opts.plan.steps.len(),
 		checks: None,
+		verdict: None,
 	};
 	// Plugin checks read it, with the raw files, before the report adds the checks.
 	dir.write_json("summary.json", &summary)?;
@@ -243,11 +244,12 @@ pub fn report(
 	dir: &RunDir,
 	measured: Measured,
 	plugin_checks: &[polkameter_checks::CheckResult],
+	fail_on_verdict: bool,
 ) -> Result<i32> {
 	dir.write_json(PLUGIN_CHECKS, &plugin_checks)?;
 	let Measured { summary, finals, mode } = measured;
 	let checks = polkameter_checks::report::write(dir, summary.clone(), &finals, plugin_checks)?;
-	Ok(exit_code(mode, &summary, &checks))
+	Ok(exit_code(mode, &summary, &checks, fail_on_verdict))
 }
 
 /// The loss check, with the node's pool counts read from the collator we submit to after the
@@ -329,8 +331,19 @@ fn write_steps<S: polkameter_load::submit::Submit>(
 	Ok(finals)
 }
 
-/// 1 in smoke mode when a monitor had a problem or a check that must have a result has none.
-fn exit_code(mode: Mode, summary: &Summary, checks: &[polkameter_checks::CheckResult]) -> i32 {
+/// 1 for an opted-in FAIL verdict, or smoke-mode monitor problems and missing required results.
+fn exit_code(
+	mode: Mode,
+	summary: &Summary,
+	checks: &[polkameter_checks::CheckResult],
+	fail_on_verdict: bool,
+) -> i32 {
+	if fail_on_verdict
+		&& polkameter_checks::report::overall_status(summary, checks)
+			== polkameter_files::summary::OverallStatus::Fail
+	{
+		return 1;
+	}
 	if mode != Mode::Smoke {
 		return 0;
 	}
@@ -403,6 +416,58 @@ mod tests {
 	use polkameter_checks::{CheckResult, Status, Verdict};
 
 	#[test]
+	fn fail_on_verdict_only_fails_the_existing_fail_status() {
+		for mode in [Mode::Stress, Mode::Smoke] {
+			for status in [Status::Pass, Status::Warn, Status::Fail, Status::NoResult] {
+				let mut summary: Summary = serde_json::from_str(include_str!(
+					"../../cli/tests/fixtures/smoke-run/summary.json"
+				))
+				.unwrap();
+				summary.breaking_point = None;
+				summary.problems.clear();
+				let checks = [CheckResult {
+					outcome: "run".into(),
+					check: "plugin check".into(),
+					verdict: Verdict::new(status, "test"),
+					optional: false,
+				}];
+				let expected = i32::from(
+					status == Status::Fail || (mode == Mode::Smoke && status == Status::NoResult),
+				);
+				assert_eq!(exit_code(mode, &summary, &checks, true), expected);
+			}
+		}
+	}
+
+	#[test]
+	fn report_writes_the_same_fail_verdict_with_either_exit_policy() {
+		let root =
+			std::env::temp_dir().join(format!("polkameter-verdict-report-{}", std::process::id()));
+		std::fs::create_dir_all(&root).unwrap();
+		let dir = RunDir::open(&root);
+		for fail_on_verdict in [false, true] {
+			let summary: Summary = serde_json::from_str(include_str!(
+				"../../cli/tests/fixtures/smoke-run/summary.json"
+			))
+			.unwrap();
+			let measured = Measured { summary, finals: vec![], mode: Mode::Stress };
+			assert_eq!(
+				report(&dir, measured, &[], fail_on_verdict).unwrap(),
+				i32::from(fail_on_verdict)
+			);
+			let json: serde_json::Value =
+				serde_json::from_slice(&std::fs::read(root.join("summary.json")).unwrap()).unwrap();
+			assert_eq!(json["verdict"]["result"], "FAIL");
+			assert!(
+				std::fs::read_to_string(root.join("summary.md"))
+					.unwrap()
+					.contains("- **Verdict:** FAIL")
+			);
+		}
+		std::fs::remove_dir_all(root).unwrap();
+	}
+
+	#[test]
 	fn exit_code_policy() {
 		let result = |check: &str, status, optional| CheckResult {
 			outcome: "pool".into(),
@@ -424,7 +489,7 @@ mod tests {
 			summary.problems = if problem { vec!["monitor scrape failed".into()] } else { vec![] };
 			let checks =
 				[result("required", required, false), result("from a plugin", optional, true)];
-			assert_eq!(exit_code(mode, &summary, &checks), expected, "{name}");
+			assert_eq!(exit_code(mode, &summary, &checks, false), expected, "{name}");
 		}
 	}
 }

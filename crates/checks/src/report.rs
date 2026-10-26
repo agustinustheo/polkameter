@@ -4,10 +4,9 @@
 
 use polkameter_files::{
 	BlockStats, FileError, FinalStep, RunDir, num, read_store, serde_name,
-	summary::{ProbePhase, Rule, Summary},
+	summary::{OverallStatus, ProbePhase, Rule, RunVerdict, Summary},
 	to_fixed,
 };
-use serde::Serialize;
 
 use crate::{
 	CheckResult, RunData, Status, Window, all,
@@ -26,6 +25,7 @@ pub fn write(
 	let data = RunData::new(read_store(dir)?, summary.clone());
 	let mut checks = run(&all(), &data);
 	checks.extend_from_slice(plugin_checks);
+	summary.verdict = Some(RunVerdict { result: overall_status(&summary, &checks) });
 	summary.checks = Some(serde_json::to_value(&checks).expect("checks serialize"));
 	dir.write_json("summary.json", &summary)?;
 	let md = markdown(&summary, finals, &data, &checks);
@@ -131,22 +131,13 @@ fn collator_cells(c: Option<&CollatorStep>) -> Vec<String> {
 	vec![cell(|c| c.build_ms), cell(|c| c.validations), cell(|c| c.waiting), cell(|c| c.ready), why]
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "UPPERCASE")]
-enum OverallStatus {
-	Pass,
-	Warn,
-	Fail,
-	Inconclusive,
-}
-
 /// A number from the run's thresholds, if the run has that rule.
 fn rule(s: &Summary, key: &str) -> Option<f64> {
 	s.rules.get(key).and_then(serde_json::Value::as_f64)
 }
 
 /// One top-level answer from the runner's stop, its performance measure and the outcome checks.
-fn overall_status(s: &Summary, checks: &[CheckResult]) -> OverallStatus {
+pub fn overall_status(s: &Summary, checks: &[CheckResult]) -> OverallStatus {
 	if s.stop.class.is_some()
 		|| !s.failure_modes.is_empty()
 		|| s.breaking_point.is_some()
@@ -431,7 +422,24 @@ mod tests {
 			let mut s = summary();
 			edit(&mut s);
 			assert_eq!(overall_status(&s, &checks), want);
+			s.verdict = Some(RunVerdict { result: overall_status(&s, &checks) });
+			let json = serde_json::to_value(&s).unwrap();
+			assert_eq!(json["verdict"]["result"], serde_name(want));
+			let restored: Summary = serde_json::from_value(json).unwrap();
+			assert_eq!(restored.verdict, s.verdict);
+			let data = RunData::new(Default::default(), s.clone());
+			assert!(
+				markdown(&s, &[], &data, &checks)
+					.contains(&format!("- **Verdict:** {}", serde_name(want)))
+			);
 		}
+	}
+
+	#[test]
+	fn older_summaries_read_without_a_verdict() {
+		let s = summary();
+		assert_eq!(s.verdict, None);
+		assert!(serde_json::to_value(s).unwrap().get("verdict").is_none());
 	}
 
 	#[test]

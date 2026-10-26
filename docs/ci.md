@@ -21,6 +21,7 @@ jobs:
         with:
           plan: plans/transfers.polkameter.xml
           plugins: target/release/<plugin-binary>
+          fail-on: verdict
           credentials: previewnet-sudo=POLKAMETER_SETUP_SURI
         env:
           POLKAMETER_SETUP_SURI: ${{ secrets.SETUP_SURI }}
@@ -40,6 +41,7 @@ The action installs the toolchain named by its `toolchain` input, Rust 1.93.0 by
 | `topologies` | no | `""` | Zombienet topologies to register, one `ALIAS=path` per line. |
 | `capabilities` | no | `""` | Capabilities the network provisioner supplies, one name per line. |
 | `output` | no | `polkameter-runs` | Artifact root, relative to the workspace. The run creates one `run-*` directory inside it. |
+| `fail-on` | no | `error` | `error` preserves the CLI defaults; `verdict` also fails on a `FAIL` load verdict. Other values are invalid. |
 | `upload` | no | `"true"` | Upload the run directory as a workflow artifact. |
 | `artifact-name` | no | `polkameter-run` | Name of the uploaded run artifact. |
 | `toolchain` | no | `1.93.0` | Rust toolchain that builds PolkaMeter. It must be 1.93 or newer. |
@@ -47,7 +49,8 @@ The action installs the toolchain named by its `toolchain` input, Rust 1.93.0 by
 | Output | Description |
 | --- | --- |
 | `run-dir` | The run directory, relative to the workspace. |
-| `exit-code` | The exit code of polkameter run. 0 passed, 1 failed checks or assertions, other values are errors. |
+| `verdict` | `PASS`, `WARN`, `FAIL` or `INCONCLUSIVE`, read from `summary.json`. Empty if no verdict was written, including plans without a load test. |
+| `exit-code` | The exit code of `polkameter run`. See [What fails the job](#what-fails-the-job). |
 
 ## Secrets
 
@@ -62,25 +65,23 @@ The action fails the job with the exit code of `polkameter run`:
 | Exit code | Meaning | Job |
 | --- | --- | --- |
 | `0` | The run completed. | Passes |
-| `1` | The run failed: a plugin error, a failed `core.assert-equal` step or a deadline. In smoke mode, also a monitor problem or a required check with no result. | Fails |
+| `1` | The run failed: a plugin error, a failed `core.assert-equal` step or a deadline. In smoke mode, also a monitor problem or a required check with no result. With `fail-on: verdict`, also a `FAIL` verdict. | Fails |
 | `2` | The plan or the arguments are invalid. An invalid plan fails earlier, in the `validate` step. | Fails |
 | `130` | The run was stopped with Ctrl-C (SIGINT). | Fails |
 
-> **Warning:** A load run exits `0` when its verdict is `FAIL`, so the job passes. In stress mode this always holds. In smoke mode it holds unless a monitor has a problem or a required check has no result. The verdict is the line `- **Verdict:** FAIL` in `summary.md`. Add this step after the action:
+Set `fail-on: verdict` on the action step to fail the job when the load verdict is `FAIL`:
 
 ```yaml
-      - name: Fail the job on a FAIL verdict
-        shell: bash
-        env:
-          RUN_DIR: ${{ steps.load.outputs.run-dir }}
-        run: |
-          if grep -q '^- \*\*Verdict:\*\* FAIL$' "$RUN_DIR/summary.md"; then
-            echo "::error::Load test verdict is FAIL"
-            exit 1
-          fi
+      - id: load
+        uses: agustinustheo/polkameter@main
+        with:
+          plan: plans/transfers.polkameter.xml
+          fail-on: verdict
 ```
 
-The step runs only when the action passed. A plan without a load test has no verdict line, so the step passes.
+The action passes `--fail-on-verdict` to the CLI. It still uploads artifacts when the verdict fails. `WARN` and `INCONCLUSIVE` do not trigger this policy, and a plan without a load test has no verdict to fail on.
+
+With the default `fail-on: error`, a stress-mode load run exits `0` even when its verdict is `FAIL`. Use the `verdict` output to inspect the result in later steps; use `if: always()` if the action failed.
 
 ## What the job keeps
 
@@ -101,10 +102,9 @@ Then run these from the repository root:
 polkameter plugin install target/release/<plugin-binary>
 polkameter plugin credential previewnet-sudo <ENV_VAR>
 polkameter validate plans/transfers.polkameter.xml
-polkameter run plans/transfers.polkameter.xml --output polkameter-runs
-RUN_DIR=$(ls -d polkameter-runs/run-*)
+polkameter run plans/transfers.polkameter.xml --output polkameter-runs --fail-on-verdict
 ```
 
-The `plugin credential` line maps the profile to a variable name. Set that variable in the job's environment before `run`. Use a fresh output directory for each job, so `ls` finds one run directory. The exit codes are the same as in the table above. Check the verdict with the `grep` from the warning, using `$RUN_DIR`.
+The `plugin credential` line maps the profile to a variable name. Set that variable in the job's environment before `run`. Use a fresh output directory for each job. The exit codes are the same as in the table above; `--fail-on-verdict` exits `1` on `FAIL`.
 
 Keep the whole run directory. `polkameter report <run-dir>` regenerates the checks from its files, and [Run directory](results.md) lists them.

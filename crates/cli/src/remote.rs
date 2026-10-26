@@ -138,11 +138,13 @@ fn is_loopback_http(endpoint: &str) -> bool {
 #[derive(Deserialize, Serialize)]
 pub struct PluginRequest {
 	pub xml: String,
+	#[serde(default)]
+	pub options: polkameter_engine::execute::RunOptions,
 }
 async fn plugin_capabilities() -> AgentResult<Json<serde_json::Value>> {
 	let registry = polkameter_engine::plugins::Registry::load().map_err(bad_request)?;
 	Ok(Json(
-		serde_json::json!({"protocol":1,"plugins":registry.plugins.iter().map(|(id,p)|serde_json::json!({"id":id,"version":p.version,"blake2":p.blake2})).collect::<Vec<_>>()}),
+		serde_json::json!({"protocol":1,"runOptions":{"failOnVerdict":true},"plugins":registry.plugins.iter().map(|(id,p)|serde_json::json!({"id":id,"version":p.version,"blake2":p.blake2})).collect::<Vec<_>>()}),
 	))
 }
 async fn plugin_preflight_handler(
@@ -165,11 +167,12 @@ async fn plugin_start_handler(
 	State(state): State<AgentState>,
 	Json(request): Json<PluginRequest>,
 ) -> AgentResult<Json<crate::plugin_application::Status>> {
-	crate::plugin_application::start(
+	crate::plugin_application::start_with_options(
 		request.xml,
 		state.output_root,
 		state.plugins.clone(),
 		Arc::new(|_| {}),
+		request.options,
 	)
 	.await
 	.map(Json)
@@ -199,7 +202,24 @@ pub async fn plugin_start(
 	target: &RemoteRunnerTarget,
 	xml: String,
 ) -> Result<crate::plugin_application::Status, String> {
-	plugin_request(target, reqwest::Method::POST, "/runs", Some(xml)).await
+	plugin_start_with_options(target, xml, Default::default()).await
+}
+
+/// Starts a remote run with an exit policy applied by the agent.
+pub async fn plugin_start_with_options(
+	target: &RemoteRunnerTarget,
+	xml: String,
+	options: polkameter_engine::execute::RunOptions,
+) -> Result<crate::plugin_application::Status, String> {
+	if options.fail_on_verdict {
+		let capabilities: serde_json::Value =
+			plugin_request(target, reqwest::Method::GET, "/plugins", None).await?;
+		if capabilities["runOptions"]["failOnVerdict"] != true {
+			return Err("remote agent does not support --fail-on-verdict; update the agent".into());
+		}
+	}
+	plugin_request(target, reqwest::Method::POST, "/runs", Some(PluginRequest { xml, options }))
+		.await
 }
 pub async fn plugin_status(
 	id: &str,
@@ -217,13 +237,25 @@ pub async fn plugin_preflight(
 	target: &RemoteRunnerTarget,
 	xml: String,
 ) -> Result<serde_json::Value, String> {
-	plugin_request(target, reqwest::Method::POST, "/preflight", Some(xml)).await
+	plugin_request(
+		target,
+		reqwest::Method::POST,
+		"/preflight",
+		Some(PluginRequest { xml, options: Default::default() }),
+	)
+	.await
 }
 pub async fn plugin_inspect(
 	target: &RemoteRunnerTarget,
 	xml: String,
 ) -> Result<serde_json::Value, String> {
-	plugin_request(target, reqwest::Method::POST, "/inspect", Some(xml)).await
+	plugin_request(
+		target,
+		reqwest::Method::POST,
+		"/inspect",
+		Some(PluginRequest { xml, options: Default::default() }),
+	)
+	.await
 }
 
 /// The endpoint `/runs/{id}{suffix}`, after rejecting run IDs that could escape the path.
@@ -238,7 +270,7 @@ async fn plugin_request<T: serde::de::DeserializeOwned>(
 	target: &RemoteRunnerTarget,
 	method: reqwest::Method,
 	path: &str,
-	xml: Option<String>,
+	body: Option<PluginRequest>,
 ) -> Result<T, String> {
 	target.validate()?;
 	static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
@@ -246,8 +278,8 @@ async fn plugin_request<T: serde::de::DeserializeOwned>(
 		.get_or_init(reqwest::Client::new)
 		.request(method, format!("{}{path}", target.endpoint.trim_end_matches('/')))
 		.bearer_auth(&target.bearer_token);
-	if let Some(xml) = xml {
-		request = request.json(&PluginRequest { xml });
+	if let Some(body) = body {
+		request = request.json(&body);
 	}
 	decode_response(request.send().await.map_err(|error| error.to_string())?).await
 }
@@ -255,6 +287,44 @@ async fn plugin_request<T: serde::de::DeserializeOwned>(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn remote_run_options_default_for_older_clients_and_round_trip() {
+		let request: PluginRequest =
+			serde_json::from_value(serde_json::json!({"xml":"plan"})).unwrap();
+		assert!(!request.options.fail_on_verdict);
+		let request = PluginRequest {
+			xml: "plan".into(),
+			options: polkameter_engine::execute::RunOptions { fail_on_verdict: true },
+		};
+		let json = serde_json::to_value(request).unwrap();
+		assert_eq!(json["options"]["failOnVerdict"], true);
+		assert!(serde_json::from_value::<PluginRequest>(json).unwrap().options.fail_on_verdict);
+	}
+
+	#[tokio::test]
+	async fn fail_on_verdict_refuses_an_older_agent_before_starting() {
+		let app = Router::new().route(
+			"/plugins",
+			get(|| async { Json(serde_json::json!({"protocol":1,"plugins":[]})) }),
+		);
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let endpoint = format!("http://{}", listener.local_addr().unwrap());
+		let server = tokio::spawn(async move {
+			axum::serve(listener, app).await.unwrap();
+		});
+		let Err(error) = plugin_start_with_options(
+			&RemoteRunnerTarget { endpoint, bearer_token: "test".into() },
+			"plan".into(),
+			polkameter_engine::execute::RunOptions { fail_on_verdict: true },
+		)
+		.await
+		else {
+			panic!("older agent accepted the policy")
+		};
+		assert_eq!(error, "remote agent does not support --fail-on-verdict; update the agent");
+		server.abort();
+	}
 
 	#[test]
 	fn remote_targets_require_tls_or_a_loopback_tunnel() {
