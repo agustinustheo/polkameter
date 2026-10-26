@@ -25,10 +25,11 @@ for file in events.jsonl execution.json samples.jtl summary.md plots/throughput.
 done
 
 sed 's/name="expected" value="84"/name="expected" value="85"/' "$plan" > "$work/failing.xml"
-if "$cli" run "$work/failing.xml" --output "$work/failing" > /dev/null 2>&1; then
+if "$cli" run "$work/failing.xml" --output "$work/failing" > /dev/null 2> "$work/failing.err"; then
 	echo "a failed assertion exited zero" >&2
 	exit 1
 fi
+grep -q '^Polkameter: run failed: assertion verified failed (details in ' "$work/failing.err"
 
 port=$((20000 + RANDOM % 20000))
 export POLKAMETER_AGENT_TOKEN=smoke-token

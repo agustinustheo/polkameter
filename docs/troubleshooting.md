@@ -10,6 +10,19 @@ Find the message you see below. Each heading is the message as the CLI prints it
 
 **Fix:** Run `rustup update`. Or install the pinned toolchain with `rustup toolchain install 1.93.0`, then build with `cargo +1.93.0 build`.
 
+## Runs
+
+### run failed: … (details in …/execution.json)
+
+```text
+Run failed. Artifacts: ~/polkameter/target/runs/run-…
+Polkameter: run failed: assertion verified failed (details in ~/polkameter/target/runs/run-…/execution.json)
+```
+
+**Cause:** The run started, but a step, a plugin or a deadline failed it. The text after `run failed:` is the reason. Many reasons have their own entry on this page, such as [`assertion <id> failed`](#assertion--failed). `run` exits `1` and keeps the run directory. A remote run prints `remote run failed:` and names the run directory on the agent.
+
+**Fix:** Find the reason on this page. `summary.md` and `execution.json` in the run directory hold the same error. The step that failed is in `events.jsonl`, as a `step-finished` event with `"success":false`.
+
 ## Plans
 
 ### line 6, column 5: expected </setup>, found </polkameter-plan>

@@ -5,7 +5,11 @@ use std::{io::Write, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::Context as _;
 use clap::{Parser, Subcommand, ValueEnum};
-use polkameter_engine::{execute::Outcome, plan::Plan, plugins::Registry};
+use polkameter_engine::{
+	execute::{Outcome, RunState},
+	plan::Plan,
+	plugins::Registry,
+};
 use serde_json::{Value, json};
 
 use crate::remote::{self, RemoteRunnerTarget};
@@ -248,13 +252,32 @@ async fn run_local(
 	Ok(outcome.exit_code)
 }
 
-/// Reports a finished run's artifacts; `label` opens the human-readable line.
+/// Reports a finished run's artifacts; `label` opens the human-readable line. A failed run also
+/// prints its reason to standard error in both formats.
 fn write_artifact_written(format: OutputFormat, label: &str, outcome: &Outcome) {
 	write_result(
 		format,
 		&json!({"event":"artifact-written","outcome":outcome}),
 		format!("{label} {}. Artifacts: {}", outcome.state, outcome.artifact_dir.display()),
 	);
+	if let Some(reason) = failure_reason(label, outcome) {
+		eprintln!("Polkameter: {reason}");
+	}
+}
+
+/// The one-line reason for a failed run, naming the file that holds the details.
+fn failure_reason(label: &str, outcome: &Outcome) -> Option<String> {
+	if outcome.state != RunState::Failed {
+		return None;
+	}
+	let error = outcome.error.as_deref().unwrap_or("no reason recorded");
+	let execution = outcome.artifact_dir.join("execution.json");
+	let location = if label == "Run" { "" } else { " on the agent" };
+	Some(format!(
+		"{} failed: {error} (details in {}{location})",
+		label.to_lowercase(),
+		execution.display()
+	))
 }
 
 fn report(path: PathBuf, format: OutputFormat) -> Result<i32, CliError> {
@@ -461,6 +484,33 @@ mod tests {
 		};
 		let cause = std::fs::read_to_string("does/not/exist.xml").unwrap_err();
 		assert_eq!(error.to_string(), format!("cannot read plan does/not/exist.xml: {cause}"));
+	}
+
+	#[test]
+	fn only_failed_runs_have_a_failure_reason() {
+		let outcome = |state, error: Option<&str>| Outcome {
+			artifact_dir: PathBuf::from("runs/run-1"),
+			exit_code: 1,
+			state,
+			error: error.map(Into::into),
+		};
+		let execution = std::path::Path::new("runs/run-1").join("execution.json");
+		assert_eq!(
+			failure_reason("Run", &outcome(RunState::Failed, Some("assertion check failed"))),
+			Some(format!(
+				"run failed: assertion check failed (details in {})",
+				execution.display()
+			))
+		);
+		assert_eq!(
+			failure_reason("Remote run", &outcome(RunState::Failed, Some("boom"))),
+			Some(format!(
+				"remote run failed: boom (details in {} on the agent)",
+				execution.display()
+			))
+		);
+		assert_eq!(failure_reason("Run", &outcome(RunState::Completed, None)), None);
+		assert_eq!(failure_reason("Run", &outcome(RunState::Stopped, Some("run cancelled"))), None);
 	}
 
 	#[test]

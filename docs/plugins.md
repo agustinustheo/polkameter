@@ -122,7 +122,7 @@ Polkameter: plugin hello version/checksum mismatch
 
 The command exits with code 3.
 
-A `run` writes the same error to `execution.json` and exits with `1`. Rebuilding changes the hash, so reinstall after every build. After start, the manifest must match the plan's `id`, `version` and `protocol`, or the run fails with `manifest identity mismatch for <plugin id>`.
+A `run` prints the same error as `Polkameter: run failed: <error> (details in …)`, writes it to `execution.json` and exits with `1`. Rebuilding changes the hash, so reinstall after every build. After start, the manifest must match the plan's `id`, `version` and `protocol`, or the run fails with `manifest identity mismatch for <plugin id>`.
 
 ## PreparedTx and the load contract
 
