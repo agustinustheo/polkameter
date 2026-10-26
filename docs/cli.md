@@ -89,7 +89,7 @@ Run failed. Artifacts: ~/polkameter/runs/run-1792994214466-72728-1
 Polkameter: run failed: plugin exited before responding (details in ~/polkameter/runs/run-1792994214466-72728-1/execution.json)
 ```
 
-The reason stays on one line. Line breaks show as `⏎`, other control characters are escaped, and a reason longer than 300 characters is cut with `…`. `execution.json` keeps the full text.
+The reason stays on one line. Colour and cursor codes are removed, and line breaks show as `⏎`. Other control characters, including the start of other terminal escape sequences such as a window title, are shown escaped, like `\u{1b}`. The printed reason is cut at 300 characters with `…`, and `execution.json` keeps the full text.
 
 A failed remote run prints `Polkameter: remote run failed: <reason> (details in <run directory>/execution.json on the agent)`. The run directory is on the agent host. See [Troubleshooting](troubleshooting.md#run-failed--details-in-executionjson) for the reasons.
 

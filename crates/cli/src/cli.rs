@@ -296,19 +296,16 @@ fn failure_reason(location: RunLocation, outcome: &Outcome) -> Option<String> {
 	})
 }
 
-/// `text` made safe for one terminal line: ANSI escape sequences are removed, line breaks become
-/// ` ⏎ `, other control and bidirectional-override characters are escaped, and the result is
-/// cut to [`MAX_REASON_CHARS`] characters followed by `…`.
+/// `text` made safe for one terminal line. CSI escape sequences (colours, cursor movement) are
+/// removed, line breaks become ` ⏎ `, and other control characters, including the ESC of any other
+/// escape sequence, and bidirectional-override characters are escaped as `\u{…}`. The rendered
+/// line is cut to at most [`MAX_REASON_CHARS`] characters, never inside an escape, followed by `…`.
 fn one_line(text: &str) -> String {
 	let mut line = String::new();
+	let mut length = 0;
 	let mut chars = text.trim().chars().peekable();
-	let mut count = 0;
 	while let Some(c) = chars.next() {
-		if count >= MAX_REASON_CHARS {
-			line.push('…');
-			break;
-		}
-		match c {
+		let piece = match c {
 			// CSI sequence: ESC [ parameters final-byte.
 			'\u{1b}' if chars.peek() == Some(&'[') => {
 				chars.next();
@@ -323,16 +320,22 @@ fn one_line(text: &str) -> String {
 				if c == '\r' && chars.peek() == Some(&'\n') {
 					chars.next();
 				}
-				line.push_str(" ⏎ ");
+				" ⏎ ".to_owned()
 			},
 			c if c.is_control()
 				|| matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') =>
 			{
-				line.extend(c.escape_unicode());
+				c.escape_unicode().to_string()
 			},
-			c => line.push(c),
+			c => c.to_string(),
+		};
+		let piece_length = piece.chars().count();
+		if length + piece_length > MAX_REASON_CHARS {
+			line.push('…');
+			break;
 		}
-		count += 1;
+		line.push_str(&piece);
+		length += piece_length;
 	}
 	line
 }
@@ -591,6 +594,15 @@ mod tests {
 		assert_eq!(line, format!("{}…", "x".repeat(MAX_REASON_CHARS)));
 		assert_eq!(one_line(&"x".repeat(MAX_REASON_CHARS)), "x".repeat(MAX_REASON_CHARS));
 		assert_eq!(one_line("été 🚀"), "été 🚀");
+		// The cap applies to the rendered line and never cuts an escape in half.
+		let escaped = one_line(&"\u{202e}".repeat(1_000));
+		assert_eq!(escaped, format!("{}…", "\\u{202e}".repeat(MAX_REASON_CHARS / 8)));
+		assert!(escaped.chars().count() <= MAX_REASON_CHARS + 1);
+		let mixed = one_line(&"a\u{1}\n".repeat(1_000));
+		// Each repeat renders as 9 characters; after 33 of them and an `a` (298), `\u{1}` no
+		// longer fits whole.
+		assert_eq!(mixed, format!("{}a…", "a\\u{1} ⏎ ".repeat(33)));
+		assert!(mixed.chars().count() <= MAX_REASON_CHARS + 1);
 		let reason = failure_reason(
 			RunLocation::Local,
 			&Outcome {
