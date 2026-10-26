@@ -2,6 +2,18 @@
 
 `polkameter` validates, preflights and runs plans, reports on runs, manages plugins and serves a remote agent. Run `polkameter COMMAND --help` for one command's flags. Errors: see [Troubleshooting](troubleshooting.md).
 
+## --version
+
+Prints the installed version and exits 0. `-V` is the short form.
+
+```sh
+polkameter --version
+```
+
+```text
+polkameter 0.2.0
+```
+
 ## validate
 
 Checks a plan's structure without starting plugins or connecting to a chain. [Plans](plans.md#validation-rules) lists the rules.
