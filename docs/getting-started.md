@@ -62,7 +62,7 @@ which polkameter
 
 The `export` lasts only for the current shell. Run it again in a new terminal.
 
-To put `polkameter` in `~/.cargo/bin` instead, run `cargo install --locked --git https://github.com/agustinustheo/polkameter polkameter`. You still need the checkout for the example plugin and plan.
+To put `polkameter` in `~/.cargo/bin` instead, run `cargo install --locked polkameter`. You still need the checkout for the example plugin and plan. `cargo install --locked --git https://github.com/agustinustheo/polkameter polkameter` installs the latest unreleased code.
 
 ## 3. Install the example plugin
 

@@ -7,6 +7,7 @@
 
 <p align="center">
   <a href="https://github.com/agustinustheo/polkameter/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/agustinustheo/polkameter/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://crates.io/crates/polkameter"><img src="https://img.shields.io/crates/v/polkameter?style=flat-square" alt="crates.io"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/agustinustheo/polkameter?style=flat-square" alt="Apache-2.0 license"></a>
   <a href="https://github.com/agustinustheo/polkameter/graphs/contributors"><img src="https://img.shields.io/github/contributors/agustinustheo/polkameter?style=flat-square" alt="Contributors"></a>
   <a href="https://github.com/agustinustheo/polkameter/stargazers"><img src="https://img.shields.io/github/stars/agustinustheo/polkameter?style=flat-square" alt="Stars"></a>
@@ -16,11 +17,13 @@ PolkaMeter is a load-testing tool for Polkadot SDK chains, modeled on JMeter. An
 
 ## Quick start
 
-Install the CLI. It needs Rust 1.93 or newer:
+Install the CLI from [crates.io](https://crates.io/crates/polkameter). It needs Rust 1.93 or newer:
 
 ```sh
-cargo install --locked --git https://github.com/agustinustheo/polkameter polkameter
+cargo install --locked polkameter
 ```
+
+`cargo install --locked --git https://github.com/agustinustheo/polkameter polkameter` installs the latest unreleased code.
 
 From a checkout of this repository, build the example plugin and install it. The example needs no chain:
 

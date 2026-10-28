@@ -155,16 +155,24 @@ Checks read the observer's series, labelled `job="plugin"` and `instance=<plugin
 
 ## Library crates for plugins
 
-These crates are not on crates.io. Depend on each from git at the SDK's `rev`, for example `polkameter-chain = { git = "https://github.com/agustinustheo/polkameter", rev = "<commit>" }`.
+These crates are on crates.io at version 0.2.0. Add the ones your plugin uses with a version requirement:
+
+```toml
+[dependencies]
+polkameter-plugin-sdk = "0.2"
+polkameter-chain = "0.2"
+```
+
+Each crate name below links to its crates.io page. The docs.rs link opens its API documentation.
 
 Anything else is internal.
 
 | Crate | Plugin API |
 | --- | --- |
-| `polkameter-plugin-sdk` | `Plugin`, `serve`, `Operation`, `Schema`, `Manifest`, `Context`, `Artifact`, `PreparedTx`, `StateCheckInput`, `PROTOCOL`, `MAX_MESSAGE_BYTES`, `blake2_hex`, `strip_0x`. |
-| `polkameter-chain` | `Client` (`connect`, `finalized`, `at`, `chain_info`, `check_extensions`, `call_data`, `sudo`, `nonce`, `validate`, `submit`; `LayoutChanged` from the extension check); `fetch(at, pallet, entry, keys)` (`()` keys for a plain entry), `entries`, `has_prefix`, `calls`; `events` with `Event` (`pallet`, `name`, `extrinsic`, `fields`); `value::{field, nth, variant_name, as_u64, as_bytes32}`; `Keypair`, `Value`, `DecodeAsType`, `ChainInfo`, `tx_hash`; `scale_value_reexport`, `scale_decode_reexport`. |
-| `polkameter-monitors` | `ChainSeries` (`gauge`, `inc`, `observe`), `chain_series::channel`, `chain_series::run`; `walker::Walk` (`NAME`, `on_block`, optional `on_update` and `finish`), `walker::walk`; `MonitorError`. |
-| `polkameter-files` | `registry::Metric::new`, `Def`, `Kind`, `PluginMetric::from(&Def)`, `Problems`, `RunDir`, `read_store`, `now_ms`, `Millis`, `num`. |
-| `polkameter-checks` | `RunData` (`new`, `at`, `has`, `times`, `gauge_range`, `buckets`, `phase`, `run`); `Phase`; `Window`, `Label`; `CheckResult`, `Verdict`, `Status`, `CounterReset`, `quantile`. |
+| [`polkameter-plugin-sdk`](https://crates.io/crates/polkameter-plugin-sdk) ([docs.rs](https://docs.rs/polkameter-plugin-sdk)) | `Plugin`, `serve`, `Operation`, `Schema`, `Manifest`, `Context`, `Artifact`, `PreparedTx`, `StateCheckInput`, `PROTOCOL`, `MAX_MESSAGE_BYTES`, `blake2_hex`, `strip_0x`. |
+| [`polkameter-chain`](https://crates.io/crates/polkameter-chain) ([docs.rs](https://docs.rs/polkameter-chain)) | `Client` (`connect`, `finalized`, `at`, `chain_info`, `check_extensions`, `call_data`, `sudo`, `nonce`, `validate`, `submit`; `LayoutChanged` from the extension check); `fetch(at, pallet, entry, keys)` (`()` keys for a plain entry), `entries`, `has_prefix`, `calls`; `events` with `Event` (`pallet`, `name`, `extrinsic`, `fields`); `value::{field, nth, variant_name, as_u64, as_bytes32}`; `Keypair`, `Value`, `DecodeAsType`, `ChainInfo`, `tx_hash`; `scale_value_reexport`, `scale_decode_reexport`. |
+| [`polkameter-monitors`](https://crates.io/crates/polkameter-monitors) ([docs.rs](https://docs.rs/polkameter-monitors)) | `ChainSeries` (`gauge`, `inc`, `observe`), `chain_series::channel`, `chain_series::run`; `walker::Walk` (`NAME`, `on_block`, optional `on_update` and `finish`), `walker::walk`; `MonitorError`. |
+| [`polkameter-files`](https://crates.io/crates/polkameter-files) ([docs.rs](https://docs.rs/polkameter-files)) | `registry::Metric::new`, `Def`, `Kind`, `PluginMetric::from(&Def)`, `Problems`, `RunDir`, `read_store`, `now_ms`, `Millis`, `num`. |
+| [`polkameter-checks`](https://crates.io/crates/polkameter-checks) ([docs.rs](https://docs.rs/polkameter-checks)) | `RunData` (`new`, `at`, `has`, `times`, `gauge_range`, `buckets`, `phase`, `run`); `Phase`; `Window`, `Label`; `CheckResult`, `Verdict`, `Status`, `CounterReset`, `quantile`. |
 
 The load, monitor, check and file crates derive from the stress tool in [paritytech/polkadot-pop-e2e](https://github.com/paritytech/polkadot-pop-e2e), under Apache-2.0.
