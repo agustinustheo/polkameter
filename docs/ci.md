@@ -103,8 +103,10 @@ With the default `fail-on: error`, a stress-mode load run exits `0` even when it
 Without the action, install the CLI in your job. It needs Rust 1.93 or newer:
 
 ```sh
-cargo install --locked --git https://github.com/agustinustheo/polkameter polkameter
+cargo install --locked polkameter
 ```
+
+`cargo install --locked --git https://github.com/agustinustheo/polkameter polkameter` installs the latest unreleased code.
 
 Then run these from the repository root:
 

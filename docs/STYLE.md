@@ -47,7 +47,7 @@ A tutorial links to the reference for details. A reference page links to the exp
 
 11. **Same words everywhere:** PolkaMeter (not Polkameter), plan, run, run directory, plugin, step, load test, transaction, verdict. Headings in sentence case.
 
-12. **Only document what exists.** Do not document the desktop app. Do not describe planned features. Do not claim PolkaMeter is on crates.io until a release is published there.
+12. **Only document what exists.** Do not document the desktop app. Do not describe planned features. The CLI (`polkameter`) and the library crates for plugins are on crates.io at 0.2.0. Install the CLI with `cargo install --locked polkameter`. Do not claim a crate is on crates.io until its release is published there.
 
 ## Reference entry format
 

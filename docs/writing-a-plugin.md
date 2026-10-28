@@ -31,12 +31,10 @@ rust-version = "1.93"
 
 [dependencies]
 anyhow = "1"
-polkameter-plugin-sdk = { git = "https://github.com/agustinustheo/polkameter", rev = "931ef45a36f4238d66e4b7af21b9a2ea20a4caec" }
+polkameter-plugin-sdk = "0.2"
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 ```
-
-The SDK is not on crates.io yet, so you take it from git. The `rev` pins a commit. Without it, Cargo follows the tip of `main`, so a fresh build can pick up SDK changes you have not tested.
 
 ## Write the plugin
 
@@ -108,9 +106,10 @@ cargo build
 
 ```text
 ...
-   Compiling polkameter-plugin-sdk v0.2.0 (https://github.com/agustinustheo/polkameter?rev=931ef45a36f4238d66e4b7af21b9a2ea20a4caec#931ef45a)
+   Compiling tokio v1.54.1
+   Compiling polkameter-plugin-sdk v0.2.0
    Compiling hello-plugin v0.1.0 (~/hello-plugin)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.18s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 11.23s
 ```
 
 The executable is `target/debug/hello-plugin`.
