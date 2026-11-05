@@ -57,6 +57,9 @@ enum Command {
 		/// code; runtime and smoke-mode failures still exit 1. Plans without a load test are unaffected.
 		#[arg(long)]
 		fail_on_verdict: bool,
+		/// Write an additional copy of junit.xml to this local path.
+		#[arg(long)]
+		junit: Option<PathBuf>,
 		/// Remote runner endpoint. It must use HTTPS or be a loopback HTTP tunnel.
 		#[arg(long)]
 		remote: Option<String>,
@@ -69,6 +72,9 @@ enum Command {
 	/// Regenerate the checks, summary and plots of a run directory from its files.
 	Report {
 		artifact_directory: PathBuf,
+		/// Write an additional copy of junit.xml to this path.
+		#[arg(long)]
+		junit: Option<PathBuf>,
 		#[arg(long, value_enum, default_value_t = OutputFormat::Human)]
 		format: OutputFormat,
 	},
@@ -194,6 +200,7 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 			remote,
 			remote_token_env,
 			fail_on_verdict,
+			junit,
 			format,
 		} => {
 			let (xml, plan) = load(&path)?;
@@ -205,6 +212,7 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 						xml,
 						format,
 						options,
+						junit,
 					)
 					.await
 				},
@@ -213,11 +221,13 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 						CliError::Invalid("--output is required without --remote".into())
 					})?;
 					let registry = registry(&plan, credential_env)?;
-					run_local(plan, registry, output, format, options).await
+					run_local(plan, registry, output, format, options, junit).await
 				},
 			}
 		},
-		Command::Report { artifact_directory, format } => report(artifact_directory, format),
+		Command::Report { artifact_directory, format, junit } => {
+			report(artifact_directory, format, junit)
+		},
 		Command::Agent { command } => agent(command).await,
 	}
 }
@@ -250,6 +260,7 @@ async fn run_local(
 	output: PathBuf,
 	format: OutputFormat,
 	options: RunOptions,
+	junit: Option<PathBuf>,
 ) -> Result<i32, CliError> {
 	let cancel = tokio_util::sync::CancellationToken::new();
 	let signal = cancel.clone();
@@ -271,6 +282,7 @@ async fn run_local(
 	.await;
 	interrupt.abort();
 	let outcome = result.map_err(|e| CliError::Runtime(e.to_string()))?;
+	copy_junit(&outcome.artifact_dir, junit.as_deref())?;
 	write_artifact_written(format, RunLocation::Local, &outcome);
 	Ok(outcome.exit_code)
 }
@@ -363,7 +375,7 @@ fn one_line(text: &str) -> String {
 	line
 }
 
-fn report(path: PathBuf, format: OutputFormat) -> Result<i32, CliError> {
+fn report(path: PathBuf, format: OutputFormat, junit: Option<PathBuf>) -> Result<i32, CliError> {
 	let runtime = |e: anyhow::Error| CliError::Runtime(format!("{e:#}"));
 	polkameter_engine::artifacts::write_outputs(&path)
 		.with_context(|| format!("cannot read run directory {}", path.display()))
@@ -371,6 +383,8 @@ fn report(path: PathBuf, format: OutputFormat) -> Result<i32, CliError> {
 	if path.join("summary.json").is_file() {
 		polkameter_engine::measurement::check(&path).map_err(runtime)?;
 	}
+	polkameter_engine::junit::write(&path, &[]).map_err(runtime)?;
+	copy_junit(&path, junit.as_deref())?;
 	let execution = path.join("execution.json");
 	let outcome: polkameter_engine::execute::Outcome = serde_json::from_slice(
 		&std::fs::read(&execution)
@@ -382,6 +396,31 @@ fn report(path: PathBuf, format: OutputFormat) -> Result<i32, CliError> {
 		.map_err(|e| CliError::Runtime(format!("cannot read {}: {e}", summary_path.display())))?;
 	write_result(format, &json!({"event":"report","outcome":outcome,"summary":summary}), summary);
 	Ok(0)
+}
+
+/// Keep the default report even when the caller requests a copy (including the same path).
+fn copy_junit(
+	directory: &std::path::Path,
+	destination: Option<&std::path::Path>,
+) -> Result<(), CliError> {
+	if let Some(destination) = destination {
+		let xml = std::fs::read_to_string(directory.join("junit.xml"))
+			.map_err(|e| CliError::Runtime(format!("cannot read junit.xml: {e}")))?;
+		write_junit_copy(destination, &xml)?;
+	}
+	Ok(())
+}
+
+fn write_junit_copy(destination: &std::path::Path, xml: &str) -> Result<(), CliError> {
+	let result = (|| -> std::io::Result<()> {
+		if let Some(parent) = destination.parent().filter(|p| !p.as_os_str().is_empty()) {
+			std::fs::create_dir_all(parent)?;
+		}
+		std::fs::write(destination, xml)
+	})();
+	result.map_err(|e| {
+		CliError::Runtime(format!("cannot write JUnit copy {}: {e}", destination.display()))
+	})
 }
 
 async fn agent(command: AgentCommand) -> Result<i32, CliError> {
@@ -491,6 +530,7 @@ async fn run_plugin_remote(
 	xml: String,
 	format: OutputFormat,
 	options: RunOptions,
+	junit: Option<PathBuf>,
 ) -> Result<i32, CliError> {
 	let started = remote::plugin_start_with_options(&target, xml, options)
 		.await
@@ -502,6 +542,12 @@ async fn run_plugin_remote(
 			remote::plugin_status(&started.id, &target).await.map_err(CliError::Runtime)?;
 		if status.state != "running" {
 			if let Some(outcome) = status.outcome {
+				if let Some(path) = junit.as_deref() {
+					let xml = remote::plugin_junit(&started.id, &target)
+						.await
+						.map_err(CliError::Runtime)?;
+					write_junit_copy(path, &xml)?;
+				}
 				write_artifact_written(format, RunLocation::Remote, &outcome);
 				return Ok(outcome.exit_code);
 			}
@@ -545,7 +591,7 @@ mod tests {
 			serde_json::from_slice(&std::fs::read(directory.join("summary.json")).unwrap())
 				.unwrap();
 		// The CLI report path also invokes measurement::check from the raw files.
-		assert_eq!(report(directory.clone(), OutputFormat::Json).unwrap(), 0);
+		assert_eq!(report(directory.clone(), OutputFormat::Json, None).unwrap(), 0);
 		let replayed: Value =
 			serde_json::from_slice(&std::fs::read(directory.join("summary.json")).unwrap())
 				.unwrap();

@@ -10,6 +10,7 @@ Example plan, no load test (plot files trimmed):
 run-1792253315025-76883-1/
   events.jsonl
   execution.json
+  junit.xml
   plan.json
   plots/                      throughput.svg, latency-percentiles.svg, failure-breakdown.svg
   plugins/example/stderr.log
@@ -25,6 +26,7 @@ The name is `run-<milliseconds>-<pid>-<sequence>`, created in `--output`, or `--
 | File | Contents |
 | --- | --- |
 | `execution.json` | How the run ended. |
+| `junit.xml` | JUnit test suites for CI test reports. See [JUnit mapping](#junitxml). |
 | `summary.md` | No load test: plan name, state, and error or `All configured steps completed.` Load test: the full report. |
 | `events.jsonl` | Every event, one JSON object per line. |
 | `plan.json` | The plan as parsed. |
@@ -70,6 +72,51 @@ Written after teardown.
 | `completed_with_failures` | `1` | A `FAIL` verdict with `--fail-on-verdict`, or a smoke-mode monitor problem or required check with no result. |
 | `stopped` | `130` | Ctrl-C, or a remote stop request. |
 | `failed` | `1` | Any error, including a failed `core.assert-equal` step and a report that could not be written. |
+
+## junit.xml
+
+JUnit XML for GitLab test reports, Jenkins and GitHub test-report actions. Every run writes it after teardown, including failed and stopped runs. `polkameter report` regenerates it from the recorded files.
+
+```xml
+<testsuite name="load test" tests="16" failures="2" errors="0" skipped="1" time="155.157">
+  <properties><property name="run-directory" value="/runs/smoke-run"/></properties>
+  ...
+  <testcase classname="load test" name="recycler: time from load to built root" time="0.000">
+    <skipped>no result: no sampled voucher reached a built root (no loads in this run?)</skipped>
+  </testcase>
+  <testcase classname="load test" name="overall verdict" time="155.157">
+    <failure message="FAIL: Load stop: all 3 steps ran">FAIL: Load stop: all 3 steps ran</failure>
+  </testcase>
+  ...
+</testsuite>
+```
+
+This excerpt comes from the recorded smoke fixture after `report`, with its directory normalized to `/runs/smoke-run`. The full report has a `<testsuites>` root. The dialect is validated against the [Jenkins JUnit schema](https://github.com/junit-team/junit-framework/blob/95b24d54861752d797510da89071c549c26355c2/platform-tests/src/test/resources/jenkins-junit.xsd), vendored with its MIT licence in `tests/schemas/junit.xsd`; no single official schema covers every CI system.
+
+| Recorded result | Suite and testcase | JUnit result |
+| --- | --- | --- |
+| Plan execution | `plan`, `execution` | Completed: passed. Failed or completed with failures: `<failure>`. Stopped: `<skipped>`. Captures errors outside steps, including plugin startup. |
+| Plan steps and assertions | One suite per nonempty `preflight`, `setup`, `evaluate`, `teardown` section; step ID as testcase name | Success: passed. Assertion failure, step error or interrupted step: `<failure>`. Step never started: `<skipped>`. |
+| Workflow steps | One `workflow:<id>` suite per workflow; step ID plus user and iteration as testcase name | Same as plan steps. Missing invocations are grouped in one skipped case per step to bound report size. |
+| Load outcome `pass` or `info` | `load test`, `<outcome>: <check>` | Passed, with status and detail in `<system-out>`. |
+| Load outcome `fail` | Same | `<failure>` with status and detail. |
+| Load outcome `warn` | Same | Passed, with `warn:` and detail in `<system-out>`. |
+| Load outcome `no result` | Same, including optional checks | `<skipped>` with the missing-data reason. |
+| Overall load verdict | `load test`, `overall verdict` | `PASS`: passed; `WARN`: passed with output; `FAIL`: `<failure>`; `INCONCLUSIVE` or absent verdict: `<skipped>`. |
+
+Section suites keep CI results grouped like the plan. Workflow invocation names distinguish concurrent users and repeated iterations. Older recordings without `plan.json` use event phases for suites and can only list steps that were recorded.
+
+Warnings remain successful because JUnit has no warning state; testcase output keeps the warning visible in CI views that expose captured output. A missing result is skipped because no assertion could be made. The overall load verdict is a separate case so a breaking point or stop-rule failure still fails the test report even when every outcome check passes.
+
+| Field | Meaning |
+| --- | --- |
+| `time` | Seconds, to three decimal places. Steps use recorded `elapsedMs`; an interrupted step uses the last event time. The load verdict holds the measurement-through-checks duration. Checks and the execution case use zero because their individual durations are not recorded. Suite times sum their cases. |
+| `tests`, `failures`, `errors`, `skipped` | Counts per suite. Step errors use `<failure>`, so `errors` is zero. |
+| `run-directory` property and suite output | The directory being reported, including after copying a recording to another machine. |
+| Messages and names | XML-escaped, control characters replaced with spaces, one line, limited to 2048 Unicode characters plus an ellipsis. Step inputs, outputs and credential values are not exported; recorded text uses the existing credential redaction. |
+| `--junit PATH` on `run` or `report` | An additional copy, creating parent directories as needed. The default `junit.xml` remains in the run directory. A remote run fetches the agent's report to the local path; update the agent if it lacks this endpoint. |
+
+JUnit failures do not change the CLI's exit policy. `report` still exits zero after a successful rebuild, and `run` still follows [exit codes](cli.md#exit-codes), including `--fail-on-verdict`.
 
 ## summary.md
 
@@ -271,7 +318,7 @@ Each command's exit code, and what sets it, is in the [CLI reference](cli.md#exi
 
 | Plan | Rewrites |
 | --- | --- |
-| Without `<load>` | `samples.jtl` and the plots |
+| Without `<load>` | `junit.xml`, `samples.jtl` and the plots |
 | With `<load>` | Also the checks, `summary.json` and `summary.md` |
 
 The result comes only from the files, so you can copy a run directory to another machine and report it there.

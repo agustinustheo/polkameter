@@ -87,7 +87,7 @@ impl Log {
 fn secret_values(credentials: &Values) -> Vec<String> {
 	credentials.values().filter_map(|v| v.as_str().map(str::to_owned)).collect()
 }
-fn redact_text(text: &str, secrets: &[String]) -> String {
+pub(crate) fn redact_text(text: &str, secrets: &[String]) -> String {
 	secrets
 		.iter()
 		.fold(text.to_owned(), |text, secret| text.replace(secret, "[redacted]"))
@@ -418,7 +418,9 @@ pub async fn run_with_options(
 	let credentials = registry.resolve_credentials(&plan);
 	let log =
 		Log::open(&directory, sink, credentials.as_ref().map(secret_values).unwrap_or_default())?;
-	write_json(&directory.join("plan.json"), &plan)?;
+	let mut recorded_plan = serde_json::to_value(&plan)?;
+	redact(&mut recorded_plan, &log.secrets);
+	write_json(&directory.join("plan.json"), &recorded_plan)?;
 	let context = Context::host(run_id, directory.canonicalize()?);
 	let run = Run {
 		plan: &plan,
@@ -679,6 +681,20 @@ impl Run<'_> {
 					outcome.error.as_deref().unwrap_or("All configured steps completed.")
 				),
 			)?;
+		}
+		// These files are also inputs to offline JUnit regeneration. Reuse event redaction
+		// before persisting plugin-provided text for a later report without credentials.
+		for name in ["summary.json", "plugin-checks.json"] {
+			let path = self.directory.join(name);
+			if path.exists() {
+				let mut value: Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+				redact(&mut value, &self.log.secrets);
+				write_json(&path, &value)?;
+			}
+		}
+		if let Err(error) = crate::junit::write(&self.directory, &self.log.secrets) {
+			fail_report(&mut outcome, redact_text(&error.to_string(), &self.log.secrets));
+			write_json(&self.directory.join("execution.json"), &outcome)?;
 		}
 		self.log.emit(json!({"event": "completed", "outcome": outcome}))?;
 		Ok(outcome)

@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="plan" tests="1" failures="0" errors="0" skipped="0" time="0.000">
+    <properties><property name="run-directory" value="/runs/smoke-run"/></properties>
+    <testcase classname="plan" name="execution" time="0.000">
+      <system-out>completed: </system-out>
+    </testcase>
+    <system-out>Run directory: /runs/smoke-run</system-out>
+  </testsuite>
+  <testsuite name="preflight" tests="1" failures="0" errors="0" skipped="0" time="0.026">
+    <properties><property name="run-directory" value="/runs/smoke-run"/></properties>
+    <testcase classname="preflight" name="compatibility" time="0.026">
+      <system-out>Step completed</system-out>
+    </testcase>
+    <system-out>Run directory: /runs/smoke-run</system-out>
+  </testsuite>
+  <testsuite name="setup" tests="4" failures="0" errors="0" skipped="0" time="139.245">
+    <properties><property name="run-directory" value="/runs/smoke-run"/></properties>
+    <testcase classname="setup" name="claims" time="104.890">
+      <system-out>Step completed</system-out>
+    </testcase>
+    <testcase classname="setup" name="fresh" time="0.029">
+      <system-out>Step completed</system-out>
+    </testcase>
+    <testcase classname="setup" name="recognition" time="0.129">
+      <system-out>Step completed</system-out>
+    </testcase>
+    <testcase classname="setup" name="recognized" time="34.197">
+      <system-out>Step completed</system-out>
+    </testcase>
+    <system-out>Run directory: /runs/smoke-run</system-out>
+  </testsuite>
+  <testsuite name="load test" tests="16" failures="2" errors="0" skipped="1" time="155.157">
+    <properties><property name="run-directory" value="/runs/smoke-run"/></properties>
+    <testcase classname="load test" name="block production: why blocks end" time="0.000">
+      <system-out>info: no block ended full</system-out>
+    </testcase>
+    <testcase classname="load test" name="block production: build time within the authoring deadline" time="0.000">
+      <system-out>pass: p95 build time at most 1 s in every step and in recovery</system-out>
+    </testcase>
+    <testcase classname="load test" name="pvf: relay slots (level 1)" time="0.000">
+      <failure message="fail: step 1: missed 2 of 5 slots, 2.0 more than at idle: not built 0 (collator), not backed 2 (PVF, delivery or statements; forks not measured yet), timed out 0 (availability)">fail: step 1: missed 2 of 5 slots, 2.0 more than at idle: not built 0 (collator), not backed 2 (PVF, delivery or statements; forks not measured yet), timed out 0 (availability)</failure>
+    </testcase>
+    <testcase classname="load test" name="pvf: no timed-out candidates or disputes" time="0.000">
+      <system-out>pass: parachain candidates timed out 0; disputes on the relay 0, raised by validators 0</system-out>
+    </testcase>
+    <testcase classname="load test" name="pvf: PVF time on validators (level 2, all parachains)" time="0.000">
+      <system-out>pass: no run over 2 s; highest p95 0.5 s in step 1, queue p95 0.01 s</system-out>
+    </testcase>
+    <testcase classname="load test" name="pvf: collation funnel" time="0.000">
+      <system-out>warn: expired after advertised 0 (delivery), after fetched 2 (validation or backing), after backed 0 (availability); backed to included 1.00 relay blocks on average</system-out>
+    </testcase>
+    <testcase classname="load test" name="pool: no silent loss" time="0.000">
+      <system-out>pass: 0 of 360 txs accepted, in no block, and without any error; the node&apos;s mempool holds 1 txs, 0 ready</system-out>
+    </testcase>
+    <testcase classname="load test" name="pool: the burst drains" time="0.000">
+      <system-out>pass: probes back in time 1 s after the load stopped; backlog 37 at the stop, drained after 7 s</system-out>
+    </testcase>
+    <testcase classname="load test" name="pool: refusals are clean" time="0.000">
+      <system-out>pass: 0 refused (none)</system-out>
+    </testcase>
+    <testcase classname="load test" name="pool: pool work leaves time for blocks" time="0.000">
+      <system-out>pass: maintenance p95 within 3.0 s in every step and in recovery</system-out>
+    </testcase>
+    <testcase classname="load test" name="run: monitors recorded everything" time="0.000">
+      <system-out>pass: no failed scrapes or unreadable blocks</system-out>
+    </testcase>
+    <testcase classname="load test" name="recycler: the backlog clears" time="0.000">
+      <system-out>pass: at the end: 0 queued, 0 unbuilt, 0 stale rings (start 0 / 0 / 0); queue peak 0; back to the start 2 s after the last load</system-out>
+    </testcase>
+    <testcase classname="load test" name="recycler: maintenance keeps up" time="0.000">
+      <system-out>pass: 0 ring builds, 0 onboardings, 0 failed maintenance calls; stale rings peak 0</system-out>
+    </testcase>
+    <testcase classname="load test" name="recycler: cleanup keeps up" time="0.000">
+      <system-out>pass: ring_pages 0 -&gt; 0, old_roots 1 -&gt; 1, suspensions 0 -&gt; 0 (old roots are kept 600 s, longer than this run)</system-out>
+    </testcase>
+    <testcase classname="load test" name="recycler: time from load to built root" time="0.000">
+      <skipped>no result: no sampled voucher reached a built root (no loads in this run?)</skipped>
+    </testcase>
+    <testcase classname="load test" name="overall verdict" time="155.157">
+      <failure message="FAIL: Load stop: all 3 steps ran">FAIL: Load stop: all 3 steps ran</failure>
+    </testcase>
+    <system-out>Run directory: /runs/smoke-run</system-out>
+  </testsuite>
+</testsuites>
