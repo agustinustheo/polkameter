@@ -198,3 +198,5 @@ Use `features = ["chain"]` if the plugin does not use `polkameter-files`, `polka
 | `polkameter_monitors::walker::*`, `polkameter_monitors::chain_series::*` | `polkameter_plugin_sdk::observers::walker::*`, `polkameter_plugin_sdk::observers::chain_series::*` |
 
 Two text replacements cover the plugin API in the table above: `polkameter_chain::` becomes `polkameter_plugin_sdk::chain::`, and `polkameter_files::`, `polkameter_checks::` and `polkameter_monitors::` become `polkameter_plugin_sdk::observers::`. Version 0.3 has no replacement for `polkameter-engine` and `polkameter-load`: they are part of the `polkameter` CLI.
+
+`CheckResult` also has a new field since 0.2, `source`. PolkaMeter sets it to the evaluate step's ID, so a plugin that builds a `CheckResult` sets `source: None`.
