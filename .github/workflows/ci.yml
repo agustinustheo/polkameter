@@ -103,3 +103,26 @@ jobs:
         run: |
           test "$EXIT_CODE" = 0
           test -z "$VERDICT"
+
+  container:
+    name: Container image
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v3
+      # Build only, so the Dockerfile is tested before a release builds and pushes it.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: polkameter:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Run the image
+        run: |
+          docker run --rm polkameter:ci --version
+          test "$(docker run --rm --entrypoint id polkameter:ci -u)" = 10001
+          docker image ls polkameter:ci --format 'Image size: {{.Size}}'
