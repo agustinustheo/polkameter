@@ -11,12 +11,18 @@ import sys
 import tarfile
 import tempfile
 from urllib.error import URLError
-from urllib.parse import quote, urlsplit
+from urllib.parse import urlsplit
 from urllib.request import build_opener, HTTPRedirectHandler, Request
 import zipfile
 
 REPO = "agustinustheo/polkameter"
+API = "https://api.github.com"
 TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
+
+
+def asset_name(version, target):
+    suffix = "zip" if target.endswith("-windows-msvc") else "tar.gz"
+    return f"polkameter-{version}-{target}.{suffix}"
 
 
 class Unavailable(Exception):
@@ -34,41 +40,27 @@ class SafeRedirect(HTTPRedirectHandler):
 class Installer:
     def __init__(self):
         self.root = Path(os.environ["GITHUB_ACTION_PATH"])
-        self.api = os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/")
+        # Distribution is hosted on github.com even for GHES callers. A GHES
+        # runner token must never be sent to the public API or to gh.
+        public_runner = (os.environ.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
+                         == "https://github.com"
+                         and os.environ.get("GITHUB_API_URL", API).rstrip("/") == API)
+        self.token = os.environ.get("GITHUB_TOKEN", "") if public_runner else ""
         self.opener = build_opener(SafeRedirect())
 
     def request(self, url, accept="application/vnd.github+json"):
         headers = {"Accept": accept, "User-Agent": "polkameter-action"}
-        token = os.environ.get("GITHUB_TOKEN", "")
         # Only send the runner token to the API, never to a release storage host.
-        if token and urlsplit(url).netloc == urlsplit(self.api).netloc:
-            headers["Authorization"] = f"Bearer {token}"
+        if self.token and urlsplit(url)[:2] == urlsplit(API)[:2]:
+            headers["Authorization"] = f"Bearer {self.token}"
         try:
             return self.opener.open(Request(url, headers=headers), timeout=30)
         except URLError as error:
             raise Unavailable(f"GitHub request failed: {error}") from error
 
     def get(self, endpoint):
-        with self.request(f"{self.api}/repos/{REPO}/{endpoint}") as response:
+        with self.request(f"{API}/repos/{REPO}/{endpoint}") as response:
             return json.load(response)
-
-    def tag_commit(self, tag):
-        obj = self.get(f"git/ref/tags/{quote(tag, safe='')}")["object"]
-        # Release tags may be annotated (including nested annotated tags).
-        for _ in range(10):
-            if obj["type"] == "commit":
-                return obj["sha"]
-            if obj["type"] != "tag":
-                break
-            obj = self.get(f"git/tags/{obj['sha']}")["object"]
-        raise Unavailable(f"Tag {tag} does not resolve to a commit")
-
-    def checkout_commit(self):
-        if not (self.root / ".git").exists():
-            return None
-        result = subprocess.run(["git", "-C", str(self.root), "rev-parse", "HEAD"],
-                                capture_output=True, text=True, check=False)
-        return result.stdout.strip() if result.returncode == 0 else None
 
     def source_version(self):
         # Read only the package version, never a similarly named dependency.
@@ -84,45 +76,19 @@ class Installer:
             tag = explicit if explicit.startswith("v") else f"v{explicit}"
             if not TAG.fullmatch(tag):
                 raise ValueError("version must be X.Y.Z or vX.Y.Z")
-            return self.get(f"releases/tags/{tag}")
-        if TAG.fullmatch(ref):
-            return self.get(f"releases/tags/{ref}")
-        if not re.fullmatch(r"v[0-9]+", ref):
+        elif TAG.fullmatch(ref):
+            tag = ref
+        elif re.fullmatch(r"v[0-9]+", ref):
+            # Remote action packages have no .git. Never query the moving tag:
+            # it may have advanced since the runner downloaded this package.
+            tag = f"v{self.source_version()}"
+            if not TAG.fullmatch(tag) or tag.split(".")[0] != ref:
+                raise Unavailable("The action package version does not match the moving major tag")
+        else:
             raise Unavailable("This action ref is not a release tag; use version to select a release")
-
-        commit = self.checkout_commit()
-        if not commit:
-            try:
-                commit = self.tag_commit(ref)
-            except Unavailable:
-                pass
-        if commit:
-            # Find the immutable release behind a moving major tag, not /latest.
-            page = 1
-            while True:
-                try:
-                    releases = self.get(f"releases?per_page=100&page={page}")
-                except Unavailable:
-                    break
-                for release in releases:
-                    tag = release["tag_name"]
-                    if not TAG.fullmatch(tag) or tag.split(".")[0] != ref or release["draft"]:
-                        continue
-                    try:
-                        if self.tag_commit(tag) == commit:
-                            return release
-                    except Unavailable:
-                        continue
-                if len(releases) < 100:
-                    break
-                page += 1
-
-        tag = f"v{self.source_version()}"
-        if tag.split(".")[0] != ref:
-            raise Unavailable("The action package version does not match the moving major tag")
         release = self.get(f"releases/tags/{tag}")
-        if commit and self.tag_commit(tag) != commit:
-            raise Unavailable("The package release tag does not match the action commit")
+        if release["tag_name"] != tag or release["draft"]:
+            raise ValueError(f"GitHub did not return the requested published release {tag}")
         return release
 
     def install(self, release):
@@ -138,7 +104,7 @@ class Installer:
             raise Unavailable("No release binary for this runner platform")
         tag = release["tag_name"]
         suffix = "zip" if os.environ["RUNNER_OS"] == "Windows" else "tar.gz"
-        name = f"polkameter-{tag.removeprefix('v')}-{target}.{suffix}"
+        name = asset_name(tag.removeprefix("v"), target)
         assets = {asset["name"]: asset["url"] for asset in release["assets"]}
         if name not in assets or f"{name}.sha256" not in assets:
             raise Unavailable(f"Release {tag} has no archive and checksum for {target}")
@@ -156,11 +122,25 @@ class Installer:
         if not match or match[2] != name or match[1].lower() != digest.hexdigest():
             raise ValueError(f"Checksum verification failed for {name}")
 
-        verify = os.environ.get("VERIFY_ATTESTATION", "")
-        if verify == "true" or (verify == "" and shutil.which("gh")):
+        if os.environ.get("VERIFY_ATTESTATION", "true") != "false":
             if not shutil.which("gh"):
-                raise ValueError("Attestation verification requested, but gh is not installed")
-            subprocess.run(["gh", "attestation", "verify", str(archive), "--repo", REPO], check=True)
+                raise Unavailable("Build provenance verification requires gh, but gh is not installed")
+            env = dict(os.environ, GH_HOST="github.com")
+            for key in ("GH_TOKEN", "GITHUB_TOKEN"):
+                env.pop(key, None)
+            if self.token:
+                env["GH_TOKEN"] = self.token
+            # gh hashes this exact file and verifies the attested subject digest.
+            # Pin both the trusted signer and the source tag, so a valid archive
+            # from an older release cannot be substituted with its checksum.
+            subprocess.run(["gh", "attestation", "verify", str(archive),
+                            "--repo", REPO, "--hostname", "github.com",
+                            "--signer-workflow", f"{REPO}/.github/workflows/release.yml",
+                            "--source-ref", f"refs/tags/{tag}", "--digest-alg", "sha256"],
+                           env=env, check=True)
+        else:
+            print("::warning::verify-attestation=false: installing with SHA-256 only; "
+                  "release build provenance is not verified")
 
         binary = "polkameter.exe" if suffix == "zip" else "polkameter"
         bindir = directory / "bin"
@@ -183,6 +163,13 @@ class Installer:
         return tag.removeprefix("v")
 
 
+def report(method, version, reason):
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with open(summary, "a") as output:
+            output.write(f"PolkaMeter installation: **{method}** (version {version}). {reason}\n\n")
+
+
 def main():
     mode = os.environ.get("INSTALL", "auto")
     if mode not in ("auto", "release", "source"):
@@ -191,25 +178,33 @@ def main():
         raise ValueError("verify-attestation must be true or false")
     installer = Installer()
     method = "source"
+    reason = "Source build explicitly requested"
     version = installer.source_version()
     if mode != "source":
         try:
             release = installer.resolve(os.environ.get("ACTION_REF", ""), os.environ.get("VERSION", ""))
             version = installer.install(release)
             method = "release"
+            reason = f"Downloaded release v{version}; SHA-256 verified"
+            reason += ("; provenance verification explicitly disabled"
+                       if os.environ.get("VERIFY_ATTESTATION") == "false"
+                       else "; release workflow and source tag attestation verified")
         except Unavailable as error:
             if mode == "release":
                 raise ValueError(str(error)) from error
-            print(f"Using source build: {error}")
+            reason = str(error)
+            print(f"::warning::Using source build: {reason}")
     needs_toolchain = method == "source" or bool(os.environ.get("PLUGIN_CRATES", "").strip())
     with open(os.environ["GITHUB_OUTPUT"], "a") as output:
         output.write(f"install-method={method}\nversion={version}\nneeds-toolchain={str(needs_toolchain).lower()}\n")
-    print(f"PolkaMeter {version}: {method}")
+    report(method, version, reason)
+    print(f"::notice::PolkaMeter {version}: {method}. {reason}")
 
 
 if __name__ == "__main__":
     try:
         main()
     except (ValueError, subprocess.CalledProcessError, OSError, KeyError, tarfile.TarError, zipfile.BadZipFile) as error:
+        report("failed", "unavailable", str(error))
         print(f"::error::{error}", file=sys.stderr)
         sys.exit(1)

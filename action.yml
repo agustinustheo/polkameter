@@ -12,18 +12,22 @@ inputs:
     description: Plugin package directories or Cargo.toml paths to build and install, one path or path:package per line.
     required: false
     default: ""
+  plugin-unlocked:
+    description: Allow plugin-crates builds to update Cargo.lock. By default builds use --locked and require an up-to-date lockfile.
+    required: false
+    default: "false"
   install:
     description: 'CLI installation: auto (release with source fallback), release or source.'
     required: false
     default: auto
   version:
-    description: Release version (X.Y.Z or vX.Y.Z). Empty derives it from a release tag or moving major tag; other refs build from source.
+    description: Release version (X.Y.Z or vX.Y.Z). Empty uses a full release tag or the package version for a moving major tag; other refs build from source.
     required: false
     default: ""
   verify-attestation:
-    description: Verify release build provenance with gh. Empty enables verification when gh exists; true requires gh; false skips it.
+    description: Require gh verification of the release workflow and source tag. False explicitly skips provenance with a warning; SHA-256 is always checked.
     required: false
-    default: ""
+    default: "true"
   credentials:
     description: Credential profiles to map to environment variables, one PROFILE=ENV_VAR per line. Set the secret variables on the calling step with env:; secrets are never inputs.
     required: false
@@ -64,7 +68,7 @@ outputs:
     description: CLI installation method (release or source).
     value: ${{ steps.install.outputs.install-method }}
   junit:
-    description: Path to the run's junit.xml, or empty if it was not written.
+    description: Path to the run's junit.xml (from v0.3.0), or empty if it was not written.
     value: ${{ steps.run.outputs.junit }}
   run-dir:
     description: The run directory, relative to the workspace.
@@ -126,6 +130,7 @@ runs:
         PLUGINS: ${{ inputs.plugins }}
         PLUGIN_CRATES: ${{ inputs.plugin-crates }}
         TOOLCHAIN: ${{ inputs.toolchain }}
+        PLUGIN_UNLOCKED: ${{ inputs.plugin-unlocked }}
         CREDENTIALS: ${{ inputs.credentials }}
         TOPOLOGIES: ${{ inputs.topologies }}
         CAPABILITIES: ${{ inputs.capabilities }}

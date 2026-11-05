@@ -1,6 +1,6 @@
 # Run PolkaMeter in CI
 
-The PolkaMeter action runs a plan in a GitHub Actions job. It downloads a released CLI, installs your plugins and credentials, runs the plan and uploads the run directory. It works on Linux and macOS runners. For other systems, see [Other CI systems](#other-ci-systems).
+The PolkaMeter action runs a plan in a GitHub Actions job. It downloads a released CLI, installs your plugins and credentials, runs the plan and uploads the run directory. The composite action supports Linux and macOS runners. From v0.3.0, Windows CLI archives are published separately; the composite action is not supported end to end on Windows. For other systems, see [Other CI systems](#other-ci-systems).
 
 ## A minimal workflow
 
@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - id: load
-        uses: agustinustheo/polkameter@v0
+        uses: agustinustheo/polkameter@v0.2.0
         with:
           plan: plans/transfers.polkameter.xml
           plugins: plugins/<plugin-binary>
@@ -26,21 +26,27 @@ jobs:
           POLKAMETER_SETUP_SURI: ${{ secrets.SETUP_SURI }}
 ```
 
-The moving `v0` tag exists from the next release on. Until then, pin `@v0.2.0`, which builds from source. Expect seconds with a release, minutes when building from source; plugin builds and the plan take additional time.
+The example uses `@v0.2.0`, which builds from source. The moving `@v0` tag, release-binary installation and the inputs below for installation and plugin builds are available from v0.3.0. Installation typically takes seconds when a release binary exists and several minutes when building from source; plugin builds and the plan take additional time.
 
-To pin the action, replace `v0` with a full release tag or commit SHA. With `install: auto`, full tags such as `v0.3.0` select that release. A moving major tag selects the release whose tag points at the action's commit, using the GitHub tags and releases API.
+To pin the action, use a full release tag or commit SHA. From v0.3.0, `install: auto` selects a full tag's release, such as `v0.3.0`. For a moving major tag such as `@v0`, it reads the CLI package version from the downloaded action package (inheriting the workspace version from `Cargo.toml` when needed). It requests that exact version's release without querying the moving tag again.
 
-If needed, the action reads the CLI package version (or its inherited workspace version) and checks that release's tag against the action commit when it can determine it. Branches, commit SHAs and local `uses: ./` build from source. Missing releases or platform assets also fall back to source.
+Branches, commit SHAs and local `uses: ./` build from source. Missing releases or platform assets also fall back to source. The action emits a warning with the fallback reason and records the installation method, version and reason in the job summary.
 
-Set `version: <X.Y.Z>` to select a release explicitly, including from a branch or commit SHA. Set `install: release` to fail when it cannot download that release, or `install: source` to always build the CLI from the action's ref. The source build keeps its cache in `.polkameter-action-target` inside the action directory.
+Set `version: "0.3.0"` (or `"v0.3.0"`) to select a release explicitly, including from a branch or commit SHA. Set `install: release` to fail when that release cannot be installed, or `install: source` to always build the CLI from the action's ref, ignoring `version`. Any source fallback builds the action's own version, even when a different release was requested. The source build keeps its cache in `.polkameter-action-target` inside the action directory.
 
-Downloads use the job's `GITHUB_TOKEN` and always check the archive's SHA-256 checksum. If `gh` is available, the action also verifies GitHub's build attestation, which identifies the repository that built the archive. Set `verify-attestation: "true"` to require verification (and `gh`), or `"false"` to skip it; failed checksum or requested attestation checks fail the job.
+Downloads always check the archive's SHA-256 checksum. By default, `gh` must verify the archive's build attestation from `agustinustheo/polkameter/.github/workflows/release.yml`, bound to the selected `refs/tags/v<X.Y.Z>` source ref and the archive's digest. If `gh` is missing, `auto` emits a warning and builds from source; `release` fails. If verification runs and fails (including authentication, network or missing-attestation errors), both modes fail the job. A checksum mismatch also fails both modes; these failures do not fall back to source.
+
+To explicitly accept checksum-only installation, set `verify-attestation: "false"`. The action warns that release provenance is not verified. Checksums remain mandatory.
+
+On GitHub Enterprise Server (GHES), releases and attestations still come from `api.github.com` and `github.com`. The action never sends the enterprise runner token to those hosts. Release downloads are anonymous; `gh` uses any stored github.com authentication from its own configuration. Runners need outbound access to github.com and its release storage; an unavailable download falls back in `auto`, while a failed attestation verification is fatal as described above.
 
 The action installs Rust only for a source build or when you set `plugin-crates`. It uses the `toolchain` input, Rust 1.93.0 by default, and sets that toolchain as the job's default. Later steps that run `cargo` use it too.
 
 ## Build plugins in the action
 
-Use `plugin-crates` to build and install plugins from your checkout. Each line names a package directory or `Cargo.toml` path; add `:package` to select a package from a workspace. The action builds release executables and installs them before validating the plan.
+Use `plugin-crates` to build and install plugins from your checkout. Each line names a package directory or `Cargo.toml` path; add `:package` to select a package from a workspace. The action builds release executables with `--locked` and installs them before validating the plan. Commit an up-to-date `Cargo.lock` for each package or its workspace; a missing or stale lockfile fails with Cargo diagnostics. To allow dependency resolution and lockfile changes explicitly, set `plugin-unlocked: "true"`; the action emits a warning.
+
+This configuration requires v0.3.0 or newer (`@v0` from that release):
 
 ```yaml
       - uses: actions/checkout@v7
@@ -61,9 +67,10 @@ You can combine `plugin-crates` with `plugins` for prebuilt executables. A relea
 | `plan` | yes | | Path to the `.polkameter.xml` plan, relative to the workspace. |
 | `plugins` | no | `""` | Plugin executables to install, one per line, relative to the workspace. |
 | `plugin-crates` | no | `""` | Package directories or `Cargo.toml` paths to build and install, one `path` or `path:package` per line. |
+| `plugin-unlocked` | no | `"false"` | Opt in to plugin builds that may update `Cargo.lock`; default builds require an up-to-date lockfile. |
 | `install` | no | `auto` | `auto` downloads a release with a source fallback; `release` requires a matching asset; `source` always builds. |
-| `version` | no | derived | Release version, `X.Y.Z` or `vX.Y.Z`. Empty uses the action's full release tag or resolves its moving major tag. Other refs build from source. |
-| `verify-attestation` | no | enabled if `gh` exists | `"true"` requires `gh` and a valid build attestation; `"false"` skips verification. Checksums are always verified. |
+| `version` | no | derived | Release version, `X.Y.Z` or `vX.Y.Z`. Empty uses the action's full release tag or its embedded package version for a moving major tag. Other refs build from source. |
+| `verify-attestation` | no | `"true"` | Require `gh` verification of the release workflow, source tag and archive digest. `"false"` explicitly opts out with a warning. Checksums are always verified. |
 | `credentials` | no | `""` | Credential profiles to map to environment variables, one `PROFILE=ENV_VAR` per line. Set the secret variables on the calling step with `env:`; secrets are never inputs. |
 | `topologies` | no | `""` | Zombienet topologies to register, one `ALIAS=path` per line. |
 | `capabilities` | no | `""` | Capabilities the network provisioner supplies, one name per line. |
@@ -77,7 +84,7 @@ You can combine `plugin-crates` with `plugins` for prebuilt executables. A relea
 | --- | --- |
 | `version` | Installed CLI version, without the `v` prefix. |
 | `install-method` | `release` or `source`. |
-| `junit` | Path to `<run-dir>/junit.xml` when present, or empty. |
+| `junit` | Path to `<run-dir>/junit.xml` when present, or empty. Available from v0.3.0; v0.2.0 does not write JUnit reports. |
 | `run-dir` | The run directory, relative to the workspace. |
 | `verdict` | `PASS`, `WARN`, `FAIL` or `INCONCLUSIVE`, read from `summary.json`. Empty if no verdict was written, including plans without a load test. |
 | `exit-code` | The exit code of `polkameter run`. See [What fails the job](#what-fails-the-job). |
@@ -103,7 +110,7 @@ Set `fail-on: verdict` on the action step to fail the job when the load verdict 
 
 ```yaml
       - id: load
-        uses: agustinustheo/polkameter@v0
+        uses: agustinustheo/polkameter@v0.2.0
         with:
           plan: plans/transfers.polkameter.xml
           fail-on: verdict
@@ -125,26 +132,27 @@ With the default `fail-on: error`, a stress-mode load run exits `0` even when it
 
 ## What the job keeps
 
-- **Job summary.** The action appends the run's `summary.md` to the job summary. For a plan without a load test, it holds only a short status.
+- **Job summary.** From v0.3.0, it records the CLI installation method and reason. The action appends the run's `summary.md` to the job summary. For a plan without a load test, it holds only a short status.
 - **Artifact.** The whole run directory, uploaded as `polkameter-run`. Set `artifact-name` to change the name. The upload runs even when the run failed. If validation fails before the run starts, there is no run directory and no artifact.
 
 ## Other CI systems
 
-Without the action, install the CLI in your job. It needs Rust 1.93 or newer:
+Without the action, add installation to your CI configuration. It needs Rust 1.93 or newer. For a GitHub Actions shell step:
 
-```sh
-cargo install --locked polkameter
+```yaml
+- run: cargo install --locked polkameter
 ```
 
 `cargo install --locked --git https://github.com/agustinustheo/polkameter polkameter` installs the latest unreleased code.
 
-Then run these from the repository root:
+Configure subsequent shell steps to run from the repository root, replacing the placeholders with your plugin executable and environment variable name:
 
-```sh
-polkameter plugin install target/release/<plugin-binary>
-polkameter plugin credential previewnet-sudo <ENV_VAR>
-polkameter validate plans/transfers.polkameter.xml
-polkameter run plans/transfers.polkameter.xml --output polkameter-runs --fail-on-verdict
+```yaml
+- run: |
+    polkameter plugin install target/release/<plugin-binary>
+    polkameter plugin credential previewnet-sudo <ENV_VAR>
+    polkameter validate plans/transfers.polkameter.xml
+    polkameter run plans/transfers.polkameter.xml --output polkameter-runs --fail-on-verdict
 ```
 
 The `plugin credential` line maps the profile to a variable name. Set that variable in the job's environment before `run`. Use a fresh output directory for each job. The exit codes are the same as in the table above; `--fail-on-verdict` exits `1` on `FAIL`.

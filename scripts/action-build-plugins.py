@@ -8,6 +8,11 @@ import sys
 
 
 def main():
+    unlocked = os.environ.get("PLUGIN_UNLOCKED", "false")
+    if unlocked not in ("true", "false"):
+        raise ValueError("plugin-unlocked must be true or false")
+    if unlocked == "true":
+        print("::warning::plugin-unlocked=true: plugin dependency resolution may update Cargo.lock")
     for entry in os.environ.get("PLUGIN_CRATES", "").splitlines():
         entry = entry.strip()
         if not entry:
@@ -18,11 +23,20 @@ def main():
             manifest /= "Cargo.toml"
         args = ["cargo", f"+{os.environ['TOOLCHAIN']}", "build", "--release",
                 "--manifest-path", str(manifest), "--message-format=json-render-diagnostics"]
+        if unlocked != "true":
+            args.append("--locked")
         if separator:
             if not package:
                 raise ValueError("plugin-crates expects path or path:package")
             args.extend(["--package", package])
-        result = subprocess.run(args, stdout=subprocess.PIPE, text=True, check=True)
+        try:
+            result = subprocess.run(args, stdout=subprocess.PIPE, text=True, check=True)
+        except subprocess.CalledProcessError as error:
+            if unlocked != "true":
+                raise ValueError(f"Locked plugin build failed for {entry}. Commit an up-to-date "
+                                 "Cargo.lock for the package/workspace; for intentional dependency "
+                                 "resolution, opt in with plugin-unlocked: true. See Cargo diagnostics above.") from error
+            raise
         binaries = set()
         for line in result.stdout.splitlines():
             artifact = json.loads(line)
