@@ -17,14 +17,19 @@ PolkaMeter is a load-testing tool for Polkadot SDK chains, modeled on JMeter. An
 
 ## Quick start
 
-Install the prebuilt CLI on Linux or macOS:
+Install the published CLI with Rust 1.93 or newer:
 
+<!-- TODO(v0.3.0): lead with the prebuilt installer after the first CLI-archive release is published. -->
 ```sh
-curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh | sh
-export PATH="$HOME/.local/bin:$PATH"
+cargo install --locked polkameter
+polkameter --version
 ```
 
-The script downloads a CLI-only release archive and verifies its SHA-256 checksum. These assets become available with the first release containing this distribution setup. See [Install](docs/install.md) for `cargo binstall polkameter`, Windows archives, containers, version selection and source installation with Rust 1.93 or newer.
+```text
+polkameter 0.2.0
+```
+
+[Install](docs/install.md) covers version selection and source installation. Prebuilt CLI archives, `install.sh`, binstall metadata and containers are available **from v0.3.0**; v0.2.0 has no prebuilt CLI archives.
 
 From a checkout of this repository, build the example plugin and install it. The example needs no chain:
 

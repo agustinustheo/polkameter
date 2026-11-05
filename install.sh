@@ -19,9 +19,40 @@ case "$(uname -m)" in
     aarch64|arm64) arch=aarch64 ;;
     *) fail 'supported architectures: x86_64 and aarch64' ;;
 esac
+fetch() {
+    # Keep HTTP failures separate from transport errors, so missing old assets
+    # and GitHub's rate limit do not end in a bare curl error under set -e.
+    if ! status=$(curl -sSL --retry 3 -w '%{http_code}' "$1" -o "$2"); then
+        fail "could not download $1; check your connection and retry"
+    fi
+    case "$status" in
+        200) ;;
+        404)
+            if [ "$3" = archive ]; then
+                fail "v$version has no prebuilt CLI archive; install with cargo install --locked polkameter, or pick a newer version"
+            fi
+            fail "GitHub returned 404 for $1; check the release version and asset availability"
+            ;;
+        403|429) fail "GitHub returned HTTP $status (rate limit or access denied); retry later or install with cargo install --locked polkameter" ;;
+        *) fail "GitHub returned HTTP $status for $1" ;;
+    esac
+}
 if [ "$version" = latest ]; then
-    url=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$base/latest")
+    if ! response=$(curl -sSLI -o /dev/null -w '%{http_code} %{url_effective}' "$base/latest"); then
+        fail 'could not resolve the latest release; check your connection and retry'
+    fi
+    status=${response%% *}
+    url=${response#* }
+    case "$status" in
+        200) ;;
+        404) fail 'GitHub returned 404: no latest stable release was found; select a version or install with cargo install --locked polkameter' ;;
+        403|429) fail "GitHub returned HTTP $status (rate limit or access denied); retry later or select a version" ;;
+        *) fail "GitHub returned HTTP $status while resolving the latest release" ;;
+    esac
     version=${url##*/}
+    case "$version" in
+        *-*) fail 'latest resolved to a prerelease; select that version explicitly' ;;
+    esac
 fi
 version=${version#v}
 # Permit SemVer prerelease/build identifiers; reject paths and shell metacharacters.
@@ -33,14 +64,14 @@ asset=polkameter-$version-$arch-$os.tar.gz
 temporary=$(mktemp -d)
 trap 'rm -rf "$temporary"' 0
 trap 'exit 1' HUP INT TERM
-curl -fsSL --retry 3 "$base/download/v$version/$asset" -o "$temporary/$asset"
-curl -fsSL --retry 3 "$base/download/v$version/$asset.sha256" -o "$temporary/$asset.sha256"
-read -r expected filename < "$temporary/$asset.sha256"
-[ "$filename" = "$asset" ] || fail 'unexpected checksum filename'
+fetch "$base/download/v$version/$asset" "$temporary/$asset" archive
+fetch "$base/download/v$version/$asset.sha256" "$temporary/$asset.sha256" checksum
+read -r expected filename < "$temporary/$asset.sha256" || fail 'invalid checksum file (expected one line ending in a newline)'
+[ "$filename" = "$asset" ] || fail 'invalid checksum file: unexpected filename'
 case "$expected" in
-    ''|*[!0-9a-fA-F]*) fail 'invalid SHA-256 checksum' ;;
+    ''|*[!0-9a-fA-F]*) fail 'invalid checksum file: invalid SHA-256 checksum' ;;
 esac
-[ "${#expected}" -eq 64 ] || fail 'invalid SHA-256 checksum'
+[ "${#expected}" -eq 64 ] || fail 'invalid checksum file: invalid SHA-256 checksum'
 if command -v sha256sum >/dev/null 2>&1; then
     actual=$(sha256sum "$temporary/$asset")
 elif command -v shasum >/dev/null 2>&1; then
@@ -50,10 +81,21 @@ else
 fi
 actual=${actual%% *}
 [ "$actual" = "$expected" ] || fail 'SHA-256 verification failed'
-if [ "${POLKAMETER_VERIFY_ATTESTATION:-0}" = 1 ]; then
-    command -v gh >/dev/null 2>&1 || fail 'gh is required to verify attestations'
-    gh attestation verify "$temporary/$asset" --repo agustinustheo/polkameter
-fi
+case "${POLKAMETER_VERIFY_ATTESTATION:-auto}" in
+    0) printf 'polkameter: attestation verification disabled; only the checksum was verified.\n' >&2 ;;
+    auto|1)
+        if command -v gh >/dev/null 2>&1; then
+            gh attestation verify "$temporary/$asset" --repo agustinustheo/polkameter \
+                --signer-workflow agustinustheo/polkameter/.github/workflows/release.yml \
+                --source-ref "refs/tags/v$version" || fail 'attestation verification failed; see the release recovery and trust documentation'
+        elif [ "${POLKAMETER_VERIFY_ATTESTATION:-auto}" = 1 ]; then
+            fail 'gh is required to verify attestations'
+        else
+            printf 'polkameter: gh is unavailable; only the checksum was verified.\n' >&2
+        fi
+        ;;
+    *) fail 'POLKAMETER_VERIFY_ATTESTATION must be auto, 1, or 0' ;;
+esac
 # Extract only the executable; no archive path can choose the installation location.
 tar -xzf "$temporary/$asset" -C "$temporary" polkameter
 mkdir -p "$install_dir"

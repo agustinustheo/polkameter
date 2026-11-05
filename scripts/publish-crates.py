@@ -90,13 +90,16 @@ class Credentials:
     """Refresh short-lived OIDC credentials during long new-crate rate limits."""
 
     def __init__(self):
-        self.token = os.environ.get("CARGO_REGISTRY_TOKEN", "")
-        self.trusted = os.environ.get("CRATES_IO_TRUSTED_PUBLISHING") == "true"
+        self.token = os.environ.get("TRUSTED_PUBLISHING_TOKEN", "")
+        self.fallback = os.environ.get("CARGO_REGISTRY_TOKEN", "")
         self.created = time.monotonic()
         self.minted = False
 
-    def environment(self):
-        if self.trusted and time.monotonic() - self.created >= 600:
+    def preferred_mode(self):
+        return "trusted-publishing" if self.token else "fallback-secret"
+
+    def environment(self, mode):
+        if mode == "trusted-publishing" and time.monotonic() - self.created >= 600:
             # Same exchange as rust-lang/crates-io-auth-action; that action supplies
             # the initial token and revokes it in its post step.
             url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
@@ -113,9 +116,10 @@ class Credentials:
             print(f"::add-mask::{token}", flush=True)
             self.close()
             self.token, self.created, self.minted = token, time.monotonic(), True
-        if not self.token:
+        token = self.token if mode == "trusted-publishing" else self.fallback
+        if not token:
             raise ValueError("Configure crates.io Trusted Publishing or CARGO_REGISTRY_TOKEN")
-        return {**os.environ, "CARGO_REGISTRY_TOKEN": self.token}
+        return {**os.environ, "CARGO_REGISTRY_TOKEN": token}
 
     def close(self):
         if self.minted:
@@ -128,22 +132,30 @@ class Credentials:
 
 def publish(package, credentials):
     name, version = package["name"], package["version"]
+    # An exchanged token can cover only some crates. Reset the preferred mode
+    # for each crate so one unconfigured crate does not disable OIDC for others.
+    mode = credentials.preferred_mode()
     for attempt in range(len(BACKOFF) + 1):
         # Check before every attempt: also handles a successful upload whose
         # response was lost, and resuming after another crate failed.
         if published(name, version):
             print(f"Skip {name}@{version}: already on crates.io", flush=True)
             return
-        print(f"Publish {name}@{version} (attempt {attempt + 1})", flush=True)
-        result = subprocess.run(
-            ["cargo", f"+{TOOLCHAIN}", "publish", "--locked", "--registry", "crates-io", "-p", name],
-            env=credentials.environment(), text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        )
-        print(result.stdout, end="", flush=True)
-        if result.returncode == 0:
-            return
-        if published(name, version):
-            return
+        while True:
+            print(f"Publish {name}@{version} using {mode} (attempt {attempt + 1})", flush=True)
+            result = subprocess.run(
+                ["cargo", f"+{TOOLCHAIN}", "publish", "--locked", "--registry", "crates-io", "-p", name],
+                env=credentials.environment(mode), text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            )
+            print(result.stdout, end="", flush=True)
+            if result.returncode == 0 or published(name, version):
+                return
+            denied = re.search(r"\b(?:401|403)\b", result.stdout)
+            if denied and mode == "trusted-publishing" and credentials.fallback:
+                print(f"{name}: Trusted Publishing authorization denied; retrying with fallback-secret", flush=True)
+                mode = "fallback-secret"
+                continue
+            break
         limited = re.search(r"429|rate.?limit|too many requests|try again after", result.stdout, re.I)
         if not limited or attempt == len(BACKOFF):
             raise RuntimeError(f"Publishing {name}@{version} failed; dispatch the same tag to resume")

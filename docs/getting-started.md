@@ -4,14 +4,19 @@ You will install the CLI, run the example plan and read its results. You need no
 
 ## 1. Install the CLI
 
-Install the prebuilt CLI on Linux or macOS, then put its directory on your `PATH`:
+Install the published CLI with Rust 1.93 or newer, then check its version:
 
+<!-- TODO(v0.3.0): lead with the prebuilt installer after the first CLI-archive release is published. -->
 ```sh
-curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh | sh
-export PATH="$HOME/.local/bin:$PATH"
+cargo install --locked polkameter
+polkameter --version
 ```
 
-The script verifies the release archive's checksum and installs `polkameter` in `~/.local/bin`. It requires a release containing the CLI-only assets; [Install](install.md) lists other methods and release availability.
+```text
+polkameter 0.2.0
+```
+
+Prebuilt CLI archives, `install.sh`, binstall metadata and containers are available **from v0.3.0**. The [install guide](install.md) lists their requirements; v0.2.0 has no prebuilt CLI archives.
 
 ## 2. Build the example plugin
 

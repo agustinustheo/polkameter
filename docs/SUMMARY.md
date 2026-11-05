@@ -20,6 +20,7 @@
 
 - [Plan](plans.md)
 - [CLI](cli.md)
+- [Release assets](release-assets.md)
 - [Run directory](results.md)
 - [Plugins and SDK](plugins.md)
 
