@@ -15,26 +15,14 @@
 //! a series from [`chain_series::channel`] in its plugin directory. The block follower is not
 //! here: the load tool drives it, because it matches our txs in each block.
 
-pub mod chain_series;
 pub mod preflight;
 pub mod process;
 pub mod relay;
 pub mod scraper;
 pub mod topology;
-pub mod walker;
 
-/// Part of the plugin API (used by out-of-tree plugins).
-pub use chain_series::ChainSeries;
+pub use polkameter_plugin_sdk::observers::monitors::{
+	ChainSeries, MonitorError, chain_series, walker,
+};
 pub use scraper::{Sample, Scraper, ScraperHandle};
 pub use topology::{Job, Target, load_targets};
-
-/// A monitor failed with an error of our own: the run stops.
-#[derive(Debug, thiserror::Error)]
-pub enum MonitorError {
-	/// A raw file could not be written.
-	#[error(transparent)]
-	File(#[from] polkameter_files::FileError),
-	/// An answer did not decode as our types, or a step edge was missed.
-	#[error("{0}")]
-	Tool(String),
-}

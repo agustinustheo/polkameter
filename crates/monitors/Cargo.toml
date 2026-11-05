@@ -11,6 +11,7 @@ keywords = ["polkadot", "substrate", "monitoring"]
 categories = ["development-tools::testing"]
 
 [dependencies]
+polkameter-plugin-sdk = { workspace = true, features = ["observers"] }
 polkameter-files.workspace = true
 polkameter-chain.workspace = true
 anyhow.workspace = true

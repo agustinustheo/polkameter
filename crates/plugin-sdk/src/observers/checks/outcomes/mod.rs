@@ -6,7 +6,7 @@ mod pool;
 mod pvf;
 mod recorded;
 
-use crate::Check;
+use crate::observers::checks::Check;
 
 /// Every check, one list per outcome, in the order of the summary.
 pub fn all() -> Vec<Check> {

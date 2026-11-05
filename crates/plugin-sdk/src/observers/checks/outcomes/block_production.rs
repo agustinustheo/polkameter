@@ -1,9 +1,9 @@
 //! Block production (outcomes.md): why blocks end, and build time against the authoring deadline.
 
-use polkameter_files::registry::Outcome;
+use crate::observers::files::registry::Outcome;
 use serde::Serialize;
 
-use crate::{
+use crate::observers::checks::{
 	Check, LIMITS, Status, Verdict,
 	data::{
 		COLLATOR, CounterReset, END_REASON, Label, RunData, count_above, quantile, reasons_text,

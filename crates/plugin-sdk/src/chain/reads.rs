@@ -6,7 +6,7 @@ use std::collections::HashSet;
 
 use subxt::dynamic::{self, Value};
 
-use crate::client::{AtBlock, ChainError, decode_err, read_any};
+use crate::chain::client::{AtBlock, ChainError, decode_err, read_any};
 
 /// One event of a block.
 #[derive(Debug, Clone)]

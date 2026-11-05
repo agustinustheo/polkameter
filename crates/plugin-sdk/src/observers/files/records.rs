@@ -30,7 +30,7 @@ pub struct ScrapeRecord {
 pub struct SeriesRecord {
 	/// When the value last changed.
 	pub t: Millis,
-	/// A name from [`crate::registry::STRESS_METRICS`].
+	/// A name from [`crate::observers::files::registry::STRESS_METRICS`].
 	pub name: String,
 	/// Label values; the registry lists the names.
 	pub labels: BTreeMap<String, String>,

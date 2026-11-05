@@ -4140,28 +4140,14 @@ dependencies = [
 name = "polkameter-chain"
 version = "0.2.0"
 dependencies = [
- "frame-decode",
- "hex",
- "scale-decode",
- "scale-value",
- "serde",
- "serde_json",
- "sp-crypto-hashing",
- "subxt",
- "subxt-rpcs",
- "subxt-signer",
- "thiserror 2.0.21",
- "tokio",
+ "polkameter-plugin-sdk",
 ]
 
 [[package]]
 name = "polkameter-checks"
 version = "0.2.0"
 dependencies = [
- "polkameter-files",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
+ "polkameter-plugin-sdk",
 ]
 
 [[package]]
@@ -4213,9 +4199,7 @@ dependencies = [
 name = "polkameter-files"
 version = "0.2.0"
 dependencies = [
- "serde",
- "serde_json",
- "thiserror 2.0.21",
+ "polkameter-plugin-sdk",
 ]
 
 [[package]]
@@ -4243,6 +4227,7 @@ dependencies = [
  "parity-scale-codec",
  "polkameter-chain",
  "polkameter-files",
+ "polkameter-plugin-sdk",
  "reqwest",
  "serde",
  "serde_json",
@@ -4256,11 +4241,20 @@ name = "polkameter-plugin-sdk"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "frame-decode",
+ "futures-util",
  "hex",
+ "scale-decode",
+ "scale-value",
  "serde",
  "serde_json",
  "sp-crypto-hashing",
+ "subxt",
+ "subxt-rpcs",
+ "subxt-signer",
+ "thiserror 2.0.21",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

@@ -8,7 +8,7 @@
 
 use std::{collections::HashMap, fmt, ops::AddAssign};
 
-use polkameter_files::{Series, Store, num, summary::Summary};
+use crate::observers::files::{Series, Store, num, summary::Summary};
 use serde::{Serialize, Serializer};
 
 /// Label filter: every pair must match.

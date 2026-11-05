@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use polkameter_files::{
+use crate::observers::files::{
 	FileError, JsonlWriter, Millis, SeriesWriter, now_ms,
 	registry::{Metric, kind},
 };

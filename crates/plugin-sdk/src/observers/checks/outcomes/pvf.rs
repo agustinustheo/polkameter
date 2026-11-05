@@ -1,10 +1,10 @@
 //! PVF (outcomes.md): level 1 counts the observed parachain's relay slots on chain and decides
 //! pass or fail; level 2 reads the validators (all parachains together) for timing and causes.
 
-use polkameter_files::{num, registry::Outcome, to_fixed};
+use crate::observers::files::{num, registry::Outcome, to_fixed};
 use serde::Serialize;
 
-use crate::{
+use crate::observers::checks::{
 	Check, LIMITS, Status, Verdict,
 	data::{COLLATOR, CounterReset, Label, Phase, RunData, Window, count_above, quantile},
 };

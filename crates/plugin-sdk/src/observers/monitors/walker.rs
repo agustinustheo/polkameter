@@ -8,12 +8,12 @@
 
 use std::future::Future;
 
+use crate::chain::{ChainError, Client, Fault};
+use crate::observers::files::Problems;
 use futures_util::FutureExt;
-use polkameter_chain::{ChainError, Client, Fault};
-use polkameter_files::Problems;
 use tokio_util::sync::CancellationToken;
 
-use crate::MonitorError;
+use crate::observers::monitors::MonitorError;
 
 /// A recorder the walker drives.
 /// Part of the plugin API (used by out-of-tree plugins).

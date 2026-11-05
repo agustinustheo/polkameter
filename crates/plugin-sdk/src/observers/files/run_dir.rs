@@ -8,7 +8,7 @@ use std::{
 
 use serde::Serialize;
 
-use crate::FileError;
+use crate::observers::files::FileError;
 
 fn io(path: &Path) -> impl FnOnce(std::io::Error) -> FileError + '_ {
 	move |source| FileError::Io { path: path.display().to_string(), source }

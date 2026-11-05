@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, HashMap};
 use serde::{Deserialize, Serialize};
 
 use super::{Labels, Point, Series, Store, parse_sample_line};
-use crate::{
+use crate::observers::files::{
 	FileError, RunDir, num,
 	records::{Sample, ScrapeRecord, SeriesRecord},
 	registry::{self, Kind},

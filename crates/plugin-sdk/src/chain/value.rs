@@ -3,7 +3,7 @@
 
 use scale_value::{Composite, Primitive, ValueDef};
 
-use crate::Value;
+use crate::chain::Value;
 
 fn children(v: &Value) -> Box<dyn Iterator<Item = &Value> + '_> {
 	match &v.value {

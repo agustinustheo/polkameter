@@ -10,7 +10,7 @@ use subxt::{
 };
 use subxt_rpcs::{RpcClient, rpc_params};
 
-use crate::{
+use crate::chain::{
 	reads::fetch,
 	tx::{ChainInfo, tx_hash},
 };

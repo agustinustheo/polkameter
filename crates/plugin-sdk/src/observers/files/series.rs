@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::{
+use crate::observers::files::{
 	FileError, JsonlWriter,
 	records::{Millis, Sample, SeriesRecord},
 	registry::{Def, Metric, kind},

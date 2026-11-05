@@ -1,4 +1,23 @@
-//! Versioned protocol for independently installed Polkameter components.
+//! The SDK for Polkameter plugins.
+//!
+//! The crate root is the versioned JSON-line protocol a plugin binary speaks ([`Plugin`],
+//! [`serve`], [`Manifest`] and the message types). Two optional features add the libraries a
+//! plugin may use:
+//!
+//! | feature     | module         | what it gives                                                  |
+//! | ----------- | -------------- | -------------------------------------------------------------- |
+//! | (default)   | crate root     | the protocol: manifest, requests, responses, `serve`           |
+//! | `chain`     | [`chain`]      | a node over RPC: typed reads, events, submission, keypairs     |
+//! | `observers` | [`observers`]  | run files, metric registry, block walker, series, checks       |
+//!
+//! `observers` implies `chain`. Without features the crate does not depend on subxt.
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
+#[cfg(feature = "chain")]
+pub mod chain;
+#[cfg(feature = "observers")]
+pub mod observers;
+
 use anyhow::{Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

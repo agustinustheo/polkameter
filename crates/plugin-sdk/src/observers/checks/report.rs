@@ -2,13 +2,13 @@
 //! and `summary.md`. The collator table comes from the same series, so the summary and the checks
 //! read the same numbers, and `polkameter report <dir>` can write it all again later.
 
-use polkameter_files::{
+use crate::observers::files::{
 	BlockStats, FileError, FinalStep, RunDir, num, read_store, serde_name,
 	summary::{OverallStatus, ProbePhase, Rule, RunVerdict, Summary},
 	to_fixed,
 };
 
-use crate::{
+use crate::observers::checks::{
 	CheckResult, RunData, Status, Window, all,
 	data::{COLLATOR, END_REASON, Label, Phase, add_to, reasons_text},
 	run,
@@ -372,15 +372,15 @@ fn render_summary(s: &Summary, steps: &[FinalStep], d: &RunData, checks: &[Check
 
 #[cfg(test)]
 mod tests {
-	use polkameter_files::summary::{Artifact, BreakingPoint, Stop};
+	use crate::observers::files::summary::{Artifact, BreakingPoint, Stop};
 
 	use super::*;
-	use crate::Verdict;
+	use crate::observers::checks::Verdict;
 
 	/// The recorded smoke run, shared with the replay test. Its breaking point is cleared: the
 	/// verdict tests set their own.
 	fn summary() -> Summary {
-		let text = include_str!("../../cli/tests/fixtures/smoke-run/summary.json");
+		let text = include_str!("../../../../cli/tests/fixtures/smoke-run/summary.json");
 		let mut s: Summary = serde_json::from_str(text).expect("summary fixture");
 		s.breaking_point = None;
 		s

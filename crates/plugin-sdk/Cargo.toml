@@ -1,14 +1,31 @@
 [package]
 name = "polkameter-plugin-sdk"
-description = "The SDK for Polkameter plugins: the manifest, JSON-line protocol and setup helpers a plugin binary implements"
+description = "The SDK for Polkameter plugins: the JSON-line protocol, plus optional chain access (`chain`) and run recording and checks (`observers`)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 rust-version.workspace = true
-keywords = ["polkadot", "substrate", "plugin"]
-categories = ["development-tools::testing"]
+readme = "README.md"
+keywords = ["polkadot", "substrate", "plugin", "load-testing"]
+categories = ["development-tools::testing", "api-bindings"]
+
+[features]
+default = []
+# A Polkadot SDK node over RPC: typed reads, events and submission (`polkameter_plugin_sdk::chain`).
+chain = [
+	"dep:subxt",
+	"dep:subxt-rpcs",
+	"dep:subxt-signer",
+	"dep:scale-value",
+	"dep:scale-decode",
+	"dep:frame-decode",
+	"dep:thiserror",
+]
+# Recording and judging a run: run files, metric registry, block walker and checks
+# (`polkameter_plugin_sdk::observers`). Implies `chain`, since the walker reads a chain.
+observers = ["chain", "dep:thiserror", "dep:tokio-util", "dep:futures-util"]
 
 [dependencies]
 anyhow.workspace = true
@@ -17,3 +34,21 @@ serde_json.workspace = true
 tokio.workspace = true
 hex.workspace = true
 sp-crypto-hashing.workspace = true
+
+thiserror = { workspace = true, optional = true }
+subxt = { version = "=0.51.1", optional = true }
+subxt-rpcs = { version = "=0.51.1", optional = true }
+subxt-signer = { version = "=0.51.1", default-features = false, features = ["sr25519", "std"], optional = true }
+scale-value = { version = "0.18.1", optional = true }
+scale-decode = { version = "0.16.2", features = ["derive"], optional = true }
+frame-decode = { version = "0.18", optional = true }
+tokio-util = { workspace = true, optional = true }
+futures-util = { version = "0.3", default-features = false, features = ["std"], optional = true }
+
+[[test]]
+name = "checks_data"
+required-features = ["observers"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

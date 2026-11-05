@@ -1,7 +1,9 @@
 //! Window math and one check on a few hand-written samples.
 
-use polkameter_checks::{RunData, Status};
-use polkameter_files::{Point, Series, Store, parse_sample_line, summary::Summary};
+use polkameter_plugin_sdk::observers::checks::{RunData, Status};
+use polkameter_plugin_sdk::observers::files::{
+	Point, Series, Store, parse_sample_line, summary::Summary,
+};
 
 const SAMPLES: &str = r#"# TYPE polkameter_step gauge
 polkameter_step{instance="load-tool",job="stress"} 0 100.000
@@ -66,7 +68,10 @@ substrate_proposer_end_proposal_reason{instance="a",job="collator",reason="hit_b
 #[test]
 fn build_time_fails_when_most_blocks_take_over_2_5_s() {
 	let d = RunData::new(parse_samples(SAMPLES), summary());
-	let results = polkameter_checks::run(&polkameter_checks::all(), &d);
+	let results = polkameter_plugin_sdk::observers::checks::run(
+		&polkameter_plugin_sdk::observers::checks::all(),
+		&d,
+	);
 	let build = results
 		.iter()
 		.find(|r| r.check == "build time within the authoring deadline")

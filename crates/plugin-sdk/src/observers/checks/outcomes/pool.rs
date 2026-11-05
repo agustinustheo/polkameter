@@ -1,9 +1,9 @@
 //! Transaction pool (outcomes.md): silent loss, stuck pool, clean refusals, pool work.
 
-use polkameter_files::{num, registry::Outcome, to_fixed};
+use crate::observers::files::{num, registry::Outcome, to_fixed};
 use serde::Serialize;
 
-use crate::{
+use crate::observers::checks::{
 	Check, LIMITS, Status, Verdict,
 	data::{COLLATOR, CounterReset, END_REASON, Label, Phase, RunData, Window, quantile},
 };
@@ -93,7 +93,7 @@ fn refusals_clean(d: &RunData) -> Result<Verdict, CounterReset> {
 	}
 	let no_code = by_reason.iter().filter(|(r, _)| r == "no code").fold(0.0, |a, x| a + x.1);
 	let total = by_reason.iter().fold(0.0, |a, x| a + x.1);
-	let hung = d.summary.stop.rule == polkameter_files::summary::Rule::PoolIntake;
+	let hung = d.summary.stop.rule == crate::observers::files::summary::Rule::PoolIntake;
 	let reasons = if by_reason.is_empty() {
 		"none".to_owned()
 	} else {

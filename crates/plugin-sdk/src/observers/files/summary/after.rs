@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::records::{BlockStats, Millis, NodeMax};
+use crate::observers::files::records::{BlockStats, Millis, NodeMax};
 
 /// Baseline or recovery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

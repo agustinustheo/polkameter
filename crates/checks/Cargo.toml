@@ -11,10 +11,7 @@ keywords = ["polkadot", "substrate", "load-testing"]
 categories = ["development-tools::testing"]
 
 [dependencies]
-polkameter-files.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-thiserror.workspace = true
+polkameter-plugin-sdk = { workspace = true, features = ["observers"] }
 
 [lints]
 workspace = true

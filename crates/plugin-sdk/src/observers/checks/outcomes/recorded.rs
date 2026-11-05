@@ -1,8 +1,8 @@
 //! The run itself: did every monitor record what it should.
 
-use polkameter_files::registry::Outcome;
+use crate::observers::files::registry::Outcome;
 
-use crate::{
+use crate::observers::checks::{
 	Check, Status, Verdict,
 	data::{CounterReset, RunData},
 };
