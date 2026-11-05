@@ -1,6 +1,6 @@
 # Releasing PolkaMeter
 
-Every crate shares `[workspace.package].version` in the root `Cargo.toml`. Internal path dependencies carry the same version in `[workspace.dependencies]`.
+Every crate shares `[workspace.package].version` in the root `Cargo.toml`. Internal path dependencies carry the same version in `[workspace.dependencies]`. Two crates are published: `polkameter-plugin-sdk`, then `polkameter`; the desktop app and the example plugin have `publish = false`.
 
 ## Cut a release
 

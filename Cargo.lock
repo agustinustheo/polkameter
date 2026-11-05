@@ -4122,7 +4122,7 @@ dependencies = [
 
 [[package]]
 name = "polkameter"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -4146,7 +4146,7 @@ dependencies = [
 
 [[package]]
 name = "polkameter-desktop"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "polkameter",
  "rfd",
@@ -4157,7 +4157,7 @@ dependencies = [
 
 [[package]]
 name = "polkameter-example-plugin"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "polkameter",
@@ -4169,7 +4169,7 @@ dependencies = [
 
 [[package]]
 name = "polkameter-plugin-sdk"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "frame-decode",

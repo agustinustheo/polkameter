@@ -4,7 +4,7 @@ members = ["src-tauri", "crates/*", "plugins/*"]
 
 [workspace.package]
 edition = "2024"
-version = "0.2.0"
+version = "0.3.0"
 license = "Apache-2.0"
 repository = "https://github.com/agustinustheo/polkameter"
 homepage = "https://agustinustheodorus.com/polkameter/"
@@ -12,8 +12,8 @@ rust-version = "1.93"
 
 [workspace.dependencies]
 subxt-rpcs = "0.51.1"
-polkameter = { path = "crates/cli", version = "0.2.0" }
-polkameter-plugin-sdk = { path = "crates/plugin-sdk", version = "0.2.0" }
+polkameter = { path = "crates/cli", version = "0.3.0" }
+polkameter-plugin-sdk = { path = "crates/plugin-sdk", version = "0.3.0" }
 
 anyhow = "1"
 csv = "1.3"
