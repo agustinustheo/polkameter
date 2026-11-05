@@ -263,12 +263,6 @@ async fn run_local(
 	junit: Option<PathBuf>,
 ) -> Result<i32, CliError> {
 	let cancel = tokio_util::sync::CancellationToken::new();
-	let signal = cancel.clone();
-	let interrupt = tokio::spawn(async move {
-		if tokio::signal::ctrl_c().await.is_ok() {
-			signal.cancel();
-		}
-	});
 	let sink = Arc::new(move |event: Value| {
 		if format == OutputFormat::Json {
 			write_json_line(&event);
@@ -277,10 +271,26 @@ async fn run_local(
 		}
 	});
 	let secrets = available_secrets(&registry);
-	let result =
-		crate::engine::execute::run_with_options(plan, registry, &output, cancel, sink, options)
-			.await;
-	interrupt.abort();
+	let work = crate::engine::execute::run_with_options(
+		plan,
+		registry,
+		&output,
+		cancel.clone(),
+		sink,
+		options,
+	);
+	tokio::pin!(work);
+	let result = tokio::select! {
+		// Poll ctrl_c first to register the handler before work can emit step-started.
+		biased;
+		signal = tokio::signal::ctrl_c() => {
+			if signal.is_ok() {
+				cancel.cancel();
+			}
+			work.await
+		},
+		result = &mut work => result,
+	};
 	let outcome = result.map_err(|e| CliError::Runtime(e.to_string()))?;
 	if let Err(error) = copy_junit(&outcome.artifact_dir, junit.as_deref()) {
 		junit_warning(format, Some(&outcome.artifact_dir), &error.to_string(), &secrets);
