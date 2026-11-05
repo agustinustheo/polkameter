@@ -1,11 +1,27 @@
 name: PolkaMeter
-description: Build PolkaMeter from this action's ref, run a plan and fail the job when the plan fails. Linux and macOS runners.
+description: Install PolkaMeter, run a plan and fail the job when the plan fails. Linux and macOS runners.
 inputs:
   plan:
     description: Path to the .polkameter.xml plan, relative to the workspace.
     required: true
   plugins:
     description: Plugin executables to install, one per line, relative to the workspace.
+    required: false
+    default: ""
+  plugin-crates:
+    description: Plugin package directories or Cargo.toml paths to build and install, one path or path:package per line.
+    required: false
+    default: ""
+  install:
+    description: 'CLI installation: auto (release with source fallback), release or source.'
+    required: false
+    default: auto
+  version:
+    description: Release version (X.Y.Z or vX.Y.Z). Empty derives it from a release tag or moving major tag; other refs build from source.
+    required: false
+    default: ""
+  verify-attestation:
+    description: Verify release build provenance with gh. Empty enables verification when gh exists; true requires gh; false skips it.
     required: false
     default: ""
   credentials:
@@ -37,10 +53,19 @@ inputs:
     required: false
     default: polkameter-run
   toolchain:
-    description: Rust toolchain that builds PolkaMeter. It must be 1.93 or newer.
+    description: Rust toolchain that builds PolkaMeter or plugin-crates. It must be 1.93 or newer.
     required: false
     default: 1.93.0
 outputs:
+  version:
+    description: Installed CLI version, without the v prefix.
+    value: ${{ steps.install.outputs.version }}
+  install-method:
+    description: CLI installation method (release or source).
+    value: ${{ steps.install.outputs.install-method }}
+  junit:
+    description: Path to the run's junit.xml, or empty if it was not written.
+    value: ${{ steps.run.outputs.junit }}
   run-dir:
     description: The run directory, relative to the workspace.
     value: ${{ steps.run.outputs.run-dir }}
@@ -62,16 +87,30 @@ runs:
           error|verdict) ;;
           *) echo "::error::fail-on must be error or verdict"; exit 2 ;;
         esac
+    - name: Install released PolkaMeter or select source
+      id: install
+      shell: bash
+      env:
+        INSTALL: ${{ inputs.install }}
+        VERSION: ${{ inputs.version }}
+        ACTION_REF: ${{ github.action_ref }}
+        GITHUB_TOKEN: ${{ github.token }}
+        VERIFY_ATTESTATION: ${{ inputs.verify-attestation }}
+        PLUGIN_CRATES: ${{ inputs.plugin-crates }}
+      run: python3 "$GITHUB_ACTION_PATH/scripts/action-install.py"
     - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+      if: steps.install.outputs.needs-toolchain == 'true'
       with:
         toolchain: ${{ inputs.toolchain }}
     - uses: Swatinem/rust-cache@v2
+      if: steps.install.outputs.install-method == 'source'
       with:
         # A target dir of its own, so restoring the cache never overwrites the
         # caller's target/ when the action runs from the same checkout (uses: ./).
         workspaces: ${{ github.action_path }} -> .polkameter-action-target
         key: polkameter-action
     - name: Build PolkaMeter
+      if: steps.install.outputs.install-method == 'source'
       shell: bash
       env:
         TOOLCHAIN: ${{ inputs.toolchain }}
@@ -85,6 +124,8 @@ runs:
       env:
         PLAN: ${{ inputs.plan }}
         PLUGINS: ${{ inputs.plugins }}
+        PLUGIN_CRATES: ${{ inputs.plugin-crates }}
+        TOOLCHAIN: ${{ inputs.toolchain }}
         CREDENTIALS: ${{ inputs.credentials }}
         TOPOLOGIES: ${{ inputs.topologies }}
         CAPABILITIES: ${{ inputs.capabilities }}
@@ -101,6 +142,9 @@ runs:
         export POLKAMETER_PLUGIN_REGISTRY="$RUNNER_TEMP/polkameter/plugins.json"
         echo "POLKAMETER_PLUGIN_REGISTRY=$POLKAMETER_PLUGIN_REGISTRY" >> "$GITHUB_ENV"
 
+        if [ -n "${PLUGIN_CRATES//[[:space:]]/}" ]; then
+          python3 "$GITHUB_ACTION_PATH/scripts/action-build-plugins.py"
+        fi
         while IFS= read -r plugin; do
           polkameter plugin install "$plugin"
         done < <(lines "$PLUGINS")
@@ -127,6 +171,12 @@ runs:
           exit 1
         fi
         echo "run-dir=$run_dir" >> "$GITHUB_OUTPUT"
+
+        junit=""
+        if [ -f "$run_dir/junit.xml" ]; then
+          junit="$run_dir/junit.xml"
+        fi
+        echo "junit=$junit" >> "$GITHUB_OUTPUT"
 
         verdict=""
         if [ -f "$run_dir/summary.json" ]; then

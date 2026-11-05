@@ -82,20 +82,22 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-      - run: cargo +${{ env.RUST_VERSION }} build -p polkameter-example-plugin
+      # Local uses exercises the source path. Exercise the release download and
+      # provenance verification with @v0 after the next release adds CLI assets.
       - uses: ./
         id: plan
         with:
           plan: examples/plugin-workflow.polkameter.xml
-          plugins: target/debug/polkameter-example-plugin
+          plugin-crates: plugins/example:polkameter-example-plugin
           fail-on: verdict
       - name: Assert the example plan passed
         env:
           EXIT_CODE: ${{ steps.plan.outputs.exit-code }}
           VERDICT: ${{ steps.plan.outputs.verdict }}
+          INSTALL_METHOD: ${{ steps.plan.outputs.install-method }}
+          VERSION: ${{ steps.plan.outputs.version }}
         run: |
           test "$EXIT_CODE" = 0
           test -z "$VERDICT"
+          test "$INSTALL_METHOD" = source
+          test -n "$VERSION"
