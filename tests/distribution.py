@@ -152,9 +152,17 @@ class InstallerTests(unittest.TestCase):
     def test_no_gh_notice_and_required_mode(self):
         tools = self.root / "without-gh"
         tools.mkdir(exist_ok=True)
-        import shutil
-        for command in ("sh", "curl", "tar", "mktemp", "rm", "grep", "shasum", "mkdir", "install"):
-            (tools / command).symlink_to(shutil.which(command))
+        # Expose every command on the real PATH except gh, so the test does not depend on
+        # which helpers (gzip, sha256sum, ...) tar and the installer need on each platform.
+        for directory in os.environ["PATH"].split(os.pathsep):
+            if not os.path.isdir(directory):
+                continue
+            for entry in os.listdir(directory):
+                link = tools / entry
+                source = os.path.join(directory, entry)
+                if entry in ("gh", "uname") or link.exists() or not os.access(source, os.X_OK):
+                    continue
+                link.symlink_to(source)
         (tools / "uname").symlink_to(self.tools / "uname")
         result = self.run_installer(PATH=str(tools), POLKAMETER_VERIFY_ATTESTATION="auto")
         self.assert_installed(result)
