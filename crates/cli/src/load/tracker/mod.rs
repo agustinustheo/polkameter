@@ -122,8 +122,46 @@ pub struct Tracker<S> {
 	pub last_finalized: (Millis, u32),
 	/// What the follower could not read.
 	pub unreadable: Vec<String>,
+	/// Times the block follower lost the node and followed it again: not observed, so not a
+	/// chain stall. Also sender connections that dropped and were opened again.
+	pub observation_gaps: Vec<ObservationGap>,
+	/// The follower could not reach the node after every reconnect attempt: the node is down.
+	pub node_unreachable: Option<String>,
+	/// When the last new best block arrived while the follower was connected, for block gaps.
+	prev_head_at: Option<Millis>,
 	phases: Vec<(Millis, Phase)>,
 	baseline_probes: usize,
+}
+
+/// A stretch of the run the block follower did not observe, or a sender connection that
+/// dropped: an RPC problem, not a chain failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservationGap {
+	/// What lost the node: `blocks`, or `sender connection N`.
+	pub what: String,
+	/// When it was lost.
+	pub from: Millis,
+	/// When it was back; `None` while it is not.
+	pub to: Option<Millis>,
+	/// Why it was lost.
+	pub reason: String,
+}
+
+impl std::fmt::Display for ObservationGap {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self.to {
+			Some(to) => write!(
+				f,
+				"{}: RPC connection lost ({}); reconnected after {:.1} s, nothing observed meanwhile",
+				self.what,
+				self.reason,
+				to.saturating_sub(self.from) as f64 / 1000.0
+			),
+			None => {
+				write!(f, "{}: RPC connection lost ({}); not reconnected", self.what, self.reason)
+			},
+		}
+	}
 }
 
 impl<S: Submit> Tracker<S> {
@@ -159,6 +197,9 @@ impl<S: Submit> Tracker<S> {
 			last_fetched: 0,
 			last_finalized: (now, 0),
 			unreadable: Vec::new(),
+			observation_gaps: Vec::new(),
+			node_unreachable: None,
+			prev_head_at: None,
 			phases: vec![(now, Phase::Baseline)],
 			baseline_probes,
 		}
@@ -172,6 +213,11 @@ impl<S: Submit> Tracker<S> {
 	/// The sender.
 	pub fn sender(&self) -> &S {
 		&self.sender
+	}
+
+	/// The sender, to change it (tests).
+	pub fn sender_mut(&mut self) -> &mut S {
+		&mut self.sender
 	}
 
 	pub(super) fn phase(&self) -> Phase {
@@ -212,16 +258,40 @@ impl<S: Submit> Tracker<S> {
 		self.load.gauge(&STEP, [], f64::from(k), now)
 	}
 
-	/// Ends the running step.
+	/// Ends the running step. The time since the last new best block counts as a block gap in
+	/// the step now, so a stall at its end is seen in its own numbers.
 	pub fn end_step(&mut self, now: Millis) {
+		let (prev, unobserved) = (self.prev_head_at, self.unobserved_since());
 		for lane in &mut self.steps {
 			if let Some(st) = lane.last_mut() {
 				st.ended_at = now;
+				st.closed = true;
+				if let Some(prev) = prev {
+					st.gap_portion(prev, now);
+				}
+				if let Some(from) = unobserved {
+					st.unobserved_ms += now.saturating_sub(from.max(st.started_at));
+				}
 			}
 		}
 	}
 
+	/// True while the block follower is connected: the stall rules only hold then.
+	pub fn observing(&self) -> bool {
+		self.unobserved_since().is_none()
+	}
+
+	/// When the block follower lost the node, while it has not followed it again.
+	fn unobserved_since(&self) -> Option<Millis> {
+		self.observation_gaps
+			.iter()
+			.rev()
+			.find(|g| g.what == "blocks" && g.to.is_none())
+			.map(|g| g.from)
+	}
+
 	/// Sends one flood tx of `lane`; false when it has none ready or every connection is backed up.
+	/// A tx that could not be queued goes back to the source and is the next one sent.
 	pub fn send_next(&mut self, lane: usize, now: Millis) -> bool {
 		let Some(tx) = self.lanes[lane].source.next_tx() else {
 			self.current(lane).starved_ticks += 1;
@@ -229,6 +299,7 @@ impl<S: Submit> Tracker<S> {
 		};
 		let step = self.steps[lane].len() - 1;
 		if !self.submit(lane, tx.hash, &tx.bytes, Kind::Flood { step }, now) {
+			self.lanes[lane].source.put_back(tx);
 			self.current(lane).backpressure_ticks += 1;
 			return false;
 		}
@@ -291,6 +362,21 @@ impl<S: Submit> Tracker<S> {
 			Reply::Accepted { id, at } => (id, at, None),
 			Reply::Refused { id, at, code, error } => (id, at, Some((code, error))),
 			Reply::Closed { connection, by_node } => return self.on_closed(connection, by_node),
+			Reply::Interrupted { connection, ids, reason } => {
+				return self.on_interrupted(connection, &ids, reason);
+			},
+			Reply::Reconnected { connection, down_ms } => {
+				let what = format!("sender connection {connection}");
+				if let Some(gap) = self
+					.observation_gaps
+					.iter_mut()
+					.rev()
+					.find(|g| g.what == what && g.to.is_none())
+				{
+					gap.to = Some(gap.from + down_ms);
+				}
+				return;
+			},
 		};
 		let Some(req) = self.requests.remove(&id) else { return };
 		if let Kind::Flood { step } = req.kind {
@@ -327,6 +413,20 @@ impl<S: Submit> Tracker<S> {
 				);
 			},
 		}
+	}
+
+	/// A sender connection dropped and is being opened again: its unanswered submits have an
+	/// unknown outcome. Their hashes stay watched in blocks, as for a closed connection.
+	fn on_interrupted(&mut self, connection: usize, ids: &[u64], reason: String) {
+		for id in ids {
+			self.requests.remove(id);
+		}
+		self.observation_gaps.push(ObservationGap {
+			what: format!("sender connection {connection}"),
+			from: crate::load::now_ms(),
+			to: None,
+			reason,
+		});
 	}
 
 	fn on_closed(&mut self, connection: usize, by_node: bool) {

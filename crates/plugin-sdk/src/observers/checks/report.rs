@@ -218,6 +218,15 @@ fn loss_line(s: &Summary) -> String {
 			st.detail
 		);
 	}
+	if let Some(e) = &l.state_error {
+		out += &format!(". State check: **no result** ({e})");
+	}
+	if c.failed_only_on_fork > 0 {
+		out += &format!(
+			". {} txs failed only in a fork block and are not counted as failed",
+			c.failed_only_on_fork
+		);
+	}
 	out
 }
 

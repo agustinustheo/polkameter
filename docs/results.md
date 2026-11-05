@@ -43,16 +43,16 @@ No file stores a credential value. Where a plugin or error would echo one, the f
 | --- | --- | --- |
 | `calibration.json` | Configured and measured block interval; 25% tolerance. | |
 | `summary.json` | The summary as data. | |
-| `steps.jsonl` | Per step and lane: target rate, sent, included, refused, p50 and p95 latency, node CPU and memory. | |
+| `steps.jsonl` | Per step and lane: target rate, sent, included, refused, p50 and p95 latency, block gaps, node CPU and memory. [Which step a number belongs to](how-it-works.md#which-step-a-number-belongs-to). | |
 | `load.jsonl` | The load tool's `polkameter_*` metrics. | |
-| `blocks.jsonl` | Each best block, and the gap since the previous one. | |
+| `blocks.jsonl` | Each best block, and the gap since the previous one. The gap is `null` for the first block after the block follower reconnected. | |
 | `transactions.jsonl` | Each sent transaction and its [status](#loss-accounting). | |
 | `lost.jsonl` | Each lost transaction, the first 1000. `loss.lost` holds the full count. Empty if none. | |
 | `plugin-checks.json` | Checks from evaluate steps. Empty if none. | |
 | `resolved-targets.json` | Scrape targets resolved from the topology, and its hash. | `<monitors>` |
 | `scrapes.jsonl` | Raw `/metrics` per node; `error` if a node did not answer. | `<monitors>` to hold records |
 | `chain.jsonl` | The relay recorder's series for the observed parachain. | `<monitors>` to hold records |
-| `node.jsonl` | Node CPU and memory during the load. | `POLKAMETER_NODE_PID`, or the node's RPC port listening |
+| `node.jsonl` | Node CPU and memory during the load, and the process ID sampled. | A node on this machine: `POLKAMETER_NODE_PID`, or a loopback RPC URL. See [Node CPU and memory](how-it-works.md#node-cpu-and-memory). |
 | `plugins/<id>/series.jsonl`, `metrics.json` | A plugin's series and metric declarations. | A plugin that records metrics |
 
 ## execution.json
@@ -158,12 +158,12 @@ The `verdict` object in `summary.json` after running `polkameter report /tmp/pol
 | `rules` | Effective thresholds, camel case (`minIncludedRatio`). |
 | `stop` | `rule`, `detail`, `step`, `class`. |
 | `breakingPoint` | `step`, `targetRate`, `measure` (`included`, `latency` or `refused`), `detail`. `null` if none. |
-| `maxSustained` | `step`, `targetRate`, `includedPerS` of the step before. The last step if none. |
+| `maxSustained` | `step`, `targetRate`, `includedPerS` of the step before. The last step if none. `includedPerS` counts only that step's own transactions. |
 | `failureModes` | `class` and `what` per failure. See [Failure modes](#failure-modes). |
 | `recovery` | `measured`, `recovered`, `seconds`, `backlogAtStop`, `backlogAtEnd`, `drainedSeconds`, `drainPerS`, `probes`, `blocks`, `node`. |
 | `loss` | Transaction counts. See [Loss accounting](#loss-accounting). |
 | `baseline` | `probes`, `p50Ms`, `maxMs` of the probes before the load. |
-| `problems` | What the monitors could not record. |
+| `problems` | What the monitors could not record, including each RPC connection that dropped and reconnected, and a node process that restarted. |
 | `network`, `runner` | Node URL, parachain ID, runtime spec version, block interval; CPU count and model. |
 | `steps` | Number of load steps. |
 | `checks` | `outcome`, `check`, `status`, `detail`, `numbers` if any. `"optional": true` on optional checks only. |
@@ -192,13 +192,14 @@ The `loss` object in `summary.json`:
 | `sent` | Transactions sent; the statuses add up to it. |
 | `accepted` | Submits with a successful RPC reply, not dispatch successes. |
 | `included` | In a finalized block the walk read. |
-| `failedInBlock` | Failed in a best or finalized block. |
+| `failedInBlock` | Dispatch failed. The finalized block's events decide when the transaction is in one; otherwise the best block's, while finality is not verified. |
 | `refused`, `unverified`, `unknown` | Count of each status. |
 | `inPool`, `lost` | Count of each. `null` if the pool or chain is unreadable. |
-| `onChain` | Finalized blocks walked; `missed`, `onlyOnFork`, `moved` against the tracker. |
+| `onChain` | Finalized blocks walked; `missed`, `onlyOnFork`, `moved` against the tracker. `failedOnlyOnFork`, present when above 0: failed only in a block the finalized chain dropped, so not in `failedInBlock`. |
 | `nodePool` | The node's mempool and ready counts after the run. |
 | `finalized` | Last block with a run transaction, the finalized block at the wait's end, and whether it finalized in time. |
 | `state` | Chain-state check of 100 included transactions: `checked`, `missing`, `detail`. Only with a state check. |
+| `stateError` | Why the plan's state check gave no result: an error, a timeout, or no finalized block to read. Present only then. The "no silent loss" check is then `no result`, and the verdict cannot be `PASS`. |
 | `note` | Why something is missing. |
 
 ## Stop rules and thresholds
@@ -213,15 +214,17 @@ Breaking-point rules record a result, and the load goes on. The other rules end 
 | **Pool refuses**: refused share above the limit, this step or the last | graceful | 10% | `pool-refuses-ratio` |
 | **Pool intake**: p95 submit reply above the limit, or one submit waited that long, or node stopped reading submits | graceful | 5 s | `max-submit-reply-ms` |
 | **Slow blocks**: mean block gap above factor times `block-interval-seconds` | hard | 2.0 | `max-block-gap-factor` |
-| **Stall**: no new best block for this long | hard | 30 s | `stall-ms` |
-| **Finality stall**: no new finalized block for this long | hard | 60 s | `finality-stall-ms` |
-| **Node down**: node closed an RPC connection | hard | none | none |
+| **Stall**: no new best block for this long, while the block follower is connected | hard | 30 s | `stall-ms` |
+| **Finality stall**: no new finalized block for this long, while the block follower is connected | hard | 60 s | `finality-stall-ms` |
+| **Node down**: the node stayed unreachable after every reconnect attempt, about 15 s | hard | none | none |
 | **Rate cap**: every step ran | none | none | none |
 | **Budget used up**: prepared transactions ran out, or a short step had nothing to send | none | none | none |
-| **Generator limit**: sent share of target rate below minimum, or the load tool paused over 5 s between sends | none | 95%; 5 s between sends (fixed) | `min-send-ratio` |
+| **Generator limit**: sent share of target rate below minimum, or the load tool paused over 5 s between sends, or the wall clock moved over 5 s more than the load tool's own clock (machine sleep) | none | 95%; 5 s between sends (fixed) | `min-send-ratio` |
 | **Smoke error**: monitor problem, smoke mode only | none | none | none |
 
 Ratios accept values above 0 up to 1. Factors and durations must be above 0. Set them in the plan's [`<thresholds>`](plans.md#thresholds).
+
+A dropped RPC connection that reconnects is a problem, not a stop. [Why a dropped connection is not a chain failure](how-it-works.md#why-a-dropped-connection-is-not-a-chain-failure) explains it.
 
 ## Recovery
 
@@ -256,7 +259,7 @@ Checks run on the recorded series, in this order. A check whose metric the node 
 | pvf: no timed-out candidates or disputes | Timed-out candidates; relay disputes. | `fail` if any. |
 | pvf: PVF time on validators (level 2, all parachains) | Validation time. | `warn`: a validation over 2 s, or an invalid result. |
 | pvf: collation funnel | Collations expired after advertisement, fetch or backing; mean backing-to-inclusion time. | `warn`: any expired, or mean over 1.5 relay blocks. |
-| pool: no silent loss | Accepted transactions in no block, without error. | `fail` if any. `no result` if the pool cannot be listed. |
+| pool: no silent loss | Accepted transactions in no block, without error. | `fail` if any. `no result` if the pool cannot be listed, or if the plan's state check gave no result. |
 | pool: the burst drains | Probes in time, backlog drained, no empty block while over 10 transactions waited. | `fail` unless all three hold. |
 | pool: refusals are clean | Refusals by reason. | `fail`: no code. `warn`: run stopped at pool intake. |
 | pool: pool work leaves time for blocks | Pool maintenance p95; validation backlog. | `fail`: p95 over half the block interval. `warn`: over 1000 waiting for validation. |

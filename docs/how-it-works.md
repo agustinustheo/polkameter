@@ -68,6 +68,45 @@ After the load, PolkaMeter checks each transaction against two sources: the fina
 
 So the counts add up to the number of transactions sent. A transaction is `lost` only when both sources were read and neither holds it. Without the walk of the finalized chain, a transaction that a reorg moved would look lost. Anything the run could not check becomes `unknown` or `unverified`, so a failed read cannot create a loss.
 
+A dispatch failure counts only if it holds on the finalized chain. A transaction can fail in a best block that a reorg then drops, and succeed in the block that replaces it. Once the finalized chain is walked, its block decides. A failure only in a dropped block is counted apart, as `failedOnlyOnFork`. Before finality is verified, the best block is the only evidence, so its failure counts.
+
+A configured state check is part of the loss check. If it errors or times out, PolkaMeter has no proof that the included transactions left their state. The "no silent loss" check is then `no result`, and the verdict cannot be PASS.
+
+## Which step a number belongs to
+
+Steps are short, and a slow chain moves work across their edges. PolkaMeter attributes each number to the time it describes:
+
+- A transaction's inclusion and latency belong to the step that sent it, even if it lands later. That is the step whose rate caused it.
+- `included/s` of a step is its own transactions that a block included, over the step's length. The backlog of the step before does not count, so `maxSustained` is not inflated by it.
+- A block belongs to the step in which it arrived. Its own numbers, such as transactions per block and weight, stay with it.
+- A block gap belongs to the time it spans. A gap that crosses a step edge counts in each step for the part inside it. A gap still open when a step ends counts in that step up to its end.
+
+The mean block gap of a step is the step's length over the new best blocks that arrived in it. The slow blocks rule reads it when the step ends. So a stall late in a step shows in that step, not in the next one.
+
+## Why a dropped connection is not a chain failure
+
+PolkaMeter reaches the node over WebSocket connections: one for the block follower and several for sending. A proxy, a load balancer or an idle timeout can close one while the node is healthy. PolkaMeter opens it again with backoff: 0.25, 0.5, 1, 2, 4 and 8 s, about 15 s in all.
+
+While the block follower reconnects, nothing is observed. The stall and finality stall rules pause, and they count again from the reconnect. The first block after it has no gap. The blocks missed meanwhile are read below the next best block, as after a reorg. The lost time is listed under problems.
+
+When a sending connection drops, the submissions it had written and not seen answered have an unknown outcome. PolkaMeter keeps watching blocks for them, and the loss check decides their status. Submissions not yet written go out on the new connection. Meanwhile, the other connections carry the load.
+
+Only a node that stays unreachable after every attempt is `node down`. Such a node is down for every user of it, which is a chain failure.
+
+## Which clock a run uses
+
+Every time in a run comes from a clock that never goes back. PolkaMeter reads the wall clock once, when it starts. After that, time advances with the system's monotonic clock. Step lengths, deadlines, the send rate, latencies and the stall rules all use it. The timestamps in the run's files are that start time plus the elapsed monotonic time.
+
+So a wall clock step from NTP or a VM resume does not end a step early, stretch it or cause a burst of sends. If the machine sleeps, the monotonic clock stops while the wall clock does not. PolkaMeter compares the two on every send tick. If the wall clock moved more than 5 s further, the load stops on generator limit, because the numbers after a sleep are not the chain's.
+
+## Node CPU and memory
+
+PolkaMeter can only sample a node that runs on the same machine. It samples the process in `POLKAMETER_NODE_PID`, or the process listening on the RPC port of a loopback URL (`localhost`, `127.0.0.1` or `::1`).
+
+A port forwarder on that port is not the node, so PolkaMeter does not sample it. That covers an SSH tunnel, `kubectl port-forward`, `socat` and Docker's port proxy. For a remote URL, nothing is sampled. In both cases the run prints why and goes on, and `node.jsonl` stays empty.
+
+If the sampled process ends during the run, the node probably restarted. PolkaMeter looks for the node process now on the port, records the restart under problems and samples the new process. The CPU of the first sample after a restart is not known. With `POLKAMETER_NODE_PID` and a URL that is not loopback, a restarted node cannot be found again.
+
 ## Why stress mode exits 0 by default
 
 A stress run measures where the chain stops keeping up, and finding that point is its job. By default, the exit code reports whether PolkaMeter finished without an error of its own. A breaking point, a `FAIL` verdict or a failed check goes into `summary.json` and `summary.md` without changing the default exit code.

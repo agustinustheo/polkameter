@@ -61,18 +61,7 @@ pub async fn run(
 			),
 		"insufficient probe reserve"
 	);
-	let lanes = vec![Lane {
-		call: "prepared",
-		source: QueueSource::new(
-			flood.iter().map(|t| Ok(Tx::new(t.decode()?))).collect::<Result<Vec<_>>>()?,
-			probes.iter().map(|t| Ok(Tx::new(t.decode()?))).collect::<Result<Vec<_>>>()?,
-			"prepared transactions",
-		),
-	}];
-	let mut seen = std::collections::HashSet::new();
-	for tx in flood.iter().chain(&probes) {
-		anyhow::ensure!(seen.insert(&tx.hash), "duplicate transaction in flood/probe sources");
-	}
+	let lanes = vec![Lane { call: "prepared", source: prepared_source(&flood, &probes)? }];
 	let state_check = load
 		.state
 		.as_ref()
@@ -110,7 +99,13 @@ pub async fn run(
 	let sender = Sender::open(&url, load.connections, replies_tx).await?;
 	let follow = CancellationToken::new();
 	let _follow_guard = follow.clone().drop_guard();
-	follower::start(client.clone(), client.normal_limit().await?, blocks_tx, follow.clone());
+	follower::start(
+		client.clone(),
+		url.clone(),
+		client.normal_limit().await?,
+		blocks_tx,
+		follow.clone(),
+	);
 	let mut tracker = Tracker::new(
 		lanes,
 		sender,
@@ -125,6 +120,7 @@ pub async fn run(
 		events,
 		problems: monitors.problems.clone(),
 		tool_failed: monitors.tool_failed.clone(),
+		wall: polkameter_plugin_sdk::observers::files::wall_ms,
 	};
 
 	let phases = async {
@@ -166,6 +162,15 @@ pub async fn run(
 	recovery.node = NodeMax::over(&samples, recovery_window.0, recovery_window.1);
 	let finals = write_steps(dir, &tracker, &samples)?;
 	progress("reconciliation")?;
+	// The connection of the start may have dropped during the run (the follower and the sender
+	// reconnect on their own): the loss check reads on a live one.
+	let client = match client.best_number().await {
+		Ok(_) => client,
+		Err(e) => {
+			eprintln!("loss check: the RPC connection dropped ({e}); reconnecting");
+			Client::connect(&url).await.unwrap_or(client)
+		},
+	};
 	let (loss, lost) = loss_check(
 		&client,
 		&monitors,
@@ -181,10 +186,12 @@ pub async fn run(
 	}
 	lost_out.flush()?;
 	let unreadable = tracker.unreadable.clone();
+	let gaps: Vec<String> = tracker.observation_gaps.iter().map(ToString::to_string).collect();
 	tracker.finish()?.close();
 	monitors.stop_chain().await?;
 	let mut problems = monitors.problems.all();
 	problems.extend(unreadable.into_iter().map(|u| format!("blocks: {u}")));
+	problems.extend(gaps);
 	monitors.stop().await?;
 
 	// Summary.
@@ -236,6 +243,33 @@ pub async fn run(
 	// Plugin checks read it, with the raw files, before the report adds the checks.
 	dir.write_json("summary.json", &summary)?;
 	Ok(Measured { summary, finals, mode })
+}
+
+/// The lane's source from the prepared flood and probe transactions. Each is decoded, and two
+/// with the same bytes are refused wherever they are (flood or probes), whatever the spelling
+/// of their hash (`0x` prefix or not, letter case): the tracker keys every tx by its 32-byte hash.
+fn prepared_source(
+	flood: &[polkameter_plugin_sdk::PreparedTx],
+	probes: &[polkameter_plugin_sdk::PreparedTx],
+) -> Result<QueueSource> {
+	let mut seen = std::collections::HashSet::new();
+	let mut decode = |txs: &[polkameter_plugin_sdk::PreparedTx], what: &str| {
+		txs.iter()
+			.enumerate()
+			.map(|(i, t)| {
+				let tx = Tx::new(t.decode()?);
+				anyhow::ensure!(
+					seen.insert(tx.hash),
+					"duplicate transaction in flood/probe sources: {what} {i} has hash 0x{} again",
+					hex::encode(tx.hash)
+				);
+				Ok(tx)
+			})
+			.collect::<Result<Vec<_>>>()
+	};
+	let flood = decode(flood, "flood transaction")?;
+	let probes = decode(probes, "probe transaction")?;
+	Ok(QueueSource::new(flood, probes, "prepared transactions"))
 }
 
 /// Writes the checks (the plugins' after the built-in ones), summary.json and summary.md,
@@ -423,6 +457,25 @@ impl StateCheck for PluginState {
 mod tests {
 	use super::*;
 	use polkameter_plugin_sdk::observers::checks::{CheckResult, Status, Verdict};
+
+	#[test]
+	fn the_same_transaction_spelled_twice_is_a_duplicate() {
+		use polkameter_plugin_sdk::PreparedTx;
+		let a = PreparedTx::new(&[1, 2, 3], serde_json::Value::Null);
+		let b = PreparedTx::new(&[4, 5, 6], serde_json::Value::Null);
+		let prefixed = PreparedTx { hash: format!("0x{}", a.hash), ..a.clone() };
+		let byte_prefixed = PreparedTx { bytes: format!("0x{}", a.bytes), ..a.clone() };
+		assert!(prepared_source(&[a.clone(), b.clone()], &[]).is_ok());
+		for (flood, probes) in [
+			(vec![a.clone(), prefixed.clone()], vec![]),
+			(vec![a.clone(), byte_prefixed], vec![]),
+			(vec![a.clone()], vec![prefixed]),
+			(vec![b.clone()], vec![b.clone()]),
+		] {
+			let error = prepared_source(&flood, &probes).unwrap_err().to_string();
+			assert!(error.contains("duplicate transaction"), "{error}");
+		}
+	}
 
 	#[test]
 	fn fail_on_verdict_only_fails_the_existing_fail_status() {

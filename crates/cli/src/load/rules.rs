@@ -9,9 +9,12 @@
 //!   pool refuses    > 10% of a step's submits refused                         graceful
 //!   pool intake     p95 submit reply > 5 s, or the node stops reading submits graceful
 //!   slow blocks     blocks arrive 2x slower than at the start (wall clock)    hard
-//!   stall           no new best block for 30 s                                hard
-//!   finality stall  no new finalized block for 60 s                           hard
-//!   node down       the node closed an RPC connection                         hard
+//!   stall           no new best block for 30 s, while the follower is connected hard
+//!   finality stall  no new finalized block for 60 s, same                      hard
+//!   node down       the node stayed unreachable after every reconnect attempt  hard
+//!
+//! A dropped RPC connection that opens again is an observation gap (a problem), not a failure:
+//! the stall rules count from the reconnect.
 //!
 //! The ramp also ends without a failure on: rate cap, budget used up, generator limit, smoke error.
 
@@ -115,6 +118,10 @@ pub struct LiveState {
 	pub finalized: u32,
 	/// Monitor problems, in smoke mode only.
 	pub smoke_problems: Vec<String>,
+	/// The block follower is connected: false while it reconnects, when no block can be seen.
+	pub observing: bool,
+	/// The follower could not reach the node after every reconnect attempt.
+	pub node_unreachable: Option<String>,
 }
 
 /// A failure that shows during a step.
@@ -125,8 +132,19 @@ pub fn live_failure(s: &LiveState, rules: &Rules) -> Option<Stop> {
 		return Some(Stop::new(
 			Rule::NodeDown,
 			step,
-			format!("the node closed {} of {} RPC connections", s.closed_by_node, s.connections),
+			format!(
+				"{} of {} RPC connections dropped and could not be opened again",
+				s.closed_by_node, s.connections
+			),
 		));
+	}
+	if let Some(why) = &s.node_unreachable {
+		return Some(Stop::new(Rule::NodeDown, step, why.clone()));
+	}
+	if !s.observing {
+		// Reconnecting: no block can be seen, so a missing block says nothing about the chain.
+		return (!s.smoke_problems.is_empty())
+			.then(|| Stop::new(Rule::SmokeError, step, s.smoke_problems.join("; ")));
 	}
 	if s.now.saturating_sub(s.last_block_at) > rules.stall_ms {
 		return Some(Stop::new(
@@ -344,15 +362,45 @@ mod tests {
 
 	#[test]
 	fn fails_on_slow_blocks_as_hard() {
-		let blocks = [13_000, 14_000]
-			.map(|gap| polkameter_plugin_sdk::observers::files::BlockRecord {
-				gap_ms: Some(gap),
-				..Default::default()
-			})
-			.to_vec();
-		let stop =
-			check_step(&[step(0, |s| s.blocks = blocks)], &source(), 0, 6_000.0, &RULES).unwrap();
+		// 10 s with one new best block: a block every 10 s, against 4 s at the start.
+		let stop = check_step(
+			&[step(0, |s| {
+				s.heads = 1;
+				s.closed = true;
+			})],
+			&source(),
+			0,
+			4_000.0,
+			&RULES,
+		)
+		.unwrap();
 		assert_eq!((stop.rule, stop.class), (Rule::SlowBlocks, Some(Class::Hard)));
+		assert!(stop.detail.contains("a block every 10.0 s"), "{}", stop.detail);
+	}
+
+	fn live() -> LiveState {
+		LiveState {
+			now: 100_000,
+			connections: 4,
+			last_block_at: 60_000,
+			last_finalized_at: 90_000,
+			observing: true,
+			..Default::default()
+		}
+	}
+
+	#[test]
+	fn a_follower_that_is_reconnecting_is_not_a_stall() {
+		assert_eq!(live_failure(&live(), &RULES).unwrap().rule, Rule::Stall);
+		let reconnecting = LiveState { observing: false, ..live() };
+		assert_eq!(live_failure(&reconnecting, &RULES), None);
+		let down = LiveState {
+			observing: false,
+			node_unreachable: Some("blocks: the node did not answer for 15 s".into()),
+			..live()
+		};
+		let stop = live_failure(&down, &RULES).unwrap();
+		assert_eq!((stop.rule, stop.class), (Rule::NodeDown, Some(Class::Hard)));
 	}
 
 	#[test]

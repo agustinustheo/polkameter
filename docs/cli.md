@@ -339,7 +339,7 @@ By default, a stress-mode load run exits `0` whatever its verdict. Add `--fail-o
 | --- | --- | --- |
 | `POLKAMETER_PLUGIN_REGISTRY` | Commands that use installed plugins | Path of the plugin registry (JSON). Default: `~/.config/polkameter/plugins.json` |
 | `HOME`, `USERPROFILE` | The default registry path | Home directory for the default path. `USERPROFILE` is used if `HOME` is unset. If neither is set, set `POLKAMETER_PLUGIN_REGISTRY` |
-| `POLKAMETER_NODE_PID` | Load runs with `<monitors>` | The node's process ID, for CPU and memory. If unset, PolkaMeter finds the process on the RPC port with `lsof`, then `ss`. If none is found, no CPU or memory is recorded |
+| `POLKAMETER_NODE_PID` | Load runs | The node's process ID, for CPU and memory. If unset and the target URL is loopback, PolkaMeter finds the process on the RPC port with `lsof`, then `ss`, skipping port forwarders such as `ssh`. If none is found, no CPU or memory is recorded. See [Node CPU and memory](how-it-works.md#node-cpu-and-memory) |
 | `POLKAMETER_AGENT_TOKEN` | `agent serve` | Default name of the token variable, used when `--token-env` is not given |
 
 Plugins start with a cleared environment. Only `PATH`, `TMPDIR`, `TEMP`, `SYSTEMROOT`, `SSL_CERT_FILE` and `SSL_CERT_DIR` are passed on. A plugin receives credential values only as step inputs.

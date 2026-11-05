@@ -17,7 +17,7 @@ use polkameter_plugin_sdk::observers::files::{
 use serde::Serialize;
 use tokio::{
 	sync::{broadcast, mpsc::UnboundedReceiver},
-	time::MissedTickBehavior,
+	time::{Instant, MissedTickBehavior},
 };
 
 use crate::load::{follower::BlockEvent, now_ms, plan::Plan};
@@ -104,6 +104,8 @@ pub struct Io {
 	pub problems: Problems,
 	/// Cancelled when a monitor fails with an error of our tools: the run stops at once.
 	pub tool_failed: tokio_util::sync::CancellationToken,
+	/// The wall clock, only to see that the machine slept (`wall_ms`; a test changes it).
+	pub wall: fn() -> Millis,
 }
 
 /// No result: the network was not healthy before the load, or a raw file could not be written.
@@ -163,10 +165,12 @@ pub async fn baseline<S: Submit>(
 	opts: &RunOptions,
 ) -> Result<Baseline, RunError> {
 	t.set_phase(Phase::Baseline, now_ms())?;
-	let deadline =
-		now_ms() + (opts.baseline_probes as u64 + 10) * (opts.block_interval_s * 1000.0) as u64;
+	let deadline = Instant::now()
+		+ Duration::from_millis(
+			(opts.baseline_probes as u64 + 10) * (opts.block_interval_s * 1000.0) as u64,
+		);
 	let mut tick = interval(200);
-	while now_ms() < deadline {
+	while Instant::now() < deadline {
 		if next(t, io, &mut tick).await? {
 			t.tick(now_ms())?;
 			if t.probes.len() >= opts.baseline_probes
@@ -206,9 +210,9 @@ pub async fn drain<S: Submit>(
 	io: &mut Io,
 	timeout_ms: Millis,
 ) -> Result<bool, RunError> {
-	let deadline = now_ms() + timeout_ms;
+	let deadline = Instant::now() + Duration::from_millis(timeout_ms);
 	let mut tick = interval(100);
-	while t.last_fetched < t.last_head.1 && now_ms() < deadline {
+	while t.last_fetched < t.last_head.1 && Instant::now() < deadline {
 		next(t, io, &mut tick).await?;
 	}
 	Ok(t.last_fetched >= t.last_head.1)
@@ -228,10 +232,11 @@ pub async fn recover<S: Submit>(
 		"recovery: load stopped with {backlog_at_stop} txs outstanding; one probe per block for up to {} s",
 		opts.recovery_s
 	);
-	let deadline = stopped_at + u64::from(opts.recovery_s) * 1000;
-	let (mut back_at, mut drained_at, mut last_log) = (None, None, stopped_at);
+	let started = Instant::now();
+	let deadline = started + Duration::from_secs(u64::from(opts.recovery_s));
+	let (mut back_at, mut drained_at, mut last_log) = (None, None, started);
 	let mut tick = interval(500);
-	while now_ms() < deadline && t.closed_by_node == 0 {
+	while Instant::now() < deadline && t.closed_by_node == 0 && t.node_unreachable.is_none() {
 		if !next(t, io, &mut tick).await? {
 			continue;
 		}
@@ -252,11 +257,11 @@ pub async fn recover<S: Submit>(
 		if back_at.is_some() && drained_at.is_some() {
 			break;
 		}
-		if now - last_log > 30_000 {
-			last_log = now;
+		if last_log.elapsed() > Duration::from_secs(30) {
+			last_log = Instant::now();
 			eprintln!(
 				"recovery: {} s, backlog {}",
-				(now - stopped_at) / 1000,
+				started.elapsed().as_secs(),
 				t.outstanding().len()
 			);
 		}

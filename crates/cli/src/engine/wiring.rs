@@ -110,15 +110,15 @@ impl Monitors {
 			spawn(step_edges(events.subscribe(), handle.clone(), stop.clone()), &failed),
 		];
 
-		let sampler = match process::find_pid(chains.node_url).await {
-			Some(pid) => Some(spawn(
-				process::NodeSampler::new(pid, dir.jsonl("node.jsonl")?).run(stop_sampling.clone()),
-				&failed,
-			)),
-			None => {
-				eprintln!(
-					"node: no PID for the node under load (set POLKAMETER_NODE_PID); no CPU or memory recorded"
-				);
+		let ps = process::Ps::new(chains.node_url);
+		let sampler = match process::find_pid(chains.node_url, &ps).await {
+			Ok(pid) => {
+				let sampler =
+					process::NodeSampler::new(pid, ps, dir.jsonl("node.jsonl")?, problems.clone());
+				Some(spawn(sampler.run(stop_sampling.clone()), &failed))
+			},
+			Err(why) => {
+				eprintln!("node: {why}; no CPU or memory recorded");
 				None
 			},
 		};

@@ -6,14 +6,20 @@
 //! - fetcher: reads each queued block (body, weight, timestamp, events) strictly in arrival
 //!   order and sends [`BlockEvent::Fetched`]. In order, so a source never sees a later block
 //!   before the inclusions of an earlier one.
+//!
+//! When the connection drops, the heads task sends [`BlockEvent::Disconnected`], opens it again
+//! with backoff and sends [`BlockEvent::Reconnected`]: the time between is an observation gap,
+//! not a chain stall, and the first block after it has no gap to the block before. The blocks
+//! missed meanwhile are filled in below the next best block. Only a node that stays unreachable
+//! after the backoff is [`BlockEvent::Unreachable`] (node down).
 
-use std::{collections::HashSet, future::Future};
+use std::{collections::HashSet, future::Future, time::Duration};
 
 use polkameter_plugin_sdk::chain::{
-	ChainError, Client, DecodeAsType, events, failed_extrinsics, fetch, hex0x, tx_hash,
+	ChainError, Client, DecodeAsType, Fault, events, failed_extrinsics, fetch, hex0x, tx_hash,
 };
 use polkameter_plugin_sdk::observers::files::{BlockRecord, Millis};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::load::{now_ms, source::TxHash};
@@ -44,6 +50,21 @@ pub enum BlockEvent {
 	},
 	/// A block could not be read: a result for the problems list, not a stop.
 	Unreadable(String),
+	/// The follower lost the node (the connection dropped or the subscription ended) and is
+	/// reconnecting: no block is observed until [`BlockEvent::Reconnected`]. Not a chain stall.
+	Disconnected {
+		/// When.
+		at: Millis,
+		/// Why.
+		reason: String,
+	},
+	/// The follower follows the node again.
+	Reconnected {
+		/// When.
+		at: Millis,
+	},
+	/// The node stayed unreachable after every reconnect attempt: the node is down.
+	Unreachable(String),
 	/// An answer did not decode as our types: an error of our tools, the run stops.
 	Tool(String),
 }
@@ -64,73 +85,183 @@ struct PerClass {
 /// The running runtime's normal class limit (ref time, proof size), from `System.BlockWeights`.
 pub type Limit = (u64, u64);
 
-/// A block for the fetcher: hash, number, when it arrived, filled in.
-type Queued = ([u8; 32], u32, Millis, bool);
+/// A block for the fetcher: hash, number, when it arrived, filled in, and the first after the
+/// follower reconnected (its gap to the block before is not known).
+type Queued = ([u8; 32], u32, Millis, bool, bool);
 
 /// Blocks filled in below one best block at most; a longer walk is an unreadable stretch.
 const MAX_FILL: usize = 64;
 
-/// Starts both tasks; they end at `stop`.
+/// Waits before each reconnect attempt: about 15 s in all, then the node counts as down (the
+/// follower keeps trying at the last wait, and goes on if the node comes back).
+pub const RECONNECT_BACKOFF: [Duration; 6] = [
+	Duration::from_millis(250),
+	Duration::from_millis(500),
+	Duration::from_secs(1),
+	Duration::from_secs(2),
+	Duration::from_secs(4),
+	Duration::from_secs(8),
+];
+
+/// Best-block read errors in a row that count as a lost connection.
+const ERRORS_IN_A_ROW: u32 = 3;
+
+/// Starts both tasks; they end at `stop`. `url` opens the connection again when it drops.
 pub fn start(
 	client: Client,
+	url: String,
 	limit: Limit,
 	out: mpsc::UnboundedSender<BlockEvent>,
 	stop: CancellationToken,
 ) {
 	let (queue_tx, queue) = mpsc::unbounded_channel();
-	tokio::spawn(heads(client.clone(), out.clone(), queue_tx, stop.clone()));
-	tokio::spawn(fetcher(client, limit, out, queue, stop));
+	let (clients, current) = watch::channel(client.clone());
+	let connect = move || {
+		let url = url.clone();
+		async move { Client::connect(&url).await }
+	};
+	tokio::spawn(heads(client, connect, clients, out.clone(), queue_tx, stop.clone()));
+	tokio::spawn(fetcher(current, limit, out, queue, stop));
 }
 
-async fn heads(
-	client: Client,
+/// Opens a connection with [`RECONNECT_BACKOFF`]. `None` at `stop`. When the schedule runs
+/// out, `gave_up` is called once and the last wait repeats.
+pub async fn reconnect<T, E, F, Fut>(
+	mut connect: F,
+	backoff: &[Duration],
+	stop: &CancellationToken,
+	mut gave_up: impl FnMut(&E),
+) -> Option<T>
+where
+	F: FnMut() -> Fut,
+	Fut: Future<Output = Result<T, E>>,
+{
+	let last = *backoff.last()?;
+	let mut attempt = 0;
+	loop {
+		let wait = backoff.get(attempt).copied().unwrap_or(last);
+		tokio::select! {
+			() = stop.cancelled() => return None,
+			() = tokio::time::sleep(wait) => {},
+		}
+		match connect().await {
+			Ok(t) => return Some(t),
+			Err(e) if attempt + 1 == backoff.len() => gave_up(&e),
+			Err(_) => {},
+		}
+		attempt += 1;
+	}
+}
+
+/// Follows best and finalized blocks; when the connection drops, reports it, opens it again
+/// and follows on. Blocks below the first new best block after a reconnect are filled in, as
+/// after a reorg.
+async fn heads<F, Fut>(
+	mut client: Client,
+	mut connect: F,
+	clients: watch::Sender<Client>,
 	out: mpsc::UnboundedSender<BlockEvent>,
 	queue: mpsc::UnboundedSender<Queued>,
 	stop: CancellationToken,
-) {
-	let (Ok(mut best), Ok(mut finalized)) =
-		(client.api().stream_best_blocks().await, client.api().stream_blocks().await)
-	else {
-		let _ = out.send(BlockEvent::Unreadable("cannot subscribe to blocks".into()));
-		return;
-	};
+) where
+	F: FnMut() -> Fut,
+	Fut: Future<Output = Result<Client, ChainError>>,
+{
+	let mut followed = Followed::default();
+	loop {
+		let Some(reason) = follow(&client, &out, &queue, &stop, &mut followed).await else {
+			return;
+		};
+		let lost_at = now_ms();
+		eprintln!("blocks: lost the node ({reason}); reconnecting");
+		let _ = out.send(BlockEvent::Disconnected { at: lost_at, reason: reason.clone() });
+		let gave_up = |e: &ChainError| {
+			let _ = out.send(BlockEvent::Unreachable(format!(
+				"the block follower could not reach the node for {} s after it was lost ({reason}): {e}",
+				now_ms().saturating_sub(lost_at) / 1000
+			)));
+		};
+		let Some(c) = reconnect(&mut connect, &RECONNECT_BACKOFF, &stop, gave_up).await else {
+			return;
+		};
+		client = c;
+		let _ = clients.send(client.clone());
+		let at = now_ms();
+		eprintln!("blocks: reconnected after {:.1} s", at.saturating_sub(lost_at) as f64 / 1000.0);
+		let _ = out.send(BlockEvent::Reconnected { at });
+		followed.after_gap = true;
+	}
+}
+
+/// What the follower keeps across reconnects.
+#[derive(Default)]
+struct Followed {
+	/// Blocks queued.
+	seen: HashSet<[u8; 32]>,
+	/// The first best block followed.
+	first: Option<u32>,
+	/// The next block queued is the first after a reconnect.
+	after_gap: bool,
+}
+
+/// Follows on one connection. `None` at `stop`; else why the connection was lost.
+async fn follow(
+	client: &Client,
+	out: &mpsc::UnboundedSender<BlockEvent>,
+	queue: &mpsc::UnboundedSender<Queued>,
+	stop: &CancellationToken,
+	f: &mut Followed,
+) -> Option<String> {
+	let (mut best, mut finalized) =
+		match (client.api().stream_best_blocks().await, client.api().stream_blocks().await) {
+			(Ok(best), Ok(finalized)) => (best, finalized),
+			(Err(e), _) | (_, Err(e)) => return Some(format!("cannot subscribe to blocks: {e}")),
+		};
 	// At start the stream goes back to the finalized block; record from the best one on, or
 	// the first probes would be sent on old blocks and land "fast".
-	let first = match client.best_number().await {
-		Ok(n) => n,
-		Err(e) => {
-			let _ = out.send(BlockEvent::Unreadable(format!("best number: {e}")));
-			return;
+	let first = match f.first {
+		Some(first) => first,
+		None => match client.best_number().await {
+			Ok(n) => *f.first.insert(n),
+			Err(e) => return Some(format!("best number: {e}")),
 		},
 	};
-	let mut seen = HashSet::new();
+	let mut errors = 0;
 	loop {
 		tokio::select! {
-			() = stop.cancelled() => return,
+			() = stop.cancelled() => return None,
 			block = finalized.next() => match block {
 				Some(Ok(b)) => { let _ = out.send(BlockEvent::Finalized { number: b.number() as u32, seen_at: now_ms() }); }
 				Some(Err(e)) => { let _ = out.send(BlockEvent::Unreadable(format!("finalized: {e}"))); }
-				None => { let _ = out.send(BlockEvent::Unreadable("the finalized block stream ended".into())); return }
+				None => return Some("the finalized block stream ended".into()),
 			},
 			block = best.next() => match block {
-				None => { let _ = out.send(BlockEvent::Unreadable("the best block stream ended".into())); return }
-				Some(block) => match block {
-				Ok(b) if b.number() as u32 >= first && !seen.contains(&b.hash().0) => {
-					let (number, hash, seen_at) = (b.number() as u32, b.hash().0, now_ms());
-					let _ = out.send(BlockEvent::Head { number, seen_at });
-					match fill_in(b.header().parent_hash.0, number, first, &seen, |h| client.parent(h)).await {
-						Ok(missing) => for (h, n) in missing {
-							seen.insert(h);
-							let _ = queue.send((h, n, seen_at, true));
-						},
-						Err(e) => { let _ = out.send(BlockEvent::Unreadable(format!("blocks below {number}: {e}"))); }
+				None => return Some("the best block stream ended".into()),
+				Some(Err(e)) => {
+					errors += 1;
+					if errors >= ERRORS_IN_A_ROW {
+						return Some(format!("{errors} best block errors in a row, the last: {e}"));
 					}
-					seen.insert(hash);
-					let _ = queue.send((hash, number, seen_at, false));
-				}
-				Ok(_) => {}
-				Err(e) => { let _ = out.send(BlockEvent::Unreadable(format!("best: {e}"))); }
-			}},
+					let _ = out.send(BlockEvent::Unreadable(format!("best: {e}")));
+				},
+				Some(Ok(b)) => {
+					errors = 0;
+					if b.number() as u32 >= first && !f.seen.contains(&b.hash().0) {
+						let (number, hash, seen_at) = (b.number() as u32, b.hash().0, now_ms());
+						let _ = out.send(BlockEvent::Head { number, seen_at });
+						let after_gap = std::mem::take(&mut f.after_gap);
+						match fill_in(b.header().parent_hash.0, number, first, &f.seen, |h| client.parent(h)).await {
+							Ok(missing) => for (h, n) in missing {
+								f.seen.insert(h);
+								let _ = queue.send((h, n, seen_at, true, false));
+							},
+							Err(e) => { let _ = out.send(BlockEvent::Unreadable(format!("blocks below {number}: {e}"))); }
+						}
+						f.seen.insert(hash);
+						let _ = queue.send((hash, number, seen_at, false, after_gap));
+					}
+				},
+			},
 		}
 	}
 }
@@ -169,8 +300,13 @@ where
 /// Reads up to 4 blocks at a time; results still come out in arrival order.
 const FETCH_AHEAD: usize = 4;
 
+/// Reads of one block that fail on the chain's side, each on the current connection, before it
+/// counts as unreadable: a read in flight when the connection dropped is read again on the new
+/// one.
+const READ_ATTEMPTS: u32 = 4;
+
 async fn fetcher(
-	client: Client,
+	clients: watch::Receiver<Client>,
 	limit: Limit,
 	out: mpsc::UnboundedSender<BlockEvent>,
 	mut queue: mpsc::UnboundedReceiver<Queued>,
@@ -179,19 +315,33 @@ async fn fetcher(
 	use futures_util::StreamExt;
 	let blocks = futures_util::stream::poll_fn(move |cx| queue.poll_recv(cx));
 	let mut reads = blocks
-		.map(|(hash, number, seen_at, filled_in)| {
-			let client = client.clone();
+		.map(|(hash, number, seen_at, filled_in, after_gap)| {
+			let clients = clients.clone();
 			async move {
-				(number, seen_at, filled_in, read(&client, hash, number, seen_at, limit).await)
+				let mut attempt = 1;
+				let result = loop {
+					let client = clients.borrow().clone();
+					match read(&client, hash, number, seen_at, limit).await {
+						Err(e) if e.fault() != Fault::Tool && attempt < READ_ATTEMPTS => {
+							attempt += 1;
+							tokio::time::sleep(Duration::from_secs(1)).await;
+						},
+						result => break result,
+					}
+				};
+				(number, seen_at, filled_in, after_gap, result)
 			}
 		})
 		.buffered(FETCH_AHEAD);
 	let mut last: Option<Millis> = None; // when the last best block arrived
 	loop {
-		let (number, seen_at, filled_in, result) = tokio::select! {
+		let (number, seen_at, filled_in, after_gap, result) = tokio::select! {
 			() = stop.cancelled() => return,
 			Some(r) = reads.next() => r,
 		};
+		if after_gap {
+			last = None; // the follower was disconnected: the gap is not known
+		}
 		match result {
 			Ok((mut record, txs)) => {
 				record.fetch_lag_ms = Some(now_ms().saturating_sub(seen_at));
@@ -202,7 +352,7 @@ async fn fetcher(
 				}
 				let _ = out.send(BlockEvent::Fetched { record, txs });
 			},
-			Err(e) if e.fault() == polkameter_plugin_sdk::chain::Fault::Tool => {
+			Err(e) if e.fault() == Fault::Tool => {
 				let _ = out.send(BlockEvent::Tool(format!("block {number}: {e}")));
 			},
 			Err(e) => {
@@ -295,5 +445,33 @@ mod tests {
 		assert!(fill(&HashMap::new(), h(12), 13, 5, &[h(12)]).is_empty());
 		let chain = HashMap::from([(h(6), h(5))]);
 		assert_eq!(fill(&chain, h(6), 7, 5, &[]), [(h(5), 5), (h(6), 6)]);
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn reconnect_backs_off_and_reports_a_node_that_stays_down_once() {
+		let stop = CancellationToken::new();
+		let backoff = [Duration::from_secs(1), Duration::from_secs(2)];
+		// Fails four times, then the node is back.
+		let mut tries = 0;
+		let mut gave_up = 0;
+		let started = tokio::time::Instant::now();
+		let got = reconnect(
+			|| {
+				tries += 1;
+				std::future::ready(if tries > 4 { Ok(tries) } else { Err("refused") })
+			},
+			&backoff,
+			&stop,
+			|_| gave_up += 1,
+		)
+		.await;
+		assert_eq!(got, Some(5));
+		assert_eq!(gave_up, 1, "down once the schedule ran out, then it keeps trying");
+		// 1 + 2, then the last wait again: 2 + 2 + 2.
+		assert_eq!(started.elapsed(), Duration::from_secs(9));
+		stop.cancel();
+		let none: Option<()> =
+			reconnect(|| std::future::ready(Err::<(), _>("x")), &backoff, &stop, |_| {}).await;
+		assert_eq!(none, None);
 	}
 }

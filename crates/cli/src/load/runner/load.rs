@@ -1,6 +1,12 @@
 //! 2. The load: the plan's steps, every lane at its own token bucket, and when a stop ends it.
 
-use polkameter_plugin_sdk::observers::files::summary::{Rule, Stop};
+use std::time::Duration;
+
+use polkameter_plugin_sdk::observers::files::{
+	Millis,
+	summary::{Rule, Stop},
+};
+use tokio::time::Instant;
 
 use super::{Io, Mode, RunError, RunEvent, RunOptions, interval, next};
 use crate::load::{
@@ -60,25 +66,28 @@ async fn send_step<S: Submit>(
 	rates: &[f64],
 	seconds: u32,
 ) -> Result<Option<Stop>, RunError> {
-	let end = now_ms() + u64::from(seconds) * 1000;
+	// Monotonic time for the step's end and the token bucket: a wall-clock step neither ends the
+	// step early nor sends a burst.
+	let start = Instant::now();
+	let end = start + Duration::from_secs(u64::from(seconds));
 	let mut tick = interval(20);
 	let mut tokens = vec![0.0_f64; rates.len()];
-	let mut last = now_ms();
+	let (mut last, mut last_wall) = (start, (io.wall)());
 	let step = t.steps[0].last().expect("started").step;
-	while now_ms() < end {
+	while Instant::now() < end {
 		if !next(t, io, &mut tick).await? {
 			continue;
 		}
-		let now = now_ms();
-		if now - last > opts.rules.max_tick_gap_ms {
-			let detail = format!(
-				"the load tool was paused for {} s (machine sleep or CPU starvation); the numbers after this are not the chain's",
-				(now - last) / 1000
-			);
+		let (at, now, wall) = (Instant::now(), now_ms(), (io.wall)());
+		let elapsed = at.duration_since(last);
+		let elapsed_ms = elapsed.as_millis() as Millis;
+		if let Some(detail) =
+			paused(elapsed_ms, wall.saturating_sub(last_wall), opts.rules.max_tick_gap_ms)
+		{
 			return Ok(Some(Stop::new(Rule::GeneratorLimit, Some(step), detail)));
 		}
 		for (lane, rate) in rates.iter().enumerate() {
-			tokens[lane] = (tokens[lane] + rate * (now - last) as f64 / 1000.0).min(rate.max(1.0)); // at most 1 s of catch-up
+			tokens[lane] = (tokens[lane] + rate * elapsed.as_secs_f64()).min(rate.max(1.0)); // at most 1 s of catch-up
 			while tokens[lane] >= 1.0 && t.send_next(lane, now) {
 				tokens[lane] -= 1.0;
 			}
@@ -86,7 +95,7 @@ async fn send_step<S: Submit>(
 				tokens[lane] = 0.0; // nothing ready, or backed up
 			}
 		}
-		last = now;
+		(last, last_wall) = (at, wall);
 		t.tick(now)?;
 		let live = LiveState {
 			step,
@@ -97,6 +106,8 @@ async fn send_step<S: Submit>(
 			last_finalized_at: t.last_finalized.0,
 			best: t.last_head.1,
 			finalized: t.last_finalized.1,
+			observing: t.observing(),
+			node_unreachable: t.node_unreachable.clone(),
 			smoke_problems: if opts.mode == Mode::Smoke { io.problems.all() } else { Vec::new() },
 		};
 		if let Some(stop) = live_failure(&live, &opts.rules) {
@@ -104,6 +115,27 @@ async fn send_step<S: Submit>(
 		}
 	}
 	Ok(None)
+}
+
+/// Why the load tool itself was paused between two send ticks, if it was: `elapsed` ms passed on
+/// the monotonic clock and `wall` ms on the wall clock. A long monotonic gap is CPU starvation; a
+/// wall clock far ahead of the monotonic one is a machine that slept (the monotonic clock stops
+/// then) or a forward clock step. A wall clock that went back is ignored.
+fn paused(elapsed: Millis, wall: Millis, max_gap: Millis) -> Option<String> {
+	const NOT_THE_CHAIN: &str = "the numbers after this are not the chain's";
+	if elapsed > max_gap {
+		return Some(format!(
+			"the load tool was paused for {} s (machine sleep or CPU starvation); {NOT_THE_CHAIN}",
+			elapsed / 1000
+		));
+	}
+	let ahead = wall.saturating_sub(elapsed);
+	(ahead > max_gap).then(|| {
+		format!(
+			"the wall clock moved {} s more than the load tool's own clock (machine sleep or a clock step); {NOT_THE_CHAIN}",
+			ahead / 1000
+		)
+	})
 }
 
 fn log_step<S: Submit>(t: &Tracker<S>) {
@@ -121,5 +153,20 @@ fn log_step<S: Submit>(t: &Tracker<S>) {
 			t.inflight(),
 			t.outstanding().len()
 		);
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::paused;
+
+	#[test]
+	fn a_pause_is_a_long_tick_or_a_wall_clock_far_ahead() {
+		assert_eq!(paused(20, 20, 5_000), None);
+		// A wall clock that went back (saturated to 0) is not a pause.
+		assert_eq!(paused(20, 0, 5_000), None);
+		assert!(paused(6_000, 6_000, 5_000).unwrap().contains("paused for 6 s"));
+		// Asleep: the monotonic clock stood still while the wall clock moved a minute.
+		assert!(paused(20, 60_020, 5_000).unwrap().contains("moved 60 s more"));
 	}
 }

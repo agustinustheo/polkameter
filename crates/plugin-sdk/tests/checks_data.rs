@@ -79,3 +79,27 @@ fn build_time_fails_when_most_blocks_take_over_2_5_s() {
 	assert_eq!(build.verdict.status, Status::Fail, "{}", build.verdict.detail);
 	assert!(build.verdict.detail.starts_with("step 1: 4 of 5 blocks took over 2.5 s"));
 }
+
+#[test]
+fn a_state_check_without_a_result_makes_the_verdict_inconclusive() {
+	use polkameter_plugin_sdk::observers::checks::{all, report::overall_status, run};
+	use polkameter_plugin_sdk::observers::files::summary::{OverallStatus, Rule, Stop};
+	let mut s = summary();
+	// A clean run: every check passes but the plan's state check timed out.
+	s.breaking_point = None;
+	s.stop = Stop::new(Rule::RateCap, Some(2), "all 3 steps ran");
+	s.loss.state = None;
+	s.loss.state_error = Some("plugin state check: timed out after 60 s".into());
+	let d = RunData::new(Store::new(), s.clone());
+	let results = run(&all(), &d);
+	let loss = results.iter().find(|r| r.check == "no silent loss").unwrap();
+	assert_eq!(loss.verdict.status, Status::NoResult, "{}", loss.verdict.detail);
+	assert!(loss.verdict.detail.contains("timed out after 60 s"));
+	assert!(!loss.optional);
+	assert_ne!(overall_status(&s, &results), OverallStatus::Pass);
+	// The same run with the state check's result: the loss check passes.
+	s.loss.state_error = None;
+	let results = run(&all(), &RunData::new(Store::new(), s));
+	let loss = results.iter().find(|r| r.check == "no silent loss").unwrap();
+	assert_eq!(loss.verdict.status, Status::Pass);
+}

@@ -2,16 +2,55 @@
 //! exports no process metrics on macOS. CPU is the change in the node's CPU time over wall
 //! time, so 250% means 2.5 cores busy.
 //!
-//! The process is `POLKAMETER_NODE_PID`, or the one listening on the node's RPC port. Neither
-//! found: no samples, with a warning.
+//! Only a node on this machine can be sampled. The process is `POLKAMETER_NODE_PID`, or the one
+//! listening on the RPC port of a loopback URL (`localhost`, `127.0.0.1`, `::1`). A listener
+//! that is a port forwarder (an SSH tunnel, `kubectl port-forward`, `socat`, Docker's proxy) is
+//! not the node, so it is not sampled. For a remote URL nothing is sampled. In both cases the run
+//! goes on without CPU or memory, with a warning.
+//!
+//! When the sampled process ends (the node restarted), the sampler looks for the new process on
+//! the same port, records the restart as a problem and samples the new one; the CPU of the first
+//! sample after a restart is not known.
 
-use std::time::Duration;
+use std::{future::Future, time::Duration};
 
-use polkameter_plugin_sdk::observers::files::{FileError, JsonlWriter, Millis, NodeSample, now_ms};
+use polkameter_plugin_sdk::observers::files::{
+	FileError, JsonlWriter, Millis, NodeSample, Problems, now_ms,
+};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
 const EVERY: Duration = Duration::from_secs(5);
+
+/// Processes that listen on a port for another machine or container: never the node.
+const FORWARDERS: &[&str] = &[
+	"ssh",
+	"sshd",
+	"autossh",
+	"kubectl",
+	"socat",
+	"nc",
+	"ncat",
+	"docker-proxy",
+	"com.docker.backend",
+	"vpnkit",
+	"gvproxy",
+	"limactl",
+	"rootlessport",
+	"slirp4netns",
+	"stunnel",
+	"cloudflared",
+	"ngrok",
+	"haproxy",
+	"nginx",
+	"envoy",
+];
+
+/// True for a process name that is a port forwarder, not a node.
+pub fn is_forwarder(name: &str) -> bool {
+	let base = name.trim().rsplit('/').next().unwrap_or("");
+	FORWARDERS.contains(&base)
+}
 
 /// `ps -o time=` is `[[dd-]hh:]mm:ss[.cc]` on Linux and macOS.
 fn cpu_seconds(time: &str) -> Option<f64> {
@@ -24,48 +63,131 @@ fn cpu_seconds(time: &str) -> Option<f64> {
 	Some(days * 86_400.0 + s)
 }
 
-/// The PID listening on the port of a `ws://` URL: `POLKAMETER_NODE_PID`, else `lsof`, else `ss`.
-pub async fn find_pid(ws_url: &str) -> Option<u32> {
-	if let Ok(pid) = std::env::var("POLKAMETER_NODE_PID") {
-		return pid.parse().ok();
+/// The RPC port of a node on this machine: `None` for a URL whose host is not loopback, since
+/// a local process on that port would not be the node.
+pub fn local_port(ws_url: &str) -> Option<u16> {
+	let url = reqwest::Url::parse(ws_url).ok()?;
+	let host = url.host_str()?;
+	let ip = host.trim_start_matches('[').trim_end_matches(']').parse::<std::net::IpAddr>();
+	let loopback = host.eq_ignore_ascii_case("localhost") || ip.is_ok_and(|ip| ip.is_loopback());
+	loopback.then(|| url.port_or_known_default()).flatten()
+}
+
+/// What the sampler reads about processes; `ps` and `lsof`/`ss` in a run, a fake in tests.
+pub trait Processes: Send + Sync {
+	/// CPU seconds and resident KiB of `pid`; `None` when it is gone.
+	fn usage(&self, pid: u32) -> impl Future<Output = Option<(f64, f64)>> + Send;
+	/// The node process listening on the node's port, if there is one.
+	fn listener(&self) -> impl Future<Output = Option<u32>> + Send;
+}
+
+/// The real process table, for the node's RPC port (`None` for a remote node).
+pub struct Ps {
+	port: Option<u16>,
+}
+
+impl Ps {
+	/// For the node at `ws_url`.
+	pub fn new(ws_url: &str) -> Self {
+		Self { port: local_port(ws_url) }
 	}
-	let port = ws_url.rsplit_once(':')?.1.split('/').next()?;
+}
+
+impl Processes for Ps {
+	async fn usage(&self, pid: u32) -> Option<(f64, f64)> {
+		let out = Command::new("ps")
+			.args(["-o", "time=,rss=", "-p", &pid.to_string()])
+			.output()
+			.await;
+		let text = String::from_utf8_lossy(&out.ok()?.stdout).into_owned();
+		let mut parts = text.split_whitespace();
+		let (time, rss) = (parts.next()?, parts.next()?);
+		Some((cpu_seconds(time)?, rss.parse().ok()?))
+	}
+
+	async fn listener(&self) -> Option<u32> {
+		let port = self.port?;
+		for pid in listening_pids(port).await {
+			match process_name(pid).await {
+				Some(name) if is_forwarder(&name) => {
+					eprintln!(
+						"node: port {port} is served by {name} (PID {pid}), a port forwarder, not the node"
+					);
+				},
+				Some(_) => return Some(pid),
+				None => {},
+			}
+		}
+		None
+	}
+}
+
+/// The processes listening on TCP `port`: `lsof`, else `ss`.
+async fn listening_pids(port: u16) -> Vec<u32> {
 	if let Ok(out) = Command::new("lsof")
 		.args(["-t", "-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN"])
 		.output()
-		.await && let Some(pid) = String::from_utf8_lossy(&out.stdout)
-		.lines()
-		.next()
-		.and_then(|l| l.trim().parse().ok())
+		.await
 	{
-		return Some(pid);
-	}
-	if let Ok(out) = Command::new("ss").args(["-Hltnp", &format!("sport = :{port}")]).output().await
-	{
-		let text = String::from_utf8_lossy(&out.stdout);
-		if let Some(i) = text.find("pid=") {
-			let digits: String = text[i + 4..].chars().take_while(char::is_ascii_digit).collect();
-			if let Ok(pid) = digits.parse() {
-				return Some(pid);
-			}
+		let pids: Vec<u32> = String::from_utf8_lossy(&out.stdout)
+			.lines()
+			.filter_map(|l| l.trim().parse().ok())
+			.collect();
+		if !pids.is_empty() {
+			return pids;
 		}
 	}
-	None
+	let Ok(out) = Command::new("ss").args(["-Hltnp", &format!("sport = :{port}")]).output().await
+	else {
+		return Vec::new();
+	};
+	let text = String::from_utf8_lossy(&out.stdout);
+	text.split("pid=")
+		.skip(1)
+		.filter_map(|s| s.chars().take_while(char::is_ascii_digit).collect::<String>().parse().ok())
+		.collect()
+}
+
+/// The command name of `pid`.
+async fn process_name(pid: u32) -> Option<String> {
+	let out = Command::new("ps").args(["-o", "comm=", "-p", &pid.to_string()]).output().await;
+	let name = String::from_utf8_lossy(&out.ok()?.stdout).trim().to_owned();
+	(!name.is_empty()).then_some(name)
+}
+
+/// The node's PID: `POLKAMETER_NODE_PID`, or the node process listening on the port of a
+/// loopback URL. `Err` says why there is none.
+pub async fn find_pid(ws_url: &str, processes: &impl Processes) -> Result<u32, String> {
+	if let Ok(pid) = std::env::var("POLKAMETER_NODE_PID") {
+		return pid.parse().map_err(|_| format!("POLKAMETER_NODE_PID={pid} is not a PID"));
+	}
+	if local_port(ws_url).is_none() {
+		return Err(format!(
+			"{ws_url} is not on this machine, so its process cannot be sampled (set POLKAMETER_NODE_PID for a local node behind another address)"
+		));
+	}
+	processes
+		.listener()
+		.await
+		.ok_or_else(|| "no node process listens on its port (set POLKAMETER_NODE_PID)".to_owned())
 }
 
 /// The process sampler.
-#[derive(Debug)]
-pub struct NodeSampler {
+pub struct NodeSampler<P> {
 	pid: u32,
+	processes: P,
 	out: JsonlWriter,
+	problems: Problems,
 	/// The last sample: when, and the node's CPU seconds then.
 	last: Option<(Millis, f64)>,
+	/// The sampled process ended and no new one was found yet.
+	lost: bool,
 }
 
-impl NodeSampler {
-	/// Samples process `pid` into `out` (`node.jsonl`).
-	pub fn new(pid: u32, out: JsonlWriter) -> Self {
-		Self { pid, out, last: None }
+impl<P: Processes> NodeSampler<P> {
+	/// Samples process `pid` into `out` (`node.jsonl`); a restart goes to `problems`.
+	pub fn new(pid: u32, processes: P, out: JsonlWriter, problems: Problems) -> Self {
+		Self { pid, processes, out, problems, last: None, lost: false }
 	}
 
 	/// Samples every 5 s until `stop`, then writes the file out.
@@ -80,21 +202,38 @@ impl NodeSampler {
 		self.out.finish()
 	}
 
-	async fn sample(&mut self) -> Result<(), FileError> {
-		// No answer: the process is gone, and the node-down rule reports it.
-		let Ok(out) = Command::new("ps")
-			.args(["-o", "time=,rss=", "-p", &self.pid.to_string()])
-			.output()
-			.await
-		else {
-			return Ok(());
+	/// One sample. When the process is gone, the node process now on the port is sampled
+	/// instead.
+	pub async fn sample(&mut self) -> Result<(), FileError> {
+		let usage = match self.processes.usage(self.pid).await {
+			Some(usage) => usage,
+			None => match self.processes.listener().await {
+				Some(pid) if pid != self.pid => {
+					let what = format!(
+						"node: process {} ended; sampling the node process now on its port, {pid} (the node restarted)",
+						self.pid
+					);
+					eprintln!("{what}");
+					self.problems.record(what);
+					(self.pid, self.last, self.lost) = (pid, None, false);
+					let Some(usage) = self.processes.usage(pid).await else { return Ok(()) };
+					usage
+				},
+				_ => {
+					if !self.lost {
+						self.lost = true;
+						let what = format!(
+							"node: process {} ended and no node process listens on its port; no CPU or memory until one does",
+							self.pid
+						);
+						eprintln!("{what}");
+						self.problems.record(what);
+					}
+					return Ok(());
+				},
+			},
 		};
-		let text = String::from_utf8_lossy(&out.stdout);
-		let mut parts = text.split_whitespace();
-		let (Some(time), Some(rss)) = (parts.next(), parts.next()) else { return Ok(()) };
-		let (Some(cpu_s), Ok(rss_kib)) = (cpu_seconds(time), rss.parse::<f64>()) else {
-			return Ok(());
-		};
+		let (cpu_s, rss_kib) = usage;
 		let t = now_ms();
 		let cpu_pct = self
 			.last
@@ -104,12 +243,15 @@ impl NodeSampler {
 			t,
 			cpu_pct: cpu_pct.map(|p| p.round() as i64),
 			rss_mi_b: (rss_kib / 1024.0).round() as u64,
+			pid: Some(self.pid),
 		})
 	}
 }
 
 #[cfg(test)]
 mod tests {
+	use std::sync::Mutex;
+
 	use super::*;
 
 	#[test]
@@ -118,5 +260,80 @@ mod tests {
 		assert_eq!(cpu_seconds("01:02:03"), Some(3723.0));
 		assert_eq!(cpu_seconds("2-01:00:00"), Some(2.0 * 86_400.0 + 3600.0));
 		assert_eq!(cpu_seconds("x"), None);
+	}
+
+	#[test]
+	fn only_a_loopback_node_is_sampled() {
+		assert_eq!(local_port("ws://127.0.0.1:9944"), Some(9944));
+		assert_eq!(local_port("ws://localhost:9944/rpc"), Some(9944));
+		assert_eq!(local_port("ws://[::1]:9944"), Some(9944));
+		assert_eq!(local_port("ws://localhost"), Some(80));
+		assert_eq!(local_port("wss://rpc.example.com:443"), None);
+		assert_eq!(local_port("ws://10.0.0.5:9944"), None);
+		// The userinfo trick does not make a remote host local.
+		assert_eq!(local_port("ws://localhost:80@evil.example:9944"), None);
+	}
+
+	#[test]
+	fn port_forwarders_are_not_the_node() {
+		for name in ["ssh", "/usr/bin/ssh", "kubectl", "com.docker.backend", "docker-proxy"] {
+			assert!(is_forwarder(name), "{name}");
+		}
+		for name in ["polkadot", "polkadot-parachain", "/opt/bin/substrate-node", "sshnode"] {
+			assert!(!is_forwarder(name), "{name}");
+		}
+	}
+
+	/// Processes by PID: CPU seconds and RSS KiB, and who listens on the port.
+	#[derive(Default)]
+	struct Fake {
+		alive: Mutex<Vec<(u32, f64, f64)>>,
+		listener: Mutex<Option<u32>>,
+	}
+
+	impl Processes for &Fake {
+		async fn usage(&self, pid: u32) -> Option<(f64, f64)> {
+			let alive = self.alive.lock().unwrap();
+			alive.iter().find(|p| p.0 == pid).map(|p| (p.1, p.2))
+		}
+		async fn listener(&self) -> Option<u32> {
+			*self.listener.lock().unwrap()
+		}
+	}
+
+	#[tokio::test]
+	async fn a_restarted_node_is_followed_to_its_new_process() {
+		let dir = polkameter_plugin_sdk::observers::files::RunDir::create(
+			&std::env::temp_dir(),
+			&format!("polkameter-sampler-{}", std::process::id()),
+		)
+		.unwrap();
+		let fake = Fake::default();
+		*fake.alive.lock().unwrap() = vec![(10, 5.0, 2048.0)];
+		*fake.listener.lock().unwrap() = Some(10);
+		let problems = Problems::default();
+		let mut sampler =
+			NodeSampler::new(10, &fake, dir.jsonl("node.jsonl").unwrap(), problems.clone());
+		sampler.sample().await.unwrap();
+		// The node restarts as PID 20.
+		*fake.alive.lock().unwrap() = vec![];
+		*fake.listener.lock().unwrap() = None;
+		sampler.sample().await.unwrap();
+		sampler.sample().await.unwrap();
+		*fake.alive.lock().unwrap() = vec![(20, 1.0, 4096.0)];
+		*fake.listener.lock().unwrap() = Some(20);
+		sampler.sample().await.unwrap();
+		sampler.sample().await.unwrap();
+		sampler.out.finish().unwrap();
+		let samples: Vec<NodeSample> = dir.read_jsonl("node.jsonl").unwrap();
+		let pids: Vec<_> = samples.iter().map(|s| s.pid).collect();
+		assert_eq!(pids, [Some(10), Some(20), Some(20)], "sampling goes on with the new process");
+		assert_eq!(samples[1].cpu_pct, None, "no CPU across the restart");
+		assert_eq!(samples[2].rss_mi_b, 4);
+		let problems = problems.all();
+		assert_eq!(problems.len(), 2, "{problems:?}");
+		assert!(problems[0].contains("process 10 ended and no node process listens"));
+		assert!(problems[1].contains("sampling the node process now on its port, 20"));
+		std::fs::remove_dir_all(&dir.path).ok();
 	}
 }

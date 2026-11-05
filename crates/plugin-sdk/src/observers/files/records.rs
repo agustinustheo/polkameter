@@ -102,6 +102,9 @@ pub struct NodeSample {
 	pub cpu_pct: Option<i64>,
 	/// Resident memory.
 	pub rss_mi_b: u64,
+	/// The process sampled: a new one after the node restarted.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub pid: Option<u32>,
 }
 
 /// What a run of best blocks held (part of a step record and of recovery).

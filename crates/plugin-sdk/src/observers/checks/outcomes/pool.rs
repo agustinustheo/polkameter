@@ -47,11 +47,17 @@ fn no_silent_loss(d: &RunData) -> Result<Verdict, CounterReset> {
 	let pool = l.node_pool.as_ref().map_or(String::new(), |p| {
 		format!("; the node's mempool holds {} txs, {} ready", p.mempool, p.ready)
 	});
-	let status = if lost > 0 { Status::Fail } else { Status::Pass };
-	Ok(Verdict::new(
-		status,
-		format!("{lost} of {} txs accepted, in no block, and without any error{pool}", l.sent),
-	))
+	let mut status = if lost > 0 { Status::Fail } else { Status::Pass };
+	let mut detail =
+		format!("{lost} of {} txs accepted, in no block, and without any error{pool}", l.sent);
+	// The plan asked to check chain state: without that result, "no loss" is not proven.
+	if let Some(e) = &l.state_error {
+		detail += &format!("; the state check gave no result: {e}");
+		if status == Status::Pass {
+			status = Status::NoResult;
+		}
+	}
+	Ok(Verdict::new(status, detail))
 }
 
 fn burst_drains(d: &RunData) -> Result<Verdict, CounterReset> {

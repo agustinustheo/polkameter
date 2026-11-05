@@ -125,6 +125,24 @@ Polkameter: cannot read run directory target/no-such-run: No such file or direct
 
 **Fix:** Set `block-interval-seconds` on `<load>` to the measured value. The default is `6.0`.
 
+### node: ... is not on this machine, so its process cannot be sampled
+
+**Cause:** The load test's target is not a loopback URL, so PolkaMeter cannot tell which local process is the node. The run goes on without CPU or memory.
+
+**Fix:** If the node runs on this machine behind another address, set `POLKAMETER_NODE_PID` to its process ID. Otherwise there is nothing to fix: PolkaMeter samples only local nodes.
+
+### node: port <port> is served by ssh (PID <pid>), a port forwarder, not the node
+
+**Cause:** The target URL is a local port that an SSH tunnel or another forwarder serves. Sampling it would measure the forwarder, so PolkaMeter does not.
+
+**Fix:** Run PolkaMeter on the node's machine to record its CPU and memory. The load test itself works through the tunnel.
+
+### blocks: RPC connection lost (...); reconnected after <seconds> s, nothing observed meanwhile
+
+**Cause:** A WebSocket connection to the node dropped, for example through a proxy idle timeout, and PolkaMeter opened it again. The run went on. The "monitors recorded everything" check warns, and smoke mode exits `1`.
+
+**Fix:** If it happens often, check the proxy or load balancer between PolkaMeter and the node. Raise its idle timeout above the run's length.
+
 ## Remote runs
 
 ### remote agent does not support --fail-on-verdict; update the agent
