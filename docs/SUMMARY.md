@@ -9,6 +9,7 @@
 
 # How-to guides
 
+- [Install](install.md)
 - [Run a load test](load-test.md)
 - [Read the results](reading-results.md)
 - [Run PolkaMeter in CI](ci.md)
@@ -19,6 +20,7 @@
 
 - [Plan](plans.md)
 - [CLI](cli.md)
+- [Release assets](release-assets.md)
 - [Run directory](results.md)
 - [Plugins and SDK](plugins.md)
 
