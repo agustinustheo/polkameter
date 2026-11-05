@@ -72,7 +72,7 @@ fn polkameter(directory: &Path) -> Command {
 	let mut command = Command::new(env!("CARGO_BIN_EXE_polkameter"));
 	command
 		.env("POLKAMETER_PLUGIN_REGISTRY", directory.join("plugins.json"))
-		.env("POLKAMETER_AGENT_TOKEN", "run-failure-token");
+		.env("POLKAMETER_AGENT_TOKEN", "run-failure-token-0123456789abcdef");
 	command
 }
 

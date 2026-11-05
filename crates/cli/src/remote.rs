@@ -2,17 +2,44 @@
 //! the desktop app use to drive it. The client sends plan XML; the agent resolves plugins and
 //! credentials on its own host.
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{
+	net::{IpAddr, SocketAddr},
+	sync::{
+		Arc,
+		atomic::{AtomicBool, Ordering},
+	},
+	time::Duration,
+};
 
 use axum::{
 	Json, Router,
-	extract::{Path, Request, State},
+	extract::{Path, Query, Request, State},
 	http::{StatusCode, header::AUTHORIZATION},
 	middleware::{self, Next},
 	response::{IntoResponse, Response},
 	routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
+use tokio::time::Instant;
+
+use crate::shutdown::{FORCE_LIMIT, Signal, Signals};
+
+/// Shortest bearer token the agent accepts, in characters.
+pub const MIN_TOKEN_CHARS: usize = 32;
+/// How long the client waits to connect to the agent.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long one request to the agent may take, including its response body.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long an inspect or preflight request may take.
+pub const CHECK_TIMEOUT: Duration = Duration::from_secs(600);
+/// How long a status poll may keep failing before the client gives up on the run.
+pub const RETRY_BUDGET: Duration = Duration::from_secs(60);
+/// Longest wait between two retries of a failed status poll.
+const MAX_RETRY_DELAY: Duration = Duration::from_secs(5);
+/// Time between status polls of a running remote run.
+const POLL_INTERVAL: Duration = Duration::from_millis(300);
+/// How long a stopping agent keeps serving after its run ended, until a client reads the outcome.
+const OUTCOME_DRAIN: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -23,15 +50,43 @@ pub struct RemoteRunnerTarget {
 
 impl RemoteRunnerTarget {
 	pub fn validate(&self) -> Result<(), String> {
-		let endpoint = self.endpoint.trim_end_matches('/');
 		if self.bearer_token.trim().is_empty() {
 			return Err("remote runner bearer token must not be empty".into());
 		}
-		if endpoint.starts_with("https://") || is_loopback_http(endpoint) {
-			return Ok(());
+		self.base_url().map(|_| ())
+	}
+
+	/// The endpoint, parsed and checked, without a trailing `/`. HTTPS may go to any host. Plain
+	/// HTTP must go to a loopback address (`127.0.0.0/8`, `::1` or `localhost`), as through an
+	/// SSH tunnel. User information, queries and fragments are refused.
+	fn base_url(&self) -> Result<String, String> {
+		let url = reqwest::Url::parse(self.endpoint.trim())
+			.map_err(|error| format!("invalid remote runner endpoint: {error}"))?;
+		if !url.username().is_empty() || url.password().is_some() {
+			return Err("remote runner endpoint must not contain user information (user@ or user:password@)".into());
 		}
-		Err("remote runner endpoint must use https://, or http:// only through a loopback SSH tunnel"
-			.into())
+		if url.query().is_some() || url.fragment().is_some() {
+			return Err("remote runner endpoint must not contain a query or fragment".into());
+		}
+		let host = url.host_str().unwrap_or_default();
+		let allowed = match url.scheme() {
+			"https" => !host.is_empty(),
+			"http" => is_loopback_host(host),
+			_ => false,
+		};
+		if !allowed {
+			return Err("remote runner endpoint must use https://, or http:// only through a loopback SSH tunnel".into());
+		}
+		Ok(url.as_str().trim_end_matches('/').to_owned())
+	}
+}
+
+/// Whether a parsed URL host names this machine. IPv6 hosts arrive in brackets.
+fn is_loopback_host(host: &str) -> bool {
+	let address = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host);
+	match address.parse::<IpAddr>() {
+		Ok(ip) => ip.is_loopback(),
+		Err(_) => host.eq_ignore_ascii_case("localhost"),
 	}
 }
 
@@ -40,11 +95,35 @@ struct AgentState {
 	bearer_token: String,
 	output_root: String,
 	plugins: Arc<crate::plugin_application::State>,
+	shutting_down: Arc<AtomicBool>,
+	/// Notified when a stopping agent serves a finished run's status.
+	delivered: Arc<tokio::sync::Notify>,
 }
 
-pub async fn serve(bind: &str, bearer_token: String, output_root: String) -> Result<(), String> {
-	if bearer_token.trim().is_empty() {
-		return Err("agent bearer token must not be empty".into());
+/// Settings of `agent serve` beyond its address and token.
+#[derive(Clone, Debug)]
+pub struct AgentSettings {
+	/// Where run directories go.
+	pub output_root: String,
+	/// Keep at most this many run directories; `None` keeps them all.
+	pub keep_runs: Option<usize>,
+	/// How long an active run may take to stop after the first signal.
+	pub grace: Duration,
+}
+
+/// Serves the agent until a stop signal. The first signal stops the active run, which still
+/// runs its teardown within `grace`; a second signal or the end of the grace period interrupts
+/// teardown. New runs are refused meanwhile. Returns the first signal.
+pub async fn serve(
+	bind: &str,
+	bearer_token: String,
+	settings: AgentSettings,
+	signals: &mut Signals,
+) -> Result<Signal, String> {
+	if bearer_token.trim().chars().count() < MIN_TOKEN_CHARS {
+		return Err(format!(
+			"agent bearer token must have at least {MIN_TOKEN_CHARS} characters; generate one with `openssl rand -hex 32`"
+		));
 	}
 	let address = bind
 		.parse::<SocketAddr>()
@@ -54,11 +133,90 @@ pub async fn serve(bind: &str, bearer_token: String, output_root: String) -> Res
 			"agent binds only to a loopback address; use an SSH tunnel or TLS terminator".into()
 		);
 	}
+	if settings.keep_runs == Some(0) {
+		return Err("--keep-runs must be at least 1".into());
+	}
+	let plugins = Arc::new(crate::plugin_application::State {
+		keep_runs: settings.keep_runs,
+		..Default::default()
+	});
 	let state = AgentState {
 		bearer_token,
-		output_root,
-		plugins: Arc::new(crate::plugin_application::State::default()),
+		output_root: settings.output_root,
+		plugins: plugins.clone(),
+		shutting_down: Arc::new(AtomicBool::new(false)),
+		delivered: Arc::default(),
 	};
+	let shutting_down = state.shutting_down.clone();
+	let delivered = state.delivered.clone();
+	let app = router(state);
+	let listener = tokio::net::TcpListener::bind(address)
+		.await
+		.map_err(|error| format!("could not bind remote agent: {error}"))?;
+	let (close, closed) = tokio::sync::oneshot::channel::<()>();
+	let mut server = tokio::spawn(async move {
+		axum::serve(listener, app)
+			.with_graceful_shutdown(async {
+				let _ = closed.await;
+			})
+			.await
+	});
+	let first = tokio::select! {
+		result = &mut server => {
+			return Err(match result {
+				Ok(Ok(())) => "remote agent stopped".into(),
+				Ok(Err(error)) => format!("remote agent stopped: {error}"),
+				Err(error) => format!("remote agent stopped: {error}"),
+			});
+		},
+		signal = signals.recv() => signal,
+	};
+	shutting_down.store(true, Ordering::SeqCst);
+	let active = plugins.status.lock().await.state == "running";
+	if active {
+		eprintln!(
+			"Polkameter: received {}; stopping the active run (teardown has up to {} s; send the signal again to stop now)",
+			first.name(),
+			settings.grace.as_secs()
+		);
+	} else {
+		eprintln!("Polkameter: received {}; shutting down", first.name());
+	}
+	// Keep serving while the run stops, so its client can still read the outcome.
+	let stop = plugins.cancel.lock().await.clone();
+	let supervised = crate::shutdown::supervise(
+		crate::plugin_application::finished(&plugins),
+		signals,
+		settings.grace,
+		Some(first),
+		|signal| {
+			if let Some(stop) = &stop {
+				stop.request(signal.exit_code());
+			}
+		},
+		|signal| {
+			eprintln!("Polkameter: stopping now; teardown is interrupted");
+			if let Some(stop) = &stop {
+				stop.force(signal.exit_code());
+			}
+		},
+	)
+	.await;
+	if supervised.result.is_none() {
+		eprintln!(
+			"Polkameter: the run did not record its outcome within {} s of a forced stop",
+			FORCE_LIMIT.as_secs()
+		);
+	} else if active {
+		// Give the run's client a moment to read the outcome before the agent goes away.
+		let _ = tokio::time::timeout(OUTCOME_DRAIN, delivered.notified()).await;
+	}
+	let _ = close.send(());
+	let _ = tokio::time::timeout(Duration::from_secs(5), server).await;
+	Ok(first)
+}
+
+fn router(state: AgentState) -> Router {
 	let protected = Router::new()
 		.route("/plugins", get(plugin_capabilities))
 		.route("/preflight", post(plugin_preflight_handler))
@@ -68,31 +226,32 @@ pub async fn serve(bind: &str, bearer_token: String, output_root: String) -> Res
 		.route("/runs/{id}/junit", get(plugin_junit_handler))
 		.route("/runs/{id}/stop", post(plugin_stop_handler))
 		.route_layer(middleware::from_fn_with_state(state.clone(), require_bearer));
-	let app = Router::new()
+	Router::new()
 		.route("/health", get(|| async { Json(serde_json::json!({"status":"ok"})) }))
 		.merge(protected)
-		.with_state(state);
-	let listener = tokio::net::TcpListener::bind(address)
-		.await
-		.map_err(|error| format!("could not bind remote agent: {error}"))?;
-	axum::serve(listener, app)
-		.await
-		.map_err(|error| format!("remote agent stopped: {error}"))
+		.with_state(state)
 }
 
 async fn decode_response<T: for<'de> Deserialize<'de>>(
 	response: reqwest::Response,
-) -> Result<T, String> {
+) -> Result<T, RequestError> {
 	let status = response.status();
-	let body = response
-		.text()
-		.await
-		.map_err(|error| format!("could not read remote runner response: {error}"))?;
+	let body = response.text().await.map_err(|error| RequestError {
+		message: format!("could not read remote runner response: {error}"),
+		retryable: true,
+	})?;
 	if !status.is_success() {
-		return Err(format!("remote runner returned {status}: {body}"));
+		return Err(RequestError {
+			message: format!("remote runner returned {status}: {body}"),
+			retryable: status.is_server_error()
+				|| status == reqwest::StatusCode::REQUEST_TIMEOUT
+				|| status == reqwest::StatusCode::TOO_MANY_REQUESTS,
+		});
 	}
-	serde_json::from_str(&body)
-		.map_err(|error| format!("could not decode remote runner response: {error}"))
+	serde_json::from_str(&body).map_err(|error| RequestError {
+		message: format!("could not decode remote runner response: {error}"),
+		retryable: false,
+	})
 }
 
 type AgentResult<T> = Result<T, (StatusCode, String)>;
@@ -130,12 +289,6 @@ fn is_safe_run_id(value: &str) -> bool {
 		})
 }
 
-fn is_loopback_http(endpoint: &str) -> bool {
-	endpoint.starts_with("http://127.0.0.1:")
-		|| endpoint.starts_with("http://localhost:")
-		|| endpoint.starts_with("http://[::1]:")
-}
-
 #[derive(Deserialize, Serialize)]
 pub struct PluginRequest {
 	pub xml: String,
@@ -168,6 +321,9 @@ async fn plugin_start_handler(
 	State(state): State<AgentState>,
 	Json(request): Json<PluginRequest>,
 ) -> AgentResult<Json<crate::plugin_application::Status>> {
+	if state.shutting_down.load(Ordering::SeqCst) {
+		return Err((StatusCode::SERVICE_UNAVAILABLE, "the agent is shutting down".into()));
+	}
 	crate::plugin_application::start_with_options(
 		request.xml,
 		state.output_root,
@@ -183,10 +339,13 @@ async fn plugin_status_handler(
 	Path(id): Path<String>,
 	State(state): State<AgentState>,
 ) -> AgentResult<Json<crate::plugin_application::Status>> {
-	crate::plugin_application::status(&state.plugins, &id)
+	let status = crate::plugin_application::status(&state.plugins, &id)
 		.await
-		.map(Json)
-		.map_err(bad_request)
+		.map_err(bad_request)?;
+	if state.shutting_down.load(Ordering::SeqCst) && status.state != "running" {
+		state.delivered.notify_one();
+	}
+	Ok(Json(status))
 }
 // Serve only the fixed report file of a completed run known to this agent.
 async fn plugin_junit_handler(
@@ -202,14 +361,35 @@ async fn plugin_junit_handler(
 		.map_err(bad_request)
 }
 
+/// `POST /runs/{id}/stop?force=true` also interrupts teardown.
+#[derive(Default, Deserialize)]
+struct StopQuery {
+	#[serde(default)]
+	force: bool,
+}
+
 async fn plugin_stop_handler(
 	Path(id): Path<String>,
+	Query(query): Query<StopQuery>,
 	State(state): State<AgentState>,
 ) -> AgentResult<Json<crate::plugin_application::Status>> {
-	crate::plugin_application::stop(&state.plugins, &id)
+	crate::plugin_application::stop_with(&state.plugins, &id, query.force)
 		.await
 		.map(Json)
 		.map_err(bad_request)
+}
+
+/// A failed request to the agent, and whether trying again could succeed.
+#[derive(Debug)]
+struct RequestError {
+	message: String,
+	retryable: bool,
+}
+
+impl From<String> for RequestError {
+	fn from(message: String) -> Self {
+		Self { message, retryable: false }
+	}
 }
 
 /// The client side: each call targets one agent endpoint.
@@ -250,7 +430,16 @@ pub async fn plugin_stop(
 	id: &str,
 	target: &RemoteRunnerTarget,
 ) -> Result<crate::plugin_application::Status, String> {
-	plugin_request(target, reqwest::Method::POST, &run_path(id, "/stop")?, None).await
+	plugin_stop_with(id, target, false).await
+}
+/// Stops a remote run; with `force`, its teardown is interrupted too.
+pub async fn plugin_stop_with(
+	id: &str,
+	target: &RemoteRunnerTarget,
+	force: bool,
+) -> Result<crate::plugin_application::Status, String> {
+	let suffix = if force { "/stop?force=true" } else { "/stop" };
+	plugin_request(target, reqwest::Method::POST, &run_path(id, suffix)?, None).await
 }
 pub async fn plugin_preflight(
 	target: &RemoteRunnerTarget,
@@ -285,27 +474,388 @@ fn run_path(id: &str, suffix: &str) -> Result<String, String> {
 	Ok(format!("/runs/{id}{suffix}"))
 }
 
+/// The shared HTTP client. It never follows redirects, so the bearer token only goes to the
+/// validated endpoint, and every request has connect and total timeouts.
+fn client() -> Result<&'static reqwest::Client, String> {
+	static CLIENT: std::sync::OnceLock<Result<reqwest::Client, String>> =
+		std::sync::OnceLock::new();
+	CLIENT
+		.get_or_init(|| {
+			reqwest::Client::builder()
+				.connect_timeout(CONNECT_TIMEOUT)
+				.redirect(reqwest::redirect::Policy::none())
+				.build()
+				.map_err(|error| format!("could not create the remote runner client: {error}"))
+		})
+		.as_ref()
+		.map_err(Clone::clone)
+}
+
 async fn plugin_request<T: serde::de::DeserializeOwned>(
 	target: &RemoteRunnerTarget,
 	method: reqwest::Method,
 	path: &str,
 	body: Option<PluginRequest>,
 ) -> Result<T, String> {
+	request(target, method, path, body).await.map_err(|error| error.message)
+}
+
+async fn request<T: serde::de::DeserializeOwned>(
+	target: &RemoteRunnerTarget,
+	method: reqwest::Method,
+	path: &str,
+	body: Option<PluginRequest>,
+) -> Result<T, RequestError> {
+	// Inspect and preflight start plugins and run read-only steps, so they get longer.
+	let timeout =
+		if matches!(path, "/inspect" | "/preflight") { CHECK_TIMEOUT } else { REQUEST_TIMEOUT };
+	request_within(target, method, path, body, timeout).await
+}
+
+/// One request to the agent that fails once `timeout` has passed, including the response body.
+async fn request_within<T: serde::de::DeserializeOwned>(
+	target: &RemoteRunnerTarget,
+	method: reqwest::Method,
+	path: &str,
+	body: Option<PluginRequest>,
+	timeout: Duration,
+) -> Result<T, RequestError> {
 	target.validate()?;
-	static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-	let mut request = CLIENT
-		.get_or_init(reqwest::Client::new)
-		.request(method, format!("{}{path}", target.endpoint.trim_end_matches('/')))
-		.bearer_auth(&target.bearer_token);
+	let base = target.base_url()?;
+	let mut request = client()?
+		.request(method, format!("{base}{path}"))
+		.bearer_auth(&target.bearer_token)
+		.timeout(timeout);
 	if let Some(body) = body {
 		request = request.json(&body);
 	}
-	decode_response(request.send().await.map_err(|error| error.to_string())?).await
+	let response = request.send().await.map_err(|error| RequestError {
+		message: if error.is_timeout() {
+			format!("remote runner request timed out: {}", with_causes(&error))
+		} else {
+			format!("remote runner request failed: {}", with_causes(&error))
+		},
+		// The request may not have arrived; status polls and stops are safe to repeat.
+		retryable: true,
+	})?;
+	decode_response(response).await
+}
+
+/// An error and its causes, such as `connection refused`, on one line.
+fn with_causes(error: &dyn std::error::Error) -> String {
+	let mut text = error.to_string();
+	let mut cause = error.source();
+	while let Some(error) = cause {
+		let message = error.to_string();
+		if !text.contains(&message) {
+			text = format!("{text}: {message}");
+		}
+		cause = error.source();
+	}
+	text
+}
+
+/// Limits of a remote run as the client follows it.
+#[derive(Clone, Debug)]
+pub struct Follow {
+	/// After the first signal, how long the agent gets to stop the run before the client forces
+	/// the stop.
+	pub grace: Duration,
+	/// How long the client follows the run at all before it stops the run and gives up.
+	pub deadline: Duration,
+	/// How long status polls may keep failing before the client stops the run and gives up.
+	pub retry_budget: Duration,
+	/// Time between status polls.
+	pub poll_interval: Duration,
+}
+
+impl Follow {
+	/// Limits for a plan with this whole-run deadline and total teardown budget.
+	pub fn for_plan(run: Duration, teardown: Duration, grace: Duration) -> Self {
+		Self {
+			grace,
+			// Startup, report writing and plugin restarts fit in the extra minute.
+			deadline: run + teardown + Duration::from_secs(60),
+			retry_budget: RETRY_BUDGET,
+			poll_interval: POLL_INTERVAL,
+		}
+	}
+}
+
+/// How following a remote run ended.
+#[derive(Debug)]
+pub enum Followed {
+	/// The run ended; its final status, and the first stop signal if one arrived.
+	Ended { status: crate::plugin_application::Status, signal: Option<Signal> },
+	/// A forced stop was sent, but the run did not end within [`FORCE_LIMIT`].
+	Abandoned { id: String, signal: Signal },
+}
+
+/// What woke the follow loop.
+enum Wake<T> {
+	Done(T),
+	Signal(Signal),
+	Grace,
+	ForceLimit,
+}
+
+/// Starts a remote run and follows it to the end.
+///
+/// Status polls that fail are retried with exponential backoff for [`Follow::retry_budget`].
+/// The first signal asks the agent to stop the run and keeps following it; a second signal,
+/// or the end of [`Follow::grace`], asks the agent to interrupt teardown too. Whenever the client
+/// gives up (deadline, retries exhausted, an unrecoverable error), it first asks the agent to
+/// stop the run, so the agent does not stay busy.
+pub async fn follow_run(
+	target: &RemoteRunnerTarget,
+	xml: String,
+	options: crate::engine::execute::RunOptions,
+	signals: &mut Signals,
+	limits: &Follow,
+) -> Result<Followed, String> {
+	let mut first: Option<Signal> = None;
+	let mut forced_at: Option<Instant> = None;
+	let start = plugin_start_with_options(target, xml, options);
+	tokio::pin!(start);
+	// A signal during the start request is kept: the run is stopped once its ID is known.
+	let started = loop {
+		match wake(&mut start, signals, None, forced_at.map(|at| at + FORCE_LIMIT)).await {
+			Wake::Done(started) => break started?,
+			Wake::Signal(signal) if first.is_none() => {
+				first = Some(signal);
+				announce(signal, limits.grace);
+			},
+			Wake::Signal(_) => forced_at = Some(forced_at.unwrap_or_else(Instant::now)),
+			Wake::Grace => {},
+			Wake::ForceLimit => {
+				return Err("stopped before the agent answered the start request; the run may still start on the agent".into());
+			},
+		}
+	};
+	let id = started.id;
+	let path = run_path(&id, "")?;
+	let mut stopper = Stopper { id: &id, target, sent: None };
+	let mut timers = Timers {
+		first,
+		grace_end: first.map(|_| Instant::now() + limits.grace),
+		forced_at,
+		grace: limits.grace,
+	};
+	if forced_at.is_some() {
+		stopper.send(true).await;
+	} else if first.is_some() {
+		stopper.send(false).await;
+	}
+	let deadline = Instant::now() + limits.deadline;
+	let mut failing_since: Option<Instant> = None;
+	let mut delay = limits.poll_interval;
+	loop {
+		let poll =
+			request::<crate::plugin_application::Status>(target, reqwest::Method::GET, &path, None);
+		tokio::pin!(poll);
+		let result = match timers.wake(&mut poll, signals).await {
+			Wake::Done(result) => result,
+			other => {
+				if let Some(followed) = stopper.act(timers.interrupt(other)).await {
+					return Ok(followed);
+				}
+				continue;
+			},
+		};
+		match result {
+			Ok(status) if status.state != "running" => {
+				return Ok(Followed::Ended { status, signal: timers.first });
+			},
+			Ok(_) => {
+				failing_since = None;
+				delay = limits.poll_interval;
+			},
+			Err(error) if !error.retryable => return Err(stopper.give_up(&error.message).await),
+			Err(error) => {
+				let since = *failing_since.get_or_insert_with(Instant::now);
+				if since.elapsed() >= limits.retry_budget {
+					let reason = format!(
+						"status polls kept failing for {} s: {}",
+						limits.retry_budget.as_secs(),
+						error.message
+					);
+					return Err(stopper.give_up(&reason).await);
+				}
+				delay = (delay * 2).min(MAX_RETRY_DELAY);
+				eprintln!(
+					"Polkameter: status poll failed ({}); retrying in {} ms",
+					error.message,
+					delay.as_millis()
+				);
+			},
+		}
+		// A stop that could not be delivered is retried with the next poll.
+		stopper.retry().await;
+		if Instant::now() >= deadline {
+			let reason = format!(
+				"the run did not end within the client's deadline of {} s",
+				limits.deadline.as_secs()
+			);
+			return Err(stopper.give_up(&reason).await);
+		}
+		let pause = tokio::time::sleep(delay);
+		tokio::pin!(pause);
+		let woke = timers.wake(&mut pause, signals).await;
+		if let Some(followed) = stopper.act(timers.interrupt(woke)).await {
+			return Ok(followed);
+		}
+	}
+}
+
+/// What the client does after a signal or a timer.
+enum Interrupt {
+	Stop,
+	Force,
+	GiveUp(Signal),
+}
+
+/// The signal state of a followed run: the first signal, the end of its grace period, and when
+/// the stop was forced.
+struct Timers {
+	first: Option<Signal>,
+	grace_end: Option<Instant>,
+	forced_at: Option<Instant>,
+	grace: Duration,
+}
+
+impl Timers {
+	/// Waits for `work`, the next signal, the end of the grace period or the end of a forced
+	/// stop. Signals are not read once the stop is forced.
+	async fn wake<F: std::future::Future + Unpin>(
+		&self,
+		work: &mut F,
+		signals: &mut Signals,
+	) -> Wake<F::Output> {
+		wake(work, signals, self.grace_end, self.forced_at.map(|at| at + FORCE_LIMIT)).await
+	}
+
+	fn interrupt<T>(&mut self, woke: Wake<T>) -> Option<Interrupt> {
+		match woke {
+			Wake::Done(_) => None,
+			Wake::Signal(signal) => match self.first {
+				None => {
+					self.first = Some(signal);
+					self.grace_end = Some(Instant::now() + self.grace);
+					announce(signal, self.grace);
+					Some(Interrupt::Stop)
+				},
+				Some(_) if self.forced_at.is_none() => {
+					self.forced_at = Some(Instant::now());
+					eprintln!("Polkameter: asking the agent to stop now; teardown is interrupted");
+					Some(Interrupt::Force)
+				},
+				Some(_) => None,
+			},
+			Wake::Grace => {
+				self.forced_at = Some(Instant::now());
+				eprintln!(
+					"Polkameter: the remote run did not stop within {} s; asking the agent to stop now",
+					self.grace.as_secs()
+				);
+				Some(Interrupt::Force)
+			},
+			Wake::ForceLimit => Some(Interrupt::GiveUp(self.first.unwrap_or(Signal::Interrupt))),
+		}
+	}
+}
+
+fn announce(signal: Signal, grace: Duration) {
+	eprintln!(
+		"Polkameter: received {}; asking the agent to stop the run (teardown has up to {} s; send the signal again to stop now)",
+		signal.name(),
+		grace.as_secs()
+	);
+}
+
+/// Waits for `work`, the next signal, the end of the grace period or the end of a forced stop.
+async fn wake<F: std::future::Future + Unpin>(
+	work: &mut F,
+	signals: &mut Signals,
+	grace_end: Option<Instant>,
+	force_end: Option<Instant>,
+) -> Wake<F::Output> {
+	let grace = async {
+		match (grace_end, force_end) {
+			(Some(at), None) => tokio::time::sleep_until(at).await,
+			_ => std::future::pending().await,
+		}
+	};
+	let force = async {
+		match force_end {
+			Some(at) => tokio::time::sleep_until(at).await,
+			None => std::future::pending().await,
+		}
+	};
+	tokio::select! {
+		biased;
+		output = work => Wake::Done(output),
+		signal = signals.recv(), if force_end.is_none() => Wake::Signal(signal),
+		() = grace => Wake::Grace,
+		() = force => Wake::ForceLimit,
+	}
+}
+
+/// Delivers stop requests for one remote run, remembering the strongest one asked for.
+struct Stopper<'a> {
+	id: &'a str,
+	target: &'a RemoteRunnerTarget,
+	/// The stop asked for (`true` when forced), and whether the agent received it.
+	sent: Option<(bool, bool)>,
+}
+
+impl Stopper<'_> {
+	async fn send(&mut self, force: bool) {
+		let force = force || self.sent.is_some_and(|(forced, _)| forced);
+		let delivered = match plugin_stop_with(self.id, self.target, force).await {
+			Ok(_) => true,
+			Err(error) => {
+				eprintln!("Polkameter: could not ask the agent to stop run {}: {error}", self.id);
+				false
+			},
+		};
+		self.sent = Some((force, delivered));
+	}
+
+	/// Sends the stop an interrupt asks for, or ends following the run.
+	async fn act(&mut self, interrupt: Option<Interrupt>) -> Option<Followed> {
+		match interrupt? {
+			Interrupt::Stop => self.send(false).await,
+			Interrupt::Force => self.send(true).await,
+			Interrupt::GiveUp(signal) => {
+				return Some(Followed::Abandoned { id: self.id.to_owned(), signal });
+			},
+		}
+		None
+	}
+
+	async fn retry(&mut self) {
+		if let Some((force, false)) = self.sent {
+			self.send(force).await;
+		}
+	}
+
+	/// Asks the agent to stop the run before the client gives up, and says whether it could.
+	async fn give_up(&mut self, reason: &str) -> String {
+		match plugin_stop_with(self.id, self.target, false).await {
+			Ok(_) => format!("{reason}; asked the agent to stop run {}", self.id),
+			Err(error) => {
+				format!("{reason}; could not ask the agent to stop run {}: {error}", self.id)
+			},
+		}
+	}
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::plugin_application::Status;
+	use std::sync::{Mutex, atomic::AtomicUsize};
+	use tokio::sync::Notify;
 
 	#[test]
 	fn remote_run_options_default_for_older_clients_and_round_trip() {
@@ -345,31 +895,415 @@ mod tests {
 		server.abort();
 	}
 
+	fn target(endpoint: &str) -> RemoteRunnerTarget {
+		RemoteRunnerTarget { endpoint: endpoint.into(), bearer_token: "token".into() }
+	}
+
 	#[test]
 	fn remote_targets_require_tls_or_a_loopback_tunnel() {
-		assert!(
-			RemoteRunnerTarget {
-				endpoint: "http://127.0.0.1:9901".into(),
-				bearer_token: "token".into(),
-			}
-			.validate()
-			.is_ok()
+		for endpoint in [
+			"http://127.0.0.1:9901",
+			"http://127.0.0.2:9901/",
+			"http://localhost:9901",
+			"http://LOCALHOST",
+			"http://[::1]:9901",
+			"https://runner.example",
+			"https://runner.example:8443/agent/",
+		] {
+			assert!(target(endpoint).validate().is_ok(), "{endpoint} was refused");
+		}
+		for endpoint in [
+			"http://runner.example",
+			"http://127.0.0.1.nip.io:9901",
+			"http://localhost.runner.example:9901",
+			"http://[::2]:9901",
+			"ftp://127.0.0.1:9901",
+			"127.0.0.1:9901",
+			"http://127.0.0.1:9901/?next=x",
+			"http://127.0.0.1:9901/#x",
+			"",
+		] {
+			assert!(target(endpoint).validate().is_err(), "{endpoint} was accepted");
+		}
+		assert_eq!(
+			target("https://runner.example:8443/agent/").base_url().unwrap(),
+			"https://runner.example:8443/agent"
 		);
-		assert!(
-			RemoteRunnerTarget {
-				endpoint: "https://runner.example".into(),
-				bearer_token: "token".into(),
+		assert_eq!(target("http://127.1:9901").base_url().unwrap(), "http://127.0.0.1:9901");
+	}
+
+	#[test]
+	fn user_information_cannot_hide_the_real_host() {
+		for endpoint in [
+			"http://127.0.0.1:9901@example.invalid:9901",
+			"http://localhost:80@evil.example:80",
+			"http://127.0.0.1:1@192.168.1.10:8766",
+			"https://user:password@runner.example",
+			"https://user@runner.example",
+		] {
+			assert_eq!(
+				target(endpoint).validate().unwrap_err(),
+				"remote runner endpoint must not contain user information (user@ or user:password@)",
+				"{endpoint}"
+			);
+		}
+	}
+
+	async fn serve_on_loopback(app: Router) -> (String, tokio::task::JoinHandle<()>) {
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let endpoint = format!("http://{}", listener.local_addr().unwrap());
+		let server = tokio::spawn(async move {
+			axum::serve(listener, app).await.unwrap();
+		});
+		(endpoint, server)
+	}
+
+	#[tokio::test]
+	async fn redirects_are_not_followed_so_the_token_stays_with_the_endpoint() {
+		let other_hits = Arc::new(AtomicUsize::new(0));
+		let hits = other_hits.clone();
+		let (other, other_server) = serve_on_loopback(Router::new().fallback(move || {
+			hits.fetch_add(1, Ordering::SeqCst);
+			async { Json(serde_json::json!({"id":"x","state":"completed"})) }
+		}))
+		.await;
+		let location = format!("{other}/runs/run-1");
+		let (endpoint, server) = serve_on_loopback(Router::new().fallback(move || {
+			let location = location.clone();
+			async move {
+				(StatusCode::TEMPORARY_REDIRECT, [(axum::http::header::LOCATION, location)], "")
 			}
-			.validate()
-			.is_ok()
-		);
+		}))
+		.await;
+		let error = plugin_status("run-1", &target(&endpoint)).await.unwrap_err();
+		assert!(error.starts_with("remote runner returned 307 Temporary Redirect"), "{error}");
+		assert_eq!(other_hits.load(Ordering::SeqCst), 0);
+		server.abort();
+		other_server.abort();
+	}
+
+	/// What the mock agent answers to the n-th status poll.
+	#[derive(Clone, Copy, Debug)]
+	enum Poll {
+		Fail(u16),
+		Running,
+		/// Never answers.
+		Stall,
+		Completed,
+	}
+
+	#[derive(Default)]
+	struct Mock {
+		script: Vec<Poll>,
+		polls: AtomicUsize,
+		/// The stop requests received, as `stop` or `force`.
+		stops: Mutex<Vec<&'static str>>,
+		/// Notified when a poll stalls or a start request arrives.
+		stalled: Notify,
+		started: Notify,
+		/// When set, the start request waits for this.
+		start_gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+		/// Keep answering from the script after a stop.
+		ignore_stops: bool,
+	}
+
+	fn status(state: &str, exit_code: Option<i32>) -> Status {
+		Status {
+			id: "run-1".into(),
+			state: state.into(),
+			outcome: exit_code.map(|exit_code| crate::engine::execute::Outcome {
+				artifact_dir: "/agent/runs/run-1".into(),
+				exit_code,
+				state: if exit_code == 0 {
+					crate::engine::execute::RunState::Completed
+				} else {
+					crate::engine::execute::RunState::Stopped
+				},
+				error: None,
+			}),
+			..Status::default()
+		}
+	}
+
+	async fn mock_agent(mock: Arc<Mock>) -> (String, tokio::task::JoinHandle<()>) {
+		let (start, poll, stop) = (mock.clone(), mock.clone(), mock);
+		let app = Router::new()
+			.route(
+				"/runs",
+				post(move || {
+					let mock = start.clone();
+					async move {
+						mock.started.notify_one();
+						let gate = mock.start_gate.lock().unwrap().take();
+						if let Some(gate) = gate {
+							let _ = gate.await;
+						}
+						Json(status("running", None))
+					}
+				}),
+			)
+			.route(
+				"/runs/{id}",
+				get(move || {
+					let mock = poll.clone();
+					async move {
+						let index = mock.polls.fetch_add(1, Ordering::SeqCst);
+						if !mock.ignore_stops && !mock.stops.lock().unwrap().is_empty() {
+							return Json(status("stopped", Some(130))).into_response();
+						}
+						match mock.script.get(index).or(mock.script.last()).copied() {
+							Some(Poll::Fail(code)) => {
+								(StatusCode::from_u16(code).unwrap(), "agent trouble")
+									.into_response()
+							},
+							Some(Poll::Stall) => {
+								mock.stalled.notify_one();
+								std::future::pending().await
+							},
+							Some(Poll::Completed) => {
+								Json(status("completed", Some(0))).into_response()
+							},
+							Some(Poll::Running) | None => {
+								Json(status("running", None)).into_response()
+							},
+						}
+					}
+				}),
+			)
+			.route(
+				"/runs/{id}/stop",
+				post(move |Query(query): Query<StopQuery>| {
+					let mock = stop.clone();
+					async move {
+						mock.stops.lock().unwrap().push(if query.force { "force" } else { "stop" });
+						Json(status("running", None))
+					}
+				}),
+			);
+		serve_on_loopback(app).await
+	}
+
+	fn limits() -> Follow {
+		Follow {
+			grace: Duration::from_secs(30),
+			deadline: Duration::from_secs(60),
+			retry_budget: Duration::from_secs(30),
+			poll_interval: Duration::from_millis(1),
+		}
+	}
+
+	async fn follow(
+		endpoint: &str,
+		signals: &mut Signals,
+		limits: &Follow,
+	) -> Result<Followed, String> {
+		follow_run(&target(endpoint), "plan".into(), Default::default(), signals, limits).await
+	}
+
+	#[tokio::test]
+	async fn failed_status_polls_are_retried_until_the_run_ends() {
+		let mock = Arc::new(Mock {
+			script: vec![
+				Poll::Fail(503),
+				Poll::Fail(502),
+				Poll::Running,
+				Poll::Fail(500),
+				Poll::Completed,
+			],
+			..Mock::default()
+		});
+		let (endpoint, server) = mock_agent(mock.clone()).await;
+		let (_sender, mut signals) = Signals::channel();
+		let Followed::Ended { status, signal } =
+			follow(&endpoint, &mut signals, &limits()).await.unwrap()
+		else {
+			panic!("the run was abandoned")
+		};
+		assert_eq!((status.state.as_str(), signal), ("completed", None));
+		assert_eq!(mock.polls.load(Ordering::SeqCst), 5);
+		assert!(mock.stops.lock().unwrap().is_empty());
+		server.abort();
+	}
+
+	#[tokio::test]
+	async fn giving_up_on_failed_polls_stops_the_remote_run() {
+		let mock = Arc::new(Mock { script: vec![Poll::Fail(503)], ..Mock::default() });
+		let (endpoint, server) = mock_agent(mock.clone()).await;
+		let (_sender, mut signals) = Signals::channel();
+		let limits = Follow { retry_budget: Duration::ZERO, ..limits() };
+		let error = follow(&endpoint, &mut signals, &limits).await.unwrap_err();
 		assert!(
-			RemoteRunnerTarget {
-				endpoint: "http://runner.example".into(),
-				bearer_token: "token".into(),
-			}
-			.validate()
-			.is_err()
+			error.starts_with("status polls kept failing for 0 s: remote runner returned 503"),
+			"{error}"
 		);
+		assert!(error.ends_with("; asked the agent to stop run run-1"), "{error}");
+		assert_eq!(*mock.stops.lock().unwrap(), ["stop"]);
+		server.abort();
+	}
+
+	#[tokio::test]
+	async fn an_unrecoverable_poll_error_stops_the_remote_run_at_once() {
+		let mock = Arc::new(Mock { script: vec![Poll::Fail(400)], ..Mock::default() });
+		let (endpoint, server) = mock_agent(mock.clone()).await;
+		let (_sender, mut signals) = Signals::channel();
+		let error = follow(&endpoint, &mut signals, &limits()).await.unwrap_err();
+		assert_eq!(
+			error,
+			"remote runner returned 400 Bad Request: agent trouble; asked the agent to stop run run-1"
+		);
+		assert_eq!(mock.polls.load(Ordering::SeqCst), 1);
+		assert_eq!(*mock.stops.lock().unwrap(), ["stop"]);
+		server.abort();
+	}
+
+	#[tokio::test]
+	async fn the_client_deadline_stops_the_remote_run() {
+		let mock = Arc::new(Mock { script: vec![Poll::Running], ..Mock::default() });
+		let (endpoint, server) = mock_agent(mock.clone()).await;
+		let (_sender, mut signals) = Signals::channel();
+		let limits = Follow { deadline: Duration::ZERO, ..limits() };
+		let error = follow(&endpoint, &mut signals, &limits).await.unwrap_err();
+		assert_eq!(
+			error,
+			"the run did not end within the client's deadline of 0 s; asked the agent to stop run run-1"
+		);
+		assert_eq!(*mock.stops.lock().unwrap(), ["stop"]);
+		server.abort();
+	}
+
+	#[tokio::test]
+	async fn a_signal_during_a_stalled_poll_stops_the_remote_run() {
+		let mock = Arc::new(Mock { script: vec![Poll::Running, Poll::Stall], ..Mock::default() });
+		let (endpoint, server) = mock_agent(mock.clone()).await;
+		let (sender, mut signals) = Signals::channel();
+		let stalled = mock.clone();
+		tokio::spawn(async move {
+			stalled.stalled.notified().await;
+			sender.send(Signal::Terminate).unwrap();
+		});
+		let Followed::Ended { status, signal } =
+			follow(&endpoint, &mut signals, &limits()).await.unwrap()
+		else {
+			panic!("the run was abandoned")
+		};
+		assert_eq!((status.state.as_str(), signal), ("stopped", Some(Signal::Terminate)));
+		assert_eq!(*mock.stops.lock().unwrap(), ["stop"]);
+		server.abort();
+	}
+
+	#[tokio::test]
+	async fn a_signal_during_the_start_request_stops_the_run_once_it_has_an_id() {
+		let (release, gate) = tokio::sync::oneshot::channel();
+		let mock = Arc::new(Mock {
+			script: vec![Poll::Running],
+			start_gate: Mutex::new(Some(gate)),
+			..Mock::default()
+		});
+		let (endpoint, server) = mock_agent(mock.clone()).await;
+		let (sender, mut signals) = Signals::channel();
+		let started = mock.clone();
+		tokio::spawn(async move {
+			started.started.notified().await;
+			sender.send(Signal::Interrupt).unwrap();
+			// The client has the signal before the agent answers.
+			tokio::task::yield_now().await;
+			let _ = release.send(());
+			// Keep the channel open, as the operating system does.
+			std::future::pending::<()>().await;
+		});
+		let Followed::Ended { status, signal } =
+			follow(&endpoint, &mut signals, &limits()).await.unwrap()
+		else {
+			panic!("the run was abandoned")
+		};
+		assert_eq!((status.state.as_str(), signal), ("stopped", Some(Signal::Interrupt)));
+		assert_eq!(*mock.stops.lock().unwrap(), ["stop"]);
+		server.abort();
+	}
+
+	#[tokio::test]
+	async fn a_second_signal_forces_the_remote_stop_and_gives_up_after_the_limit() {
+		// The agent never reports the end of the run.
+		let mock =
+			Arc::new(Mock { script: vec![Poll::Stall], ignore_stops: true, ..Mock::default() });
+		let (endpoint, server) = mock_agent(mock.clone()).await;
+		let (sender, mut signals) = Signals::channel();
+		let stalled = mock.clone();
+		tokio::spawn(async move {
+			stalled.stalled.notified().await;
+			sender.send(Signal::Terminate).unwrap();
+			stalled.stalled.notified().await;
+			sender.send(Signal::Terminate).unwrap();
+			std::future::pending::<()>().await;
+		});
+		let started = Instant::now();
+		let followed = follow(&endpoint, &mut signals, &limits()).await.unwrap();
+		let Followed::Abandoned { id, signal } = followed else { panic!("the run ended") };
+		assert_eq!((id.as_str(), signal), ("run-1", Signal::Terminate));
+		assert_eq!(*mock.stops.lock().unwrap(), ["stop", "force"]);
+		assert!(started.elapsed() >= FORCE_LIMIT);
+		server.abort();
+	}
+
+	#[tokio::test]
+	async fn a_stalled_request_times_out_and_can_be_retried() {
+		let (endpoint, server) = serve_on_loopback(
+			Router::new().fallback(std::future::pending::<Json<serde_json::Value>>),
+		)
+		.await;
+		let started = std::time::Instant::now();
+		let error = request_within::<Status>(
+			&target(&endpoint),
+			reqwest::Method::GET,
+			"/runs/run-1",
+			None,
+			Duration::from_millis(100),
+		)
+		.await
+		.unwrap_err();
+		assert!(error.message.starts_with("remote runner request timed out"), "{error:?}");
+		assert!(error.retryable);
+		assert!(started.elapsed() < Duration::from_secs(10));
+		server.abort();
+	}
+
+	#[tokio::test]
+	async fn the_agent_refuses_short_tokens() {
+		let (_sender, mut signals) = Signals::channel();
+		let settings = AgentSettings {
+			output_root: "unused".into(),
+			keep_runs: None,
+			grace: Duration::from_secs(1),
+		};
+		let error = serve("127.0.0.1:0", "x".repeat(MIN_TOKEN_CHARS - 1), settings, &mut signals)
+			.await
+			.unwrap_err();
+		assert_eq!(
+			error,
+			"agent bearer token must have at least 32 characters; generate one with `openssl rand -hex 32`"
+		);
+	}
+
+	#[tokio::test]
+	async fn a_stopping_agent_refuses_new_runs() {
+		let state = AgentState {
+			bearer_token: "t".repeat(MIN_TOKEN_CHARS),
+			output_root: "unused".into(),
+			plugins: Arc::default(),
+			shutting_down: Arc::new(AtomicBool::new(true)),
+			delivered: Arc::default(),
+		};
+		let (endpoint, server) = serve_on_loopback(router(state)).await;
+		let error = plugin_start(
+			&RemoteRunnerTarget { endpoint, bearer_token: "t".repeat(MIN_TOKEN_CHARS) },
+			"plan".into(),
+		)
+		.await
+		.unwrap_err();
+		assert_eq!(
+			error,
+			"remote runner returned 503 Service Unavailable: the agent is shutting down"
+		);
+		server.abort();
 	}
 }

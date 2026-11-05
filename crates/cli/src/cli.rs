@@ -4,10 +4,11 @@
 use std::{io::Write, path::PathBuf, sync::Arc, time::Duration};
 
 use crate::engine::{
-	execute::{Outcome, RunOptions, RunState},
+	execute::{Outcome, RunOptions, RunState, Stop},
 	plan::Plan,
 	plugins::Registry,
 };
+use crate::shutdown::{self, Signal, Signals};
 use anyhow::Context as _;
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::{Value, json};
@@ -66,6 +67,10 @@ enum Command {
 		/// Environment variable holding the remote-agent bearer token.
 		#[arg(long, requires = "remote")]
 		remote_token_env: Option<String>,
+		/// Seconds a run gets after SIGINT or SIGTERM to finish its teardown and write its
+		/// results. A second signal, or the end of this period, interrupts teardown.
+		#[arg(long, value_name = "SECONDS", default_value_t = 30)]
+		shutdown_grace: u64,
 		#[arg(long, value_enum, default_value_t = OutputFormat::Human)]
 		format: OutputFormat,
 	},
@@ -111,6 +116,14 @@ enum AgentCommand {
 		token_env: String,
 		#[arg(long, default_value = "target/polkameter-agent-runs")]
 		output_root: String,
+		/// Keep only the newest N run directories under --output-root, deleting older ones
+		/// when a run starts. By default every run directory is kept.
+		#[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
+		keep_runs: Option<u64>,
+		/// Seconds the active run gets after SIGINT or SIGTERM to finish its teardown. A second
+		/// signal, or the end of this period, interrupts teardown.
+		#[arg(long, value_name = "SECONDS", default_value_t = 30)]
+		shutdown_grace: u64,
 	},
 }
 
@@ -201,27 +214,32 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 			remote_token_env,
 			fail_on_verdict,
 			junit,
+			shutdown_grace,
 			format,
 		} => {
+			// Before any work, so that no signal can end the process without cleanup.
+			let mut signals = install_signals()?;
+			let grace = Duration::from_secs(shutdown_grace);
 			let (xml, plan) = load(&path)?;
 			let options = RunOptions { fail_on_verdict };
 			match remote {
 				Some(endpoint) => {
-					run_plugin_remote(
-						remote_target(endpoint, remote_token_env)?,
-						xml,
-						format,
-						options,
-						junit,
-					)
-					.await
+					let limits = remote::Follow::for_plan(
+						Duration::from_millis(plan.timeout_ms),
+						teardown_budget(&plan),
+						grace,
+					);
+					let target = remote_target(endpoint, remote_token_env)?;
+					let remote = RemoteRun { target, xml, options, junit, limits };
+					run_plugin_remote(remote, format, &mut signals).await
 				},
 				None => {
 					let output = output.ok_or_else(|| {
 						CliError::Invalid("--output is required without --remote".into())
 					})?;
 					let registry = registry(&plan, credential_env)?;
-					run_local(plan, registry, output, format, options, junit).await
+					let local = LocalRun { plan, registry, output, options, junit, grace };
+					run_local(local, format, &mut signals).await
 				},
 			}
 		},
@@ -230,6 +248,21 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 		},
 		Command::Agent { command } => agent(command).await,
 	}
+}
+
+fn install_signals() -> Result<Signals, CliError> {
+	Signals::install()
+		.map_err(|e| CliError::Runtime(format!("cannot install signal handlers: {e}")))
+}
+
+/// The longest a plan's teardown can take: each step's `timeout-ms`, plus a plugin restart
+/// (`$describe`, up to 10 s) for each step.
+fn teardown_budget(plan: &Plan) -> Duration {
+	plan.teardown
+		.entries
+		.iter()
+		.map(|step| Duration::from_millis(step.timeout_ms) + Duration::from_secs(10))
+		.sum()
 }
 
 /// The plan's XML, which remote runs send as-is, and its parsed form.
@@ -254,15 +287,23 @@ fn registry(plan: &Plan, credential_env: Option<String>) -> Result<Registry, Cli
 	Ok(registry)
 }
 
-async fn run_local(
+/// A local run and where its results go.
+struct LocalRun {
 	plan: Plan,
 	registry: Registry,
 	output: PathBuf,
-	format: OutputFormat,
 	options: RunOptions,
 	junit: Option<PathBuf>,
+	grace: Duration,
+}
+
+async fn run_local(
+	run: LocalRun,
+	format: OutputFormat,
+	signals: &mut Signals,
 ) -> Result<i32, CliError> {
-	let cancel = tokio_util::sync::CancellationToken::new();
+	let LocalRun { plan, registry, output, options, junit, grace } = run;
+	let stop = Stop::default();
 	let sink = Arc::new(move |event: Value| {
 		if format == OutputFormat::Json {
 			write_json_line(&event);
@@ -271,25 +312,34 @@ async fn run_local(
 		}
 	});
 	let secrets = available_secrets(&registry);
-	let work = crate::engine::execute::run_with_options(
-		plan,
-		registry,
-		&output,
-		cancel.clone(),
-		sink,
-		options,
-	);
-	tokio::pin!(work);
-	let result = tokio::select! {
-		// Poll ctrl_c first to register the handler before work can emit step-started.
-		biased;
-		signal = tokio::signal::ctrl_c() => {
-			if signal.is_ok() {
-				cancel.cancel();
-			}
-			work.await
+	let work =
+		crate::engine::execute::run_stoppable(plan, registry, &output, stop.clone(), sink, options);
+	let supervised = shutdown::supervise(
+		work,
+		signals,
+		grace,
+		None,
+		|signal| {
+			eprintln!(
+				"Polkameter: received {}; stopping the run (teardown has up to {} s; send the signal again to stop now)",
+				signal.name(),
+				grace.as_secs()
+			);
+			stop.request(signal.exit_code());
 		},
-		result = &mut work => result,
+		|signal| {
+			eprintln!("Polkameter: stopping now; teardown is interrupted");
+			stop.force(signal.exit_code());
+		},
+	)
+	.await;
+	let Some(result) = supervised.result else {
+		let signal = supervised.signal.unwrap_or(Signal::Interrupt);
+		eprintln!(
+			"Polkameter: the run did not write its outcome within {} s of a forced stop",
+			shutdown::FORCE_LIMIT.as_secs()
+		);
+		return Ok(signal.exit_code());
 	};
 	let outcome = result.map_err(|e| CliError::Runtime(e.to_string()))?;
 	if let Err(error) = copy_junit(&outcome.artifact_dir, junit.as_deref()) {
@@ -464,14 +514,28 @@ fn write_junit_copy(destination: &std::path::Path, xml: &str) -> Result<(), CliE
 
 async fn agent(command: AgentCommand) -> Result<i32, CliError> {
 	match command {
-		AgentCommand::Serve { bind, token_env, output_root } => {
+		AgentCommand::Serve { bind, token_env, output_root, keep_runs, shutdown_grace } => {
+			let mut signals = install_signals()?;
 			let token = std::env::var(&token_env).map_err(|_| {
 				CliError::Invalid(format!(
 					"agent token environment variable {token_env} is not set"
 				))
 			})?;
-			remote::serve(&bind, token, output_root).await.map_err(CliError::Runtime)?;
-			Ok(0)
+			if token.trim().chars().count() < remote::MIN_TOKEN_CHARS {
+				return Err(CliError::Invalid(format!(
+					"agent token in {token_env} must have at least {} characters; generate one with `openssl rand -hex 32`",
+					remote::MIN_TOKEN_CHARS
+				)));
+			}
+			let settings = remote::AgentSettings {
+				output_root,
+				keep_runs: keep_runs.map(|keep| usize::try_from(keep).unwrap_or(usize::MAX)),
+				grace: Duration::from_secs(shutdown_grace),
+			};
+			let signal = remote::serve(&bind, token, settings, &mut signals)
+				.await
+				.map_err(CliError::Runtime)?;
+			Ok(signal.exit_code())
 		},
 	}
 }
@@ -564,48 +628,58 @@ async fn plugin_command(command: PluginCommand) -> Result<i32, CliError> {
 	}
 	Ok(0)
 }
-async fn run_plugin_remote(
+/// A remote run: the agent, the plan, and where a JUnit copy goes.
+struct RemoteRun {
 	target: RemoteRunnerTarget,
 	xml: String,
-	format: OutputFormat,
 	options: RunOptions,
 	junit: Option<PathBuf>,
+	limits: remote::Follow,
+}
+
+async fn run_plugin_remote(
+	run: RemoteRun,
+	format: OutputFormat,
+	signals: &mut Signals,
 ) -> Result<i32, CliError> {
-	let started = remote::plugin_start_with_options(&target, xml, options)
+	let RemoteRun { target, xml, options, junit, limits } = run;
+	let followed = remote::follow_run(&target, xml, options, signals, &limits)
 		.await
 		.map_err(CliError::Runtime)?;
-	let mut interrupt = Box::pin(tokio::signal::ctrl_c());
-	let mut stopped = false;
-	loop {
-		let status =
-			remote::plugin_status(&started.id, &target).await.map_err(CliError::Runtime)?;
-		if status.state != "running" {
-			if let Some(outcome) = status.outcome {
-				if let Some(path) = junit.as_deref() {
-					let result = match remote::plugin_junit(&started.id, &target).await {
-						Ok(xml) => write_junit_copy(path, &xml),
-						Err(error) => {
-							Err(CliError::Runtime(format!("cannot fetch junit.xml: {error}")))
-						},
-					};
-					if let Err(error) = result {
-						junit_warning(
-							format,
-							None,
-							&error.to_string(),
-							std::slice::from_ref(&target.bearer_token),
-						);
-					}
-				}
-				write_artifact_written(format, RunLocation::Remote, &outcome);
-				return Ok(outcome.exit_code);
-			}
-			return Err(CliError::Runtime(
-				status.error.unwrap_or_else(|| "remote run produced no outcome".into()),
-			));
+	let (status, signal) = match followed {
+		remote::Followed::Ended { status, signal } => (status, signal),
+		remote::Followed::Abandoned { id, signal } => {
+			eprintln!(
+				"Polkameter: stopped waiting for remote run {id}; the agent keeps its run directory"
+			);
+			return Ok(signal.exit_code());
+		},
+	};
+	let Some(mut outcome) = status.outcome else {
+		return Err(CliError::Runtime(
+			status.error.unwrap_or_else(|| "remote run produced no outcome".into()),
+		));
+	};
+	if let Some(path) = junit.as_deref() {
+		let result = match remote::plugin_junit(&status.id, &target).await {
+			Ok(xml) => write_junit_copy(path, &xml),
+			Err(error) => Err(CliError::Runtime(format!("cannot fetch junit.xml: {error}"))),
+		};
+		if let Err(error) = result {
+			junit_warning(
+				format,
+				None,
+				&error.to_string(),
+				std::slice::from_ref(&target.bearer_token),
+			);
 		}
-		tokio::select! {result=&mut interrupt,if !stopped=>{result.map_err(|e|CliError::Runtime(e.to_string()))?;remote::plugin_stop(&started.id,&target).await.map_err(CliError::Runtime)?;stopped=true;},_=tokio::time::sleep(Duration::from_millis(300))=>{}}
 	}
+	// The agent records 130 for any stop; this process reports the signal it received.
+	if let (Some(signal), RunState::Stopped) = (signal, outcome.state) {
+		outcome.exit_code = signal.exit_code();
+	}
+	write_artifact_written(format, RunLocation::Remote, &outcome);
+	Ok(outcome.exit_code)
 }
 
 #[cfg(test)]
@@ -763,6 +837,10 @@ mod tests {
 			Cli::try_parse_from(["polkameter", "run", "plan.xml", "--output", "runs"]).unwrap();
 		assert!(matches!(cli.command, Command::Run { fail_on_verdict: false, .. }));
 		assert!(parses(&["agent", "serve"]));
+		assert!(parses(&["agent", "serve", "--keep-runs", "5", "--shutdown-grace", "0"]));
+		assert!(!parses(&["agent", "serve", "--keep-runs", "0"]));
+		assert!(parses(&["run", "plan.xml", "--output", "runs", "--shutdown-grace", "5"]));
+		assert!(!parses(&["run", "plan.xml", "--output", "runs", "--shutdown-grace", "-1"]));
 		assert!(!parses(&["run", "plan.xml"]));
 		assert!(!parses(&["run", "plan.xml", "--output", "runs", "--remote-token-env", "T"]));
 		assert!(parses(&[

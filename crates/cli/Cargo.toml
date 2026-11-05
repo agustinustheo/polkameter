@@ -37,6 +37,7 @@ tokio-util.workspace = true
 
 [dev-dependencies]
 flate2 = "1"
+tokio = { workspace = true, features = ["test-util"] }
 
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/polkameter-{ version }-{ target }.tar.gz"

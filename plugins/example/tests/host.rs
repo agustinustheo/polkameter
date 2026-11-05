@@ -295,3 +295,92 @@ async fn missing_credential_persists_failed_outcome_before_setup() {
 	let events = read_events(&outcome.artifact_dir);
 	assert!(!events.iter().any(|e| e["event"] == "step-started"));
 }
+#[tokio::test]
+async fn an_operation_error_keeps_the_plugin_for_later_steps_and_teardown() {
+	let root = scratch("operation-error");
+	let xml = plugin_plan(
+		"Operation error",
+		r#"<setup><step id="failing" use="example.fail"/></setup>
+    <teardown>
+      <step id="first" use="example.fail-with-message"><input name="message" value="cleanup refused"/></step>
+      <step id="second" use="example.double"><input name="value" value="21"/></step>
+    </teardown>"#,
+	);
+	let outcome = run(&xml, registry().await, &root).await;
+	assert_eq!((outcome.exit_code, outcome.state), (1, RunState::Failed));
+	let error = outcome.error.unwrap();
+	assert!(error.starts_with("plugin operation failed: intentional plugin failure"), "{error}");
+	assert!(error.contains("teardown failed: plugin operation failed: cleanup refused"), "{error}");
+	let events = read_events(&outcome.artifact_dir);
+	// The same process answered every call: nothing was killed or restarted.
+	assert!(!events.iter().any(|e| e["event"] == "plugin-restarted"));
+	assert!(finished(&events, "first").any(|e| e["success"] == false));
+	assert!(finished(&events, "second").any(|e| e["success"] == true));
+}
+#[tokio::test]
+async fn teardown_restarts_a_plugin_that_crashed() {
+	let root = scratch("restart");
+	let xml = plugin_plan(
+		"Restart",
+		r#"<setup><step id="failure" use="example.crash"/></setup>
+    <teardown><step id="cleanup" use="example.double"><input name="value" value="21"/></step></teardown>"#,
+	);
+	let outcome = run(&xml, registry().await, &root).await;
+	assert_eq!(outcome.exit_code, 1);
+	assert_eq!(outcome.error.as_deref(), Some("plugin exited before responding"));
+	let events = read_events(&outcome.artifact_dir);
+	assert_eq!(events.iter().filter(|e| e["event"] == "plugin-restarted").count(), 1, "{events:?}");
+	assert!(finished(&events, "cleanup").any(|e| e["success"] == true));
+}
+#[tokio::test]
+async fn teardown_does_not_restart_a_plugin_whose_file_changed() {
+	let root = scratch("restart-changed");
+	let xml = plugin_plan(
+		"Restart refused",
+		r#"<setup><step id="failure" use="example.crash"/></setup>
+    <teardown><step id="cleanup" use="example.double"><input name="value" value="21"/></step></teardown>"#,
+	);
+	let mut registry = registry().await;
+	// Plugins::start checks the checksum, so change the record only after the run started.
+	let plan = Plan::parse(&xml).unwrap();
+	let installed = registry.plugins.get_mut("example").unwrap();
+	let copy = root.join("copied-plugin");
+	std::fs::copy(&installed.executable, &copy).unwrap();
+	installed.executable = copy.clone();
+	let tamper = copy.clone();
+	let sink = Arc::new(move |event: Value| {
+		if event["event"] == "phase" && event["phase"] == "teardown" {
+			std::fs::write(&tamper, b"#!/bin/sh\nexit 1\n").unwrap();
+		}
+	});
+	let outcome = execute::run(plan, registry, &root, CancellationToken::new(), sink)
+		.await
+		.unwrap();
+	assert_eq!(outcome.exit_code, 1);
+	let events = read_events(&outcome.artifact_dir);
+	assert!(events.iter().any(|e| e["event"] == "warning"
+		&& e["message"].as_str().is_some_and(|m| m.contains("version/checksum mismatch"))));
+	assert!(finished(&events, "cleanup").any(|e| e["success"] == false));
+}
+#[tokio::test]
+async fn teardown_steps_run_under_their_own_timeout() {
+	let root = scratch("teardown-timeout");
+	let xml = plugin_plan(
+		"Teardown deadline",
+		r#"<setup><step id="ok" use="example.double"><input name="value" value="1"/></step></setup>
+    <teardown>
+      <step id="slow" use="example.wait" timeout-ms="50"><input name="milliseconds" value="60000"/></step>
+      <step id="cleanup" use="example.double"><input name="value" value="21"/></step>
+    </teardown>"#,
+	);
+	let started = std::time::Instant::now();
+	let outcome = run(&xml, registry().await, &root).await;
+	assert!(started.elapsed() < std::time::Duration::from_secs(30));
+	assert_eq!(outcome.exit_code, 1);
+	assert_eq!(outcome.error.as_deref(), Some("plugin deadline exceeded"));
+	let events = read_events(&outcome.artifact_dir);
+	assert!(finished(&events, "slow").any(|e| e["success"] == false));
+	// The timed-out call killed the plugin, which was started again for the next step.
+	assert_eq!(events.iter().filter(|e| e["event"] == "plugin-restarted").count(), 1);
+	assert!(finished(&events, "cleanup").any(|e| e["success"] == true));
+}

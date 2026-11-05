@@ -70,7 +70,7 @@ Written after teardown.
 | --- | --- | --- |
 | `completed` | `0` | No error. |
 | `completed_with_failures` | `1` | A `FAIL` verdict with `--fail-on-verdict`, or a smoke-mode monitor problem or required check with no result. |
-| `stopped` | `130` | Ctrl-C, or a remote stop request. |
+| `stopped` | `130` or `143` | `130` after SIGINT (Ctrl-C) or a remote stop request, `143` after SIGTERM. |
 | `failed` | `1` | Any error, including a failed `core.assert-equal` step and a report that could not be written. |
 
 ## junit.xml
@@ -308,6 +308,8 @@ Each event has a `timestamp` in milliseconds and `version` `2`. Credentials are 
 | `step-progress` | `step`, `elapsedMs` | Every 5 seconds while a step runs. |
 | `step-finished` | `step`, `elapsedMs`, `success`, `error`, `user`, `iteration` | A step ends. |
 | `cleanup-failed` | `error` | A teardown step failed. |
+| `plugin-restarted` | `plugin` | A plugin that crashed, timed out or was stopped was started again for a teardown step. |
+| `warning` | `message` | Something did not stop the run, such as a plugin that could not be restarted or a JUnit file that could not be written. |
 | `completed` | `outcome` | The run ended, with the same outcome as `execution.json`. |
 
 `--format json` adds `artifact-written`, `report` and `validation` lines, which are not written to `events.jsonl`.

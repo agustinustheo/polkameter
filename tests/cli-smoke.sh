@@ -45,7 +45,7 @@ xmllint --nonet --noout --schema tests/schemas/junit.xsd "$work/recorded/junit.x
 [ "$(jq -r '.verdict.result // empty' "$work/recorded/summary.json")" = FAIL ]
 
 port=$((20000 + RANDOM % 20000))
-export POLKAMETER_AGENT_TOKEN=smoke-token
+export POLKAMETER_AGENT_TOKEN=smoke-token-0123456789abcdef0123456789
 "$cli" agent serve --bind "127.0.0.1:$port" --output-root "$work/remote" > "$work/agent.log" 2>&1 &
 agent=$!
 for _ in $(seq 1 50); do
