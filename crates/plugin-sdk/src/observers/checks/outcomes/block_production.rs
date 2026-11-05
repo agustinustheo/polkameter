@@ -8,6 +8,7 @@ use crate::observers::checks::{
 	data::{
 		COLLATOR, CounterReset, END_REASON, Label, RunData, count_above, quantile, reasons_text,
 	},
+	outcomes::{coverage, long_enough},
 };
 
 const BUILD_TIME: &str = "substrate_proposer_block_constructed";
@@ -31,11 +32,21 @@ fn why_blocks_end(d: &RunData) -> Result<Verdict, CounterReset> {
 	if !d.has(END_REASON, &[]) {
 		return Ok(Verdict::new(Status::NoResult, "no collator metrics"));
 	}
-	let windows = d
-		.load_windows()
+	let load = d.load_windows();
+	let failed_scrapes = match coverage(d, END_REASON, &[COLLATOR], &load) {
+		Ok(note) => note,
+		Err(no_result) => return Ok(no_result),
+	};
+	let windows = load
 		.into_iter()
 		.map(|w| Ok(Reasons { reasons: d.end_reasons(&w)?, window: w.label }))
 		.collect::<Result<Vec<_>, _>>()?;
+	if windows.iter().all(|w| w.reasons.is_empty()) {
+		return Ok(Verdict::new(
+			Status::NoResult,
+			format!("the collator recorded no block in any step or in recovery{failed_scrapes}"),
+		));
+	}
 	let full: Vec<_> = windows
 		.iter()
 		.filter(|s| {
@@ -45,10 +56,10 @@ fn why_blocks_end(d: &RunData) -> Result<Verdict, CounterReset> {
 		})
 		.collect();
 	let detail = if full.is_empty() {
-		"no block ended full".to_owned()
+		format!("no block ended full{failed_scrapes}")
 	} else {
 		format!(
-			"blocks end full in {}",
+			"blocks end full in {}{failed_scrapes}",
 			full.iter()
 				.map(|s| format!("{} ({})", s.window, text(&s.reasons)))
 				.collect::<Vec<_>>()
@@ -69,20 +80,42 @@ struct BuildTime {
 
 /// The node's buckets jump from 1 s to 2.5 s, so only a build over 2.5 s is surely over the 2 s
 /// deadline: over 5% of blocks is a fail, any such block or a p95 of 2.5 s a warning.
+///
+/// Every window needs fresh scrapes at its edges, and one that lasts two block intervals or
+/// more needs a built block: without them the check has no result rather than a pass.
 fn build_time(d: &RunData) -> Result<Verdict, CounterReset> {
-	if !d.has(&format!("{BUILD_TIME}_bucket"), &[]) {
+	let bucket = format!("{BUILD_TIME}_bucket");
+	if !d.has(&bucket, &[]) {
 		return Ok(Verdict::new(Status::NoResult, "no collator metrics"));
 	}
+	let load = d.load_windows();
+	let failed_scrapes = match coverage(d, &bucket, &[COLLATOR], &load) {
+		Ok(note) => note,
+		Err(no_result) => return Ok(no_result),
+	};
 	let mut windows = Vec::new();
-	for w in d.load_windows() {
+	let mut unobserved = Vec::new();
+	for w in load {
 		let b = d.buckets(BUILD_TIME, &[COLLATOR], &w)?;
 		let blocks = b.as_ref().and_then(|b| b.last()).map_or(0.0, |x| x.1);
+		if blocks == 0.0 && long_enough(&w, d.block_interval_s) {
+			unobserved.push(w.label.to_string());
+		}
 		windows.push(BuildTime {
 			window: w.label,
 			blocks,
 			p95_s: quantile(b.as_ref(), 0.95),
 			over: count_above(b.as_ref(), 2.5).unwrap_or(0.0),
 		});
+	}
+	if !unobserved.is_empty() || windows.iter().all(|w| w.blocks == 0.0) {
+		let which =
+			if unobserved.is_empty() { "any window".to_owned() } else { unobserved.join(", ") };
+		return Ok(Verdict::new(
+			Status::NoResult,
+			format!("the collator recorded no built block in {which}{failed_scrapes}"),
+		)
+		.with(serde_json::json!({ "windows": windows })));
 	}
 	let deadline = LIMITS.authoring_deadline_s;
 	let failed = windows.iter().find(|s| s.blocks > 0.0 && s.over / s.blocks > 0.05);
@@ -110,7 +143,8 @@ fn build_time(d: &RunData) -> Result<Verdict, CounterReset> {
 			(Status::Pass, "p95 build time at most 1 s in every step and in recovery".to_owned())
 		},
 	};
-	Ok(Verdict::new(status, detail).with(serde_json::json!({ "windows": windows })))
+	Ok(Verdict::new(status, detail + &failed_scrapes)
+		.with(serde_json::json!({ "windows": windows })))
 }
 
 /// The block production checks.

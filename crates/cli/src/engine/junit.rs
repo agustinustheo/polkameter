@@ -1,5 +1,11 @@
 //! JUnit reports derived only from recorded events, plan structure and load results.
-use std::{collections::BTreeMap, fmt::Write as _, fs, io::Write as _, path::Path};
+use std::{
+	collections::BTreeMap,
+	fmt::Write as _,
+	fs,
+	io::{BufRead as _, BufReader, Write as _},
+	path::Path,
+};
 
 use anyhow::Result;
 use serde_json::Value;
@@ -56,21 +62,23 @@ type Key = (String, Option<u64>, Option<u64>);
 /// Writes `junit.xml`. Run-time callers pass the same secrets used to redact events; offline
 /// callers use available credentials and the already-redacted recorded files. Only recorded
 /// error summaries (including bounded assertion values), not raw inputs/outputs, are exported.
+///
+/// `events.jsonl` is read one line at a time and only what the report needs from each step
+/// event is kept, so a long run's event log is never held in memory.
 pub fn write(directory: &Path, secrets: &[String]) -> Result<()> {
-	let mut events: Vec<Value> = fs::read_to_string(directory.join("events.jsonl"))?
-		.lines()
-		.map(serde_json::from_str)
-		.collect::<std::result::Result<_, _>>()?;
 	let mut plan = read_optional(&directory.join("plan.json"))?;
 	let mut summary = read_optional(&directory.join("summary.json"))?;
 	let mut outcome: Value = serde_json::from_slice(&fs::read(directory.join("execution.json"))?)?;
-	for event in &mut events {
-		redact(event, secrets);
-	}
 	for value in [&mut plan, &mut summary, &mut outcome] {
 		redact(value, secrets);
 	}
-	let suites = suites(&plan, &events, &summary, &outcome);
+	let file = fs::File::open(directory.join("events.jsonl"))?;
+	let events = BufReader::new(file).lines().map(|line| -> Result<Value> {
+		let mut event = serde_json::from_str(&line?)?;
+		redact(&mut event, secrets);
+		Ok(event)
+	});
+	let suites = suites(&plan, events, &summary, &outcome)?;
 	let safe_path = redact_text(&directory.display().to_string(), secrets);
 	let xml = render(&suites, Path::new(&safe_path));
 	fs::write(directory.join("junit.xml"), xml)?;
@@ -97,7 +105,46 @@ fn key(event: &Value) -> Key {
 	(text(event, "step").into(), event["user"].as_u64(), event["iteration"].as_u64())
 }
 
-fn suites(plan: &Value, events: &[Value], summary: &Value, outcome: &Value) -> Vec<Suite> {
+/// What the report keeps of a `step-finished` event.
+struct Finished {
+	success: bool,
+	elapsed_ms: u64,
+	error: Option<String>,
+}
+
+/// When the load measurement started and the last teardown phase began, from phase events.
+#[derive(Default)]
+struct LoadTiming {
+	/// The first `measurement` phase event's timestamp, if there is such an event.
+	start: Option<Option<u64>>,
+	/// The last `teardown` phase event's timestamp, if there is such an event.
+	stop: Option<Option<u64>>,
+}
+
+impl LoadTiming {
+	fn ms(&self) -> u64 {
+		self.start
+			.zip(self.stop)
+			.map_or(0, |(start, stop)| stop.unwrap_or(0).saturating_sub(start.unwrap_or(0)))
+	}
+}
+
+/// The entries of one step's invocations, in key order.
+fn of_step<'a, T>(
+	map: &'a BTreeMap<Key, T>,
+	id: &'a str,
+) -> impl Iterator<Item = (&'a Key, &'a T)> {
+	map.range((id.to_owned(), None, None)..).take_while(move |(key, _)| key.0 == id)
+}
+
+/// Builds the suites from the plan and the recorded events, read once in order. Only a small
+/// record per step invocation is kept, never the events themselves.
+fn suites(
+	plan: &Value,
+	events: impl IntoIterator<Item = Result<Value>>,
+	summary: &Value,
+	outcome: &Value,
+) -> Result<Vec<Suite>> {
 	let mut suites = vec![Suite { name: "plan".into(), cases: vec![] }];
 	let mut owners = BTreeMap::new();
 	for section in ["preflight", "setup", "evaluate", "teardown"] {
@@ -111,20 +158,34 @@ fn suites(plan: &Value, events: &[Value], summary: &Value, outcome: &Value) -> V
 			items(&workflow["step"]),
 		);
 	}
-	let mut started = BTreeMap::new();
-	let mut finished = BTreeMap::new();
+	let mut started: BTreeMap<Key, Option<u64>> = BTreeMap::new();
+	let mut finished: BTreeMap<Key, Finished> = BTreeMap::new();
 	let mut phase = "plan".to_owned();
+	// The timestamp of the last event that is neither `completed` nor `warning`.
+	let mut end = None;
+	let mut timing = LoadTiming::default();
 	for event in events {
-		match text(event, "event") {
+		let event = event?;
+		let name = text(&event, "event");
+		if !matches!(name, "completed" | "warning") {
+			end = Some(event["timestamp"].as_u64());
+		}
+		if event["phase"] == "measurement" && timing.start.is_none() {
+			timing.start = Some(event["timestamp"].as_u64());
+		}
+		if event["phase"] == "teardown" {
+			timing.stop = Some(event["timestamp"].as_u64());
+		}
+		match name {
 			"phase" => {
 				phase = if event["phase"] == "workflow" {
-					format!("workflow:{}", text(event, "id"))
+					format!("workflow:{}", text(&event, "id"))
 				} else {
-					text(event, "phase").into()
+					text(&event, "phase").into()
 				};
 			},
 			"step-started" | "step-finished" => {
-				let key = key(event);
+				let key = key(&event);
 				// Old runs may have no plan.json. Their event phases still identify suites.
 				if !owners.contains_key(&key.0) {
 					let index = suites.iter().position(|s| s.name == phase).unwrap_or_else(|| {
@@ -133,60 +194,60 @@ fn suites(plan: &Value, events: &[Value], summary: &Value, outcome: &Value) -> V
 					});
 					owners.insert(key.0.clone(), index);
 				}
-				if event["event"] == "step-started" {
-					started.insert(key, event);
+				if name == "step-started" {
+					started.insert(key, event["timestamp"].as_u64());
 				} else {
-					finished.insert(key, event);
+					finished.insert(
+						key,
+						Finished {
+							success: event["success"] == true,
+							elapsed_ms: event["elapsedMs"].as_u64().unwrap_or(0),
+							error: event["error"].as_str().map(str::to_owned),
+						},
+					);
 				}
 			},
 			_ => {},
 		}
 	}
-	let end = events
-		.iter()
-		.rev()
-		.find(|e| !matches!(text(e, "event"), "completed" | "warning"))
-		.and_then(|e| e["timestamp"].as_u64())
-		.unwrap_or(0);
+	let end = end.flatten().unwrap_or(0);
 	for (id, index) in owners {
 		let mut cases = Vec::new();
 		let (mut passed, mut passed_ms, mut failures, mut overflow_ms, mut invocations) =
 			(0u64, 0u64, 0usize, 0u64, 0u64);
-		for (key, event) in finished.iter().filter(|(key, _)| key.0 == id) {
+		for (key, event) in of_step(&finished, &id) {
 			invocations += 1;
-			if key.1.is_some() && event["success"] == true {
+			if key.1.is_some() && event.success {
 				passed += 1;
-				passed_ms = passed_ms.saturating_add(event["elapsedMs"].as_u64().unwrap_or(0));
+				passed_ms = passed_ms.saturating_add(event.elapsed_ms);
 				continue;
 			}
-			if event["success"] != true {
+			if !event.success {
 				failures += 1;
 				if failures > FAILURES_PER_STEP {
-					overflow_ms =
-						overflow_ms.saturating_add(event["elapsedMs"].as_u64().unwrap_or(0));
+					overflow_ms = overflow_ms.saturating_add(event.elapsed_ms);
 					continue;
 				}
 			}
 			cases.push(Case {
 				name: case_name(key),
-				ms: event["elapsedMs"].as_u64().unwrap_or(0),
-				status: if event["success"] == true { Status::Passed } else { Status::Failed },
-				message: event["error"].as_str().unwrap_or("Step completed").into(),
+				ms: event.elapsed_ms,
+				status: if event.success { Status::Passed } else { Status::Failed },
+				message: event.error.clone().unwrap_or_else(|| "Step completed".into()),
 			});
 		}
-		for (key, event) in started.iter().filter(|(key, _)| key.0 == id) {
+		for (key, timestamp) in of_step(&started, &id) {
 			if !finished.contains_key(key) {
 				invocations += 1;
 				failures += 1;
 				if failures > FAILURES_PER_STEP {
-					overflow_ms = overflow_ms.saturating_add(
-						end.saturating_sub(event["timestamp"].as_u64().unwrap_or(end)),
-					);
+					overflow_ms =
+						overflow_ms.saturating_add(end.saturating_sub(timestamp.unwrap_or(end)));
 					continue;
 				}
 				cases.push(Case {
 					name: case_name(key),
-					ms: end.saturating_sub(event["timestamp"].as_u64().unwrap_or(end)),
+					ms: end.saturating_sub(timestamp.unwrap_or(end)),
 					status: Status::Failed,
 					message: format!("Step interrupted: {}", text(outcome, "error")),
 				});
@@ -247,12 +308,12 @@ fn suites(plan: &Value, events: &[Value], summary: &Value, outcome: &Value) -> V
 	execution.ms = 0;
 	suites[0].cases.push(execution);
 	if !summary.is_null() || !plan["load"].is_null() {
-		suites.push(load_suite(events, summary));
+		suites.push(load_suite(&timing, summary));
 	}
-	suites
+	Ok(suites)
 }
 
-fn load_suite(events: &[Value], summary: &Value) -> Suite {
+fn load_suite(timing: &LoadTiming, summary: &Value) -> Suite {
 	let mut load = Suite { name: "load test".into(), cases: vec![] };
 	let mut names = BTreeMap::new();
 	for check in items(&summary["checks"]) {
@@ -272,14 +333,7 @@ fn load_suite(events: &[Value], summary: &Value) -> Suite {
 		text(&summary["verdict"], "result"),
 		&format!("Load stop: {}", text(&summary["stop"], "detail")),
 	);
-	let start = events.iter().find(|e| e["phase"] == "measurement");
-	let stop = events.iter().rev().find(|e| e["phase"] == "teardown");
-	verdict.ms = start.zip(stop).map_or(0, |(start, stop)| {
-		stop["timestamp"]
-			.as_u64()
-			.unwrap_or(0)
-			.saturating_sub(start["timestamp"].as_u64().unwrap_or(0))
-	});
+	verdict.ms = timing.ms();
 	load.cases.push(verdict);
 	load
 }
@@ -467,6 +521,40 @@ mod tests {
 	use super::*;
 	use serde_json::json;
 
+	fn ok(events: Vec<Value>) -> impl Iterator<Item = Result<Value>> {
+		events.into_iter().map(Ok)
+	}
+
+	#[test]
+	fn a_bad_event_line_is_an_error_and_writes_no_report() {
+		let dir = std::env::temp_dir().join(format!("polkameter-junit-bad-{}", std::process::id()));
+		fs::create_dir_all(&dir).unwrap();
+		fs::write(dir.join("execution.json"), r#"{"state":"completed"}"#).unwrap();
+		fs::write(
+			dir.join("events.jsonl"),
+			"{\"event\":\"phase\",\"phase\":\"setup\"}\nnot json\n",
+		)
+		.unwrap();
+		assert!(write(&dir, &[]).is_err());
+		assert!(!dir.join("junit.xml").exists());
+		fs::remove_dir_all(&dir).unwrap();
+	}
+
+	#[test]
+	fn measurement_time_spans_the_first_measurement_to_the_last_teardown() {
+		let events = vec![
+			json!({"event":"phase","phase":"measurement","timestamp":100}),
+			json!({"event":"phase","phase":"measurement","timestamp":150}),
+			json!({"event":"phase","phase":"teardown","timestamp":300}),
+			json!({"event":"phase","phase":"teardown","timestamp":400}),
+		];
+		let summary = json!({"verdict":{"result":"PASS"},"stop":{"detail":"rate cap"}});
+		let suites = suites(&Value::Null, ok(events), &summary, &json!({})).unwrap();
+		let verdict = suites.last().unwrap().cases.last().unwrap();
+		assert_eq!(verdict.name, "overall verdict");
+		assert_eq!(verdict.ms, 300);
+	}
+
 	#[test]
 	fn maps_every_check_and_overall_status() {
 		for (status, want) in [
@@ -519,7 +607,8 @@ mod tests {
 			json!({"event":"warning","timestamp":999999}),
 		];
 		let suites =
-			suites(&plan, &events, &Value::Null, &json!({"state":"failed","error":"deadline"}));
+			suites(&plan, ok(events), &Value::Null, &json!({"state":"failed","error":"deadline"}))
+				.unwrap();
 		let cases = &suites[1].cases;
 		let find = |name| cases.iter().find(|c| c.name == name).unwrap();
 		assert_eq!(find("ok").status, Status::Passed);
@@ -543,7 +632,7 @@ mod tests {
 			json!({"event":"step-finished","step":"a","success":true,"user":0,"iteration":0}),
 			json!({"event":"step-finished","step":"a","success":false,"user":1,"iteration":0}),
 		];
-		let suites = suites(&plan, &events, &Value::Null, &json!({"state":"failed"}));
+		let suites = suites(&plan, ok(events), &Value::Null, &json!({"state":"failed"})).unwrap();
 		let cases = &suites[1].cases;
 		assert_eq!(cases.len(), 4);
 		assert_eq!(cases[0].name, "a [user=1, iteration=0]");
@@ -560,7 +649,8 @@ mod tests {
 				"success": !(user == 0 && iteration < 150), "elapsedMs":1,
 				"error":if user == 0 && iteration < 150 { json!(format!("failure {iteration}")) } else { Value::Null }})
 		})).collect();
-		let suites = suites(&plan, &events, &Value::Null, &json!({"state":"completed"}));
+		let suites =
+			suites(&plan, ok(events), &Value::Null, &json!({"state":"completed"})).unwrap();
 		let cases = &suites[1].cases;
 		assert_eq!(cases.len(), FAILURES_PER_STEP + 2);
 		assert_eq!(cases.iter().filter(|c| c.status == Status::Failed).count(), 101);
@@ -609,7 +699,7 @@ mod tests {
 			{"outcome":"pool","check":"same","status":"fail","source":"second"},
 			{"outcome":"pool","check":"same","status":"fail","source":"second"}
 		]});
-		let suite = load_suite(&[], &summary);
+		let suite = load_suite(&LoadTiming::default(), &summary);
 		assert_eq!(suite.cases[0].name, "pool: same [evaluate:first]");
 		assert_eq!(suite.cases[1].name, "pool: same [evaluate:second]");
 		assert_eq!(suite.cases[2].name, "pool: same [evaluate:second] [check=2]");
@@ -628,10 +718,11 @@ mod tests {
 	fn aborted_load_has_a_skipped_verdict_and_failed_execution() {
 		let suites = suites(
 			&json!({"load":{}}),
-			&[],
+			ok(vec![]),
 			&Value::Null,
 			&json!({"state":"failed","error":"node down"}),
-		);
+		)
+		.unwrap();
 		assert_eq!(suites[0].cases[0].status, Status::Failed);
 		assert_eq!(suites[1].cases[0].status, Status::Skipped);
 		assert_eq!(suites[1].cases[0].message, "No result recorded");

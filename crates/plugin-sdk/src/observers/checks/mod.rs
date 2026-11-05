@@ -14,7 +14,9 @@ use crate::observers::files::{registry::Outcome, serde_name};
 use serde::{Deserialize, Serialize};
 
 /// Part of the plugin API (used by out-of-tree plugins).
-pub use data::{CounterReset, Label, Phase, RunData, Window, count_above, quantile};
+pub use data::{
+	CounterReset, Label, MAX_EDGE_LAG_MS, Phase, RunData, Window, count_above, quantile,
+};
 #[doc(hidden)]
 pub use limits::LIMITS;
 #[doc(hidden)]

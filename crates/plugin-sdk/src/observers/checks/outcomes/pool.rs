@@ -5,7 +5,8 @@ use serde::Serialize;
 
 use crate::observers::checks::{
 	Check, LIMITS, Status, Verdict,
-	data::{COLLATOR, CounterReset, END_REASON, Label, Phase, RunData, Window, quantile},
+	data::{COLLATOR, CounterReset, END_REASON, Label, Phase, RunData, Window, add_to, quantile},
+	outcomes::coverage,
 };
 
 /// Our flood txs not yet included or refused, from the load tool's own counters.
@@ -77,9 +78,33 @@ fn burst_drains(d: &RunData) -> Result<Verdict, CounterReset> {
 		String::new()
 	};
 	let ok = r.recovered && r.drained_seconds.is_some() && empty == 0.0;
-	let detail = format!("{back}; backlog {} at the stop, {drained}{stuck}", r.backlog_at_stop);
+	// Empty blocks come from the collator's scrapes: without them at the recovery's edges, a
+	// pass cannot rule out a stuck pool (a failure stands on the load tool's own numbers).
+	let failed_scrapes = if d.has(END_REASON, &[COLLATOR]) {
+		match coverage(d, END_REASON, &[COLLATOR], std::slice::from_ref(&rec)) {
+			Ok(note) => note,
+			Err(no_result) if ok => return Ok(no_result),
+			Err(_) => String::new(),
+		}
+	} else {
+		String::new()
+	};
+	let detail = format!(
+		"{back}; backlog {} at the stop, {drained}{stuck}{failed_scrapes}",
+		r.backlog_at_stop
+	);
 	Ok(Verdict::new(if ok { Status::Pass } else { Status::Fail }, detail)
 		.with(serde_json::json!({ "drainedSeconds": r.drained_seconds })))
+}
+
+/// How the check names a refusal without an error code.
+const NO_CODE: &str = "no code";
+
+/// A refusal `reason` label without an error code. The load tool labels a refusal with its
+/// JSON-RPC error code, and with `0` when the error had none; `no code` and an empty label mean
+/// the same.
+fn uncoded(reason: &str) -> bool {
+	matches!(reason.trim(), "" | "0" | NO_CODE)
 }
 
 fn refusals_clean(d: &RunData) -> Result<Verdict, CounterReset> {
@@ -89,9 +114,11 @@ fn refusals_clean(d: &RunData) -> Result<Verdict, CounterReset> {
 		let filter: Vec<(&str, &str)> =
 			s.labels.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
 		let n = d.increase("polkameter_tx_rejected_total", &filter, &w)?;
-		by_reason.push((s.labels.get("reason").cloned().unwrap_or_default(), n));
+		let reason = s.labels.get("reason").map_or("", String::as_str);
+		let reason = if uncoded(reason) { NO_CODE } else { reason };
+		add_to(&mut by_reason, reason.to_owned(), n);
 	}
-	let no_code = by_reason.iter().filter(|(r, _)| r == "no code").fold(0.0, |a, x| a + x.1);
+	let no_code = by_reason.iter().filter(|(r, _)| r == NO_CODE).fold(0.0, |a, x| a + x.1);
 	let total = by_reason.iter().fold(0.0, |a, x| a + x.1);
 	let hung = d.summary.stop.rule == crate::observers::files::summary::Rule::PoolIntake;
 	let reasons = if by_reason.is_empty() {
@@ -123,12 +150,18 @@ struct PoolWork {
 }
 
 fn pool_work(d: &RunData) -> Result<Verdict, CounterReset> {
-	if !d.has("substrate_sub_txpool_maintain_duration_seconds_bucket", &[COLLATOR]) {
+	let bucket = "substrate_sub_txpool_maintain_duration_seconds_bucket";
+	if !d.has(bucket, &[COLLATOR]) {
 		return Ok(Verdict::new(Status::NoResult, "no collator metrics"));
 	}
+	let load = d.load_windows();
+	let failed_scrapes = match coverage(d, bucket, &[COLLATOR], &load) {
+		Ok(note) => note,
+		Err(no_result) => return Ok(no_result),
+	};
 	let budget = LIMITS.max_maintain_share_of_block * d.block_interval_s;
 	let mut windows = Vec::new();
-	for w in d.load_windows() {
+	for w in load {
 		let scheduled = d
 			.at("substrate_sub_txpool_validations_scheduled", &[COLLATOR], w.end)
 			.unwrap_or(0.0);
@@ -141,6 +174,15 @@ fn pool_work(d: &RunData) -> Result<Verdict, CounterReset> {
 			backlog: scheduled - finished,
 			window: w.label,
 		});
+	}
+	if windows.iter().all(|s| s.maintain_p95_s.is_none()) {
+		return Ok(Verdict::new(
+			Status::NoResult,
+			format!(
+				"the collator recorded no pool maintenance in any step or in recovery{failed_scrapes}"
+			),
+		)
+		.with(serde_json::json!({ "windows": windows })));
 	}
 	let slow = windows.iter().find(|s| s.maintain_p95_s.unwrap_or(0.0) > budget);
 	let backed = windows.iter().find(|s| s.backlog > LIMITS.max_validation_backlog);
@@ -166,7 +208,8 @@ fn pool_work(d: &RunData) -> Result<Verdict, CounterReset> {
 			),
 		),
 	};
-	Ok(Verdict::new(status, detail).with(serde_json::json!({ "windows": windows })))
+	Ok(Verdict::new(status, detail + &failed_scrapes)
+		.with(serde_json::json!({ "windows": windows })))
 }
 
 /// The pool checks.

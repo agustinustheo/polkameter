@@ -250,19 +250,25 @@ Checks run on the recorded series, in this order. A check whose metric the node 
 
 | Outcome: check | Judges | Status |
 | --- | --- | --- |
-| block production: why blocks end | Why each block ended: weight, size, deadline, or no more transactions. | `info` |
-| block production: build time within the authoring deadline | Build time against 2 s. | `warn`: a block over 2.5 s, or p95 at 2.5 s. `fail`: over 5% of blocks above 2.5 s. |
-| pvf: relay slots (level 1) | Slots missed above idle: not built, not backed, timed out. | `fail`: a window misses over one slot above idle. |
-| pvf: no timed-out candidates or disputes | Timed-out candidates; relay disputes. | `fail` if any. |
-| pvf: PVF time on validators (level 2, all parachains) | Validation time. | `warn`: a validation over 2 s, or an invalid result. |
-| pvf: collation funnel | Collations expired after advertisement, fetch or backing; mean backing-to-inclusion time. | `warn`: any expired, or mean over 1.5 relay blocks. |
+| block production: why blocks end | Why each block ended: weight, size, deadline, or no more transactions. | `info`. `no result` if the collator recorded no block at all. |
+| block production: build time within the authoring deadline | Build time against 2 s. | `warn`: a block over 2.5 s, or p95 at 2.5 s. `fail`: over 5% of blocks above 2.5 s. `no result`: no built block in a window of two block intervals or more. |
+| pvf: relay slots (level 1) | Slots missed above idle: not built, not backed, timed out. | `fail`: a window misses over one slot above idle. `no result`: no finalized relay block in the baseline or in a window of 12 s or more, or no slot offered to the parachain. |
+| pvf: no timed-out candidates or disputes | Timed-out candidates; relay disputes. | `fail` if any. `no result`: no finalized relay block in the run. |
+| pvf: PVF time on validators (level 2, all parachains) | Validation time. | `warn`: a validation over 2 s, or an invalid result. `no result`: no PVF execution in a window of 12 s or more. |
+| pvf: collation funnel | Collations expired after advertisement, fetch or backing; mean backing-to-inclusion time. | `warn`: any expired, or mean over 1.5 relay blocks. `no result`: no collation generated. |
 | pool: no silent loss | Accepted transactions in no block, without error. | `fail` if any. `no result` if the pool cannot be listed. |
 | pool: the burst drains | Probes in time, backlog drained, no empty block while over 10 transactions waited. | `fail` unless all three hold. |
-| pool: refusals are clean | Refusals by reason. | `fail`: no code. `warn`: run stopped at pool intake. |
-| pool: pool work leaves time for blocks | Pool maintenance p95; validation backlog. | `fail`: p95 over half the block interval. `warn`: over 1000 waiting for validation. |
+| pool: refusals are clean | Refusals by error code. | `fail`: a refusal without an error code. `warn`: run stopped at pool intake. |
+| pool: pool work leaves time for blocks | Pool maintenance p95; validation backlog. | `fail`: p95 over half the block interval. `warn`: over 1000 waiting for validation. `no result`: no pool maintenance recorded. |
 | run: monitors recorded everything | Monitor problems. | `warn` if any. |
 
-Statuses: `pass` (no problem found), `warn` (a `WARN` verdict unless the verdict is `FAIL`), `fail` (a `FAIL` verdict), `info` (a number to read, not judged), `no result` (data missing, or a node restarted inside the window).
+Statuses: `pass` (no problem found), `warn` (a `WARN` verdict unless the verdict is `FAIL`), `fail` (a `FAIL` verdict), `info` (a number to read, not judged), `no result` (data missing or stale, nothing observed, or a node restarted inside the window).
+
+A check that reads node metrics needs a fresh scrape at both ends of each window it judges: one at most 10 s after the window starts and one at most 10 s after it ends. If a node did not answer in time, the check is `no result` and its detail names the node and the window, for example `stale node metrics: step 1: no scrape of collator Collator-1502 within 10 s after its end`.
+
+If a scrape failed inside a window but both ends are fresh, the check keeps its status and its detail ends with the failures, for example `; failed scrapes: 2 in step 1`. The run check `monitors recorded everything` also warns about them.
+
+A counter that goes down anywhere in a window means the node restarted. The check is `no result`, with a detail such as `a node restarted: substrate_proposer_block_constructed_bucket went down from 100 to 0 in step 0`.
 
 The limits are in `crates/plugin-sdk/src/observers/checks/limits.rs`; they are placeholders until the load target and budgets are agreed. Plugin checks come after the built-in ones and count toward the verdict the same way. An `optional` plugin check with no result does not make the verdict `INCONCLUSIVE`.
 
@@ -285,7 +291,7 @@ One header row, then 13 columns.
 
 | Column | Step rows | Transaction rows (load test) |
 | --- | --- | --- |
-| `timeStamp` | Event time, in milliseconds | `sentAt` |
+| `timeStamp` | Start time: the finish time minus `elapsedMs`, in milliseconds | `sentAt` |
 | `elapsed` | `elapsedMs` of the step | `inclusionMs`, or `replyMs` without inclusion |
 | `label` | `step:<step id>` | `load:step:<step index>` |
 | `responseCode` | `STEP_OK` or `STEP_FAILED` | Transaction status |
@@ -296,6 +302,12 @@ One header row, then 13 columns.
 | `Latency` | `0` | `replyMs` |
 | `Connect` | `0` | `0` |
 | `allThreads`, `grpThreads` | `1` | `1` |
+
+The file follows JMeter's CSV results format. The header names are JMeter's own, so a tool that reads columns by header name finds them. Columns are separated by commas. A value with a comma, a double quote or a line break is put in double quotes, and a double quote inside it is doubled. As in JMeter, `timeStamp` is when a sample started, in milliseconds since the Unix epoch, and `elapsed` is how long it took.
+
+JMeter writes more columns by default, such as `dataType`, `failureMessage`, `URL` and `IdleTime`. `samples.jtl` leaves them out.
+
+If a run was reported by an earlier version, its step rows have the finish time in `timeStamp`. Run `polkameter report` on the run directory to rewrite them.
 
 ## events.jsonl
 
@@ -326,3 +338,9 @@ Each command's exit code, and what sets it, is in the [CLI reference](cli.md#exi
 | With `<load>` | Also the checks, `summary.json` and `summary.md` |
 
 The result comes only from the files, so you can copy a run directory to another machine and report it there.
+
+`polkameter report` rewrites `summary.json` only if its `schemaVersion` is the one this version writes, `1`. If the version is different or missing, it changes no file and exits `2`:
+
+```text
+Polkameter: runs/run-1/summary.json has schemaVersion 2, but polkameter 0.3.0 reads and writes only schemaVersion 1; report it with the polkameter version that recorded the run. Nothing was rewritten
+```

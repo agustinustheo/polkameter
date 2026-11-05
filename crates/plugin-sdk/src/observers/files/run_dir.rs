@@ -45,7 +45,7 @@ impl RunDir {
 	/// Writes `name` as pretty JSON.
 	pub fn write_json(&self, name: &str, value: &impl Serialize) -> Result<(), FileError> {
 		let path = self.path.join(name);
-		let text = serde_json::to_string_pretty(value).expect("our records serialize");
+		let text = serde_json::to_string_pretty(value).map_err(|e| io(&path)(e.into()))?;
 		fs::write(&path, format!("{text}\n")).map_err(io(&path))
 	}
 
@@ -87,9 +87,10 @@ impl JsonlWriter {
 		Ok(Self { path: path.to_owned(), out: BufWriter::new(file) })
 	}
 
-	/// Writes one record.
+	/// Writes one record. A failed write (a full disk, a closed pipe) or a record that cannot
+	/// be serialized is an error, never a panic.
 	pub fn write(&mut self, record: &impl Serialize) -> Result<(), FileError> {
-		serde_json::to_writer(&mut self.out, record).expect("our records serialize");
+		serde_json::to_writer(&mut self.out, record).map_err(|e| io(&self.path)(e.into()))?;
 		self.out.write_all(b"\n").map_err(io(&self.path))
 	}
 
@@ -102,5 +103,50 @@ impl JsonlWriter {
 	/// lost in a drop.
 	pub fn finish(mut self) -> Result<(), FileError> {
 		self.flush()
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn scratch(label: &str) -> PathBuf {
+		let dir =
+			std::env::temp_dir().join(format!("polkameter-run-dir-{label}-{}", std::process::id()));
+		fs::create_dir_all(&dir).unwrap();
+		dir
+	}
+
+	#[test]
+	fn a_failed_write_is_a_file_error_not_a_panic() {
+		let dir = scratch("write");
+		let path = dir.join("read-only.jsonl");
+		fs::write(&path, "").unwrap();
+		// A file opened only for reading refuses every write, as a full disk or closed pipe does.
+		let mut out =
+			JsonlWriter { path: path.clone(), out: BufWriter::new(File::open(&path).unwrap()) };
+		// Larger than the buffer, so serde_json writes through to the file.
+		let record = "x".repeat(64 * 1024);
+		match out.write(&record) {
+			Err(FileError::Io { path: p, .. }) => assert_eq!(p, path.display().to_string()),
+			other => panic!("expected an I/O error, got {other:?}"),
+		}
+		let mut small =
+			JsonlWriter { path: path.clone(), out: BufWriter::new(File::open(&path).unwrap()) };
+		small.write(&1).unwrap();
+		assert!(matches!(small.finish(), Err(FileError::Io { .. })));
+		fs::remove_dir_all(&dir).unwrap();
+	}
+
+	#[test]
+	fn a_record_that_cannot_be_serialized_is_a_file_error() {
+		let dir = scratch("serialize");
+		let run = RunDir::open(&dir);
+		// JSON object keys must be strings.
+		let bad: std::collections::BTreeMap<(u8, u8), u8> = [((1, 2), 3)].into();
+		assert!(matches!(run.write_json("bad.json", &bad), Err(FileError::Io { .. })));
+		let mut out = run.jsonl("bad.jsonl").unwrap();
+		assert!(matches!(out.write(&bad), Err(FileError::Io { .. })));
+		fs::remove_dir_all(&dir).unwrap();
 	}
 }

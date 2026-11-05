@@ -108,6 +108,18 @@ pub struct CounterReset(pub String);
 /// How late after an edge its scrape may land, in ms (scrapes are 5 s apart).
 const EDGE_SCRAPE_MS: f64 = 1000.0;
 
+/// The latest a node's scrape may land after a window edge and still stand for that edge, in ms:
+/// one scrape interval (5 s) plus the scrape timeout (5 s). Without such a scrape the edge has
+/// no fresh value, and [`RunData::gap`] names it.
+pub const MAX_EDGE_LAG_MS: f64 = 10_000.0;
+
+/// The jobs whose series are not scraped from a node: the load tool's and chain recorders'
+/// (`stress`) and plugins' (`plugin`). They change on events, so they have no scrape to miss.
+const UNSCRAPED_JOBS: [&str; 2] = ["stress", "plugin"];
+
+/// The counter of failed scrapes, per node (`job`, `instance`).
+const SCRAPE_FAILED: &str = "polkameter_scrape_failed_total";
+
 /// The collator's labels: each block is counted once over the collators.
 pub const COLLATOR: (&str, &str) = ("job", "collator");
 /// The collator's counter of why a block stopped taking txs, per `reason`.
@@ -118,19 +130,39 @@ fn node(s: &Series) -> (String, String) {
 	(get("job"), get("instance"))
 }
 
-fn value_at(s: &Series, t: f64, node_first: Option<f64>) -> f64 {
+/// Which sample stands for a series at a time.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum At {
+	/// The series has no value then: 0 (it is not born yet, or has no sample at or before).
+	Zero,
+	/// This sample.
+	Point(usize),
+}
+
+fn pick(s: &Series, t: f64, node_first: Option<f64>) -> At {
 	let scraped = s.labels.get("job").is_none_or(|j| j != "stress");
 	let born = s.points.first().map_or(f64::INFINITY, |p| p.t);
 	if scraped && born > t + EDGE_SCRAPE_MS && node_first.is_some_and(|n| born > n + EDGE_SCRAPE_MS)
 	{
-		return 0.0;
+		return At::Zero;
 	}
-	let p = if scraped {
-		s.points.iter().find(|p| p.t >= t).or(s.points.last())
+	let i = if scraped {
+		s.points.iter().position(|p| p.t >= t).or(s.points.len().checked_sub(1))
 	} else {
-		s.points.iter().rev().find(|p| p.t <= t)
+		s.points.iter().rposition(|p| p.t <= t)
 	};
-	p.map_or(0.0, |p| p.value)
+	i.map_or(At::Zero, At::Point)
+}
+
+fn value(s: &Series, at: At) -> f64 {
+	match at {
+		At::Zero => 0.0,
+		At::Point(i) => s.points[i].value,
+	}
+}
+
+fn value_at(s: &Series, t: f64, node_first: Option<f64>) -> f64 {
+	value(s, pick(s, t, node_first))
 }
 
 /// Histogram buckets over a window: (upper bound, count), ascending, `+Inf` last.
@@ -146,6 +178,8 @@ pub struct RunData {
 	pub block_interval_s: f64,
 	/// Each node's first scrape, by (job, instance).
 	node_first: HashMap<(String, String), f64>,
+	/// Each scraped node's good scrapes, by (job, instance): sorted times.
+	node_scrapes: HashMap<(String, String), Vec<f64>>,
 }
 
 impl RunData {
@@ -153,17 +187,84 @@ impl RunData {
 	pub fn new(store: Store, summary: Summary) -> Self {
 		let block_interval_s = summary.network.block_interval_s;
 		let mut node_first: HashMap<(String, String), f64> = HashMap::new();
-		for s in store.values().flatten() {
-			if let Some(p) = s.points.first() {
-				let t = node_first.entry(node(s)).or_insert(p.t);
-				*t = t.min(p.t);
+		let mut node_scrapes: HashMap<(String, String), Vec<f64>> = HashMap::new();
+		for (name, list) in &store {
+			for s in list {
+				if let Some(p) = s.points.first() {
+					let t = node_first.entry(node(s)).or_insert(p.t);
+					*t = t.min(p.t);
+				}
+				let unscraped =
+					s.labels.get("job").is_some_and(|j| UNSCRAPED_JOBS.contains(&j.as_str()));
+				if name != SCRAPE_FAILED && !unscraped {
+					node_scrapes.entry(node(s)).or_default().extend(s.points.iter().map(|p| p.t));
+				}
 			}
 		}
-		Self { store, summary, block_interval_s, node_first }
+		for times in node_scrapes.values_mut() {
+			times.sort_by(f64::total_cmp);
+			times.dedup();
+		}
+		Self { store, summary, block_interval_s, node_first, node_scrapes }
+	}
+
+	fn first_scrape(&self, s: &Series) -> Option<f64> {
+		self.node_first.get(&node(s)).copied()
 	}
 
 	fn value_at(&self, s: &Series, t: f64) -> f64 {
-		value_at(s, t, self.node_first.get(&node(s)).copied())
+		value_at(s, t, self.first_scrape(s))
+	}
+
+	/// Why the node series of `name` matching `filter` cannot give fresh values at both edges
+	/// of `w`; `None` when they can. Every node with such a series needs a good scrape at most
+	/// [`MAX_EDGE_LAG_MS`] after each edge; otherwise the value at that edge would come from a
+	/// later or older scrape (stale), so a check over `w` should have no result. Series the load
+	/// tool, the chain recorders or plugins write change on events and are never stale here.
+	/// Part of the plugin API (used by out-of-tree plugins).
+	pub fn gap(&self, name: &str, filter: Filter<'_>, w: &Window) -> Option<String> {
+		let mut nodes: Vec<(String, String)> = self
+			.series(name, filter)
+			.into_iter()
+			.filter(|s| s.labels.get("job").is_none_or(|j| !UNSCRAPED_JOBS.contains(&j.as_str())))
+			.map(node)
+			.collect();
+		nodes.sort();
+		nodes.dedup();
+		for n in nodes {
+			let times = self.node_scrapes.get(&n).map_or(&[][..], Vec::as_slice);
+			for (edge, t) in [("start", w.start), ("end", w.end)] {
+				let i = times.partition_point(|x| *x < t);
+				if times.get(i).is_none_or(|x| *x > t + MAX_EDGE_LAG_MS) {
+					return Some(format!(
+						"{}: no scrape of {} {} within {} s after its {edge}",
+						w.label,
+						n.0,
+						n.1,
+						num(MAX_EDGE_LAG_MS / 1000.0)
+					));
+				}
+			}
+		}
+		None
+	}
+
+	/// Failed scrapes in `w` of the nodes the `job` and `instance` pairs of `filter` select
+	/// (every node when it has neither). A failed scrape inside a window leaves its counter
+	/// deltas right when both edges are fresh ([`RunData::gap`]), but it hides what happened in
+	/// between, so a check should say so.
+	/// Part of the plugin API (used by out-of-tree plugins).
+	pub fn failed_scrapes(&self, filter: Filter<'_>, w: &Window) -> f64 {
+		let nodes: Vec<(&str, &str)> = filter
+			.iter()
+			.copied()
+			.filter(|(k, _)| *k == "job" || *k == "instance")
+			.collect();
+		self.series(SCRAPE_FAILED, &nodes)
+			.iter()
+			.flat_map(|s| s.points.iter())
+			.filter(|p| p.t >= w.start && p.t <= w.end)
+			.count() as f64
 	}
 
 	/// Series of `name` whose labels match.
@@ -184,13 +285,33 @@ impl RunData {
 		(!list.is_empty()).then(|| list.iter().map(|s| self.value_at(s, t)).sum())
 	}
 
-	/// One series' increase over `w`; a counter that went down means its node restarted.
+	/// One series' increase over `w`; a counter that went down anywhere from the sample at the
+	/// start to the sample at the end (both included) means its node restarted.
 	fn delta(&self, name: &str, s: &Series, w: &Window) -> Result<f64, CounterReset> {
-		let (a, b) = (self.value_at(s, w.start), self.value_at(s, w.end));
-		if b < a {
-			return Err(CounterReset(format!("{name} went down from {a} to {b}")));
+		let first = self.first_scrape(s);
+		let (a, b) = (pick(s, w.start, first), pick(s, w.end, first));
+		let (va, vb) = (value(s, a), value(s, b));
+		if let At::Point(to) = b {
+			let from = match a {
+				At::Point(from) => from,
+				// 0 before the series' first sample: the values from there on.
+				At::Zero => 0,
+			};
+			let mut prev = va;
+			for p in s.points.get(from..=to).unwrap_or_default() {
+				if p.value < prev {
+					return Err(CounterReset(format!(
+						"{name} went down from {prev} to {} in {}",
+						p.value, w.label
+					)));
+				}
+				prev = p.value;
+			}
 		}
-		Ok(b - a)
+		if vb < va {
+			return Err(CounterReset(format!("{name} went down from {va} to {vb} in {}", w.label)));
+		}
+		Ok(vb - va)
 	}
 
 	/// A counter's increase over `w`, summed over matching series.

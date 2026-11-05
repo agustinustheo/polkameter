@@ -49,9 +49,8 @@ fn validate(path: &Path) {
 	}
 }
 
-#[test]
-fn recorded_report_matches_golden_validates_and_copies() {
-	let work = Work::new("fixture");
+/// Copies the recorded smoke run's input files (not its golden outputs) into `work`.
+fn copy_fixture(work: &Work) {
 	let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/smoke-run");
 	for entry in fs::read_dir(&fixture).unwrap() {
 		let path = entry.unwrap().path();
@@ -63,6 +62,12 @@ fn recorded_report_matches_golden_validates_and_copies() {
 			fs::copy(&path, work.0.join(path.file_name().unwrap())).unwrap();
 		}
 	}
+}
+
+#[test]
+fn recorded_report_matches_golden_validates_and_copies() {
+	let work = Work::new("fixture");
+	copy_fixture(&work);
 	let copy = work.0.join("reports/load.xml");
 	let output = work
 		.cli()
@@ -79,6 +84,9 @@ fn recorded_report_matches_golden_validates_and_copies() {
 	let normalized = xml.replace(&work.0.display().to_string(), "/runs/smoke-run");
 	assert_eq!(normalized, include_str!("fixtures/smoke-run/junit.xml"));
 	validate(&xml_path);
+	// samples.jtl: JMeter CSV, workflow and setup steps stamped with their start time.
+	let jtl = fs::read_to_string(work.0.join("samples.jtl")).unwrap();
+	assert_eq!(jtl, include_str!("fixtures/smoke-run/samples.jtl"));
 	// Rebuilding is deterministic and accepts a destination equal to the default file.
 	assert!(
 		work.cli()
@@ -92,6 +100,34 @@ fn recorded_report_matches_golden_validates_and_copies() {
 			.success()
 	);
 	assert_eq!(xml, fs::read_to_string(xml_path).unwrap());
+}
+
+#[test]
+fn report_refuses_an_unknown_summary_schema_and_rewrites_nothing() {
+	let work = Work::new("schema");
+	copy_fixture(&work);
+	let path = work.0.join("summary.json");
+	let mut summary: serde_json::Value =
+		serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+	for (version, shown) in [(Some(serde_json::json!(2)), "2"), (None, "missing")] {
+		match &version {
+			Some(v) => summary["schemaVersion"] = v.clone(),
+			None => {
+				summary.as_object_mut().unwrap().remove("schemaVersion");
+			},
+		}
+		let text = serde_json::to_string_pretty(&summary).unwrap();
+		fs::write(&path, &text).unwrap();
+		let output = work.cli().arg("report").arg(&work.0).output().unwrap();
+		assert_eq!(output.status.code(), Some(2));
+		let stderr = String::from_utf8_lossy(&output.stderr);
+		assert!(stderr.contains(&format!("has schemaVersion {shown}")), "{stderr}");
+		assert!(stderr.contains("reads and writes only schemaVersion 1"), "{stderr}");
+		assert_eq!(fs::read_to_string(&path).unwrap(), text);
+		for derived in ["summary.md", "junit.xml", "samples.jtl", "plots"] {
+			assert!(!work.0.join(derived).exists(), "{derived} was written");
+		}
+	}
 }
 
 #[test]
