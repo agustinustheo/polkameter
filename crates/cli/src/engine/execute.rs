@@ -830,13 +830,21 @@ async fn invoke(
 	.await
 }
 
-/// Maximum characters in each assertion value, after credential redaction.
+/// Maximum characters before JSON quoting/escaping, after credential redaction.
 const ASSERTION_VALUE_CHARS: usize = 80;
 
 fn assertion_value(value: &Value, secrets: &[String]) -> String {
 	let mut value = value.clone();
 	redact(&mut value, secrets);
-	let safe = value.as_str().map_or_else(|| value.to_string(), str::to_owned);
+	if let Some(text) = value.as_str() {
+		// Bound the content before quoting so even a truncated string keeps its delimiters.
+		json!(assertion_text(text)).to_string()
+	} else {
+		assertion_text(&value.to_string())
+	}
+}
+
+fn assertion_text(safe: &str) -> String {
 	let mut result: String = safe
 		.chars()
 		.take(ASSERTION_VALUE_CHARS)
@@ -869,7 +877,7 @@ async fn core_operation(
 			ensure!(
 				inputs["actual"] == inputs["expected"],
 				"assertion {} failed: expected {}, got {}",
-				assertion_value(&json!(step.id), secrets),
+				assertion_text(&redact_text(&step.id, secrets)),
 				assertion_value(&inputs["expected"], secrets),
 				assertion_value(&inputs["actual"], secrets)
 			);
@@ -1163,12 +1171,33 @@ mod calibration_tests {
 		let secret = "s".repeat(200);
 		assert_eq!(
 			assertion_value(&json!(format!("{secret}\n\u{1b}\u{202e} tail")), &[secret]),
-			"[redacted]    tail"
+			r#""[redacted]    tail""#
 		);
 		assert_eq!(
 			assertion_value(&json!("界".repeat(500)), &[]).chars().count(),
-			ASSERTION_VALUE_CHARS + 1
+			ASSERTION_VALUE_CHARS + 3
 		);
+	}
+
+	#[test]
+	fn assertion_values_preserve_types_and_quote_string_delimiters() {
+		for (value, expected) in [
+			(json!("Hello, Ferris!"), r#""Hello, Ferris!""#),
+			(json!("85"), r#""85""#),
+			(json!(85), "85"),
+			(json!(true), "true"),
+			(json!(false), "false"),
+			(Value::Null, "null"),
+			(json!("a \"quote\" and \\ path"), r#""a \"quote\" and \\ path""#),
+			(json!([1, "two"]), r#"[1,"two"]"#),
+			(json!({"n": 1}), r#"{"n":1}"#),
+		] {
+			assert_eq!(assertion_value(&value, &[]), expected);
+		}
+		let quoted = assertion_value(&json!("\"\\".repeat(100)), &[]);
+		let content: String = serde_json::from_str(&quoted).unwrap();
+		assert_eq!(content.chars().count(), ASSERTION_VALUE_CHARS + 1);
+		assert!(content.ends_with('…'));
 	}
 
 	#[test]

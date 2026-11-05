@@ -132,13 +132,22 @@ fn failed_run_writes_redacted_failures_and_skips_and_report_rebuilds_them() {
 	let xml = fs::read_to_string(run.join("junit.xml")).unwrap();
 	assert_eq!(xml, fs::read_to_string(copy).unwrap());
 	assert!(!xml.contains("secret_check"));
-	assert!(xml.contains("expected b, got [redacted]"));
+	assert!(xml.contains("expected &quot;b&quot;, got &quot;[redacted]&quot;"));
 	for name in ["events.jsonl", "execution.json"] {
 		let content = fs::read_to_string(run.join(name)).unwrap();
 		assert!(!content.contains("secret_check"));
-		assert!(content.contains("expected b, got [redacted]"));
+		assert!(
+			serde_json::Deserializer::from_str(&content)
+				.into_iter::<serde_json::Value>()
+				.any(|event| {
+					let event = event.unwrap();
+					event["error"]
+						.as_str()
+						.is_some_and(|error| error.contains(r#"expected "b", got "[redacted]""#))
+				})
+		);
 	}
-	assert!(String::from_utf8_lossy(&output.stderr).contains("expected b, got [redacted]"));
+	assert!(String::from_utf8_lossy(&output.stderr).contains(r#"expected "b", got "[redacted]""#));
 	assert!(xml.contains("[redacted]"));
 	assert!(xml.contains("<failure message="));
 	assert!(xml.contains("<skipped>"));
