@@ -177,7 +177,7 @@ timeStamp,elapsed,label,responseCode,responseMessage,threadName,success,bytes,se
 
 `greet` ran once, in setup. `verified` ran once for each user.
 
-To see a failing check, change `expected` to `Hello, Ferris!` in a copy of the plan, and run that copy with `--output runs-wrong`. The run stops with `assertion verified failed` and exits with code `1`.
+To see a failing check, change `expected` to `Hello, Ferris!` in a copy of the plan, and run that copy with `--output runs-wrong`. The run stops with `assertion verified failed: expected Hello, Ferris!, got Hello, Polkadot!` and exits with code `1`.
 
 ## Plugins that drive load
 

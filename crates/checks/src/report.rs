@@ -388,6 +388,7 @@ mod tests {
 
 	fn check(name: &str, status: Status) -> CheckResult {
 		CheckResult {
+			source: None,
 			outcome: "run".into(),
 			check: name.into(),
 			verdict: Verdict::new(status, "test"),

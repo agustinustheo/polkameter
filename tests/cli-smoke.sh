@@ -18,11 +18,13 @@ trap '[ -n "$agent" ] && kill "$agent" 2>/dev/null; rm -rf "$work"' EXIT
 "$cli" validate "$plan" --format json | grep -q '"valid":true'
 "$cli" preflight "$plan" --format json > /dev/null
 
-"$cli" run "$plan" --output "$work/local" --fail-on-verdict --format json > "$work/local.json"
+"$cli" run "$plan" --output "$work/local" --junit "$work/reports/local.xml" --fail-on-verdict --format json > "$work/local.json"
 run=$(ls -d "$work"/local/run-*)
 [ ! -e "$run/summary.json" ]
 "$cli" report "$run" --format json | grep -q '"exit_code":0'
-for file in events.jsonl execution.json samples.jtl summary.md plots/throughput.svg; do
+cmp "$run/junit.xml" "$work/reports/local.xml"
+xmllint --nonet --noout --schema tests/schemas/junit.xsd "$run/junit.xml"
+for file in events.jsonl execution.json junit.xml samples.jtl summary.md plots/throughput.svg; do
 	[ -s "$run/$file" ] || { echo "missing $file" >&2; exit 1; }
 done
 
@@ -31,13 +33,15 @@ sed 's/name="expected" value="84"/name="expected" value="85"/' "$plan" > "$work/
 code=0
 "$cli" run "$work/failing.xml" --output "$work/failing" > /dev/null 2> "$work/failing.err" || code=$?
 [ "$code" -eq 1 ] || { echo "a failed assertion exited $code, expected 1" >&2; exit 1; }
-grep -q '^Polkameter: run failed: assertion verified failed (details in ' "$work/failing.err"
+xmllint --nonet --noout --schema tests/schemas/junit.xsd "$work"/failing/run-*/junit.xml
+grep -q '^Polkameter: run failed: assertion verified failed: expected 85, got 84 (details in ' "$work/failing.err"
 
 # Exercise the action's jq expression on a real FAIL report, not the shell-test stub.
 mkdir "$work/recorded"
 cp crates/cli/tests/fixtures/smoke-run/*.json crates/cli/tests/fixtures/smoke-run/*.jsonl "$work/recorded/"
 gzip -dc crates/cli/tests/fixtures/smoke-run/scrapes.jsonl.gz > "$work/recorded/scrapes.jsonl"
 "$cli" report "$work/recorded" --format json > "$work/recorded.json" 2> "$work/report.log"
+xmllint --nonet --noout --schema tests/schemas/junit.xsd "$work/recorded/junit.xml"
 [ "$(jq -r '.verdict.result // empty' "$work/recorded/summary.json")" = FAIL ]
 
 port=$((20000 + RANDOM % 20000))
@@ -49,5 +53,7 @@ for _ in $(seq 1 50); do
 	sleep 0.2
 done
 "$cli" run "$plan" --remote "http://127.0.0.1:$port" --remote-token-env POLKAMETER_AGENT_TOKEN \
-	--fail-on-verdict --format json | grep -q '"exit_code":0'
+	--junit "$work/reports/remote.xml" --fail-on-verdict --format json | grep -q '"exit_code":0'
+xmllint --nonet --noout --schema tests/schemas/junit.xsd "$work/reports/remote.xml"
+cmp "$work/reports/remote.xml" "$work"/remote/run-*/junit.xml
 echo "CLI smoke passed"

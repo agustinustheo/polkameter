@@ -16,7 +16,7 @@ Find the message you see below. Each heading is the message as the CLI prints it
 
 ```text
 Run failed. Artifacts: ~/polkameter/target/runs/run-…
-Polkameter: run failed: assertion verified failed (details in ~/polkameter/target/runs/run-…/execution.json)
+Polkameter: run failed: assertion verified failed: expected 85, got 84 (details in ~/polkameter/target/runs/run-…/execution.json)
 ```
 
 **Cause:** The run started, but a step, a plugin or a deadline failed it. The text after `run failed:` is the reason. Many reasons have their own entry on this page, such as [`assertion <id> failed`](#assertion--failed).

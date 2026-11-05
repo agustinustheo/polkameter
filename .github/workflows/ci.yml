@@ -27,10 +27,10 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
           components: rustfmt, clippy
-          apt-packages: libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libxml2-utils
+          apt-packages: libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libxml2-utils shellcheck
       - name: Lint workflows
         run: |
-          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
           ./actionlint -shellcheck= -color
       - run: corepack pnpm install --frozen-lockfile
       - run: corepack pnpm test
@@ -46,6 +46,10 @@ jobs:
         run: |
           cargo install cargo-audit --locked --version 0.22.2
           cargo audit
+      - name: Distribution tests
+        run: |
+          shellcheck install.sh
+          python3 tests/distribution.py
       - name: Action shell tests
         run: python3 tests/action-smoke.py
       - name: CLI smoke
@@ -101,3 +105,26 @@ jobs:
           test -z "$VERDICT"
           test "$INSTALL_METHOD" = source
           test -n "$VERSION"
+
+  container:
+    name: Container image
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v3
+      # Build only, so the Dockerfile is tested before a release builds and pushes it.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: polkameter:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Run the image
+        run: |
+          docker run --rm polkameter:ci --version
+          test "$(docker run --rm --entrypoint id polkameter:ci -u)" = 10001
+          docker image ls polkameter:ci --format 'Image size: {{.Size}}'

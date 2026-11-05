@@ -1,68 +1,52 @@
 # Getting started
 
-You will build the CLI, run the example plan and read its results. You need no chain.
+You will install the CLI, run the example plan and read its results. You need no chain; building the example plugin needs Rust 1.93 or newer.
 
-## 1. Check your Rust version
+## 1. Install the CLI
 
-PolkaMeter needs Rust 1.93 or newer:
+Install the published CLI with Rust 1.93 or newer, then check its version:
 
+<!-- TODO(v0.3.0): lead with the prebuilt installer after the first CLI-archive release is published. -->
 ```sh
-rustc --version
+cargo install --locked polkameter
+polkameter --version
 ```
 
 ```text
-rustc 1.92.0 (ded5c06cf 2025-12-08)
+polkameter 0.2.0
 ```
 
-With Rust 1.92, the build stops before it compiles anything:
+Prebuilt CLI archives, `install.sh`, binstall metadata and containers are available **from v0.3.0**. The [install guide](install.md) lists their requirements; v0.2.0 has no prebuilt CLI archives.
+
+## 2. Build the example plugin
+
+Clone [the repository](https://github.com/agustinustheo/polkameter) and open the checkout. From its root, build the example plugin with Rust 1.93:
 
 ```sh
-cargo build -p polkameter --bin polkameter
+cargo +1.93.0 build --locked -p polkameter-example-plugin
 ```
+
+The local build completed with:
 
 ```text
-error: rustc 1.92.0 is not supported by the following packages:
-  polkameter@0.2.0 requires rustc 1.93
-  polkameter@0.2.0 requires rustc 1.93
-  polkameter-chain@0.2.0 requires rustc 1.93
-  polkameter-checks@0.2.0 requires rustc 1.93
-  polkameter-engine@0.2.0 requires rustc 1.93
-  polkameter-files@0.2.0 requires rustc 1.93
-  polkameter-load@0.2.0 requires rustc 1.93
-  polkameter-monitors@0.2.0 requires rustc 1.93
-  polkameter-plugin-sdk@0.2.0 requires rustc 1.93
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 29.17s
 ```
 
-Run `rustup update` to get the latest stable Rust, then check the version again with `rustc --version`.
+On a first build, Cargo prints a `Compiling` line for each crate before the `Finished` line. The plugin executable is `target/debug/polkameter-example-plugin` (`.exe` on Windows). Keep using the repository root for the remaining commands.
 
-## 2. Build the CLI and the example plugin
-
-Clone [the repository](https://github.com/agustinustheo/polkameter) and open the checkout. Run both commands from its root:
+If release binaries are unavailable, build the CLI from this checkout:
 
 ```sh
-cargo build -p polkameter --bin polkameter
-cargo build -p polkameter-example-plugin
-```
-
-```text
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.22s
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s
-```
-
-On a first build, cargo prints a `Compiling` line for each crate before the `Finished` line. The builds produce `target/debug/polkameter` and `target/debug/polkameter-example-plugin`. Put the first one on your `PATH` for this shell:
-
-```sh
+cargo +1.93.0 build --locked -p polkameter --bin polkameter
 export PATH="$PWD/target/debug:$PATH"
-which polkameter
+polkameter --version
 ```
+
+The local version check at this checkout returns:
 
 ```text
-~/polkameter/target/debug/polkameter
+polkameter 0.2.0
 ```
-
-The `export` lasts only for the current shell. Run it again in a new terminal.
-
-To put `polkameter` in `~/.cargo/bin` instead, run `cargo install --locked polkameter`. You still need the checkout for the example plugin and plan. `cargo install --locked --git https://github.com/agustinustheo/polkameter polkameter` installs the latest unreleased code.
 
 ## 3. Install the example plugin
 
@@ -182,7 +166,7 @@ Phase: setup
 Phase: workflow
 Phase: teardown
 Run failed. Artifacts: ~/polkameter/target/runs/run-…
-Polkameter: run failed: assertion verified failed (details in ~/polkameter/target/runs/run-…/execution.json)
+Polkameter: run failed: assertion verified failed: expected 85, got 84 (details in ~/polkameter/target/runs/run-…/execution.json)
 1
 ```
 
@@ -197,7 +181,7 @@ cat target/runs/<run>/summary.md
 
 Status: failed
 
-assertion verified failed
+assertion verified failed: expected 85, got 84
 ```
 
 Exit code `1` means the run ended in the `failed` state. [Exit codes](cli.md#exit-codes) lists every code.

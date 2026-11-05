@@ -107,13 +107,13 @@ fn human_run_failure_prints_the_reason_on_standard_error() {
 		stderr,
 		format!(
 			"Phase: preflight\nPhase: setup\nPhase: teardown\n\
-			 Polkameter: run failed: assertion check failed (details in {})\n",
+			 Polkameter: run failed: assertion check failed: expected 2, got 1 (details in {})\n",
 			run.join("execution.json").display()
 		)
 	);
 	let execution: Value =
 		serde_json::from_slice(&std::fs::read(run.join("execution.json")).unwrap()).unwrap();
-	assert_eq!(execution["error"], "assertion check failed");
+	assert_eq!(execution["error"], "assertion check failed: expected 2, got 1");
 }
 
 #[test]
@@ -129,13 +129,13 @@ fn json_run_failure_keeps_json_on_standard_output_and_the_reason_on_standard_err
 	let last = events.last().unwrap();
 	assert_eq!(last["event"], "artifact-written");
 	assert_eq!(last["outcome"]["state"], "failed");
-	assert_eq!(last["outcome"]["error"], "assertion check failed");
+	assert_eq!(last["outcome"]["error"], "assertion check failed: expected 2, got 1");
 	assert!(events.iter().any(|event| event["event"] == "completed"
-		&& event["outcome"]["error"] == "assertion check failed"));
+		&& event["outcome"]["error"] == "assertion check failed: expected 2, got 1"));
 	assert_eq!(
 		stderr,
 		format!(
-			"Polkameter: run failed: assertion check failed (details in {})\n",
+			"Polkameter: run failed: assertion check failed: expected 2, got 1 (details in {})\n",
 			run.join("execution.json").display()
 		)
 	);
@@ -173,7 +173,7 @@ fn remote_run_failure_names_the_run_directory_on_the_agent() {
 	assert_eq!(
 		stderr,
 		format!(
-			"Polkameter: remote run failed: assertion check failed (details in {} on the agent)\n",
+			"Polkameter: remote run failed: assertion check failed: expected 2, got 1 (details in {} on the agent)\n",
 			run.join("execution.json").display()
 		)
 	);

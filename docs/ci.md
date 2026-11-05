@@ -2,6 +2,8 @@
 
 The PolkaMeter action runs a plan in a GitHub Actions job. It downloads a released CLI, installs your plugins and credentials, runs the plan and uploads the run directory. The composite action supports Linux and macOS runners. From v0.3.0, Windows CLI archives are published separately; the composite action is not supported end to end on Windows. For other systems, see [Other CI systems](#other-ci-systems).
 
+For jobs that only need the CLI, use the [prebuilt installer](install.md) or the [GitLab container](#gitlab-ci) to avoid compiling PolkaMeter. The action below currently builds the CLI; the release archive [naming contract](install.md#download-release-archives) also supports download-based actions.
+
 ## A minimal workflow
 
 Save this as `.github/workflows/load-test.yml`. It runs your plan with prebuilt plugin executables from your checkout:
@@ -28,7 +30,7 @@ jobs:
 
 The example uses `@v0.2.0`, which builds from source. The moving `@v0` tag, release-binary installation and the inputs below for installation and plugin builds are available from v0.3.0. Installation typically takes seconds when a release binary exists and several minutes when building from source; plugin builds and the plan take additional time.
 
-To pin the action, use a full release tag or commit SHA. From v0.3.0, `install: auto` selects a full tag's release, such as `v0.3.0`. For a moving major tag such as `@v0`, it reads the CLI package version from the downloaded action package (inheriting the workspace version from `Cargo.toml` when needed). It requests that exact version's release without querying the moving tag again.
+After a successful stable release, the release workflow moves `v0` to the latest `0.x` release (`v1` for `1.x`, and so on). The ref you name also sets the CLI version. To keep the action fixed, use a full release tag or commit SHA. From v0.3.0, `install: auto` selects a full tag's release, such as `v0.3.0`. For a moving major tag such as `@v0`, it reads the CLI package version from the downloaded action package (inheriting the workspace version from `Cargo.toml` when needed). It requests that exact version's release without querying the moving tag again.
 
 Branches, commit SHAs and local `uses: ./` build from source. Missing releases or platform assets also fall back to source. The action emits a warning with the fallback reason and records the installation method, version and reason in the job summary.
 
@@ -135,15 +137,42 @@ With the default `fail-on: error`, a stress-mode load run exits `0` even when it
 - **Job summary.** From v0.3.0, it records the CLI installation method and reason. The action appends the run's `summary.md` to the job summary. For a plan without a load test, it holds only a short status.
 - **Artifact.** The whole run directory, uploaded as `polkameter-run`. Set `artifact-name` to change the name. The upload runs even when the run failed. If validation fails before the run starts, there is no run directory and no artifact.
 
-## Other CI systems
+## GitHub test reports
 
-Without the action, add installation to your CI configuration. It needs Rust 1.93 or newer. For a GitHub Actions shell step:
+The run directory uploaded by the Action contains `junit.xml`. Add a test-report step after the action to show its cases in a GitHub check. Give the job `checks: write` permission:
 
 ```yaml
-- run: cargo install --locked polkameter
+permissions:
+  contents: read
+  checks: write
 ```
 
-`cargo install --locked --git https://github.com/agustinustheo/polkameter polkameter` installs the latest unreleased code.
+Use the `load` step ID from the minimal workflow above:
+
+```yaml
+      - name: Publish test results
+        if: always() && steps.load.outputs.run-dir != ''
+        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
+        with:
+          name: PolkaMeter
+          path: ${{ steps.load.outputs.run-dir }}/junit.xml
+          reporter: java-junit
+          fail-on-error: 'false'
+          fail-on-empty: 'false'
+```
+
+The reporter displays failures while the PolkaMeter action keeps control of the job's exit policy. Set `fail-on-error: 'true'` to let the reporter also fail the job on JUnit failures. Publishing checks requires a token with write permission; use this example in workflows with that permission, such as a manual run in the repository.
+
+## Other CI systems
+
+Without the action, install the prebuilt CLI on a Linux or macOS runner:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+For reproducible jobs, pass a version with `sh -s -- <version>` instead of `sh`. These recipes need a release containing CLI-only assets. See [Install](install.md) for supported systems and source installation.
 
 Configure subsequent shell steps to run from the repository root, replacing the placeholders with your plugin executable and environment variable name:
 
@@ -158,3 +187,37 @@ Configure subsequent shell steps to run from the repository root, replacing the 
 The `plugin credential` line maps the profile to a variable name. Set that variable in the job's environment before `run`. Use a fresh output directory for each job. The exit codes are the same as in the table above; `--fail-on-verdict` exits `1` on `FAIL`.
 
 Keep the whole run directory. `polkameter report <run-dir>` regenerates the checks from its files, and [Run directory](results.md) lists them.
+
+## GitLab CI
+
+Use the published container as the job's `image:`. Build the plugin in an earlier Linux job and pass its executable as an artifact; it must match the runner's CPU architecture and the image's glibc 2.36. Use `rust:1.93.0-bookworm` as the plugin build job's image. Replace `<version>`, `<plugin-build-job>` and `<plugin-binary>` before saving this in `.gitlab-ci.yml`:
+
+```yaml
+load-test:
+  image:
+    name: ghcr.io/agustinustheo/polkameter:<version>
+    entrypoint: [""]
+  needs:
+    - job: <plugin-build-job>
+      artifacts: true
+  variables:
+    POLKAMETER_PLUGIN_REGISTRY: /tmp/polkameter-plugins.json
+  script:
+    - polkameter plugin install target/release/<plugin-binary>
+    - polkameter plugin credential previewnet-sudo POLKAMETER_SETUP_SURI
+    - polkameter validate plans/transfers.polkameter.xml
+    - polkameter run plans/transfers.polkameter.xml --output polkameter-runs --junit test-results/polkameter.xml --fail-on-verdict
+  artifacts:
+    when: always
+    reports:
+      junit: test-results/polkameter.xml
+    paths:
+      - polkameter-runs/
+      - test-results/polkameter.xml
+```
+
+Set `POLKAMETER_SETUP_SURI` as a masked GitLab CI variable. The container runs as UID `10001` by default, so configure your runner to give that user write access to the checkout and output directory. Release container publication must complete before this job can pull the image.
+
+`--junit` writes a copy of the run's JUnit report to a fixed path, and `reports: junit:` shows its cases in the pipeline's Tests view and the merge request test summary. `when: always` keeps reports from failed runs. A plan rejected before a run directory is created has no JUnit report.
+
+For Jenkins, publish `polkameter-runs/**/junit.xml` with the `junit` pipeline step in an `always` post condition. The [results reference](results.md#junitxml) lists the case mapping, warning output and timings.
