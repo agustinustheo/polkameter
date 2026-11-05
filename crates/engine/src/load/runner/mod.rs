@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use polkameter_files::{
+use polkameter_plugin_sdk::observers::files::{
 	FileError, Millis, NodeMax, Problems,
 	summary::{Baseline, Outcome, ProbePhase, Recovery},
 };
@@ -20,11 +20,11 @@ use tokio::{
 	time::MissedTickBehavior,
 };
 
-use crate::{follower::BlockEvent, now_ms, plan::Plan};
+use crate::load::{follower::BlockEvent, now_ms, plan::Plan};
 
 mod load;
 
-use crate::{
+use crate::load::{
 	recovery::recovered_at,
 	rules::{Rules, secs},
 	sender::Reply,

@@ -1,7 +1,7 @@
 //! How fast to send, step by step and lane by lane. Each step is one window for the stop rules
 //! and the checks; the first failure ends the load.
 
-use crate::source::QueueSource;
+use crate::load::source::QueueSource;
 
 /// One load of a run: its own txs, rate and counts. The `call` names it in the load series.
 pub struct Lane {

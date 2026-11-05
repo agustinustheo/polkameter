@@ -12,13 +12,13 @@ use std::sync::{
 };
 
 use futures_util::{SinkExt, StreamExt};
-use polkameter_files::Millis;
+use polkameter_plugin_sdk::observers::files::Millis;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
-use polkameter_chain::hex0x;
+use polkameter_plugin_sdk::chain::hex0x;
 
-use crate::{now_ms, submit::Submit};
+use crate::load::{now_ms, submit::Submit};
 
 const MAX_QUEUED_BYTES: u64 = 4 * 1024 * 1024;
 

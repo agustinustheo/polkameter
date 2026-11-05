@@ -1,9 +1,9 @@
 //! 2. The load: the plan's steps, every lane at its own token bucket, and when a stop ends it.
 
-use polkameter_files::summary::{Rule, Stop};
+use polkameter_plugin_sdk::observers::files::summary::{Rule, Stop};
 
 use super::{Io, Mode, RunError, RunEvent, RunOptions, interval, next};
-use crate::{
+use crate::load::{
 	now_ms,
 	rules::{LiveState, check_step, live_failure, measure_violation, secs},
 	steps::final_step,

@@ -9,14 +9,14 @@
 
 use std::{collections::HashSet, future::Future};
 
-use polkameter_chain::{
+use polkameter_plugin_sdk::chain::{
 	ChainError, Client, DecodeAsType, events, failed_extrinsics, fetch, hex0x, tx_hash,
 };
-use polkameter_files::{BlockRecord, Millis};
+use polkameter_plugin_sdk::observers::files::{BlockRecord, Millis};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::{now_ms, source::TxHash};
+use crate::load::{now_ms, source::TxHash};
 
 /// What the follower saw.
 #[derive(Debug)]
@@ -49,14 +49,14 @@ pub enum BlockEvent {
 }
 
 #[derive(DecodeAsType, Default)]
-#[decode_as_type(crate_path = "polkameter_chain::scale_decode_reexport")]
+#[decode_as_type(crate_path = "polkameter_plugin_sdk::chain::scale_decode_reexport")]
 struct Weight {
 	ref_time: u64,
 	proof_size: u64,
 }
 
 #[derive(DecodeAsType, Default)]
-#[decode_as_type(crate_path = "polkameter_chain::scale_decode_reexport")]
+#[decode_as_type(crate_path = "polkameter_plugin_sdk::chain::scale_decode_reexport")]
 struct PerClass {
 	normal: Weight,
 }
@@ -202,7 +202,7 @@ async fn fetcher(
 				}
 				let _ = out.send(BlockEvent::Fetched { record, txs });
 			},
-			Err(e) if e.fault() == polkameter_chain::Fault::Tool => {
+			Err(e) if e.fault() == polkameter_plugin_sdk::chain::Fault::Tool => {
 				let _ = out.send(BlockEvent::Tool(format!("block {number}: {e}")));
 			},
 			Err(e) => {

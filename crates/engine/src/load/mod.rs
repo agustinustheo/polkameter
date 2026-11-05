@@ -5,6 +5,8 @@
 //! submit replies ([`sender`]) and the block follower ([`follower`]), so it has no lock and is
 //! tested without a network.
 
+#![warn(missing_docs, clippy::needless_pass_by_value, clippy::too_many_lines)]
+
 pub mod follower;
 pub mod loss;
 pub mod plan;
@@ -19,6 +21,6 @@ pub mod submit;
 pub mod tracker;
 
 pub use plan::{Lane, Plan, StepPlan};
-pub use polkameter_files::{Millis, now_ms};
+pub use polkameter_plugin_sdk::observers::files::{Millis, now_ms};
 pub use scenario::{BoxFuture, StateCheck};
 pub use source::{QueueSource, Tx, TxHash, probe_count};

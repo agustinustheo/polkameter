@@ -17,7 +17,6 @@ polkameter-chain = { path = "crates/chain", version = "0.2.0" }
 polkameter-checks = { path = "crates/checks", version = "0.2.0" }
 polkameter-engine = { path = "crates/engine", version = "0.2.0" }
 polkameter-files = { path = "crates/files", version = "0.2.0" }
-polkameter-load = { path = "crates/load", version = "0.2.0" }
 polkameter-monitors = { path = "crates/monitors", version = "0.2.0" }
 polkameter-plugin-sdk = { path = "crates/plugin-sdk", version = "0.2.0" }
 

@@ -18,7 +18,7 @@ pub struct Tx {
 impl Tx {
 	/// A tx and its hash.
 	pub fn new(bytes: Vec<u8>) -> Self {
-		Self { hash: polkameter_chain::tx_hash(&bytes), bytes: bytes.into() }
+		Self { hash: polkameter_plugin_sdk::chain::tx_hash(&bytes), bytes: bytes.into() }
 	}
 }
 

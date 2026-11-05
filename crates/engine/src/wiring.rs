@@ -5,13 +5,13 @@
 
 use std::future::Future;
 
+use crate::load::runner::RunEvent;
 use anyhow::Context as _;
-use polkameter_chain::Client;
-use polkameter_files::{Problems, RunDir};
-use polkameter_load::runner::RunEvent;
 use polkameter_monitors::{
 	MonitorError, Scraper, ScraperHandle, Target, chain_series, process, relay,
 };
+use polkameter_plugin_sdk::chain::Client;
+use polkameter_plugin_sdk::observers::files::{Problems, RunDir};
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;

@@ -4168,18 +4168,17 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "csv",
+ "futures-util",
  "hex",
- "polkameter-chain",
- "polkameter-checks",
- "polkameter-files",
- "polkameter-load",
  "polkameter-monitors",
  "polkameter-plugin-sdk",
  "serde",
  "serde_json",
  "sp-crypto-hashing",
  "subxt-rpcs",
+ "thiserror 2.0.21",
  "tokio",
+ "tokio-tungstenite",
  "tokio-util",
 ]
 
@@ -4200,22 +4199,6 @@ name = "polkameter-files"
 version = "0.2.0"
 dependencies = [
  "polkameter-plugin-sdk",
-]
-
-[[package]]
-name = "polkameter-load"
-version = "0.2.0"
-dependencies = [
- "futures-util",
- "hex",
- "polkameter-chain",
- "polkameter-files",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tokio",
- "tokio-tungstenite",
- "tokio-util",
 ]
 
 [[package]]

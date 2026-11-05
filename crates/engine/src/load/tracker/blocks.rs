@@ -3,14 +3,14 @@
 //! when a reorg later replaces that block (it is then usually included again); the loss check
 //! counts once more on the finalized chain.
 
-use polkameter_files::{
+use polkameter_plugin_sdk::observers::files::{
 	BlockRecord, FileError, Millis,
 	registry::{TX_FAILED, TX_INCLUDED, TX_INCLUSION},
 	summary::{Outcome, Probe, ProbePhase},
 };
 
 use super::{Kind, Phase, Tracker};
-use crate::{follower::BlockEvent, source::TxHash, submit::Submit};
+use crate::load::{follower::BlockEvent, source::TxHash, submit::Submit};
 
 impl<S: Submit> Tracker<S> {
 	/// A block event. A new head sends one probe (baseline and recovery); a fetched block (best

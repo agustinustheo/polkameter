@@ -1,7 +1,7 @@
 //! JMeter-style plots of a run's `samples.jtl`: throughput, latency percentiles and failures.
+use crate::load::steps::percentile;
 use anyhow::Result;
-use polkameter_files::Millis;
-use polkameter_load::steps::percentile;
+use polkameter_plugin_sdk::observers::files::Millis;
 use serde::Deserialize;
 use std::{collections::BTreeMap, fs, path::Path};
 

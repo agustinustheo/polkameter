@@ -1,13 +1,13 @@
 //! The tracker as a state machine: a fake sender, hand-made replies and block events, no network.
 
-use polkameter_files::{BlockRecord, RunDir, summary::Outcome};
-use polkameter_load::{
+use polkameter_engine::load::{
 	Lane, QueueSource, Tx,
 	follower::BlockEvent,
 	sender::Reply,
 	submit::Submit,
 	tracker::{Phase, Tracker},
 };
+use polkameter_plugin_sdk::observers::files::{BlockRecord, RunDir, summary::Outcome};
 
 #[derive(Default)]
 struct FakeSender {

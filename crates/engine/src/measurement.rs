@@ -1,6 +1,11 @@
 //! The measured load: baseline, rate steps, recovery and reconciliation of prepared transactions,
 //! with the node monitors. It returns the summary; the caller writes the report once plugin checks
 //! have run.
+use crate::load::runner::{Io, Mode, RunOptions, baseline, drain, load as apply_load, recover};
+use crate::load::sender::Sender;
+use crate::load::steps::final_step;
+use crate::load::tracker::{Phase, Tracker};
+use crate::load::{Lane, QueueSource, StateCheck, Tx, TxHash, follower, now_ms, rules};
 use crate::{
 	execute::{Values, resolve, target_endpoint, transactions},
 	machine,
@@ -9,16 +14,11 @@ use crate::{
 	wiring::{Chains, Monitors, monitor_targets},
 };
 use anyhow::{Context as _, Result, bail};
-use polkameter_chain::{ChainError, Client};
-use polkameter_files::summary::{
+use polkameter_plugin_sdk::chain::{ChainError, Client};
+use polkameter_plugin_sdk::observers::files::summary::{
 	Artifact, Loss, LostTx, MaxSustained, Network, NodePool, SCHEMA_VERSION, Summary,
 };
-use polkameter_files::{FinalStep, NodeMax, NodeSample, RunDir};
-use polkameter_load::runner::{Io, Mode, RunOptions, baseline, drain, load as apply_load, recover};
-use polkameter_load::sender::Sender;
-use polkameter_load::steps::final_step;
-use polkameter_load::tracker::{Phase, Tracker};
-use polkameter_load::{Lane, QueueSource, StateCheck, Tx, TxHash, follower, now_ms, rules};
+use polkameter_plugin_sdk::observers::files::{FinalStep, NodeMax, NodeSample, RunDir};
 use polkameter_plugin_sdk::{Context, StateCheckInput};
 use std::path::Path;
 use tokio_util::sync::CancellationToken;
@@ -54,7 +54,7 @@ pub async fn run(
 	let probes = transactions(&resolve(values, &load.probes_ref)?, &context.artifact_dir)?;
 	anyhow::ensure!(
 		probes.len()
-			>= polkameter_load::probe_count(
+			>= crate::load::probe_count(
 				load.baseline_probes,
 				load.recovery_seconds,
 				block_interval_s
@@ -172,7 +172,7 @@ pub async fn run(
 		&mut tracker,
 		dir,
 		configured_rules.finality_wait_ms,
-		state_check.as_ref().map(|s| s as &dyn polkameter_load::StateCheck),
+		state_check.as_ref().map(|s| s as &dyn crate::load::StateCheck),
 	)
 	.await;
 	let mut lost_out = dir.jsonl("lost.jsonl")?;
@@ -243,24 +243,29 @@ pub async fn run(
 pub fn report(
 	dir: &RunDir,
 	measured: Measured,
-	plugin_checks: &[polkameter_checks::CheckResult],
+	plugin_checks: &[polkameter_plugin_sdk::observers::checks::CheckResult],
 	fail_on_verdict: bool,
 ) -> Result<i32> {
 	dir.write_json(PLUGIN_CHECKS, &plugin_checks)?;
 	let Measured { summary, finals, mode } = measured;
-	let checks = polkameter_checks::report::write(dir, summary.clone(), &finals, plugin_checks)?;
+	let checks = polkameter_plugin_sdk::observers::checks::report::write(
+		dir,
+		summary.clone(),
+		&finals,
+		plugin_checks,
+	)?;
 	Ok(exit_code(mode, &summary, &checks, fail_on_verdict))
 }
 
 /// The loss check, with the node's pool counts read from the collator we submit to after the
 /// finality wait (the loss check awaits the read then).
-async fn loss_check<S: polkameter_load::submit::Submit>(
+async fn loss_check<S: crate::load::submit::Submit>(
 	client: &Client,
 	monitors: &Monitors,
 	tracker: &mut Tracker<S>,
 	dir: &RunDir,
 	finality_wait_ms: u64,
-	state: Option<&dyn polkameter_load::StateCheck>,
+	state: Option<&dyn crate::load::StateCheck>,
 ) -> (Loss, Vec<LostTx>) {
 	let included_ok: Vec<_> = tracker.included_ok.concat();
 	let scraper = monitors.scraper.clone();
@@ -272,7 +277,7 @@ async fn loss_check<S: polkameter_load::submit::Submit>(
 			ready: s.sum("substrate_ready_transactions_number")? as u64,
 		})
 	};
-	let settled = polkameter_load::loss::Settled {
+	let settled = crate::load::loss::Settled {
 		included_ok: &included_ok,
 		last_ours_block: tracker.last_ours_block.max(tracker.last_fetched),
 		flood: &tracker.flood,
@@ -280,8 +285,7 @@ async fn loss_check<S: polkameter_load::submit::Submit>(
 		first_fetched: tracker.first_fetched,
 	};
 	let (mut loss, lost, records) =
-		polkameter_load::loss::loss_check(client, settled, node_pool, state, finality_wait_ms)
-			.await;
+		crate::load::loss::loss_check(client, settled, node_pool, state, finality_wait_ms).await;
 	if let Err(error) = (|| -> Result<()> {
 		let mut out = dir.jsonl("transactions.jsonl")?;
 		for record in &records {
@@ -308,7 +312,7 @@ async fn loss_check<S: polkameter_load::submit::Submit>(
 }
 
 /// steps.jsonl: one record per step, with the node's highest CPU and memory while the step ran.
-fn write_steps<S: polkameter_load::submit::Submit>(
+fn write_steps<S: crate::load::submit::Submit>(
 	dir: &RunDir,
 	tracker: &Tracker<S>,
 	samples: &[NodeSample],
@@ -335,12 +339,12 @@ fn write_steps<S: polkameter_load::submit::Submit>(
 fn exit_code(
 	mode: Mode,
 	summary: &Summary,
-	checks: &[polkameter_checks::CheckResult],
+	checks: &[polkameter_plugin_sdk::observers::checks::CheckResult],
 	fail_on_verdict: bool,
 ) -> i32 {
 	if fail_on_verdict
-		&& polkameter_checks::report::overall_status(summary, checks)
-			== polkameter_files::summary::OverallStatus::Fail
+		&& polkameter_plugin_sdk::observers::checks::report::overall_status(summary, checks)
+			== polkameter_plugin_sdk::observers::files::summary::OverallStatus::Fail
 	{
 		return 1;
 	}
@@ -348,7 +352,7 @@ fn exit_code(
 		return 0;
 	}
 	let mut errors = summary.problems.clone();
-	errors.extend(polkameter_checks::smoke_gaps(checks));
+	errors.extend(polkameter_plugin_sdk::observers::checks::smoke_gaps(checks));
 	for e in &errors {
 		eprintln!("smoke: {e}");
 	}
@@ -361,13 +365,18 @@ pub fn check(dir: &Path) -> anyhow::Result<()> {
 	let summary: Summary =
 		serde_json::from_str(&std::fs::read_to_string(dir.join("summary.json"))?)?;
 	let finals: Vec<FinalStep> = run.read_jsonl("steps.jsonl")?;
-	let plugin_checks: Vec<polkameter_checks::CheckResult> =
+	let plugin_checks: Vec<polkameter_plugin_sdk::observers::checks::CheckResult> =
 		match std::fs::read_to_string(dir.join(PLUGIN_CHECKS)) {
 			Ok(text) => serde_json::from_str(&text)?,
 			Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
 			Err(e) => return Err(e.into()),
 		};
-	polkameter_checks::report::write(&run, summary, &finals, &plugin_checks)?;
+	polkameter_plugin_sdk::observers::checks::report::write(
+		&run,
+		summary,
+		&finals,
+		&plugin_checks,
+	)?;
 	Ok(())
 }
 
@@ -384,9 +393,9 @@ impl StateCheck for PluginState {
 		_client: &'a Client,
 		included: &'a [TxHash],
 		at: [u8; 32],
-	) -> polkameter_load::scenario::BoxFuture<
+	) -> crate::load::scenario::BoxFuture<
 		'a,
-		Result<polkameter_files::summary::StateSample, ChainError>,
+		Result<polkameter_plugin_sdk::observers::files::summary::StateSample, ChainError>,
 	> {
 		Box::pin(async move {
 			let read = |detail: String| ChainError::Read { what: "plugin state check", detail };
@@ -413,7 +422,7 @@ impl StateCheck for PluginState {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use polkameter_checks::{CheckResult, Status, Verdict};
+	use polkameter_plugin_sdk::observers::checks::{CheckResult, Status, Verdict};
 
 	#[test]
 	fn fail_on_verdict_only_fails_the_existing_fail_status() {
@@ -454,8 +463,8 @@ mod tests {
 			check.check == "relay slots (level 1)" && check.verdict.status == Status::Fail
 		}));
 		assert_eq!(
-			polkameter_checks::report::overall_status(&summary, &checks),
-			polkameter_files::summary::OverallStatus::Fail
+			polkameter_plugin_sdk::observers::checks::report::overall_status(&summary, &checks),
+			polkameter_plugin_sdk::observers::files::summary::OverallStatus::Fail
 		);
 		for mode in [Mode::Smoke, Mode::Stress] {
 			assert_eq!(exit_code(mode, &summary, &checks, false), 0);

@@ -1,6 +1,6 @@
+use crate::load::runner::Mode;
 use crate::xml::{self, Element, error_at};
 use anyhow::{Result, bail, ensure};
-use polkameter_load::runner::Mode;
 use serde::{Serialize, Serializer, ser::SerializeMap};
 use serde_json::Value;
 use std::{
@@ -447,7 +447,7 @@ impl Input {
 	}
 }
 impl Load {
-	pub fn rate_plan(&self) -> Result<polkameter_load::Plan> {
+	pub fn rate_plan(&self) -> Result<crate::load::Plan> {
 		ensure!(self.ramp.is_none() || self.rates.is_empty(), "use rates or a ramp, not both");
 		let plan = if let Some(r) = &self.ramp {
 			ensure!(r.steps <= 10_000, "ramp requires at most 10000 steps");
@@ -455,18 +455,18 @@ impl Load {
 			match r.growth {
 				RampGrowth::Factor(growth) => {
 					ensure!(growth.is_finite() && growth > 0.0, "invalid growth");
-					polkameter_load::Plan::geometric(r.start, growth, r.seconds, r.steps)
+					crate::load::Plan::geometric(r.start, growth, r.seconds, r.steps)
 				},
 				RampGrowth::Step(step) => {
-					polkameter_load::Plan::ramp(r.start, step, r.seconds, r.steps)
+					crate::load::Plan::ramp(r.start, step, r.seconds, r.steps)
 				},
 			}
 		} else {
-			polkameter_load::Plan {
+			crate::load::Plan {
 				steps: self
 					.rates
 					.iter()
-					.map(|r| polkameter_load::plan::StepPlan {
+					.map(|r| crate::load::plan::StepPlan {
 						seconds: r.seconds,
 						rates: vec![r.rate],
 					})
@@ -647,7 +647,7 @@ impl Plan {
 		// The run's directory; the run sets it once the directory exists.
 		values.insert("run.directory".into(), Value::String(String::new()));
 		let probes = self.load.as_ref().map_or(0, |load| {
-			polkameter_load::probe_count(
+			crate::load::probe_count(
 				load.baseline_probes,
 				load.recovery_seconds,
 				load.block_interval_seconds,
@@ -694,8 +694,8 @@ macro_rules! overrides {
 	};
 }
 impl Thresholds {
-	pub fn rules(&self) -> Result<polkameter_load::rules::Rules> {
-		let mut rules = polkameter_load::rules::RULES;
+	pub fn rules(&self) -> Result<crate::load::rules::Rules> {
+		let mut rules = crate::load::rules::RULES;
 		overrides!(self, rules,
 			stall_ms: positive = "stall-ms",
 			finality_stall_ms: positive = "finality-stall-ms",

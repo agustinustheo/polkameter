@@ -11,11 +11,7 @@ keywords = ["polkadot", "substrate", "load-testing"]
 categories = ["development-tools::testing"]
 
 [dependencies]
-polkameter-plugin-sdk.workspace = true
-polkameter-chain.workspace = true
-polkameter-load.workspace = true
-polkameter-files.workspace = true
-polkameter-checks.workspace = true
+polkameter-plugin-sdk = { workspace = true, features = ["chain", "observers"] }
 polkameter-monitors.workspace = true
 anyhow.workspace = true
 serde.workspace = true
@@ -26,3 +22,6 @@ hex.workspace = true
 sp-crypto-hashing.workspace = true
 csv.workspace = true
 subxt-rpcs.workspace = true
+thiserror.workspace = true
+tokio-tungstenite = "0.30"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }

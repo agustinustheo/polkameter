@@ -3,10 +3,10 @@
 
 use std::{future::Future, pin::Pin};
 
-use polkameter_chain::{ChainError, Client};
-use polkameter_files::summary::StateSample;
+use polkameter_plugin_sdk::chain::{ChainError, Client};
+use polkameter_plugin_sdk::observers::files::summary::StateSample;
 
-use crate::source::TxHash;
+use crate::load::source::TxHash;
 
 /// A boxed future, for the object-safe [`StateCheck`].
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;

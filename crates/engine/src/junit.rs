@@ -19,7 +19,7 @@ pub fn warning(directory: Option<&Path>, message: &str, secrets: &[String]) -> V
 	let message = redact_text(&format!("JUnit report: {message}"), secrets);
 	eprintln!("Polkameter warning: {}", escape(&message));
 	let event = serde_json::json!({"event":"warning", "message":message,
-		"timestamp":polkameter_files::now_ms(), "version":2});
+		"timestamp":polkameter_plugin_sdk::observers::files::now_ms(), "version":2});
 	if let Some(directory) = directory {
 		let _ = (|| -> Result<()> {
 			let mut file =

@@ -15,14 +15,14 @@
 //!
 //! The ramp also ends without a failure on: rate cap, budget used up, generator limit, smoke error.
 
-use polkameter_files::{
+use polkameter_plugin_sdk::observers::files::{
 	FinalStep, Millis,
 	summary::{BreakingPoint, Class, FailureMode, Loss, Rule, Stop},
 	to_fixed,
 };
 use serde::Serialize;
 
-use crate::{
+use crate::load::{
 	source::QueueSource,
 	steps::{StepStats, final_step},
 };
@@ -276,7 +276,7 @@ pub fn failure_modes(stop: &Stop, loss: &Loss, finals: &[FinalStep]) -> Vec<Fail
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::source::Tx;
+	use crate::load::source::Tx;
 
 	/// A 10 s step at 100 tx/s that sent everything; `f` changes what a case needs.
 	fn step(k: u32, f: impl FnOnce(&mut StepStats)) -> StepStats {
@@ -345,7 +345,10 @@ mod tests {
 	#[test]
 	fn fails_on_slow_blocks_as_hard() {
 		let blocks = [13_000, 14_000]
-			.map(|gap| polkameter_files::BlockRecord { gap_ms: Some(gap), ..Default::default() })
+			.map(|gap| polkameter_plugin_sdk::observers::files::BlockRecord {
+				gap_ms: Some(gap),
+				..Default::default()
+			})
 			.to_vec();
 		let stop =
 			check_step(&[step(0, |s| s.blocks = blocks)], &source(), 0, 6_000.0, &RULES).unwrap();

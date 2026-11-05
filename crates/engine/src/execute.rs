@@ -6,8 +6,8 @@ use crate::{
 	wiring,
 };
 use anyhow::{Context as _, Result, bail, ensure};
-use polkameter_files::RunDir;
 use polkameter_monitors::Job;
+use polkameter_plugin_sdk::observers::files::RunDir;
 use polkameter_plugin_sdk::{Artifact, Context, Operation, PreparedTx, Schema, strip_0x};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -69,7 +69,7 @@ impl Log {
 		Ok(Self { file: Arc::new(Mutex::new(file)), sink, secrets: Arc::new(secrets) })
 	}
 	fn emit(&self, mut value: Value) -> Result<()> {
-		value["timestamp"] = json!(polkameter_files::now_ms());
+		value["timestamp"] = json!(polkameter_plugin_sdk::observers::files::now_ms());
 		value["version"] = json!(2);
 		redact(&mut value, &self.secrets);
 		let text = serde_json::to_string(&value)?;
@@ -264,7 +264,7 @@ async fn with_scratch_plugins<T>(
 	let directory = std::env::temp_dir().join(format!(
 		"polkameter-{purpose}-{}-{}-{}",
 		std::process::id(),
-		polkameter_files::now_ms(),
+		polkameter_plugin_sdk::observers::files::now_ms(),
 		next_directory_sequence()
 	));
 	std::fs::create_dir(&directory)?;
@@ -282,12 +282,13 @@ pub async fn inspect(plan: &Plan, registry: &Registry) -> Result<Value> {
 		validate_contracts(plan, plugins)?;
 		let requirements: Vec<_> =
 			plugins.manifests.values().flat_map(|m| m.requirements.clone()).collect();
-		let metric_catalog: Vec<_> = polkameter_files::registry::NODE_METRICS
-			.iter()
-			.map(
-				|m| json!({"name": m.name, "description": m.help, "labels": m.labels, "roles": m.from}),
-			)
-			.collect();
+		let metric_catalog: Vec<_> =
+			polkameter_plugin_sdk::observers::files::registry::NODE_METRICS
+				.iter()
+				.map(
+					|m| json!({"name": m.name, "description": m.help, "labels": m.labels, "roles": m.from}),
+				)
+				.collect();
 		Ok(json!({
 			"valid": true,
 			"plugins": plugins.manifests,
@@ -356,7 +357,7 @@ async fn calibrate(plan: &Plan, directory: &Path) -> Result<Option<Value>> {
 	let Some(load) = &plan.load else { return Ok(None) };
 	let endpoint = target_endpoint(plan, &load.target)?;
 	let measured = async {
-		let client = polkameter_chain::Client::connect(endpoint).await?;
+		let client = polkameter_plugin_sdk::chain::Client::connect(endpoint).await?;
 		client.block_interval_s().await
 	}
 	.await
@@ -409,7 +410,7 @@ pub async fn run_with_options(
 	std::fs::create_dir_all(root)?;
 	let run_id = format!(
 		"run-{}-{}-{}",
-		polkameter_files::now_ms(),
+		polkameter_plugin_sdk::observers::files::now_ms(),
 		std::process::id(),
 		next_directory_sequence()
 	);
@@ -893,9 +894,10 @@ async fn cancellable<T>(
 }
 
 async fn submit(inputs: &Value, context: &Context, wait_finalized: bool) -> Result<Value> {
-	let client =
-		polkameter_chain::Client::connect(inputs["target"].as_str().context("target missing")?)
-			.await?;
+	let client = polkameter_plugin_sdk::chain::Client::connect(
+		inputs["target"].as_str().context("target missing")?,
+	)
+	.await?;
 	let txs = transactions(&inputs["transactions"], &context.artifact_dir)?;
 	let mut blocks = client.api().stream_blocks().await?;
 	let mut hashes = Vec::new();
@@ -911,22 +913,23 @@ async fn submit(inputs: &Value, context: &Context, wait_finalized: bool) -> Resu
 				let block = blocks.next().await.context("finalized block stream ended")??;
 				let body = client.body(block.hash().0).await?;
 				let Some(index) = body.iter().position(|bytes| {
-					hex::encode(polkameter_chain::tx_hash(bytes)) == strip_0x(&tx.hash)
+					hex::encode(polkameter_plugin_sdk::chain::tx_hash(bytes)) == strip_0x(&tx.hash)
 				}) else {
 					continue;
 				};
 				let index = index as u32;
-				let events = polkameter_chain::events(&client.at(block.hash().0).await?).await?;
+				let events =
+					polkameter_plugin_sdk::chain::events(&client.at(block.hash().0).await?).await?;
 				ensure!(
-					!polkameter_chain::failed_extrinsics(&events).contains(&index),
+					!polkameter_plugin_sdk::chain::failed_extrinsics(&events).contains(&index),
 					"setup extrinsic failed"
 				);
 				if tx.metadata.get("sudo") == Some(&Value::Bool(true)) {
 					ensure!(
 						events.iter().any(|e| e.extrinsic == Some(index)
 							&& e.is("Sudo", "Sudid")
-							&& polkameter_chain::value::nth(&e.fields, 0)
-								.and_then(polkameter_chain::value::variant_name)
+							&& polkameter_plugin_sdk::chain::value::nth(&e.fields, 0)
+								.and_then(polkameter_plugin_sdk::chain::value::variant_name)
 								== Some("Ok")),
 						"sudo setup failed"
 					);
@@ -945,15 +948,17 @@ fn plugin_checks(
 	plan: &Plan,
 	plugins: &Plugins,
 	values: &Values,
-) -> Result<Vec<polkameter_checks::CheckResult>> {
+) -> Result<Vec<polkameter_plugin_sdk::observers::checks::CheckResult>> {
 	let mut out = Vec::new();
 	for step in &plan.evaluate.entries {
 		if !contract(plugins, &step.operation)?.outputs.contains_key("checks") {
 			continue;
 		}
 		let Some(value) = values.get(&format!("steps.{}", step.id)) else { continue };
-		let mut checks = Vec::<polkameter_checks::CheckResult>::deserialize(&value["checks"])
-			.with_context(|| format!("step {} returned malformed checks", step.id))?;
+		let mut checks = Vec::<polkameter_plugin_sdk::observers::checks::CheckResult>::deserialize(
+			&value["checks"],
+		)
+		.with_context(|| format!("step {} returned malformed checks", step.id))?;
 		for check in &mut checks {
 			check.source = Some(step.id.clone());
 		}
@@ -977,7 +982,7 @@ async fn check_requirements(plan: &Plan, registry: &Registry, plugins: &Plugins)
 			),
 			"rpc" => {
 				let endpoint = target_endpoint(plan, &requirement.target)?;
-				let client = polkameter_chain::Client::connect(endpoint).await?;
+				let client = polkameter_plugin_sdk::chain::Client::connect(endpoint).await?;
 				let methods: Value =
 					client.request("rpc_methods", subxt_rpcs::rpc_params![]).await?;
 				ensure!(

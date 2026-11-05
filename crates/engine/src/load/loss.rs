@@ -8,11 +8,11 @@ use std::{
 	time::Duration,
 };
 
-use polkameter_chain::{Client, tx_hash};
-use polkameter_files::summary::{Finality, Loss, LostTx, NodePool, OnChain};
+use polkameter_plugin_sdk::chain::{Client, tx_hash};
+use polkameter_plugin_sdk::observers::files::summary::{Finality, Loss, LostTx, NodePool, OnChain};
 use serde::Serialize;
 
-use crate::{scenario::StateCheck, source::TxHash, tracker::FloodTx};
+use crate::load::{scenario::StateCheck, source::TxHash, tracker::FloodTx};
 
 const STATE_SAMPLE: usize = 100;
 /// Lost txs checked one by one for lost.jsonl; the rest are only counted.
@@ -161,7 +161,7 @@ pub async fn loss_check(
 			Err(e) => e.to_string(),
 		};
 		lost.push(LostTx {
-			hash: polkameter_chain::hex0x(row.hash),
+			hash: polkameter_plugin_sdk::chain::hex0x(row.hash),
 			step: row.tx.step,
 			sent_at: row.tx.sent_at,
 			on_fork_block: row.best,
@@ -272,7 +272,7 @@ async fn finalized_txs(
 	flood: &HashMap<TxHash, FloodTx>,
 	first: u32,
 	last: u32,
-) -> Result<(HashMap<TxHash, u32>, HashSet<TxHash>), polkameter_chain::ChainError> {
+) -> Result<(HashMap<TxHash, u32>, HashSet<TxHash>), polkameter_plugin_sdk::chain::ChainError> {
 	let mut found = HashMap::new();
 	let mut failed = HashSet::new();
 	for n in first..=last {
@@ -289,8 +289,8 @@ async fn finalized_txs(
 		if ours.is_empty() {
 			continue;
 		}
-		let events = polkameter_chain::events(&client.at(hash).await?).await?;
-		let failed_in_block = polkameter_chain::failed_extrinsics(&events);
+		let events = polkameter_plugin_sdk::chain::events(&client.at(hash).await?).await?;
+		let failed_in_block = polkameter_plugin_sdk::chain::failed_extrinsics(&events);
 		for (index, h) in ours {
 			found.insert(h, n);
 			if failed_in_block.contains(&(index as u32)) {
@@ -305,12 +305,12 @@ async fn wait_finalized(
 	client: &Client,
 	block: u32,
 	finality_wait_ms: u64,
-) -> Result<(u32, [u8; 32]), polkameter_chain::ChainError> {
-	let deadline = crate::now_ms() + finality_wait_ms;
+) -> Result<(u32, [u8; 32]), polkameter_plugin_sdk::chain::ChainError> {
+	let deadline = crate::load::now_ms() + finality_wait_ms;
 	loop {
 		let at = client.finalized().await?;
 		let number = at.block_number() as u32;
-		if number >= block || crate::now_ms() > deadline {
+		if number >= block || crate::load::now_ms() > deadline {
 			return Ok((number, at.block_hash().0));
 		}
 		tokio::time::sleep(Duration::from_secs(2)).await;

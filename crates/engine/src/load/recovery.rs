@@ -1,6 +1,6 @@
 //! After the load: when do new txs land in time again.
 
-use polkameter_files::{
+use polkameter_plugin_sdk::observers::files::{
 	BlockRecord, Millis,
 	summary::{Outcome, Probe, ProbePhase},
 };
@@ -12,7 +12,7 @@ pub fn recovered_at(
 	blocks: &[BlockRecord],
 	threshold_ms: Millis,
 	block_ms: f64,
-	rules: &crate::rules::Rules,
+	rules: &crate::load::rules::Rules,
 ) -> Option<Millis> {
 	let rec: Vec<&Probe> = probes.iter().filter(|p| p.phase == ProbePhase::Recovery).collect();
 	let good = |p: &&Probe| {
@@ -38,7 +38,7 @@ pub fn recovered_at(
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::rules::RULES;
+	use crate::load::rules::RULES;
 
 	fn probe(sent_at: Millis, latency: Millis) -> Probe {
 		Probe {

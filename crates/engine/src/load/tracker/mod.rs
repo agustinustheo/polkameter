@@ -7,13 +7,13 @@ mod blocks;
 
 use std::collections::HashMap;
 
-use polkameter_files::{
+use polkameter_plugin_sdk::observers::files::{
 	BlockRecord, FileError, JsonlWriter, Millis, SeriesWriter,
 	registry::{PHASE, STEP, TX_REJECTED, TX_SENT},
 	summary::{Outcome, Probe},
 };
 
-use crate::{plan::Lane, sender::Reply, source::TxHash, steps::StepStats, submit::Submit};
+use crate::load::{plan::Lane, sender::Reply, source::TxHash, steps::StepStats, submit::Submit};
 
 /// The phases of a run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

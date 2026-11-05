@@ -3,7 +3,9 @@
 
 use std::collections::BTreeMap;
 
-use polkameter_files::{BlockRecord, BlockStats, FinalStep, Millis, NodeMax};
+use polkameter_plugin_sdk::observers::files::{
+	BlockRecord, BlockStats, FinalStep, Millis, NodeMax,
+};
 
 /// Counters of one step of one lane while it runs and settles.
 #[derive(Debug, Clone, Default)]
