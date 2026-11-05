@@ -155,11 +155,15 @@ class InstallTest(unittest.TestCase):
         (self.action / "crates/cli/Cargo.toml").write_text('[package]\nversion.workspace = true\n')
         self.routes = {}
         self.requests = []
+        self.statuses = {}
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 owner.requests.append((self.path, self.headers.get("Authorization")))
+                if self.path in owner.statuses:
+                    self.send_error(owner.statuses[self.path])
+                    return
                 data = owner.routes.get(self.path)
                 if isinstance(data, tuple):
                     self.send_response(302)
@@ -382,14 +386,20 @@ exit {code}
                                    "--source-ref", "refs/tags/v0.3.0", "--digest-alg", "sha256"])
         self.assertTrue(Path(args[2]).exists())
 
+    def assert_no_asset_downloads(self):
+        self.assert_requests(self.prefix + "releases/tags/v0.3.0")
+        self.assertFalse(list(self.work.glob("polkameter-cli-*")))
+
     def test_attestation_default_requires_gh(self):
         self.run_install("source", VERIFY_ATTESTATION="")
         self.assertIn("requires gh", self.result.stdout)
         self.assertIn("requires gh", (self.work / "summary").read_text())
+        self.assert_no_asset_downloads()
 
     def test_attestation_unset_requires_gh(self):
         self.env.pop("VERIFY_ATTESTATION")
         self.run_install("source")
+        self.assert_no_asset_downloads()
 
     def test_attestation_default_verifies_when_gh_exists(self):
         self.gh()
@@ -404,9 +414,11 @@ exit {code}
 
     def test_attestation_required_without_gh_falls_back_in_auto(self):
         self.run_install("source", VERIFY_ATTESTATION="true")
+        self.assert_no_asset_downloads()
 
     def test_default_without_gh_fails_in_release_mode(self):
         self.run_install(error="requires gh", INSTALL="release", VERIFY_ATTESTATION="")
+        self.assert_no_asset_downloads()
 
     def test_ghes_uses_public_distribution_without_enterprise_token(self):
         self.gh()
@@ -418,6 +430,17 @@ exit {code}
         urls = (self.work / "urls").read_text().splitlines()
         self.assertTrue(all(url.startswith("https://api.github.com/") for url in urls))
         self.assertIn("github.com", (self.work / "gh-args").read_text())
+
+    def test_ghes_anonymous_release_rate_limit_falls_back_to_source(self):
+        self.gh()
+        self.statuses[self.prefix + "releases/tags/v0.3.0"] = 403
+        self.run_install("source", GITHUB_API_URL="https://ghe.example/api/v3",
+                         GITHUB_SERVER_URL="https://ghe.example", VERIFY_ATTESTATION="true",
+                         GH_TOKEN="enterprise-token")
+        self.assertIn("HTTP Error 403", self.result.stdout)
+        self.assertTrue(all(auth is None for _, auth in self.requests))
+        self.assert_no_asset_downloads()
+        self.assertFalse((self.work / "gh-args").exists())
 
     def test_public_runner_passes_token_only_to_public_gh(self):
         self.gh()
