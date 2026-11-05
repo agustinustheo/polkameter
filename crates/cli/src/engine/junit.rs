@@ -17,7 +17,7 @@ const SUITE_RESERVE: usize = MESSAGE_CHARS * XML_CHAR_BYTES * 6 + 4096;
 /// Remote clients emit the returned event in their own event stream (no local run directory).
 pub fn warning(directory: Option<&Path>, message: &str, secrets: &[String]) -> Value {
 	let message = redact_text(&format!("JUnit report: {message}"), secrets);
-	eprintln!("Polkameter warning: {}", escape(&message));
+	eprintln!("Polkameter warning: {}", single_line(&message));
 	let event = serde_json::json!({"event":"warning", "message":message,
 		"timestamp":polkameter_plugin_sdk::observers::files::now_ms(), "version":2});
 	if let Some(directory) = directory {
@@ -325,8 +325,8 @@ fn mapped_case(name: String, status: &str, detail: &str) -> Case {
 	}
 }
 
-// XML 1.0, terminal-safe, one line, bounded before escaping so entities cannot be cut in half.
-fn escape(text: &str) -> String {
+// Terminal-safe, one line and bounded before any format-specific escaping.
+fn single_line(text: &str) -> String {
 	let mut out = String::new();
 	for (i, c) in text.chars().enumerate() {
 		if i == MESSAGE_CHARS {
@@ -334,11 +334,6 @@ fn escape(text: &str) -> String {
 			break;
 		}
 		match c {
-			'&' => out.push_str("&amp;"),
-			'<' => out.push_str("&lt;"),
-			'>' => out.push_str("&gt;"),
-			'"' => out.push_str("&quot;"),
-			'\'' => out.push_str("&apos;"),
 			c if c.is_control() || c.is_whitespace() => out.push(' '),
 			'\u{fffe}'
 			| '\u{ffff}'
@@ -346,6 +341,22 @@ fn escape(text: &str) -> String {
 			| '\u{200f}'
 			| '\u{202a}'..='\u{202e}'
 			| '\u{2066}'..='\u{2069}' => out.push(' '),
+			c => out.push(c),
+		}
+	}
+	out
+}
+
+// XML entities are added after bounding so they cannot be cut in half.
+fn escape(text: &str) -> String {
+	let mut out = String::new();
+	for c in single_line(text).chars() {
+		match c {
+			'&' => out.push_str("&amp;"),
+			'<' => out.push_str("&lt;"),
+			'>' => out.push_str("&gt;"),
+			'"' => out.push_str("&quot;"),
+			'\'' => out.push_str("&apos;"),
 			c => out.push(c),
 		}
 	}

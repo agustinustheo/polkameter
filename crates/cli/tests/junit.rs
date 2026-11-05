@@ -181,7 +181,7 @@ fn invalid_junit_copy_destinations_warn_without_changing_success() {
 	let work = Work::new("copy-errors");
 	let plan = work.0.join("plan.xml");
 	fs::write(&plan, r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="test"><setup><step id="ok" use="core.echo"><input name="value" value="1"/></step></setup></polkameter-plan>"#).unwrap();
-	let blocker = work.0.join("blocker");
+	let blocker = work.0.join("blocker & 'quoted'\n\t\u{1b}\u{202e}");
 	fs::write(&blocker, "file, cannot create a directory under it").unwrap();
 	for destination in [work.0.clone(), blocker.join("report.xml")] {
 		let output = work
@@ -196,6 +196,14 @@ fn invalid_junit_copy_destinations_warn_without_changing_success() {
 			.output()
 			.unwrap();
 		assert!(output.status.success());
+		let stderr = String::from_utf8(output.stderr).unwrap();
+		assert_eq!(stderr.lines().count(), 1, "{stderr}");
+		assert!(stderr.contains("Polkameter warning: JUnit report:"));
+		assert!(!stderr.contains("&amp;") && !stderr.contains("&apos;"), "{stderr}");
+		assert!(!stderr.contains(['\t', '\u{1b}', '\u{202e}']), "{stderr}");
+		if destination != work.0 {
+			assert!(stderr.contains("blocker & 'quoted'    /report.xml"), "{stderr}");
+		}
 		let events: Vec<serde_json::Value> = String::from_utf8(output.stdout)
 			.unwrap()
 			.lines()
