@@ -363,7 +363,9 @@ fn local_copy_failure_preserves_sigint_exit_130_and_artifact_notification() {
 	let plan = work.0.join("plan.xml");
 	fs::write(&plan, r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="cancel"><workflow id="workers" users="1" iterations="1000000000"><step id="work" use="core.echo"><input name="value" value="1"/></step></workflow></polkameter-plan>"#).unwrap();
 	let root = work.0.join("runs");
-	let child = work
+	// The output root can exist before the child creates its run directory.
+	fs::create_dir_all(&root).unwrap();
+	let mut child = work
 		.cli()
 		.arg("run")
 		.arg(plan)
@@ -379,15 +381,20 @@ fn local_copy_failure_preserves_sigint_exit_130_and_artifact_notification() {
 	loop {
 		if let Ok(runs) = fs::read_dir(&root) {
 			let runs: Vec<_> = runs.map(|r| r.unwrap().path()).collect();
-			assert_eq!(runs.len(), 1);
-			if fs::read_to_string(runs[0].join("events.jsonl"))
-				.unwrap_or_default()
-				.contains("step-started")
-			{
+			assert!(runs.len() <= 1, "unexpected run directories: {runs:?}");
+			if runs.first().is_some_and(|run| {
+				fs::read_to_string(run.join("events.jsonl"))
+					.unwrap_or_default()
+					.contains("step-started")
+			}) {
 				break;
 			}
 		}
-		assert!(Instant::now() < deadline, "run did not start");
+		if Instant::now() >= deadline {
+			child.kill().unwrap();
+			let output = child.wait_with_output().unwrap();
+			panic!("run did not start: {}", String::from_utf8_lossy(&output.stderr));
+		}
 		std::thread::sleep(Duration::from_millis(10));
 	}
 	assert!(
