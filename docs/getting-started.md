@@ -182,7 +182,7 @@ Phase: setup
 Phase: workflow
 Phase: teardown
 Run failed. Artifacts: ~/polkameter/target/runs/run-…
-Polkameter: run failed: assertion verified failed (details in ~/polkameter/target/runs/run-…/execution.json)
+Polkameter: run failed: assertion verified failed: expected 85, got 84 (details in ~/polkameter/target/runs/run-…/execution.json)
 1
 ```
 
@@ -197,7 +197,7 @@ cat target/runs/<run>/summary.md
 
 Status: failed
 
-assertion verified failed
+assertion verified failed: expected 85, got 84
 ```
 
 Exit code `1` means the run ended in the `failed` state. [Exit codes](cli.md#exit-codes) lists every code.

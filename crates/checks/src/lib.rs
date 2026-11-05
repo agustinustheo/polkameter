@@ -76,6 +76,9 @@ pub struct Check {
 /// A check's result, as summary.json has it. Plugin checks return the same shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckResult {
+	/// Evaluate step that produced a plugin check; absent for built-in/older checks.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub source: Option<String>,
 	/// The outcome it belongs to, e.g. `pool`.
 	pub outcome: String,
 	/// The check.
@@ -102,6 +105,7 @@ pub fn run(checks: &[Check], data: &RunData) -> Vec<CheckResult> {
 	checks
 		.iter()
 		.map(|c| CheckResult {
+			source: None,
 			outcome: serde_name(c.outcome),
 			check: c.name.to_owned(),
 			verdict: (c.run)(data).unwrap_or_else(|reset| {

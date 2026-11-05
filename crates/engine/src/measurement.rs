@@ -426,6 +426,7 @@ mod tests {
 				summary.breaking_point = None;
 				summary.problems.clear();
 				let checks = [CheckResult {
+					source: None,
 					outcome: "run".into(),
 					check: "plugin check".into(),
 					verdict: Verdict::new(status, "test"),
@@ -493,6 +494,7 @@ mod tests {
 	#[test]
 	fn exit_code_policy() {
 		let result = |check: &str, status, optional| CheckResult {
+			source: None,
 			outcome: "pool".into(),
 			check: check.into(),
 			verdict: Verdict::new(status, check),

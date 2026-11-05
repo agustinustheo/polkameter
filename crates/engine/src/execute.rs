@@ -92,7 +92,7 @@ pub(crate) fn redact_text(text: &str, secrets: &[String]) -> String {
 		.iter()
 		.fold(text.to_owned(), |text, secret| text.replace(secret, "[redacted]"))
 }
-fn redact(value: &mut Value, secrets: &[String]) {
+pub(crate) fn redact(value: &mut Value, secrets: &[String]) {
 	match value {
 		Value::String(text) => *text = redact_text(text, secrets),
 		Value::Array(items) => items.iter_mut().for_each(|item| redact(item, secrets)),
@@ -693,8 +693,8 @@ impl Run<'_> {
 			}
 		}
 		if let Err(error) = crate::junit::write(&self.directory, &self.log.secrets) {
-			fail_report(&mut outcome, redact_text(&error.to_string(), &self.log.secrets));
-			write_json(&self.directory.join("execution.json"), &outcome)?;
+			let event = crate::junit::warning(None, &error.to_string(), &self.log.secrets);
+			let _ = self.log.emit(event);
 		}
 		self.log.emit(json!({"event": "completed", "outcome": outcome}))?;
 		Ok(outcome)
@@ -811,7 +811,14 @@ async fn invoke(
 	if !step.operation.starts_with("core.") {
 		return plugins.invoke(&step.operation, inputs, context, step.timeout_ms, cancel).await;
 	}
-	let work = Box::pin(core_operation(step, &inputs, context));
+	// Redact complete values before bounding them: a credential must never be truncated
+	// into a prefix that the event/outcome redactor can no longer recognize.
+	let secrets: Vec<_> = values
+		.iter()
+		.filter(|(key, _)| key.starts_with("credentials."))
+		.filter_map(|(_, value)| value.as_str().map(str::to_owned))
+		.collect();
+	let work = Box::pin(core_operation(step, &inputs, context, &secrets));
 	cancellable(cancel, async {
 		tokio::time::timeout(Duration::from_millis(step.timeout_ms), work)
 			.await
@@ -822,12 +829,49 @@ async fn invoke(
 	.await
 }
 
+/// Maximum characters in each assertion value, after credential redaction.
+const ASSERTION_VALUE_CHARS: usize = 80;
+
+fn assertion_value(value: &Value, secrets: &[String]) -> String {
+	let mut value = value.clone();
+	redact(&mut value, secrets);
+	let safe = value.as_str().map_or_else(|| value.to_string(), str::to_owned);
+	let mut result: String = safe
+		.chars()
+		.take(ASSERTION_VALUE_CHARS)
+		.map(|c| {
+			if c.is_control()
+				|| matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+			{
+				' '
+			} else {
+				c
+			}
+		})
+		.collect();
+	if safe.chars().count() > ASSERTION_VALUE_CHARS {
+		result.push('…');
+	}
+	result
+}
+
 /// The built-in operations, which run in the host rather than in a plugin.
-async fn core_operation(step: &Step, inputs: &Value, context: &Context) -> Result<Value> {
+async fn core_operation(
+	step: &Step,
+	inputs: &Value,
+	context: &Context,
+	secrets: &[String],
+) -> Result<Value> {
 	match step.operation.as_str() {
 		"core.echo" => Ok(json!({"value": inputs["value"]})),
 		"core.assert-equal" => {
-			ensure!(inputs["actual"] == inputs["expected"], "assertion {} failed", step.id);
+			ensure!(
+				inputs["actual"] == inputs["expected"],
+				"assertion {} failed: expected {}, got {}",
+				assertion_value(&json!(step.id), secrets),
+				assertion_value(&inputs["expected"], secrets),
+				assertion_value(&inputs["actual"], secrets)
+			);
 			Ok(json!({"passed": true}))
 		},
 		"core.submit-prepared" => submit(inputs, context, false).await,
@@ -908,8 +952,11 @@ fn plugin_checks(
 			continue;
 		}
 		let Some(value) = values.get(&format!("steps.{}", step.id)) else { continue };
-		let checks = Vec::<polkameter_checks::CheckResult>::deserialize(&value["checks"])
+		let mut checks = Vec::<polkameter_checks::CheckResult>::deserialize(&value["checks"])
 			.with_context(|| format!("step {} returned malformed checks", step.id))?;
+		for check in &mut checks {
+			check.source = Some(step.id.clone());
+		}
 		out.extend(checks);
 	}
 	Ok(out)
@@ -1048,6 +1095,75 @@ mod calibration_tests {
 			&& event["event"] == "step-finished"
 			&& event["success"] == true));
 		std::fs::remove_dir_all(root).unwrap();
+	}
+
+	#[tokio::test]
+	async fn junit_generation_failure_preserves_success_and_cancellation() {
+		for cancelled in [false, true] {
+			let root = std::env::temp_dir().join(format!(
+				"polkameter-junit-generation-{}-{}",
+				std::process::id(),
+				next_directory_sequence()
+			));
+			let plan = Plan::parse(r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="test"><setup><step id="ok" use="core.echo"><input name="value" value="1"/></step></setup></polkameter-plan>"#).unwrap();
+			let token = CancellationToken::new();
+			let cancel = token.clone();
+			let directory = root.clone();
+			let outcome = run(
+				plan,
+				Registry::default(),
+				&root,
+				token,
+				Arc::new(move |event| {
+					if event["phase"] == "setup" {
+						let runs: Vec<_> = std::fs::read_dir(&directory)
+							.unwrap()
+							.map(|r| r.unwrap().path())
+							.collect();
+						assert_eq!(runs.len(), 1);
+						std::fs::create_dir(runs[0].join("junit.xml")).unwrap();
+						if cancelled {
+							cancel.cancel();
+						}
+					}
+				}),
+			)
+			.await
+			.unwrap();
+			assert_eq!(outcome.exit_code, if cancelled { 130 } else { 0 });
+			assert_eq!(
+				outcome.state,
+				if cancelled { RunState::Stopped } else { RunState::Completed }
+			);
+			let events =
+				std::fs::read_to_string(outcome.artifact_dir.join("events.jsonl")).unwrap();
+			assert!(
+				events
+					.lines()
+					.map(|s| serde_json::from_str::<Value>(s).unwrap())
+					.any(|e| e["event"] == "warning")
+			);
+			let recorded: Outcome = serde_json::from_slice(
+				&std::fs::read(outcome.artifact_dir.join("execution.json")).unwrap(),
+			)
+			.unwrap();
+			assert_eq!(recorded.exit_code, outcome.exit_code);
+			assert_eq!(recorded.error, outcome.error);
+			std::fs::remove_dir_all(root).unwrap();
+		}
+	}
+
+	#[test]
+	fn assertion_details_are_redacted_before_truncation_and_single_line() {
+		let secret = "s".repeat(200);
+		assert_eq!(
+			assertion_value(&json!(format!("{secret}\n\u{1b}\u{202e} tail")), &[secret]),
+			"[redacted]    tail"
+		);
+		assert_eq!(
+			assertion_value(&json!("界".repeat(500)), &[]).chars().count(),
+			ASSERTION_VALUE_CHARS + 1
+		);
 	}
 
 	#[test]

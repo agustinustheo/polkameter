@@ -75,7 +75,7 @@ Written after teardown.
 
 ## junit.xml
 
-JUnit XML for GitLab test reports, Jenkins and GitHub test-report actions. Every run writes it after teardown, including failed and stopped runs. `polkameter report` regenerates it from the recorded files.
+JUnit XML for GitLab test reports, Jenkins and GitHub test-report actions. Every run attempts to write it after teardown, including failed and stopped runs. `polkameter report` regenerates it from the recorded files.
 
 ```xml
 <testsuite name="load test" tests="16" failures="2" errors="0" skipped="1" time="155.157">
@@ -97,14 +97,14 @@ This excerpt comes from the recorded smoke fixture after `report`, with its dire
 | --- | --- | --- |
 | Plan execution | `plan`, `execution` | Completed: passed. Failed or completed with failures: `<failure>`. Stopped: `<skipped>`. Captures errors outside steps, including plugin startup. |
 | Plan steps and assertions | One suite per nonempty `preflight`, `setup`, `evaluate`, `teardown` section; step ID as testcase name | Success: passed. Assertion failure, step error or interrupted step: `<failure>`. Step never started: `<skipped>`. |
-| Workflow steps | One `workflow:<id>` suite per workflow; step ID plus user and iteration as testcase name | Same as plan steps. Missing invocations are grouped in one skipped case per step to bound report size. |
+| Workflow steps | One `workflow:<id>` suite per workflow; step ID plus user and iteration for individual failures | Passing invocations aggregate into one case per step with a count. First 100 failures per step remain individual cases; further failures aggregate with a count and a pointer to `events.jsonl`. Missing invocations aggregate into one skipped case per step. |
 | Load outcome `pass` or `info` | `load test`, `<outcome>: <check>` | Passed, with status and detail in `<system-out>`. |
 | Load outcome `fail` | Same | `<failure>` with status and detail. |
 | Load outcome `warn` | Same | Passed, with `warn:` and detail in `<system-out>`. |
 | Load outcome `no result` | Same, including optional checks | `<skipped>` with the missing-data reason. |
 | Overall load verdict | `load test`, `overall verdict` | `PASS`: passed; `WARN`: passed with output; `FAIL`: `<failure>`; `INCONCLUSIVE` or absent verdict: `<skipped>`. |
 
-Section suites keep CI results grouped like the plan. Workflow invocation names distinguish concurrent users and repeated iterations. Older recordings without `plan.json` use event phases for suites and can only list steps that were recorded.
+Section suites keep CI results grouped like the plan. Individual workflow failure names distinguish concurrent users and repeated iterations. Plugin check names include their source evaluate step, and repeated labels get a counter. Truncated names retain their identity suffix and a stable hash of the full name; XML sanitization collisions get a counter. Older recordings without `plan.json` use event phases for suites and can only list steps that were recorded.
 
 Warnings remain successful because JUnit has no warning state; testcase output keeps the warning visible in CI views that expose captured output. A missing result is skipped because no assertion could be made. The overall load verdict is a separate case so a breaking point or stop-rule failure still fails the test report even when every outcome check passes.
 
@@ -113,8 +113,12 @@ Warnings remain successful because JUnit has no warning state; testcase output k
 | `time` | Seconds, to three decimal places. Steps use recorded `elapsedMs`; an interrupted step uses the last event time. The load verdict holds the measurement-through-checks duration. Checks and the execution case use zero because their individual durations are not recorded. Suite times sum their cases. |
 | `tests`, `failures`, `errors`, `skipped` | Counts per suite. Step errors use `<failure>`, so `errors` is zero. |
 | `run-directory` property and suite output | The directory being reported, including after copying a recording to another machine. |
-| Messages and names | XML-escaped, control characters replaced with spaces, one line, limited to 2048 Unicode characters plus an ellipsis. Step inputs, outputs and credential values are not exported; recorded text uses the existing credential redaction. |
+| Messages and names | XML-escaped, control characters replaced with spaces, one line, limited to 2048 Unicode characters plus an ellipsis. Assertion failures include expected/actual summaries, capped at 80 characters per value and redacted before truncation. Other step inputs and outputs are not exported. Recorded text uses credential redaction. |
 | `--junit PATH` on `run` or `report` | An additional copy, creating parent directories as needed. The default `junit.xml` remains in the run directory. A remote run fetches the agent's report to the local path; update the agent if it lacks this endpoint. |
+
+Reports are bounded to 4 MiB, below the 5 MB target and GitLab's 30 MB per-report limit. If a plan has enough steps or checks to exceed that bound, remaining cases are summarized in an overflow case with passed/failed/skipped case counts and pointers to `events.jsonl` and `summary.json`. The overflow case fails whenever any omitted case failed. Full invocation details stay in the recorded artifacts. JUnit suite counts describe emitted cases, including aggregates, rather than individual invocations; aggregate timings sum their invocations.
+
+JUnit generation, fetch and copy errors warn on stderr and emit a `warning` event; local warnings are appended to `events.jsonl`, while remote client fetch/copy warnings appear in the client's JSON event stream. They preserve the execution outcome, exit code (including cancellation 130) and artifact notification. If the event file is also unwritable, warning persistence is best effort. `report` uses available credential values from the local registry to redact its JUnit inputs. Without those credentials it relies on the already-redacted recordings; it cannot redact secrets it does not know, including secrets in imported or older unredacted recordings.
 
 JUnit failures do not change the CLI's exit policy. `report` still exits zero after a successful rebuild, and `run` still follows [exit codes](cli.md#exit-codes), including `--fail-on-verdict`.
 

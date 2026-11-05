@@ -1,10 +1,35 @@
 //! JUnit reports derived only from recorded events, plan structure and load results.
-use std::{collections::BTreeMap, fmt::Write as _, fs, path::Path};
+use std::{collections::BTreeMap, fmt::Write as _, fs, io::Write as _, path::Path};
 
 use anyhow::Result;
 use serde_json::Value;
 
-use crate::execute::redact_text;
+use crate::execute::{redact, redact_text};
+
+/// Maximum message/name length before XML escaping (entities require at most six bytes).
+pub const MESSAGE_CHARS: usize = 2048;
+const FAILURES_PER_STEP: usize = 100;
+const REPORT_BYTES: usize = 4 * 1024 * 1024;
+const XML_CHAR_BYTES: usize = 6;
+const SUITE_RESERVE: usize = MESSAGE_CHARS * XML_CHAR_BYTES * 6 + 4096;
+
+/// Best-effort JUnit warning. Never changes an execution outcome, even if event recording fails.
+/// Remote clients emit the returned event in their own event stream (no local run directory).
+pub fn warning(directory: Option<&Path>, message: &str, secrets: &[String]) -> Value {
+	let message = redact_text(&format!("JUnit report: {message}"), secrets);
+	eprintln!("Polkameter warning: {}", escape(&message));
+	let event = serde_json::json!({"event":"warning", "message":message,
+		"timestamp":polkameter_files::now_ms(), "version":2});
+	if let Some(directory) = directory {
+		let _ = (|| -> Result<()> {
+			let mut file =
+				fs::OpenOptions::new().append(true).open(directory.join("events.jsonl"))?;
+			writeln!(file, "{event}")?;
+			Ok(())
+		})();
+	}
+	event
+}
 
 #[derive(Debug, PartialEq)]
 enum Status {
@@ -29,15 +54,22 @@ struct Suite {
 type Key = (String, Option<u64>, Option<u64>);
 
 /// Writes `junit.xml`. Run-time callers pass the same secrets used to redact events; offline
-/// callers use the already-redacted recorded files. No step inputs or outputs are exported.
+/// callers use available credentials and the already-redacted recorded files. Only recorded
+/// error summaries (including bounded assertion values), not raw inputs/outputs, are exported.
 pub fn write(directory: &Path, secrets: &[String]) -> Result<()> {
-	let events: Vec<Value> = fs::read_to_string(directory.join("events.jsonl"))?
+	let mut events: Vec<Value> = fs::read_to_string(directory.join("events.jsonl"))?
 		.lines()
 		.map(serde_json::from_str)
 		.collect::<std::result::Result<_, _>>()?;
-	let plan = read_optional(&directory.join("plan.json"))?;
-	let summary = read_optional(&directory.join("summary.json"))?;
-	let outcome: Value = serde_json::from_slice(&fs::read(directory.join("execution.json"))?)?;
+	let mut plan = read_optional(&directory.join("plan.json"))?;
+	let mut summary = read_optional(&directory.join("summary.json"))?;
+	let mut outcome: Value = serde_json::from_slice(&fs::read(directory.join("execution.json"))?)?;
+	for event in &mut events {
+		redact(event, secrets);
+	}
+	for value in [&mut plan, &mut summary, &mut outcome] {
+		redact(value, secrets);
+	}
 	let suites = suites(&plan, &events, &summary, &outcome);
 	let safe_path = redact_text(&directory.display().to_string(), secrets);
 	let xml = render(&suites, Path::new(&safe_path));
@@ -113,12 +145,28 @@ fn suites(plan: &Value, events: &[Value], summary: &Value, outcome: &Value) -> V
 	let end = events
 		.iter()
 		.rev()
-		.find(|e| e["event"] != "completed")
+		.find(|e| !matches!(text(e, "event"), "completed" | "warning"))
 		.and_then(|e| e["timestamp"].as_u64())
 		.unwrap_or(0);
 	for (id, index) in owners {
 		let mut cases = Vec::new();
+		let (mut passed, mut passed_ms, mut failures, mut overflow_ms, mut invocations) =
+			(0u64, 0u64, 0usize, 0u64, 0u64);
 		for (key, event) in finished.iter().filter(|(key, _)| key.0 == id) {
+			invocations += 1;
+			if key.1.is_some() && event["success"] == true {
+				passed += 1;
+				passed_ms = passed_ms.saturating_add(event["elapsedMs"].as_u64().unwrap_or(0));
+				continue;
+			}
+			if event["success"] != true {
+				failures += 1;
+				if failures > FAILURES_PER_STEP {
+					overflow_ms =
+						overflow_ms.saturating_add(event["elapsedMs"].as_u64().unwrap_or(0));
+					continue;
+				}
+			}
 			cases.push(Case {
 				name: case_name(key),
 				ms: event["elapsedMs"].as_u64().unwrap_or(0),
@@ -128,11 +176,58 @@ fn suites(plan: &Value, events: &[Value], summary: &Value, outcome: &Value) -> V
 		}
 		for (key, event) in started.iter().filter(|(key, _)| key.0 == id) {
 			if !finished.contains_key(key) {
+				invocations += 1;
+				failures += 1;
+				if failures > FAILURES_PER_STEP {
+					overflow_ms = overflow_ms.saturating_add(
+						end.saturating_sub(event["timestamp"].as_u64().unwrap_or(end)),
+					);
+					continue;
+				}
 				cases.push(Case {
 					name: case_name(key),
 					ms: end.saturating_sub(event["timestamp"].as_u64().unwrap_or(end)),
 					status: Status::Failed,
 					message: format!("Step interrupted: {}", text(outcome, "error")),
+				});
+			}
+		}
+		if passed > 0 {
+			cases.push(Case {
+				name: format!("{id} [passing invocations]"),
+				ms: passed_ms,
+				status: Status::Passed,
+				message: format!("{passed} passing user/iteration invocations"),
+			});
+		}
+		if failures > FAILURES_PER_STEP {
+			cases.push(Case {
+				name: format!("{id} [additional failures]"),
+				ms: overflow_ms,
+				status: Status::Failed,
+				message: format!(
+					"{} additional failed invocations; full details in events.jsonl",
+					failures - FAILURES_PER_STEP
+				),
+			});
+		}
+		if let Some(workflow) = items(&plan["workflow"])
+			.iter()
+			.find(|w| items(&w["step"]).iter().any(|s| text(s, "@id") == id))
+		{
+			let expected = workflow["@users"]
+				.as_u64()
+				.unwrap_or(1)
+				.saturating_mul(workflow["@iterations"].as_u64().unwrap_or(1));
+			if invocations > 0 && invocations < expected {
+				cases.push(Case {
+					name: format!("{id} [not run]"),
+					ms: 0,
+					status: Status::Skipped,
+					message: format!(
+						"{} user/iteration invocations not run",
+						expected - invocations
+					),
 				});
 			}
 		}
@@ -146,7 +241,6 @@ fn suites(plan: &Value, events: &[Value], summary: &Value, outcome: &Value) -> V
 		}
 		suites[index].cases.extend(cases);
 	}
-	add_missing_workflow_cases(&mut suites, plan);
 	let mut execution =
 		mapped_case("execution".into(), text(outcome, "state"), text(outcome, "error"));
 	// Step timings and load measurement timings are counted in their own suites.
@@ -160,12 +254,18 @@ fn suites(plan: &Value, events: &[Value], summary: &Value, outcome: &Value) -> V
 
 fn load_suite(events: &[Value], summary: &Value) -> Suite {
 	let mut load = Suite { name: "load test".into(), cases: vec![] };
+	let mut names = BTreeMap::new();
 	for check in items(&summary["checks"]) {
-		load.cases.push(mapped_case(
-			format!("{}: {}", text(check, "outcome"), text(check, "check")),
-			text(check, "status"),
-			text(check, "detail"),
-		));
+		let mut name = format!("{}: {}", text(check, "outcome"), text(check, "check"));
+		if let Some(source) = check["source"].as_str() {
+			write!(name, " [evaluate:{source}]").unwrap();
+		}
+		let count = names.entry(name.clone()).or_insert(0);
+		*count += 1;
+		if *count > 1 {
+			write!(name, " [check={count}]").unwrap();
+		}
+		load.cases.push(mapped_case(name, text(check, "status"), text(check, "detail")));
 	}
 	let mut verdict = mapped_case(
 		"overall verdict".into(),
@@ -200,32 +300,6 @@ fn add_section(
 	}
 }
 
-// A partially executed workflow can have billions of unstarted invocations. Keep one skipped
-// case per step for the missing invocations, rather than expanding an unbounded Cartesian product.
-fn add_missing_workflow_cases(suites: &mut [Suite], plan: &Value) {
-	for workflow in items(&plan["workflow"]) {
-		let name = format!("workflow:{}", text(workflow, "@id"));
-		let Some(suite) = suites.iter_mut().find(|s| s.name == name) else { continue };
-		let expected = workflow["@users"]
-			.as_u64()
-			.unwrap_or(1)
-			.saturating_mul(workflow["@iterations"].as_u64().unwrap_or(1));
-		for step in items(&workflow["step"]) {
-			let id = text(step, "@id");
-			let prefix = format!("{id} [user=");
-			let count = suite.cases.iter().filter(|c| c.name.starts_with(&prefix)).count() as u64;
-			if count > 0 && count < expected {
-				suite.cases.push(Case {
-					name: format!("{id} [not run]"),
-					ms: 0,
-					status: Status::Skipped,
-					message: format!("{} user/iteration invocations not run", expected - count),
-				});
-			}
-		}
-	}
-}
-
 fn case_name((id, user, iteration): &Key) -> String {
 	match (user, iteration) {
 		(Some(user), Some(iteration)) => format!("{id} [user={user}, iteration={iteration}]"),
@@ -255,7 +329,7 @@ fn mapped_case(name: String, status: &str, detail: &str) -> Case {
 fn escape(text: &str) -> String {
 	let mut out = String::new();
 	for (i, c) in text.chars().enumerate() {
-		if i == 2048 {
+		if i == MESSAGE_CHARS {
 			out.push('…');
 			break;
 		}
@@ -278,39 +352,75 @@ fn escape(text: &str) -> String {
 	out
 }
 
+// Hash the complete identity before truncation; retain invocation/source suffixes too.
+fn escape_name(name: &str, index: usize) -> String {
+	if name.chars().count() <= MESSAGE_CHARS {
+		return escape(name);
+	}
+	let hash = name
+		.bytes()
+		.fold(0xcbf29ce484222325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100000001b3));
+	let tail: String = name.chars().rev().take(100).collect::<Vec<_>>().into_iter().rev().collect();
+	escape(&format!(
+		"{}…{tail} [id={hash:016x}-{index}]",
+		name.chars().take(MESSAGE_CHARS - 150).collect::<String>()
+	))
+}
+
+fn render_case(case: &Case, suite_name: &str, name: &str) -> String {
+	let mut xml = format!(
+		"    <testcase classname=\"{suite_name}\" name=\"{name}\" time=\"{:.3}\">\n",
+		case.ms as f64 / 1000.0
+	);
+	let message = escape(&case.message);
+	match case.status {
+		Status::Failed => writeln!(xml, "      <failure message=\"{message}\">{message}</failure>"),
+		Status::Skipped => writeln!(xml, "      <skipped>{message}</skipped>"),
+		Status::Passed => writeln!(xml, "      <system-out>{message}</system-out>"),
+	}
+	.unwrap();
+	xml.push_str("    </testcase>\n");
+	xml
+}
+
 fn render(suites: &[Suite], directory: &Path) -> String {
 	let mut xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<testsuites>\n");
-	for suite in suites {
-		let count = |status| suite.cases.iter().filter(|c| c.status == status).count();
-		let ms: u64 = suite.cases.iter().map(|c| c.ms).sum();
-		let name = escape(&suite.name);
-		writeln!(xml, "  <testsuite name=\"{name}\" tests=\"{}\" failures=\"{}\" errors=\"0\" skipped=\"{}\" time=\"{:.3}\">",
-			suite.cases.len(), count(Status::Failed), count(Status::Skipped), ms as f64 / 1000.0).unwrap();
+	let mut omitted = [0u64; 3];
+	let mut suite_names = BTreeMap::new();
+	for (suite_index, suite) in suites.iter().enumerate() {
+		let name = distinct_name(&suite.name, suite_index, &mut suite_names);
+		let mut body = String::new();
+		let mut counts = [0u64; 3];
+		let mut ms = 0u64;
+		let mut names = BTreeMap::new();
+		for (index, case) in suite.cases.iter().enumerate() {
+			let case_name = distinct_name(&case.name, index, &mut names);
+			let rendered = render_case(case, &name, &case_name);
+			let status = match case.status {
+				Status::Passed => 0,
+				Status::Failed => 1,
+				Status::Skipped => 2,
+			};
+			// Reserve ample space for suite metadata, closing tags and the overflow summary.
+			if xml.len() + body.len() + rendered.len() + SUITE_RESERVE > REPORT_BYTES {
+				omitted[status] += 1;
+				continue;
+			}
+			body.push_str(&rendered);
+			counts[status] += 1;
+			ms = ms.saturating_add(case.ms);
+		}
+		if counts.iter().sum::<u64>() == 0 {
+			continue;
+		}
+		writeln!(xml, "  <testsuite name=\"{name}\" tests=\"{}\" failures=\"{}\" errors=\"0\" skipped=\"{}\" time=\"{:.3}\">", counts.iter().sum::<u64>(), counts[1], counts[2], ms as f64 / 1000.0).unwrap();
 		writeln!(
 			xml,
 			"    <properties><property name=\"run-directory\" value=\"{}\"/></properties>",
 			escape(&directory.display().to_string())
 		)
 		.unwrap();
-		for case in &suite.cases {
-			writeln!(
-				xml,
-				"    <testcase classname=\"{name}\" name=\"{}\" time=\"{:.3}\">",
-				escape(&case.name),
-				case.ms as f64 / 1000.0
-			)
-			.unwrap();
-			let message = escape(&case.message);
-			match case.status {
-				Status::Failed => {
-					writeln!(xml, "      <failure message=\"{message}\">{message}</failure>")
-				},
-				Status::Skipped => writeln!(xml, "      <skipped>{message}</skipped>"),
-				Status::Passed => writeln!(xml, "      <system-out>{message}</system-out>"),
-			}
-			.unwrap();
-			xml.push_str("    </testcase>\n");
-		}
+		xml.push_str(&body);
 		writeln!(
 			xml,
 			"    <system-out>Run directory: {}</system-out>",
@@ -319,8 +429,26 @@ fn render(suites: &[Suite], directory: &Path) -> String {
 		.unwrap();
 		xml.push_str("  </testsuite>\n");
 	}
+	if omitted.iter().sum::<u64>() > 0 {
+		xml.push_str("  <testsuite name=\"report overflow\" tests=\"1\" failures=\"");
+		xml.push_str(if omitted[1] > 0 { "1" } else { "0" });
+		xml.push_str("\" errors=\"0\" skipped=\"0\" time=\"0.000\">\n");
+		xml.push_str(&render_case(&Case { name: "additional results".into(), ms: 0,
+			status: if omitted[1] > 0 { Status::Failed } else { Status::Passed },
+			message: format!("Report size limit: {} passed, {} failed, {} skipped cases omitted (cases may aggregate invocations); full details in events.jsonl and summary.json", omitted[0], omitted[1], omitted[2]) }, "report overflow", "additional results"));
+		xml.push_str("  </testsuite>\n");
+	}
 	xml.push_str("</testsuites>\n");
 	xml
+}
+
+fn distinct_name(name: &str, index: usize, used: &mut BTreeMap<String, usize>) -> String {
+	let mut safe = escape_name(name, index);
+	// XML sanitization can merge different names; reserve every emitted name.
+	while used.insert(safe.clone(), index).is_some() {
+		safe = format!("{} [case={index}]", safe);
+	}
+	safe
 }
 
 #[cfg(test)]
@@ -376,6 +504,8 @@ mod tests {
 			json!({"event":"step-finished","step":"bad","success":false,"error":"assertion failed"}),
 			json!({"event":"step-started","step":"interrupted","timestamp":100}),
 			json!({"event":"phase","phase":"teardown","timestamp":250}),
+			// Copy/report warnings after completion must not extend interrupted step timings.
+			json!({"event":"warning","timestamp":999999}),
 		];
 		let suites =
 			suites(&plan, &events, &Value::Null, &json!({"state":"failed","error":"deadline"}));
@@ -405,10 +535,82 @@ mod tests {
 		let suites = suites(&plan, &events, &Value::Null, &json!({"state":"failed"}));
 		let cases = &suites[1].cases;
 		assert_eq!(cases.len(), 4);
-		assert_eq!(cases[0].name, "a [user=0, iteration=0]");
-		assert_eq!(cases[1].name, "a [user=1, iteration=0]");
+		assert_eq!(cases[0].name, "a [user=1, iteration=0]");
+		assert_eq!(cases[1].name, "a [passing invocations]");
 		assert_eq!(cases[2].status, Status::Skipped);
-		assert_eq!(cases[3].message, "399999999999998 user/iteration invocations not run");
+		assert_eq!(cases[2].message, "399999999999998 user/iteration invocations not run");
+	}
+
+	#[test]
+	fn completed_large_workflow_aggregates_passes_and_retains_failures() {
+		let plan = json!({"workflow":[{"@id":"workers","@users":1000,"@iterations":200,"step":[{"@id":"work"}]}]});
+		let events: Vec<_> = (0..1000).flat_map(|user| (0..200).map(move |iteration| {
+			json!({"event":"step-finished", "step":"work", "user":user,"iteration":iteration,
+				"success": !(user == 0 && iteration < 150), "elapsedMs":1,
+				"error":if user == 0 && iteration < 150 { json!(format!("failure {iteration}")) } else { Value::Null }})
+		})).collect();
+		let suites = suites(&plan, &events, &Value::Null, &json!({"state":"completed"}));
+		let cases = &suites[1].cases;
+		assert_eq!(cases.len(), FAILURES_PER_STEP + 2);
+		assert_eq!(cases.iter().filter(|c| c.status == Status::Failed).count(), 101);
+		for i in 0..100 {
+			assert!(cases.iter().any(|c| c.message == format!("failure {i}")));
+		}
+		assert!(
+			cases
+				.iter()
+				.any(|c| c.message
+					== "50 additional failed invocations; full details in events.jsonl")
+		);
+		assert!(cases.iter().any(|c| c.message == "199850 passing user/iteration invocations"));
+		assert_eq!(cases.iter().map(|c| c.ms).sum::<u64>(), 200000);
+		let xml = render(&suites, Path::new("/runs/large"));
+		eprintln!("large synthetic report: {} bytes", xml.len());
+		assert!(xml.len() < 5 * 1024 * 1024);
+		assert!(xml.len() < 30000);
+	}
+
+	#[test]
+	fn whole_report_budget_keeps_failure_summary_even_with_many_steps() {
+		let suite = Suite {
+			name: "huge".into(),
+			cases: (0..10000)
+				.map(|i| Case {
+					name: format!("step{i}"),
+					ms: 1,
+					status: Status::Failed,
+					message: "&".repeat(MESSAGE_CHARS),
+				})
+				.collect(),
+		};
+		let xml = render(&[suite], Path::new("/runs/large"));
+		assert!(xml.len() <= REPORT_BYTES);
+		assert!(xml.contains("report overflow"));
+		assert!(xml.contains("full details in events.jsonl and summary.json"));
+		let emitted = xml.matches("<failure message=").count() - 1;
+		assert!(xml.contains(&format!("{} failed", 10000 - emitted)));
+	}
+
+	#[test]
+	fn checks_keep_source_and_duplicate_counter_and_long_names_keep_identity() {
+		let summary = json!({"checks":[
+			{"outcome":"pool","check":"same","status":"pass","source":"first"},
+			{"outcome":"pool","check":"same","status":"fail","source":"second"},
+			{"outcome":"pool","check":"same","status":"fail","source":"second"}
+		]});
+		let suite = load_suite(&[], &summary);
+		assert_eq!(suite.cases[0].name, "pool: same [evaluate:first]");
+		assert_eq!(suite.cases[1].name, "pool: same [evaluate:second]");
+		assert_eq!(suite.cases[2].name, "pool: same [evaluate:second] [check=2]");
+		let long = "界".repeat(MESSAGE_CHARS * 2);
+		let a = escape_name(&case_name(&(format!("{long}a"), Some(1), Some(2))), 0);
+		let b = escape_name(&case_name(&(format!("{long}b"), Some(1), Some(2))), 1);
+		assert_ne!(a, b);
+		assert!(a.contains("a [user=1, iteration=2]"));
+		assert!(b.contains("b [user=1, iteration=2]"));
+		assert!(a.contains("[id="));
+		let mut used = BTreeMap::new();
+		assert_ne!(distinct_name("a\nb", 0, &mut used), distinct_name("a b", 1, &mut used));
 	}
 
 	#[test]

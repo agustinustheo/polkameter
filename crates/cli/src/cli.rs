@@ -276,13 +276,16 @@ async fn run_local(
 			eprintln!("Phase: {}", event["phase"].as_str().unwrap_or("unknown"));
 		}
 	});
+	let secrets = available_secrets(&registry);
 	let result = polkameter_engine::execute::run_with_options(
 		plan, registry, &output, cancel, sink, options,
 	)
 	.await;
 	interrupt.abort();
 	let outcome = result.map_err(|e| CliError::Runtime(e.to_string()))?;
-	copy_junit(&outcome.artifact_dir, junit.as_deref())?;
+	if let Err(error) = copy_junit(&outcome.artifact_dir, junit.as_deref()) {
+		junit_warning(format, Some(&outcome.artifact_dir), &error.to_string(), &secrets);
+	}
 	write_artifact_written(format, RunLocation::Local, &outcome);
 	Ok(outcome.exit_code)
 }
@@ -383,8 +386,14 @@ fn report(path: PathBuf, format: OutputFormat, junit: Option<PathBuf>) -> Result
 	if path.join("summary.json").is_file() {
 		polkameter_engine::measurement::check(&path).map_err(runtime)?;
 	}
-	polkameter_engine::junit::write(&path, &[]).map_err(runtime)?;
-	copy_junit(&path, junit.as_deref())?;
+	let secrets = Registry::load()
+		.map(|registry| available_secrets(&registry))
+		.unwrap_or_default();
+	if let Err(error) = polkameter_engine::junit::write(&path, &secrets) {
+		junit_warning(format, Some(&path), &error.to_string(), &secrets);
+	} else if let Err(error) = copy_junit(&path, junit.as_deref()) {
+		junit_warning(format, Some(&path), &error.to_string(), &secrets);
+	}
 	let execution = path.join("execution.json");
 	let outcome: polkameter_engine::execute::Outcome = serde_json::from_slice(
 		&std::fs::read(&execution)
@@ -396,6 +405,27 @@ fn report(path: PathBuf, format: OutputFormat, junit: Option<PathBuf>) -> Result
 		.map_err(|e| CliError::Runtime(format!("cannot read {}: {e}", summary_path.display())))?;
 	write_result(format, &json!({"event":"report","outcome":outcome,"summary":summary}), summary);
 	Ok(0)
+}
+
+fn available_secrets(registry: &Registry) -> Vec<String> {
+	registry
+		.credentials
+		.values()
+		.filter_map(|name| std::env::var(name).ok())
+		.filter(|value| !value.is_empty())
+		.collect()
+}
+
+fn junit_warning(
+	format: OutputFormat,
+	directory: Option<&std::path::Path>,
+	message: &str,
+	secrets: &[String],
+) {
+	let event = polkameter_engine::junit::warning(directory, message, secrets);
+	if format == OutputFormat::Json {
+		write_json_line(&event);
+	}
 }
 
 /// Keep the default report even when the caller requests a copy (including the same path).
@@ -543,10 +573,20 @@ async fn run_plugin_remote(
 		if status.state != "running" {
 			if let Some(outcome) = status.outcome {
 				if let Some(path) = junit.as_deref() {
-					let xml = remote::plugin_junit(&started.id, &target)
-						.await
-						.map_err(CliError::Runtime)?;
-					write_junit_copy(path, &xml)?;
+					let result = match remote::plugin_junit(&started.id, &target).await {
+						Ok(xml) => write_junit_copy(path, &xml),
+						Err(error) => {
+							Err(CliError::Runtime(format!("cannot fetch junit.xml: {error}")))
+						},
+					};
+					if let Err(error) = result {
+						junit_warning(
+							format,
+							None,
+							&error.to_string(),
+							std::slice::from_ref(&target.bearer_token),
+						);
+					}
 				}
 				write_artifact_written(format, RunLocation::Remote, &outcome);
 				return Ok(outcome.exit_code);
