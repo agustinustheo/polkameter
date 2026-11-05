@@ -493,7 +493,7 @@ impl Plan {
 		self.thresholds.rules()?;
 		ensure!(
 			self.version == 1 && self.namespace == NAMESPACE,
-			"expected a version 1 Polkameter plan in its namespace"
+			"expected a version 1 PolkaMeter plan in its namespace"
 		);
 		ensure!(!self.name.is_empty() && self.timeout_ms > 0, "name and run deadline required");
 		let mut plugin_ids = BTreeSet::new();

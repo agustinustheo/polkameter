@@ -34,7 +34,7 @@ code=0
 "$cli" run "$work/failing.xml" --output "$work/failing" > /dev/null 2> "$work/failing.err" || code=$?
 [ "$code" -eq 1 ] || { echo "a failed assertion exited $code, expected 1" >&2; exit 1; }
 xmllint --nonet --noout --schema tests/schemas/junit.xsd "$work"/failing/run-*/junit.xml
-grep -q '^Polkameter: run failed: assertion verified failed: expected 85, got 84 (details in ' "$work/failing.err"
+grep -q '^PolkaMeter: run failed: assertion verified failed: expected 85, got 84 (details in ' "$work/failing.err"
 
 # Exercise the action's jq expression on a real FAIL report, not the shell-test stub.
 mkdir "$work/recorded"

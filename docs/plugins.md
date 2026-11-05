@@ -1,5 +1,8 @@
 # Plugins and SDK
 
+<!-- v0.3.0: remove after release -->
+> **Unreleased:** This page describes plugin SDK 0.3, which is not on crates.io yet. [The plugin SDK crate](#the-plugin-sdk-crate) shows the dependency line that works today. The protocol is the same in 0.2.0.
+
 A plugin is an executable that PolkaMeter starts for a run. Plans call its operations by name, and it replies over standard input and output. [Writing a plugin](writing-a-plugin.md) builds one.
 
 ## Example
@@ -117,12 +120,12 @@ A plan names a credential profile, never the secret. The host reads the mapped v
 
 ```text
 $ polkameter preflight hello.polkameter.xml
-Polkameter: plugin hello version/checksum mismatch
+PolkaMeter: plugin hello version/checksum mismatch
 ```
 
 The command exits with code 3.
 
-A `run` prints the same error as `Polkameter: run failed: <error> (details in …)`, writes it to `execution.json` and exits with `1`. Rebuilding changes the hash, so reinstall after every build. After start, the manifest must match the plan's `id`, `version` and `protocol`, or the run fails with `manifest identity mismatch for <plugin id>`.
+A `run` prints the same error as `PolkaMeter: run failed: <error> (details in …)`, writes it to `execution.json` and exits with `1`. Rebuilding changes the hash, so reinstall after every build. After start, the manifest must match the plan's `id`, `version` and `protocol`, or the run fails with `manifest identity mismatch for <plugin id>`.
 
 ## PreparedTx and the load contract
 
@@ -155,12 +158,21 @@ Checks read the observer's series, labelled `job="plugin"` and `instance=<plugin
 
 ## The plugin SDK crate
 
-A plugin depends on one crate, `polkameter-plugin-sdk` ([crates.io](https://crates.io/crates/polkameter-plugin-sdk), [docs.rs](https://docs.rs/polkameter-plugin-sdk)). Its default features give the protocol only. Turn on `chain` to read and submit to a chain, or `observers` to record series and write checks:
+A plugin depends on one crate, `polkameter-plugin-sdk` ([crates.io](https://crates.io/crates/polkameter-plugin-sdk), [API documentation for 0.3](https://docs.rs/polkameter-plugin-sdk/0.3)). Its default features give the protocol only. Turn on `chain` to read and submit to a chain, or `observers` to record series and write checks:
 
 ```toml
 [dependencies]
 polkameter-plugin-sdk = { version = "0.3", features = ["observers"] }
 ```
+
+<!-- v0.3.0: remove after release -->
+> **Warning:** Version 0.3 and its `chain` and `observers` features are available from v0.3.0. crates.io and docs.rs have 0.2.0 only. Until the release, depend on a commit of this repository:
+>
+> ```toml
+> polkameter-plugin-sdk = { git = "https://github.com/agustinustheo/polkameter", rev = "58921b7d506f9987db68fc8084b2fb8f13649f94", features = ["observers"] }
+> ```
+>
+> To read the API documentation, run `cargo doc -p polkameter-plugin-sdk --all-features --open` in a checkout.
 
 `observers` turns on `chain` as well. Without features the crate does not depend on subxt, so a plugin that only prepares data builds faster.
 
@@ -182,6 +194,9 @@ Version 0.2 published the plugin API as five crates. Version 0.3 merges them int
 [dependencies]
 polkameter-plugin-sdk = { version = "0.3", features = ["observers"] }
 ```
+
+<!-- v0.3.0: remove after release -->
+Until v0.3.0 is on crates.io, use the Git dependency from [The plugin SDK crate](#the-plugin-sdk-crate).
 
 Use `features = ["chain"]` if the plugin does not use `polkameter-files`, `polkameter-checks` or `polkameter-monitors`. Then change the import paths:
 

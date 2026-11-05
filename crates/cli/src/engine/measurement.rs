@@ -199,7 +199,7 @@ pub async fn run(
 		artifact: Some(Artifact {
 			name: "prepared extrinsics".into(),
 			description:
-				"Each operation is prepared by an installed plugin and submitted by Polkameter"
+				"Each operation is prepared by an installed plugin and submitted by PolkaMeter"
 					.into(),
 			context: "XML plugin workload".into(),
 		}),

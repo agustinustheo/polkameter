@@ -1,5 +1,8 @@
 # Getting started
 
+<!-- v0.3.0: remove after release -->
+> **Unreleased:** The published CLI is v0.2.0. This page shows its output, and the output of a v0.3.0 build from source where the two differ.
+
 You will install the CLI, run the example plan and read its results. You need no chain; building the example plugin needs Rust 1.93 or newer.
 
 ## 1. Install the CLI
@@ -16,6 +19,7 @@ polkameter --version
 polkameter 0.2.0
 ```
 
+<!-- v0.3.0: remove after release -->
 Prebuilt CLI archives, `install.sh`, binstall metadata and containers are available **from v0.3.0**. The [install guide](install.md) lists their requirements; v0.2.0 has no prebuilt CLI archives.
 
 ## 2. Build the example plugin
@@ -34,18 +38,17 @@ The local build completed with:
 
 On a first build, Cargo prints a `Compiling` line for each crate before the `Finished` line. The plugin executable is `target/debug/polkameter-example-plugin` (`.exe` on Windows). Keep using the repository root for the remaining commands.
 
-If release binaries are unavailable, build the CLI from this checkout:
+To use the v0.3.0 CLI before its release, such as for `junit.xml`, build it from this checkout instead:
 
+<!-- v0.3.0: remove after release -->
 ```sh
 cargo +1.93.0 build --locked -p polkameter --bin polkameter
 export PATH="$PWD/target/debug:$PATH"
 polkameter --version
 ```
 
-The local version check at this checkout returns:
-
 ```text
-polkameter 0.2.0
+polkameter 0.3.0
 ```
 
 ## 3. Install the example plugin
@@ -114,6 +117,7 @@ ls target/runs/<run>
 ```text
 events.jsonl
 execution.json
+junit.xml
 plan.json
 plots
 plugins
@@ -121,6 +125,9 @@ resolved-plan.json
 samples.jtl
 summary.md
 ```
+
+<!-- v0.3.0: remove after release -->
+The v0.2.0 CLI writes the same files except `junit.xml`, which is new in v0.3.0.
 
 ```sh
 cat target/runs/<run>/summary.md
@@ -166,8 +173,15 @@ Phase: setup
 Phase: workflow
 Phase: teardown
 Run failed. Artifacts: ~/polkameter/target/runs/run-…
-Polkameter: run failed: assertion verified failed: expected 85, got 84 (details in ~/polkameter/target/runs/run-…/execution.json)
+PolkaMeter: run failed: assertion verified failed: expected 85, got 84 (details in ~/polkameter/target/runs/run-…/execution.json)
 1
+```
+
+<!-- v0.3.0: remove after release -->
+The v0.2.0 CLI prints a shorter reason, without the values:
+
+```text
+Polkameter: run failed: assertion verified failed (details in ~/polkameter/target/runs/run-…/execution.json)
 ```
 
 The last line before the exit code gives the reason: the step `verified` found a different value. The run directory keeps the same error in `summary.md`:
@@ -183,6 +197,9 @@ Status: failed
 
 assertion verified failed: expected 85, got 84
 ```
+
+<!-- v0.3.0: remove after release -->
+With v0.2.0, the last line is `assertion verified failed`.
 
 Exit code `1` means the run ended in the `failed` state. [Exit codes](cli.md#exit-codes) lists every code.
 

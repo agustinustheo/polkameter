@@ -1,5 +1,8 @@
 # Install
 
+<!-- v0.3.0: remove after release -->
+> **Unreleased:** The published CLI is v0.2.0. The install script, binstall, the container and release archives are available from v0.3.0. Until then, use Cargo.
+
 Install the currently published CLI with Rust 1.93 or newer:
 
 <!-- TODO(v0.3.0): lead with the prebuilt installer once v0.3.0 assets are published. -->
@@ -14,6 +17,7 @@ polkameter 0.2.0
 
 ## Use the install script
 
+<!-- v0.3.0: remove after release -->
 > **Warning:** Prebuilt CLI archives and this script are available from v0.3.0. The latest release, v0.2.0, has no prebuilt CLI archive; use Cargo above until v0.3.0 is published.
 
 Install the CLI binary without a Rust toolchain on Linux or macOS:
@@ -46,6 +50,7 @@ curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/insta
 
 ## Use cargo binstall
 
+<!-- v0.3.0: remove after release -->
 > **Warning:** Binstall metadata and matching archives are available from v0.3.0. v0.2.0 has neither; use `cargo install --locked polkameter` until v0.3.0 is published.
 
 If you have [cargo-binstall](https://github.com/cargo-bins/cargo-binstall), download the matching prebuilt binary:
@@ -58,6 +63,7 @@ To select a version with these assets, add `--version <version>`. The metadata p
 
 ## Use a container
 
+<!-- v0.3.0: remove after release -->
 > **Warning:** GHCR images are available from v0.3.0; the commands below require a published image.
 
 Run the CLI from `ghcr.io/agustinustheo/polkameter:<version>`. Stable releases also update `:latest`, `:<major>` and `:<major>.<minor>`; for example, a `0.3.0` release publishes `:0.3.0`, `:0.3`, `:0` and `:latest`. Prereleases use their full version tag only.
@@ -86,7 +92,7 @@ Use Rust 1.93 or newer to compile the CLI from a published crates.io version:
 cargo install --locked polkameter
 ```
 
-To build the current repository code instead:
+To build the current repository code instead, such as v0.3.0 before its release:
 
 ```sh
 cargo install --locked --git https://github.com/agustinustheo/polkameter polkameter
@@ -96,6 +102,7 @@ Cargo installs the executable in `~/.cargo/bin` by default. You still need to bu
 
 ## Download release archives
 
+<!-- v0.3.0: remove after release -->
 > **Warning:** CLI archives are available from v0.3.0; v0.2.0 only has the older release assets.
 
 Choose a target and verify the archive using the [release asset reference](release-assets.md).

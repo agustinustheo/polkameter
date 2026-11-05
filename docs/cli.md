@@ -1,5 +1,8 @@
 # CLI reference
 
+<!-- v0.3.0: remove after release -->
+> **Unreleased:** This page describes v0.3.0. The published CLI is v0.2.0, which has no `--junit` and writes no `junit.xml`. To use them now, build from source with `cargo install --locked --git https://github.com/agustinustheo/polkameter polkameter`.
+
 `polkameter` validates, preflights and runs plans, reports on runs, manages plugins and serves a remote agent. Run `polkameter COMMAND --help` for one command's flags. Errors: see [Troubleshooting](troubleshooting.md).
 
 ## --version
@@ -72,7 +75,7 @@ polkameter run --remote URL --remote-token-env ENV_VAR [--junit PATH] [--fail-on
 | --- | --- | --- |
 | `PLAN` | yes | The plan file |
 | `--output DIR` | yes, unless `--remote` | The artifact root |
-| `--junit PATH` | no | Write a local copy of the run directory's `junit.xml`, including for a remote run. Default: no additional copy |
+| `--junit PATH` | no | <!-- v0.3.0: remove after release -->From v0.3.0. Write a local copy of the run directory's `junit.xml`, including for a remote run. Default: no additional copy |
 | `--credential-env` | no | Reads the only credential from this variable. Not allowed with `--remote` |
 | `--fail-on-verdict` | no | Default off. Exit `1` on a `FAIL` load verdict after writing the report and running teardown. Other verdicts and plans without a load test keep their existing exit behavior |
 | `--remote URL` | no | The agent's endpoint. See [remote agent](#remote-agent) |
@@ -102,12 +105,12 @@ Phase: preflight
 Phase: setup
 Phase: teardown
 Run failed. Artifacts: ~/polkameter/runs/run-1792994214466-72728-1
-Polkameter: run failed: plugin exited before responding (details in ~/polkameter/runs/run-1792994214466-72728-1/execution.json)
+PolkaMeter: run failed: plugin exited before responding (details in ~/polkameter/runs/run-1792994214466-72728-1/execution.json)
 ```
 
 The reason stays on one line. Colour and cursor codes are removed, and line breaks show as `⏎`. Other control characters, including the start of other terminal escape sequences such as a window title, are shown escaped, like `\u{1b}`. The printed reason is cut at 300 characters with `…`, and `execution.json` keeps the full text.
 
-A failed remote run prints `Polkameter: remote run failed: <reason> (details in <run directory>/execution.json on the agent)`. The run directory is on the agent host. See [Troubleshooting](troubleshooting.md#run-failed--details-in-executionjson) for the reasons.
+A failed remote run prints `PolkaMeter: remote run failed: <reason> (details in <run directory>/execution.json on the agent)`. The run directory is on the agent host. See [Troubleshooting](troubleshooting.md#run-failed--details-in-executionjson) for the reasons.
 
 ## report
 
@@ -120,7 +123,7 @@ polkameter report [--junit PATH] [--format human|json] ARTIFACT_DIRECTORY
 | Name | Default | Meaning |
 | --- | --- | --- |
 | `ARTIFACT_DIRECTORY` | none | The run directory |
-| `--junit PATH` | none | Write an additional copy of `junit.xml` |
+| `--junit PATH` | none | <!-- v0.3.0: remove after release -->From v0.3.0. Write an additional copy of `junit.xml` |
 | `--format` | `human` | `human` or `json`. See [output formats](#output-formats) |
 
 With a `<load>`, it rebuilds the built-in and plugin checks, `summary.json`, `summary.md`, `junit.xml`, `samples.jtl` and `plots/`. Without one, it rewrites `junit.xml`, `samples.jtl` and `plots/`. The directory must hold `execution.json` and `summary.md`. The human format prints the summary.
@@ -356,7 +359,7 @@ polkameter validate examples/plugin-workflow.polkameter.xml --format json
 {"event":"validation","plan":"Plugin data flow","valid":true}
 ```
 
-- **Errors** go to standard error as `Polkameter: <message>`, even with `--format json`. A failed run adds `Polkameter: run failed: <reason> (details in …)` there.
+- **Errors** go to standard error as `PolkaMeter: <message>`, even with `--format json`. A failed run adds `PolkaMeter: run failed: <reason> (details in …)` there.
 - **Standard output** keeps only JSON lines. A failed run's full reason is the `error` field of the `completed` and `artifact-written` outcomes.
 - **Load runs** also print `stop:`, `loss check:` and `smoke:` lines, and the summary, to standard error.
 

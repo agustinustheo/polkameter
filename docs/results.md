@@ -1,5 +1,8 @@
 # Run directory
 
+<!-- v0.3.0: remove after release -->
+> **Unreleased:** This page describes v0.3.0. The published v0.2.0 CLI writes the same files except `junit.xml`.
+
 A run writes a directory of raw files. [Read the results](reading-results.md) explains how to interpret them. A plan with a `<load>` element is a load test; other plans write fewer files.
 
 ## The run directory
@@ -74,6 +77,9 @@ Written after teardown.
 | `failed` | `1` | Any error, including a failed `core.assert-equal` step and a report that could not be written. |
 
 ## junit.xml
+
+<!-- v0.3.0: remove after release -->
+> **Warning:** `junit.xml` is written from v0.3.0. The published v0.2.0 CLI does not write it. To get it now, build the CLI from source, as [Install](install.md#build-from-source) shows.
 
 JUnit XML for GitLab test reports, Jenkins and GitHub test-report actions. Every run attempts to write it after teardown, including failed and stopped runs. `polkameter report` regenerates it from the recorded files.
 

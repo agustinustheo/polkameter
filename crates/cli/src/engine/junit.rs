@@ -17,7 +17,7 @@ const SUITE_RESERVE: usize = MESSAGE_CHARS * XML_CHAR_BYTES * 6 + 4096;
 /// Remote clients emit the returned event in their own event stream (no local run directory).
 pub fn warning(directory: Option<&Path>, message: &str, secrets: &[String]) -> Value {
 	let message = redact_text(&format!("JUnit report: {message}"), secrets);
-	eprintln!("Polkameter warning: {}", single_line(&message));
+	eprintln!("PolkaMeter warning: {}", single_line(&message));
 	let event = serde_json::json!({"event":"warning", "message":message,
 		"timestamp":polkameter_plugin_sdk::observers::files::now_ms(), "version":2});
 	if let Some(directory) = directory {
