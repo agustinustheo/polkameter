@@ -116,6 +116,8 @@ The executable is `target/debug/hello-plugin`.
 
 ## Install it
 
+From the `hello-plugin` directory:
+
 ```sh
 polkameter plugin install target/debug/hello-plugin
 ```
@@ -150,6 +152,8 @@ Save this as `hello.polkameter.xml` in the `hello-plugin` directory:
 
 ## Run it
 
+From the `hello-plugin` directory:
+
 ```sh
 polkameter run hello.polkameter.xml --output runs
 ```
@@ -162,7 +166,7 @@ Phase: teardown
 Run completed. Artifacts: ~/hello-plugin/runs/run-1792254908788-10278-1
 ```
 
-Each run writes a run directory under `--output`. Its `samples.jtl` file has one row per step and per user:
+Each run writes a run directory under `--output`. Its `samples.jtl` file has one row per step and per user. From the `hello-plugin` directory, read it with:
 
 ```sh
 cat runs/run-*/samples.jtl
@@ -177,7 +181,24 @@ timeStamp,elapsed,label,responseCode,responseMessage,threadName,success,bytes,se
 
 `greet` ran once, in setup. `verified` ran once for each user.
 
-To see a failing check, change `expected` to `Hello, Ferris!` in a copy of the plan, and run that copy with `--output runs-wrong`. The run stops with `assertion verified failed: expected Hello, Ferris!, got Hello, Polkadot!` and exits with code `1`.
+To see a failing check, change `expected` to `Hello, Ferris!` in a copy named `wrong.polkameter.xml`. From the `hello-plugin` directory, run the copy and print its exit code:
+
+```sh
+polkameter run wrong.polkameter.xml --output runs-wrong
+echo $?
+```
+
+```text
+Phase: preflight
+Phase: setup
+Phase: workflow
+Phase: teardown
+Run failed. Artifacts: ~/hello-plugin/runs-wrong/run-1793897634036-94684-1
+Polkameter: run failed: assertion verified failed: expected "Hello, Ferris!", got "Hello, Polkadot!" (details in ~/hello-plugin/runs-wrong/run-1793897634036-94684-1/execution.json)
+1
+```
+
+String values are quoted; numbers and booleans are bare. The run stops at the failed assertion and exits with code `1`.
 
 ## Plugins that drive load
 

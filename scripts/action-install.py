@@ -108,6 +108,9 @@ class Installer:
         assets = {asset["name"]: asset["url"] for asset in release["assets"]}
         if name not in assets or f"{name}.sha256" not in assets:
             raise Unavailable(f"Release {tag} has no archive and checksum for {target}")
+        verify_attestation = os.environ.get("VERIFY_ATTESTATION", "true") != "false"
+        if verify_attestation and not shutil.which("gh"):
+            raise Unavailable("Build provenance verification requires gh, but gh is not installed")
         directory = Path(tempfile.mkdtemp(prefix="polkameter-cli-", dir=os.environ["RUNNER_TEMP"]))
         archive = directory / name
         with self.request(assets[name], "application/octet-stream") as response, archive.open("wb") as out:
@@ -122,9 +125,7 @@ class Installer:
         if not match or match[2] != name or match[1].lower() != digest.hexdigest():
             raise ValueError(f"Checksum verification failed for {name}")
 
-        if os.environ.get("VERIFY_ATTESTATION", "true") != "false":
-            if not shutil.which("gh"):
-                raise Unavailable("Build provenance verification requires gh, but gh is not installed")
+        if verify_attestation:
             env = dict(os.environ, GH_HOST="github.com")
             for key in ("GH_TOKEN", "GITHUB_TOKEN"):
                 env.pop(key, None)

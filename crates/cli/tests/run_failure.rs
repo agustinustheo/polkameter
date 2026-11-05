@@ -117,6 +117,36 @@ fn human_run_failure_prints_the_reason_on_standard_error() {
 }
 
 #[test]
+fn assertion_control_differences_survive_stderr_and_recorded_errors() {
+	for (actual, rendered) in [
+		("\n", r#""\n""#),
+		("\t", r#""\t""#),
+		("\u{1b}", r#""\u001b""#),
+		("\u{202e}", r#""\u202e""#),
+	] {
+		let work = WorkDirectory::new("controls");
+		let actual = serde_json::to_string(actual).unwrap().replace('"', "&quot;");
+		let plan = FAILING_PLAN
+			.replace(r#"name="actual" value="1""#, &format!(r#"name="actual" value="{actual}""#))
+			.replace(r#"name="expected" value="2""#, r#"name="expected" value="&quot; &quot;""#);
+		std::fs::write(work.path().join("plan.xml"), plan).unwrap();
+		let (code, _, stderr) = run(work.path(), "json");
+		assert_eq!(code, 1);
+		let expected = format!(r#"assertion check failed: expected " ", got {rendered}"#);
+		assert!(stderr.contains(&expected), "{stderr}");
+		assert_eq!(stderr.lines().count(), 1);
+		assert!(!stderr.contains(['\t', '\u{1b}', '\u{202e}']));
+		let execution: Value = serde_json::from_slice(
+			&std::fs::read(work.run_directory("runs").join("execution.json")).unwrap(),
+		)
+		.unwrap();
+		assert_eq!(execution["error"], expected);
+		let junit = std::fs::read_to_string(work.run_directory("runs").join("junit.xml")).unwrap();
+		assert!(junit.contains(&expected.replace('"', "&quot;")), "{junit}");
+	}
+}
+
+#[test]
 fn json_run_failure_keeps_json_on_standard_output_and_the_reason_on_standard_error() {
 	let work = WorkDirectory::new("json");
 	let (code, stdout, stderr) = run(work.path(), "json");

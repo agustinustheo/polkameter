@@ -132,13 +132,22 @@ fn failed_run_writes_redacted_failures_and_skips_and_report_rebuilds_them() {
 	let xml = fs::read_to_string(run.join("junit.xml")).unwrap();
 	assert_eq!(xml, fs::read_to_string(copy).unwrap());
 	assert!(!xml.contains("secret_check"));
-	assert!(xml.contains("expected b, got [redacted]"));
+	assert!(xml.contains("expected &quot;b&quot;, got &quot;[redacted]&quot;"));
 	for name in ["events.jsonl", "execution.json"] {
 		let content = fs::read_to_string(run.join(name)).unwrap();
 		assert!(!content.contains("secret_check"));
-		assert!(content.contains("expected b, got [redacted]"));
+		assert!(
+			serde_json::Deserializer::from_str(&content)
+				.into_iter::<serde_json::Value>()
+				.any(|event| {
+					let event = event.unwrap();
+					event["error"]
+						.as_str()
+						.is_some_and(|error| error.contains(r#"expected "b", got "[redacted]""#))
+				})
+		);
 	}
-	assert!(String::from_utf8_lossy(&output.stderr).contains("expected b, got [redacted]"));
+	assert!(String::from_utf8_lossy(&output.stderr).contains(r#"expected "b", got "[redacted]""#));
 	assert!(xml.contains("[redacted]"));
 	assert!(xml.contains("<failure message="));
 	assert!(xml.contains("<skipped>"));
@@ -181,7 +190,11 @@ fn invalid_junit_copy_destinations_warn_without_changing_success() {
 	let work = Work::new("copy-errors");
 	let plan = work.0.join("plan.xml");
 	fs::write(&plan, r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="test"><setup><step id="ok" use="core.echo"><input name="value" value="1"/></step></setup></polkameter-plan>"#).unwrap();
-	let blocker = work.0.join("blocker");
+	#[cfg(unix)]
+	let blocker_name = "blocker & 'quoted'\n\t\u{1b}\u{202e}";
+	#[cfg(not(unix))]
+	let blocker_name = "blocker & 'quoted'";
+	let blocker = work.0.join(blocker_name);
 	fs::write(&blocker, "file, cannot create a directory under it").unwrap();
 	for destination in [work.0.clone(), blocker.join("report.xml")] {
 		let output = work
@@ -196,6 +209,17 @@ fn invalid_junit_copy_destinations_warn_without_changing_success() {
 			.output()
 			.unwrap();
 		assert!(output.status.success());
+		let stderr = String::from_utf8(output.stderr).unwrap();
+		assert_eq!(stderr.lines().count(), 1, "{stderr}");
+		assert!(stderr.contains("Polkameter warning: JUnit report:"));
+		assert!(!stderr.contains("&amp;") && !stderr.contains("&apos;"), "{stderr}");
+		assert!(!stderr.contains(['\t', '\u{1b}', '\u{202e}']), "{stderr}");
+		if destination != work.0 {
+			#[cfg(unix)]
+			assert!(stderr.contains("blocker & 'quoted'    /report.xml"), "{stderr}");
+			#[cfg(not(unix))]
+			assert!(stderr.contains(blocker_name), "{stderr}");
+		}
 		let events: Vec<serde_json::Value> = String::from_utf8(output.stdout)
 			.unwrap()
 			.lines()
@@ -346,7 +370,9 @@ fn local_copy_failure_preserves_sigint_exit_130_and_artifact_notification() {
 	let plan = work.0.join("plan.xml");
 	fs::write(&plan, r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="cancel"><workflow id="workers" users="1" iterations="1000000000"><step id="work" use="core.echo"><input name="value" value="1"/></step></workflow></polkameter-plan>"#).unwrap();
 	let root = work.0.join("runs");
-	let child = work
+	// The output root can exist before the child creates its run directory.
+	fs::create_dir_all(&root).unwrap();
+	let mut child = work
 		.cli()
 		.arg("run")
 		.arg(plan)
@@ -362,15 +388,20 @@ fn local_copy_failure_preserves_sigint_exit_130_and_artifact_notification() {
 	loop {
 		if let Ok(runs) = fs::read_dir(&root) {
 			let runs: Vec<_> = runs.map(|r| r.unwrap().path()).collect();
-			assert_eq!(runs.len(), 1);
-			if fs::read_to_string(runs[0].join("events.jsonl"))
-				.unwrap_or_default()
-				.contains("step-started")
-			{
+			assert!(runs.len() <= 1, "unexpected run directories: {runs:?}");
+			if runs.first().is_some_and(|run| {
+				fs::read_to_string(run.join("events.jsonl"))
+					.unwrap_or_default()
+					.contains("step-started")
+			}) {
 				break;
 			}
 		}
-		assert!(Instant::now() < deadline, "run did not start");
+		if Instant::now() >= deadline {
+			child.kill().unwrap();
+			let output = child.wait_with_output().unwrap();
+			panic!("run did not start: {}", String::from_utf8_lossy(&output.stderr));
+		}
 		std::thread::sleep(Duration::from_millis(10));
 	}
 	assert!(

@@ -40,7 +40,13 @@ Downloads always check the archive's SHA-256 checksum. By default, `gh` must ver
 
 To explicitly accept checksum-only installation, set `verify-attestation: "false"`. The action warns that release provenance is not verified. Checksums remain mandatory.
 
-On GitHub Enterprise Server (GHES), releases and attestations still come from `api.github.com` and `github.com`. The action never sends the enterprise runner token to those hosts. Release downloads are anonymous; `gh` uses any stored github.com authentication from its own configuration. Runners need outbound access to github.com and its release storage; an unavailable download falls back in `auto`, while a failed attestation verification is fatal as described above.
+On GitHub Enterprise Server (GHES), releases and attestations still come from `api.github.com` and `github.com`. The action never sends the enterprise runner token to those hosts. Release lookups and downloads are anonymous.
+
+On GHES, the public API limits anonymous requests to 60 per hour per IP address. Hitting that limit falls back to a source build in `auto` mode. On github.com runners, the action sends `GITHUB_TOKEN` for release requests.
+
+For attestation verification, `gh` uses any stored github.com authentication from its own configuration. The action never supplies the GHES runner token to `gh`.
+
+Runners need outbound access to github.com and its release storage. An unavailable download falls back in `auto`, while a failed attestation verification is fatal as described above.
 
 The action installs Rust only for a source build or when you set `plugin-crates`. It uses the `toolchain` input, Rust 1.93.0 by default, and sets that toolchain as the job's default. Later steps that run `cargo` use it too.
 
