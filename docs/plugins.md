@@ -149,30 +149,52 @@ Preflight measures the block interval before the load. If it differs from `block
 ## Observers and checks
 
 - **Observer.** A setup step starts it; an evaluate step stops it. It writes `series.jsonl` (same records as `chain.jsonl`) and `metrics.json` to the plugin's directory. `metrics.json` lists `PluginMetric` values, each with `name`, `kind`, `help` and `buckets`. A plugin cannot redefine a built-in metric.
-- **Check.** An evaluate step whose operation declares a `checks` output contributes results. Each is an object with `outcome`, `check`, `status`, `detail`, and optional `numbers` and `optional`. `status` is `pass`, `warn`, `fail`, `info` or `no result`. Pass `run.directory` to the operation, and build `polkameter_checks::RunData` from `read_store` and `summary.json`. Smoke mode fails a check with no result unless it is `optional`.
+- **Check.** An evaluate step whose operation declares a `checks` output contributes results. Each is an object with `outcome`, `check`, `status`, `detail`, and optional `numbers` and `optional`. `status` is `pass`, `warn`, `fail`, `info` or `no result`. Pass `run.directory` to the operation, and build `polkameter_plugin_sdk::observers::RunData` from `read_store` and `summary.json`. Smoke mode fails a check with no result unless it is `optional`.
 
 Checks read the observer's series, labelled `job="plugin"` and `instance=<plugin id>`. Results go to `plugin-checks.json`. `polkameter report RUN_DIRECTORY` reproduces the summary offline.
 
-## Library crates for plugins
+## The plugin SDK crate
 
-These crates are on crates.io at version 0.2.0. Add the ones your plugin uses with a version requirement:
+A plugin depends on one crate, `polkameter-plugin-sdk` ([crates.io](https://crates.io/crates/polkameter-plugin-sdk), [docs.rs](https://docs.rs/polkameter-plugin-sdk)). Its default features give the protocol only. Turn on `chain` to read and submit to a chain, or `observers` to record series and write checks:
 
 ```toml
 [dependencies]
-polkameter-plugin-sdk = "0.2"
-polkameter-chain = "0.2"
+polkameter-plugin-sdk = { version = "0.3", features = ["observers"] }
 ```
 
-Each crate name below links to its crates.io page. The docs.rs link opens its API documentation.
+`observers` turns on `chain` as well. Without features the crate does not depend on subxt, so a plugin that only prepares data builds faster.
 
-Anything else is internal.
+| Feature | Module | Plugin API |
+| --- | --- | --- |
+| (default) | `polkameter_plugin_sdk` | `Plugin`, `serve`, `Operation`, `Schema`, `Field`, `Requirement`, `Manifest`, `Context`, `Request`, `Response`, `Artifact`, `PreparedTx`, `StateCheckInput`, `read_line`, `PROTOCOL`, `MAX_MESSAGE_BYTES`, `blake2_hex`, `strip_0x`. |
+| `chain` | `polkameter_plugin_sdk::chain` | `Client` (`connect`, `finalized`, `at`, `chain_info`, `check_extensions`, `call_data`, `sudo`, `nonce`, `validate`, `submit`; `LayoutChanged` from the extension check); `fetch(at, pallet, entry, keys)` (`()` keys for a plain entry), `entries`, `has_prefix`, `calls`; `events` with `Event` (`pallet`, `name`, `extrinsic`, `fields`), `failed_extrinsics`; `value::{field, nth, variant_name, as_u64, as_bytes32}`; `AtBlock`, `ChainError`, `Fault`, `Refusal`; `Keypair`, `Value`, `DecodeAsType`, `ChainInfo`, `tx_hash`, `hex0x`; `scale_value_reexport`, `scale_decode_reexport`. |
+| `observers` | `polkameter_plugin_sdk::observers` | Recording: `ChainSeries` (`gauge`, `inc`, `observe`), `chain_series::channel`, `chain_series::run`; `walker::Walk` (`NAME`, `on_block`, optional `on_update` and `finish`), `walker::walk`; `MonitorError`. Files: `registry::Metric::new`, `registry::{Def, Kind, kind}`, `PluginMetric::from(&Def)`, `Problems`, `RunDir`, `read_store`, `summary::Summary`, `now_ms`, `Millis`, `num`, `FileError`. Checks: `RunData` (`new`, `at`, `has`, `times`, `gauge_range`, `buckets`, `phase`, `run`); `Phase`; `Window`, `Label`; `CheckResult`, `Verdict`, `Status`, `CounterReset`, `quantile`. |
 
-| Crate | Plugin API |
+The `observers` items are re-exported at the module root. They also live in three submodules: `observers::files`, `observers::checks` and `observers::monitors`. Items hidden from the API documentation are shared with the `polkameter` CLI and may change in any release. The `polkameter` crate is the CLI, not a library for plugins.
+
+The chain, monitor, check and file code derives from the stress tool in [paritytech/polkadot-pop-e2e](https://github.com/paritytech/polkadot-pop-e2e), under Apache-2.0.
+
+### Migrating from 0.2
+
+Version 0.2 published the plugin API as five crates. Version 0.3 merges them into `polkameter-plugin-sdk`. Replace the old dependencies with one line:
+
+```toml
+[dependencies]
+polkameter-plugin-sdk = { version = "0.3", features = ["observers"] }
+```
+
+Use `features = ["chain"]` if the plugin does not use `polkameter-files`, `polkameter-checks` or `polkameter-monitors`. Then change the import paths:
+
+| 0.2 | 0.3 |
 | --- | --- |
-| [`polkameter-plugin-sdk`](https://crates.io/crates/polkameter-plugin-sdk) ([docs.rs](https://docs.rs/polkameter-plugin-sdk)) | `Plugin`, `serve`, `Operation`, `Schema`, `Manifest`, `Context`, `Artifact`, `PreparedTx`, `StateCheckInput`, `PROTOCOL`, `MAX_MESSAGE_BYTES`, `blake2_hex`, `strip_0x`. |
-| [`polkameter-chain`](https://crates.io/crates/polkameter-chain) ([docs.rs](https://docs.rs/polkameter-chain)) | `Client` (`connect`, `finalized`, `at`, `chain_info`, `check_extensions`, `call_data`, `sudo`, `nonce`, `validate`, `submit`; `LayoutChanged` from the extension check); `fetch(at, pallet, entry, keys)` (`()` keys for a plain entry), `entries`, `has_prefix`, `calls`; `events` with `Event` (`pallet`, `name`, `extrinsic`, `fields`); `value::{field, nth, variant_name, as_u64, as_bytes32}`; `Keypair`, `Value`, `DecodeAsType`, `ChainInfo`, `tx_hash`; `scale_value_reexport`, `scale_decode_reexport`. |
-| [`polkameter-monitors`](https://crates.io/crates/polkameter-monitors) ([docs.rs](https://docs.rs/polkameter-monitors)) | `ChainSeries` (`gauge`, `inc`, `observe`), `chain_series::channel`, `chain_series::run`; `walker::Walk` (`NAME`, `on_block`, optional `on_update` and `finish`), `walker::walk`; `MonitorError`. |
-| [`polkameter-files`](https://crates.io/crates/polkameter-files) ([docs.rs](https://docs.rs/polkameter-files)) | `registry::Metric::new`, `Def`, `Kind`, `PluginMetric::from(&Def)`, `Problems`, `RunDir`, `read_store`, `now_ms`, `Millis`, `num`. |
-| [`polkameter-checks`](https://crates.io/crates/polkameter-checks) ([docs.rs](https://docs.rs/polkameter-checks)) | `RunData` (`new`, `at`, `has`, `times`, `gauge_range`, `buckets`, `phase`, `run`); `Phase`; `Window`, `Label`; `CheckResult`, `Verdict`, `Status`, `CounterReset`, `quantile`. |
+| `polkameter_plugin_sdk::*` | `polkameter_plugin_sdk::*` (unchanged) |
+| `polkameter_chain::*` | `polkameter_plugin_sdk::chain::*` |
+| `polkameter_chain::value::*` | `polkameter_plugin_sdk::chain::value::*` |
+| `#[decode_as_type(crate_path = "polkameter_chain::scale_decode_reexport")]` | `#[decode_as_type(crate_path = "polkameter_plugin_sdk::chain::scale_decode_reexport")]` |
+| `polkameter_files::*` | `polkameter_plugin_sdk::observers::*` |
+| `polkameter_files::registry::*`, `polkameter_files::summary::*` | `polkameter_plugin_sdk::observers::registry::*`, `polkameter_plugin_sdk::observers::summary::*` |
+| `polkameter_checks::*` | `polkameter_plugin_sdk::observers::*` |
+| `polkameter_monitors::{ChainSeries, MonitorError}` | `polkameter_plugin_sdk::observers::{ChainSeries, MonitorError}` |
+| `polkameter_monitors::walker::*`, `polkameter_monitors::chain_series::*` | `polkameter_plugin_sdk::observers::walker::*`, `polkameter_plugin_sdk::observers::chain_series::*` |
 
-The load, monitor, check and file crates derive from the stress tool in [paritytech/polkadot-pop-e2e](https://github.com/paritytech/polkadot-pop-e2e), under Apache-2.0.
+Two text replacements cover the plugin API in the table above: `polkameter_chain::` becomes `polkameter_plugin_sdk::chain::`, and `polkameter_files::`, `polkameter_checks::` and `polkameter_monitors::` become `polkameter_plugin_sdk::observers::`. Version 0.3 has no replacement for `polkameter-engine` and `polkameter-load`: they are part of the `polkameter` CLI.
