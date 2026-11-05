@@ -64,14 +64,15 @@ Preflight passed.
 Runs a plan. A local run writes a run directory under `--output`. A remote run sends the plan's XML to an agent, which runs it and keeps the run directory there.
 
 ```sh
-polkameter run [--output DIR] [--credential-env ENV_VAR] [--fail-on-verdict] [--format human|json] PLAN
-polkameter run --remote URL --remote-token-env ENV_VAR [--fail-on-verdict] [--format human|json] PLAN
+polkameter run [--output DIR] [--junit PATH] [--credential-env ENV_VAR] [--fail-on-verdict] [--format human|json] PLAN
+polkameter run --remote URL --remote-token-env ENV_VAR [--junit PATH] [--fail-on-verdict] [--format human|json] PLAN
 ```
 
 | Name | Required | Meaning |
 | --- | --- | --- |
 | `PLAN` | yes | The plan file |
 | `--output DIR` | yes, unless `--remote` | The artifact root |
+| `--junit PATH` | no | Write a local copy of the run directory's `junit.xml`, including for a remote run. Default: no additional copy |
 | `--credential-env` | no | Reads the only credential from this variable. Not allowed with `--remote` |
 | `--fail-on-verdict` | no | Default off. Exit `1` on a `FAIL` load verdict after writing the report and running teardown. Other verdicts and plans without a load test keep their existing exit behavior |
 | `--remote URL` | no | The agent's endpoint. See [remote agent](#remote-agent) |
@@ -113,15 +114,16 @@ A failed remote run prints `Polkameter: remote run failed: <reason> (details in 
 Rebuilds a run's outputs from its files without running the plan.
 
 ```sh
-polkameter report [--format human|json] ARTIFACT_DIRECTORY
+polkameter report [--junit PATH] [--format human|json] ARTIFACT_DIRECTORY
 ```
 
 | Name | Default | Meaning |
 | --- | --- | --- |
 | `ARTIFACT_DIRECTORY` | none | The run directory |
+| `--junit PATH` | none | Write an additional copy of `junit.xml` |
 | `--format` | `human` | `human` or `json`. See [output formats](#output-formats) |
 
-With a `<load>`, it rebuilds the built-in and plugin checks, `summary.json`, `summary.md`, `samples.jtl` and `plots/`. Without one, it rewrites `samples.jtl` and `plots/`. The directory must hold `execution.json` and `summary.md`. The human format prints the summary.
+With a `<load>`, it rebuilds the built-in and plugin checks, `summary.json`, `summary.md`, `junit.xml`, `samples.jtl` and `plots/`. Without one, it rewrites `junit.xml`, `samples.jtl` and `plots/`. The directory must hold `execution.json` and `summary.md`. The human format prints the summary.
 
 `report` exits 0 when the rebuild succeeds, even if the outcome is `failed`. Check the `Status:` line or `execution.json`'s `state`.
 

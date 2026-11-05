@@ -65,6 +65,7 @@ pub async fn serve(bind: &str, bearer_token: String, output_root: String) -> Res
 		.route("/inspect", post(plugin_inspect_handler))
 		.route("/runs", post(plugin_start_handler))
 		.route("/runs/{id}", get(plugin_status_handler))
+		.route("/runs/{id}/junit", get(plugin_junit_handler))
 		.route("/runs/{id}/stop", post(plugin_stop_handler))
 		.route_layer(middleware::from_fn_with_state(state.clone(), require_bearer));
 	let app = Router::new()
@@ -187,6 +188,20 @@ async fn plugin_status_handler(
 		.map(Json)
 		.map_err(bad_request)
 }
+// Serve only the fixed report file of a completed run known to this agent.
+async fn plugin_junit_handler(
+	Path(id): Path<String>,
+	State(state): State<AgentState>,
+) -> AgentResult<Json<String>> {
+	let status = crate::plugin_application::status(&state.plugins, &id)
+		.await
+		.map_err(bad_request)?;
+	let outcome = status.outcome.ok_or_else(|| bad_request("run has no completed report"))?;
+	std::fs::read_to_string(outcome.artifact_dir.join("junit.xml"))
+		.map(Json)
+		.map_err(bad_request)
+}
+
 async fn plugin_stop_handler(
 	Path(id): Path<String>,
 	State(state): State<AgentState>,
@@ -226,6 +241,10 @@ pub async fn plugin_status(
 	target: &RemoteRunnerTarget,
 ) -> Result<crate::plugin_application::Status, String> {
 	plugin_request(target, reqwest::Method::GET, &run_path(id, "")?, None).await
+}
+/// Retrieves a completed run's JUnit report for a local `--junit` copy.
+pub async fn plugin_junit(id: &str, target: &RemoteRunnerTarget) -> Result<String, String> {
+	plugin_request(target, reqwest::Method::GET, &run_path(id, "/junit")?, None).await
 }
 pub async fn plugin_stop(
 	id: &str,

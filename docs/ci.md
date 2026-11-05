@@ -100,6 +100,32 @@ With the default `fail-on: error`, a stress-mode load run exits `0` even when it
 - **Job summary.** The action appends the run's `summary.md` to the job summary. For a plan without a load test, it holds only a short status.
 - **Artifact.** The whole run directory, uploaded as `polkameter-run`. Set `artifact-name` to change the name. The upload runs even when the run failed. If validation fails before the run starts, there is no run directory and no artifact.
 
+## GitHub test reports
+
+The run directory uploaded by the Action contains `junit.xml`. Add a test-report step after the action to show its cases in a GitHub check. Give the job `checks: write` permission:
+
+```yaml
+permissions:
+  contents: read
+  checks: write
+```
+
+Use the `load` step ID from the minimal workflow above:
+
+```yaml
+      - name: Publish test results
+        if: always() && steps.load.outputs.run-dir != ''
+        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
+        with:
+          name: PolkaMeter
+          path: ${{ steps.load.outputs.run-dir }}/junit.xml
+          reporter: java-junit
+          fail-on-error: 'false'
+          fail-on-empty: 'false'
+```
+
+The reporter displays failures while the PolkaMeter action keeps control of the job's exit policy. Set `fail-on-error: 'true'` to let the reporter also fail the job on JUnit failures. Publishing checks requires a token with write permission; use this example in workflows with that permission, such as a manual run in the repository.
+
 ## Other CI systems
 
 Without the action, install the prebuilt CLI on a Linux or macOS runner:
@@ -142,11 +168,18 @@ load-test:
     - polkameter plugin install target/release/<plugin-binary>
     - polkameter plugin credential previewnet-sudo POLKAMETER_SETUP_SURI
     - polkameter validate plans/transfers.polkameter.xml
-    - polkameter run plans/transfers.polkameter.xml --output polkameter-runs --fail-on-verdict
+    - polkameter run plans/transfers.polkameter.xml --output polkameter-runs --junit test-results/polkameter.xml --fail-on-verdict
   artifacts:
     when: always
+    reports:
+      junit: test-results/polkameter.xml
     paths:
       - polkameter-runs/
+      - test-results/polkameter.xml
 ```
 
 Set `POLKAMETER_SETUP_SURI` as a masked GitLab CI variable. The container runs as UID `10001` by default, so configure your runner to give that user write access to the checkout and output directory. Release container publication must complete before this job can pull the image.
+
+`--junit` writes a copy of the run's JUnit report to a fixed path, and `reports: junit:` shows its cases in the pipeline's Tests view and the merge request test summary. `when: always` keeps reports from failed runs. A plan rejected before a run directory is created has no JUnit report.
+
+For Jenkins, publish `polkameter-runs/**/junit.xml` with the `junit` pipeline step in an `always` post condition. The [results reference](results.md#junitxml) lists the case mapping, warning output and timings.
