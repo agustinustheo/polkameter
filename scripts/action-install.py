@@ -18,6 +18,8 @@ import zipfile
 REPO = "agustinustheo/polkameter"
 API = "https://api.github.com"
 TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
+# gh exit status for "authentication required" (gh help exit-codes).
+GH_AUTH_REQUIRED = 4
 
 
 def asset_name(version, target):
@@ -134,11 +136,19 @@ class Installer:
             # gh hashes this exact file and verifies the attested subject digest.
             # Pin both the trusted signer and the source tag, so a valid archive
             # from an older release cannot be substituted with its checksum.
-            subprocess.run(["gh", "attestation", "verify", str(archive),
-                            "--repo", REPO, "--hostname", "github.com",
-                            "--signer-workflow", f"{REPO}/.github/workflows/release.yml",
-                            "--source-ref", f"refs/tags/{tag}", "--digest-alg", "sha256"],
-                           env=env, check=True)
+            # gh cannot query attestations anonymously, even for a public
+            # repository; it exits 4 when it has no github.com credentials.
+            verified = subprocess.run(["gh", "attestation", "verify", str(archive),
+                                       "--repo", REPO, "--hostname", "github.com",
+                                       "--signer-workflow", f"{REPO}/.github/workflows/release.yml",
+                                       "--source-ref", f"refs/tags/{tag}", "--digest-alg", "sha256"],
+                                      env=env)
+            if verified.returncode == GH_AUTH_REQUIRED and not self.token:
+                raise Unavailable("Build provenance verification needs gh authenticated to github.com "
+                                  "(for example gh auth login on the runner); "
+                                  "or set verify-attestation: false to accept SHA-256 only")
+            if verified.returncode:
+                raise subprocess.CalledProcessError(verified.returncode, verified.args)
         else:
             print("::warning::verify-attestation=false: installing with SHA-256 only; "
                   "release build provenance is not verified")

@@ -7,11 +7,15 @@ RUN cargo +1.93.0 build --locked --release -p polkameter --bin polkameter
 
 FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates tini \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 10001 polkameter
 COPY --from=builder /build/target/release/polkameter /usr/local/bin/polkameter
 USER 10001:10001
 WORKDIR /home/polkameter
-ENTRYPOINT ["polkameter"]
+# tini runs as PID 1: it forwards signals to polkameter and reaps exited plugin processes.
+# docker stop sends SIGINT, which polkameter handles like Ctrl-C: it stops the run and
+# runs teardown. SIGTERM from other runtimes still ends polkameter promptly.
+STOPSIGNAL SIGINT
+ENTRYPOINT ["/usr/bin/tini", "--", "polkameter"]
 CMD ["--help"]

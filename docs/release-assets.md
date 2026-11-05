@@ -21,7 +21,9 @@ The asset naming contract for downloaders, including the GitHub Action, is:
 - Archive root: only `polkameter` (`polkameter.exe` on Windows), `LICENSE` and `README.md`.
 - Download URL: `https://github.com/agustinustheo/polkameter/releases/download/v<version>/<archive-filename>`.
 
-On Linux, verify the checksum with `sha256sum -c <archive-filename>.sha256`; on macOS use `shasum -a 256 -c <archive-filename>.sha256`. On Windows use PowerShell's `Get-FileHash <archive-filename> -Algorithm SHA256` and compare it with the checksum file before extracting. The archives have GitHub build provenance attestations; `gh attestation verify <archive-filename> --repo agustinustheo/polkameter --signer-workflow agustinustheo/polkameter/.github/workflows/release.yml --source-ref refs/tags/v<version>` verifies one.
+On Linux, verify the checksum with `sha256sum -c <archive-filename>.sha256`; on macOS use `shasum -a 256 -c <archive-filename>.sha256`. On Windows use PowerShell's `Get-FileHash <archive-filename> -Algorithm SHA256` and compare it with the checksum file before extracting. The archives have GitHub build provenance attestations; `gh attestation verify <archive-filename> --repo agustinustheo/polkameter --signer-workflow agustinustheo/polkameter/.github/workflows/release.yml --source-ref refs/tags/v<version>` verifies one. `gh` must be signed in to github.com (`gh auth login` or `GH_TOKEN`); it cannot verify attestations anonymously.
+
+A release becomes visible only after every asset is uploaded and attested. Published assets are never replaced: if a release is ever repaired, assets that were already published keep their checksums.
 
 Desktop assets use the separate name `polkameter-desktop-<version>-<platform>.tar.gz`. Download the CLI archives above for command-line use.
 

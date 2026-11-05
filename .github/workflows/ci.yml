@@ -22,7 +22,7 @@ jobs:
     name: Checks
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -90,12 +90,12 @@ jobs:
           - name: Linux
             os: ubuntu-22.04
           - name: macOS
-            os: macos-14
+            os: macos-15
           - name: Windows
             os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -103,38 +103,73 @@ jobs:
       - run: corepack pnpm tauri build --debug --no-bundle
 
   action:
-    name: Action
-    runs-on: ubuntu-22.04
+    name: Action (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-22.04
+          - name: macOS
+            os: macos-15
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
-      # Local uses exercises the source path. Exercise the release download and
-      # provenance verification with @v0 after the next release adds CLI assets.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Local uses exercises the source path. tests/action-smoke.py covers the
+      # release download against a mocked release, here and in Distribution (macOS).
       - uses: ./
         id: plan
         with:
           plan: examples/plugin-workflow.polkameter.xml
           plugin-crates: plugins/example:polkameter-example-plugin
           fail-on: verdict
+      # A second use in the same matrix job must not collide on the artifact name.
+      - uses: ./
+        id: again
+        with:
+          plan: examples/plugin-workflow.polkameter.xml
+          plugin-crates: plugins/example:polkameter-example-plugin
+          artifact-retention-days: "1"
       - name: Assert the example plan passed
         env:
           EXIT_CODE: ${{ steps.plan.outputs.exit-code }}
           VERDICT: ${{ steps.plan.outputs.verdict }}
           INSTALL_METHOD: ${{ steps.plan.outputs.install-method }}
           VERSION: ${{ steps.plan.outputs.version }}
+          ARTIFACT: ${{ steps.plan.outputs.artifact-name }}
+          ARTIFACT_ID: ${{ steps.plan.outputs.artifact-id }}
+          SECOND_ARTIFACT: ${{ steps.again.outputs.artifact-name }}
+          SECOND_ARTIFACT_ID: ${{ steps.again.outputs.artifact-id }}
         run: |
           test "$EXIT_CODE" = 0
           test -z "$VERDICT"
           test "$INSTALL_METHOD" = source
           test -n "$VERSION"
+          test -n "$ARTIFACT_ID" && test -n "$SECOND_ARTIFACT_ID"
+          test "$ARTIFACT" != "$SECOND_ARTIFACT"
+
+  distribution-macos:
+    name: Distribution (macOS)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The binstall contract test reads cargo metadata; nothing is compiled.
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - name: Installer and action tests with macOS tools
+        run: |
+          python3 tests/distribution.py
+          python3 tests/action-smoke.py
 
   container:
     name: Container image
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       # Build only, so the Dockerfile is tested before a release builds and pushes it.
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: Dockerfile
@@ -149,3 +184,12 @@ jobs:
           docker run --rm polkameter:ci --version
           test "$(docker run --rm --entrypoint id polkameter:ci -u)" = 10001
           docker image ls polkameter:ci --format 'Image size: {{.Size}}'
+      - name: Stop the image promptly through its init process
+        run: |
+          docker run -d --name signal-test --entrypoint /usr/bin/tini polkameter:ci -- sleep 300
+          start=$(date +%s)
+          docker stop --timeout 30 signal-test
+          elapsed=$(( $(date +%s) - start ))
+          echo "docker stop took ${elapsed}s"
+          test "$elapsed" -lt 10
+          docker rm signal-test

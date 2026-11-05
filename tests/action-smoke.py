@@ -212,6 +212,7 @@ class InstallTest(unittest.TestCase):
                 runpy.run_path({str(ACTION.parent / "scripts/action-install.py")!r}, run_name="__main__")
             '''))
         self.release = self.add_release()
+        self.payload = b"fake binary"
 
     def route(self, path, value):
         self.routes[self.prefix + path] = value
@@ -260,7 +261,7 @@ class InstallTest(unittest.TestCase):
         if method == "release":
             binary = "polkameter.exe" if self.env["RUNNER_OS"] == "Windows" else "polkameter"
             installed = Path((self.work / "path").read_text().strip()) / binary
-            self.assertEqual(installed.read_bytes(), b"fake binary")
+            self.assertEqual(installed.read_bytes(), self.payload)
             self.assertTrue(os.access(installed, os.X_OK))
         else:
             self.assertFalse((self.work / "path").exists())
@@ -568,6 +569,193 @@ exit {cargo_code}
 
     def test_invalid_plugin_unlocked_input_fails(self):
         self.assertIn("plugin-unlocked must be", self.run_plugins(unlocked="bad", expected=1).stderr)
+
+    def test_unauthenticated_gh_on_ghes_falls_back_to_source(self):
+        # gh cannot verify attestations anonymously; it exits 4 without github.com credentials.
+        self.gh(4)
+        ghes = dict(GITHUB_API_URL="https://ghe.example/api/v3", GITHUB_SERVER_URL="https://ghe.example",
+                    VERIFY_ATTESTATION="true")
+        self.run_install("source", **ghes)
+        self.assertIn("needs gh authenticated to github.com", self.result.stdout)
+        self.assertIn("verify-attestation: false", self.result.stdout)
+        self.run_install(error="needs gh authenticated to github.com", INSTALL="release", **ghes)
+
+    def test_gh_auth_failure_with_runner_token_is_fatal(self):
+        self.gh(4)
+        self.run_install(error="returned non-zero exit status 4", VERIFY_ATTESTATION="true")
+
+    def test_release_install_path_runs_plan_and_stages_artifact(self):
+        # Package a stub CLI with the real release packager, serve it as a mocked
+        # release, install it as the action does, then run the plan and stage the
+        # artifact with the installed binary.
+        stub = self.work / "stub-cli"
+        stub.write_text(textwrap.dedent('''\
+            #!/usr/bin/env bash
+            set -eu
+            if [ "$1" != run ]; then exit 0; fi
+            output=$4
+            mkdir -p "$output/run-release/plugins/p"
+            echo '# released CLI' > "$output/run-release/summary.md"
+            echo '{}' > "$output/run-release/execution.json"
+            echo '<testsuites/>' > "$output/run-release/junit.xml"
+            echo '[redacted]' > "$output/run-release/plugins/p/stderr.log"
+            echo '{"key": "secret"}' > "$output/run-release/plugins/p/raw.json"
+            '''))
+        stub.chmod(0o755)
+        packaged = self.work / "packaged"
+        subprocess.run([sys.executable, str(ACTION.parent / "scripts/package-cli.py"), "0.3.0",
+                        "x86_64-unknown-linux-gnu", str(stub), "--output", str(packaged)],
+                       cwd=ACTION.parent, check=True, capture_output=True)
+        for path in packaged.iterdir():
+            self.routes[f"/assets/{path.name}"] = path.read_bytes()
+        self.payload = stub.read_bytes()
+        self.gh()
+        self.run_install(INSTALL="release", VERIFY_ATTESTATION="true")
+        bindir = (self.work / "path").read_text().strip()
+        env = dict(self.env, PATH=f"{bindir}{os.pathsep}{self.bin}{os.pathsep}{os.environ['PATH']}",
+                   GITHUB_ENV=str(self.work / "env"), PLAN="test.xml", PLUGINS="", CREDENTIALS="",
+                   TOPOLOGIES="", CAPABILITIES="", OUTPUT=str(self.work / "runs"), FAIL_ON="error",
+                   PLUGIN_CRATES="")
+        (self.work / "outputs").unlink()
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c", shell_block("Run the plan")],
+                                env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        outputs = dict(line.split("=", 1) for line in (self.work / "outputs").read_text().splitlines())
+        self.assertEqual(outputs["exit-code"], "0")
+        self.assertIn("# released CLI", (self.work / "summary").read_text())
+        (self.work / "outputs").unlink()
+        env.update(GITHUB_ACTION_PATH=str(ACTION.parent), RUN_DIR=outputs["run-dir"], ARTIFACT_NAME="",
+                   UPLOAD="true", RAW_PLUGIN_FILES="false", SIZE_LIMIT_MB="500", RETENTION_DAYS="",
+                   GITHUB_JOB="test", GITHUB_RUN_ATTEMPT="1", GITHUB_ACTION="step", RUNNER_NAME="runner")
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c", shell_block("Stage the run artifact")],
+                                env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        staged = dict(line.split("=", 1) for line in (self.work / "outputs").read_text().splitlines())
+        root = Path(staged["artifact-path"])
+        self.assertEqual(sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()),
+                         ["execution.json", "junit.xml", "plugins/p/stderr.log", "summary.md"])
+
+
+class ArtifactTest(unittest.TestCase):
+    """The artifact staging step: allowlisted reports by default, raw files on request."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.work = Path(directory.name)
+        self.run_dir = self.work / "polkameter-runs/run-1-2-3"
+        files = {
+            "execution.json": "{}", "summary.md": "# plan\n", "summary.json": "{}", "junit.xml": "<testsuites/>",
+            "plan.json": "{}", "resolved-plan.json": "{}", "plots/throughput.svg": "<svg/>",
+            "events.jsonl": "{}\n" * 10, "samples.jtl": "row\n" * 10, "steps.jsonl": "{}\n",
+            "transactions.jsonl": "x" * 4000, "plugins/example/stderr.log": "[redacted]\n",
+            # Plugin-written files: PolkaMeter never redacts these.
+            "plugins/example/diagnostic.json": '{"suri": "//Alice secret"}',
+            "plugins/example/series.jsonl": "{}\n", "plugin-dump.txt": "secret",
+            "plots/nested/extra.svg": "<svg/>",
+        }
+        for name, content in files.items():
+            path = self.run_dir / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+        (self.work / "outside-secret").write_text("do not upload")
+        (self.run_dir / "events-link.jsonl").symlink_to(self.work / "outside-secret")
+        (self.run_dir / "plugins/linked").symlink_to(self.work, target_is_directory=True)
+        self.env = dict(os.environ, GITHUB_ACTION_PATH=str(ACTION.parent), RUNNER_TEMP=str(self.work),
+                        GITHUB_OUTPUT=str(self.work / "outputs"), RUN_DIR=str(self.run_dir),
+                        ARTIFACT_NAME="", UPLOAD="true", RAW_PLUGIN_FILES="false", SIZE_LIMIT_MB="500",
+                        RETENTION_DAYS="", GITHUB_SERVER_URL="https://github.com", GITHUB_JOB="load-test",
+                        GITHUB_RUN_ATTEMPT="1", GITHUB_ACTION="__agustinustheo_polkameter",
+                        RUNNER_NAME="GitHub Actions 7")
+
+    def stage(self, code=0, block="Stage the run artifact", **env):
+        (self.work / "outputs").unlink(missing_ok=True)
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c", shell_block(block)],
+                                env=dict(self.env, **env), capture_output=True, text=True)
+        self.assertEqual(result.returncode, code, result.stdout + result.stderr)
+        self.result = result
+        if code or block != "Stage the run artifact":
+            return None
+        outputs = dict(line.split("=", 1) for line in (self.work / "outputs").read_text().splitlines())
+        self.outputs = outputs
+        root = Path(outputs["artifact-path"])
+        return sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file())
+
+    def test_default_uploads_only_polkameter_reports(self):
+        files = self.stage()
+        self.assertEqual(files, sorted([
+            "execution.json", "summary.md", "summary.json", "junit.xml", "plan.json", "resolved-plan.json",
+            "plots/throughput.svg", "events.jsonl", "samples.jtl", "steps.jsonl", "transactions.jsonl",
+            "plugins/example/stderr.log"]))
+        self.assertEqual(self.outputs["upload"], "true")
+        self.assertIn("excludes 4 file(s) that PolkaMeter did not write", self.result.stdout)
+        self.assertIn('upload-raw-plugin-files: "true"', self.result.stdout)
+
+    def test_raw_plugin_files_require_opt_in_and_never_follow_links(self):
+        files = self.stage(RAW_PLUGIN_FILES="true")
+        self.assertIn("plugins/example/diagnostic.json", files)
+        self.assertIn("plugin-dump.txt", files)
+        self.assertNotIn("events-link.jsonl", files)
+        self.assertFalse(any(f.startswith("plugins/linked") for f in files))
+        self.assertNotIn("excludes", self.result.stdout)
+
+    def test_size_limit_keeps_reports_and_lists_omitted_records(self):
+        (self.run_dir / "transactions.jsonl").write_bytes(b"x" * (2 * 1024 * 1024))
+        files = self.stage(SIZE_LIMIT_MB="1")
+        self.assertIn("summary.md", files)
+        self.assertIn("events.jsonl", files)
+        self.assertNotIn("transactions.jsonl", files)
+        omitted = Path(self.outputs["artifact-path"]) / "polkameter-artifact-omitted.txt"
+        self.assertIn("transactions.jsonl", omitted.read_text())
+        self.assertIn("::warning::The run artifact omits 1 file(s)", self.result.stdout)
+        self.assertIn("transactions.jsonl", self.stage(SIZE_LIMIT_MB="0"))
+
+    def test_default_name_is_unique_per_matrix_job_and_step(self):
+        names = set()
+        for env in ({}, dict(RUNNER_NAME="GitHub Actions 8"), dict(GITHUB_ACTION="__agustinustheo_polkameter_2"),
+                    dict(GITHUB_RUN_ATTEMPT="2"), dict(GITHUB_JOB="other")):
+            self.stage(**env)
+            name = self.outputs["artifact-name"]
+            self.assertRegex(name, r"^polkameter-run-[A-Za-z0-9_.-]+-[0-9]+-[0-9a-f]{10}$")
+            names.add(name)
+        self.assertEqual(len(names), 5)
+        self.stage()
+        self.assertIn(self.outputs["artifact-name"], names)
+
+    def test_explicit_name_is_kept(self):
+        self.stage(ARTIFACT_NAME="load-results")
+        self.assertEqual(self.outputs["artifact-name"], "load-results")
+
+    def test_ghes_skips_upload_with_notice_but_stages_files(self):
+        files = self.stage(GITHUB_SERVER_URL="https://ghe.example")
+        self.assertEqual(self.outputs["upload"], "false")
+        self.assertIn("summary.md", files)
+        self.assertIn("not supported on GitHub Enterprise Server", self.result.stdout)
+        self.stage(GITHUB_SERVER_URL="https://octo.ghe.com")
+        self.assertEqual(self.outputs["upload"], "true")
+
+    def test_invalid_artifact_inputs_fail_before_the_run(self):
+        for env, message in ((dict(UPLOAD="yes"), "upload must be true or false"),
+                             (dict(RAW_PLUGIN_FILES="1"), "upload-raw-plugin-files must be true or false"),
+                             (dict(SIZE_LIMIT_MB="-1"), "artifact-size-limit-mb"),
+                             (dict(RETENTION_DAYS="91"), "artifact-retention-days"),
+                             (dict(RETENTION_DAYS="x"), "artifact-retention-days")):
+            with self.subTest(env=env):
+                self.stage(1, block="Validate artifact inputs", **env)
+                self.assertIn(message, self.result.stderr)
+        self.stage(block="Validate artifact inputs", RETENTION_DAYS="7")
+        action = ACTION.read_text()
+        self.assertLess(action.index("- name: Validate artifact inputs"), action.index("- name: Run the plan"))
+
+    def test_upload_step_uses_staged_allowlist(self):
+        action = ACTION.read_text()
+        upload = action.split("    - name: Upload the run\n", 1)[1].split("\n    - ", 1)[0]
+        self.assertIn("if: always() && steps.stage.outputs.upload == 'true'", upload)
+        self.assertIn("name: ${{ steps.stage.outputs.artifact-name }}", upload)
+        self.assertIn("path: ${{ steps.stage.outputs.artifact-path }}", upload)
+        self.assertIn("retention-days: ${{ inputs.artifact-retention-days }}", upload)
+        self.assertNotIn("steps.run.outputs.run-dir", upload)
+        self.assertIn('default: ""', action.split("  artifact-name:\n", 1)[1].split("  artifact-retention-days:", 1)[0])
 
 
 class ReleaseContractTest(unittest.TestCase):
