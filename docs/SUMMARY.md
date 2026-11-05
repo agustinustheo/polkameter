@@ -9,6 +9,7 @@
 
 # How-to guides
 
+- [Install](install.md)
 - [Run a load test](load-test.md)
 - [Read the results](reading-results.md)
 - [Run PolkaMeter in CI](ci.md)

@@ -2,6 +2,8 @@
 
 The PolkaMeter action runs a plan in a GitHub Actions job. It builds the CLI from its own ref, installs your plugins and credentials, runs the plan and uploads the run directory. It works on Linux and macOS runners. For other systems, see [Other CI systems](#other-ci-systems).
 
+For jobs that only need the CLI, use the [prebuilt installer](install.md) or the [GitLab container](#gitlab-ci) to avoid compiling PolkaMeter. The action below currently builds the CLI; the release archive [naming contract](install.md#download-release-archives) also supports download-based actions.
+
 ## A minimal workflow
 
 Save this as `.github/workflows/load-test.yml`. It builds your plugin, then runs the plan:
@@ -17,7 +19,7 @@ jobs:
       - uses: actions/checkout@v7
       - run: cargo build --release -p <plugin-crate>
       - id: load
-        uses: agustinustheo/polkameter@main
+        uses: agustinustheo/polkameter@v0
         with:
           plan: plans/transfers.polkameter.xml
           plugins: target/release/<plugin-binary>
@@ -27,7 +29,7 @@ jobs:
           POLKAMETER_SETUP_SURI: ${{ secrets.SETUP_SURI }}
 ```
 
-Replace `main` with a release tag or a full commit SHA. The action builds the CLI from the ref you name, so the ref also sets the CLI version.
+After a successful stable release, the release workflow force-updates `v0` to the latest `0.x` release commit (`v1` for `1.x`, and so on). Pin a version tag or full commit SHA to keep the action fixed. The action builds the CLI from the ref you name, so the ref also sets the CLI version.
 
 The action installs the toolchain named by its `toolchain` input, Rust 1.93.0 by default, and sets it as the job's default. Later steps that run `cargo` use it too.
 
@@ -73,7 +75,7 @@ Set `fail-on: verdict` on the action step to fail the job when the load verdict 
 
 ```yaml
       - id: load
-        uses: agustinustheo/polkameter@main
+        uses: agustinustheo/polkameter@v0
         with:
           plan: plans/transfers.polkameter.xml
           fail-on: verdict
@@ -100,13 +102,14 @@ With the default `fail-on: error`, a stress-mode load run exits `0` even when it
 
 ## Other CI systems
 
-Without the action, install the CLI in your job. It needs Rust 1.93 or newer:
+Without the action, install the prebuilt CLI on a Linux or macOS runner:
 
 ```sh
-cargo install --locked polkameter
+curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
-`cargo install --locked --git https://github.com/agustinustheo/polkameter polkameter` installs the latest unreleased code.
+For reproducible jobs, pass a version with `sh -s -- <version>` instead of `sh`. These recipes need a release containing CLI-only assets. See [Install](install.md) for supported systems and source installation.
 
 Then run these from the repository root:
 
@@ -120,3 +123,30 @@ polkameter run plans/transfers.polkameter.xml --output polkameter-runs --fail-on
 The `plugin credential` line maps the profile to a variable name. Set that variable in the job's environment before `run`. Use a fresh output directory for each job. The exit codes are the same as in the table above; `--fail-on-verdict` exits `1` on `FAIL`.
 
 Keep the whole run directory. `polkameter report <run-dir>` regenerates the checks from its files, and [Run directory](results.md) lists them.
+
+## GitLab CI
+
+Use the published container as the job's `image:`. Build the plugin in an earlier Linux job and pass its executable as an artifact; it must match the runner's CPU architecture and the image's glibc 2.36. Use `rust:1.93.0-bookworm` as the plugin build job's image. Replace `<version>`, `<plugin-build-job>` and `<plugin-binary>` before saving this in `.gitlab-ci.yml`:
+
+```yaml
+load-test:
+  image:
+    name: ghcr.io/agustinustheo/polkameter:<version>
+    entrypoint: [""]
+  needs:
+    - job: <plugin-build-job>
+      artifacts: true
+  variables:
+    POLKAMETER_PLUGIN_REGISTRY: /tmp/polkameter-plugins.json
+  script:
+    - polkameter plugin install target/release/<plugin-binary>
+    - polkameter plugin credential previewnet-sudo POLKAMETER_SETUP_SURI
+    - polkameter validate plans/transfers.polkameter.xml
+    - polkameter run plans/transfers.polkameter.xml --output polkameter-runs --fail-on-verdict
+  artifacts:
+    when: always
+    paths:
+      - polkameter-runs/
+```
+
+Set `POLKAMETER_SETUP_SURI` as a masked GitLab CI variable. The container runs as UID `10001` by default, so configure your runner to give that user write access to the checkout and output directory. Release container publication must complete before this job can pull the image.

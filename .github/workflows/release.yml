@@ -2,100 +2,308 @@ name: Release
 
 on:
   push:
-    tags: ["v*"]
+    # Moving major tags (v0, v1, ...) must not start another release.
+    tags: ["v*.*.*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag, for example v0.1.0
+        description: Existing release tag to build or resume, for example v0.2.0
         required: true
         type: string
 
 permissions:
-  contents: write
-  attestations: write
-  id-token: write
+  contents: read
 
 env:
   RUST_VERSION: 1.93.0
   RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
-  bundle:
-    name: Bundle (${{ matrix.name }})
+  prepare:
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      major: ${{ steps.version.outputs.major }}
+      commit: ${{ steps.commit.outputs.commit }}
+    steps:
+      # Keep tooling from the workflow revision, even when dispatching an older
+      # tag that predates these scripts, Dockerfile, or workflow fixes.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.workflow_sha }}
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          path: release-source
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - name: Check the tag matches the workspace version
+        id: version
+        working-directory: release-source
+        run: python3 ../scripts/publish-crates.py --tag "$RELEASE_TAG" --check-only
+      - id: commit
+        working-directory: release-source
+        run: echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  cli-linux:
+    name: CLI (${{ matrix.target }})
+    needs: prepare
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: Linux
-            os: ubuntu-22.04
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    # Both architectures link against Ubuntu 22.04's glibc 2.35.
+    container: ubuntu:22.04
+    env:
+      CARGO_PROFILE_RELEASE_STRIP: symbols
+      CARGO_PROFILE_RELEASE_DEBUG: "0"
+    steps:
+      - name: Install CLI build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential curl ca-certificates git python3
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.workflow_sha }}
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          path: release-source
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: release-source
+      - name: Build CLI
+        working-directory: release-source
+        run: cargo +${{ env.RUST_VERSION }} build --locked --release -p polkameter --bin polkameter --target ${{ matrix.target }}
+      - name: Check Linux compatibility and package
+        working-directory: release-source
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        shell: bash
+        run: |
+          binary="target/$TARGET/release/polkameter"
+          "$binary" --version
+          ldd "$binary"
+          baseline=$(readelf --version-info "$binary" | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -1)
+          test "$(printf '%s\n' GLIBC_2.35 "$baseline" | sort -V | tail -1)" = GLIBC_2.35
+          echo "Maximum required glibc version: $baseline"
+          python3 ../scripts/package-cli.py "$VERSION" "$TARGET" "$binary"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cli-${{ matrix.target }}
+          path: release-source/release-assets/*
+          if-no-files-found: error
+
+  cli-other:
+    name: CLI (${{ matrix.target }})
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_PROFILE_RELEASE_STRIP: symbols
+      CARGO_PROFILE_RELEASE_DEBUG: "0"
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.workflow_sha }}
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          path: release-source
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: release-source
+      - name: Build and package CLI
+        working-directory: release-source
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TARGET: ${{ matrix.target }}
+          BINARY_EXT: ${{ runner.os == 'Windows' && '.exe' || '' }}
+        run: |
+          cargo +${{ env.RUST_VERSION }} build --locked --release -p polkameter --bin polkameter --target "$TARGET"
+          "target/$TARGET/release/polkameter$BINARY_EXT" --version
+          python3 ../scripts/package-cli.py "$VERSION" "$TARGET" "target/$TARGET/release/polkameter$BINARY_EXT"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cli-${{ matrix.target }}
+          path: release-source/release-assets/*
+          if-no-files-found: error
+
+  desktop:
+    name: Desktop (${{ matrix.target }})
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: linux-x86_64
             bundles: appimage,deb
-          - name: macOS
-            os: macos-14
+          - os: macos-14
+            target: macos-aarch64
             bundles: dmg
-          - name: Windows
-            os: windows-latest
+          - os: windows-latest
+            target: windows-x86_64
             bundles: nsis
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.workflow_sha }}
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          path: release-source
       - uses: ./.github/actions/setup
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - run: corepack pnpm install --frozen-lockfile
+        working-directory: release-source
       - run: corepack pnpm tauri build --bundles ${{ matrix.bundles }}
-      - run: cargo +${{ env.RUST_VERSION }} build --release -p polkameter --bin polkameter
+        working-directory: release-source
       - uses: actions/upload-artifact@v7
         with:
-          name: polkameter-${{ matrix.name }}
-          path: |
-            target/release/bundle/**
-            target/release/polkameter
-            target/release/polkameter.exe
+          name: desktop-${{ matrix.target }}
+          path: release-source/target/release/bundle/**
           if-no-files-found: error
 
   crates-io:
-    name: Publish crates to crates.io
-    needs: bundle
-    if: github.event_name == 'push'
+    name: Publish crates to crates.io (resumable)
+    needs: prepare
     environment: crates-io
     runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup
+        with:
+          ref: ${{ github.workflow_sha }}
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          path: release-source
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: ${{ env.RUST_VERSION }}
-          apt-packages: ""
-      - name: Check the tag matches the workspace version
-        run: |
-          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
-          test "${{ github.ref_name }}" = "v$version"
-      - name: Publish the crates
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: release-source
+      - name: Obtain a Trusted Publishing token
+        id: auth
+        continue-on-error: true
+        uses: rust-lang/crates-io-auth-action@v1
+      - name: Publish missing versions in dependency order
+        working-directory: release-source
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo +${{ env.RUST_VERSION }} publish --workspace --exclude polkameter-desktop --exclude polkameter-example-plugin --locked
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
+          CRATES_IO_TRUSTED_PUBLISHING: ${{ steps.auth.outcome == 'success' }}
+        run: python3 ../scripts/publish-crates.py --tag "$RELEASE_TAG"
 
-  publish:
-    name: Publish GitHub release
-    needs: bundle
+  container:
+    name: Publish multi-platform container
+    needs: prepare
     runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.workflow_sha }}
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          path: release-source
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/agustinustheo/polkameter
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.prepare.outputs.version }}
+            type=semver,pattern={{major}},value=${{ needs.prepare.outputs.version }},enable=${{ !contains(needs.prepare.outputs.version, '-') }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.prepare.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/agustinustheo/polkameter
+            org.opencontainers.image.revision=${{ needs.prepare.outputs.commit }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: release-source
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  publish:
+    name: Publish GitHub release (resumable)
+    needs: [prepare, cli-linux, cli-other, desktop]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
       - uses: actions/download-artifact@v8
         with:
-          path: release-artifacts
-      - name: Package platform release archives
-        shell: bash
+          pattern: cli-*
+          merge-multiple: true
+          path: release-assets
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: desktop-*
+          path: desktop-artifacts
+      - name: Package desktop assets separately
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          mkdir -p release-assets
-          for artifact in release-artifacts/polkameter-*; do
+          for artifact in desktop-artifacts/desktop-*; do
             test -d "$artifact"
-            case "$(basename "$artifact")" in
-              polkameter-Linux) target=linux-x86_64 ;;
-              polkameter-macOS) target=macos-aarch64 ;;
-              polkameter-Windows) target=windows-x86_64 ;;
-              *) echo "Unexpected release artifact: $artifact" >&2; exit 1 ;;
-            esac
-            tar -C "$artifact" -czf "release-assets/polkameter-${target}.tar.gz" .
+            target=${artifact##*/desktop-}
+            tar -C "$artifact" -czf "release-assets/polkameter-desktop-${VERSION}-${target}.tar.gz" .
           done
       - name: Generate SPDX SBOM
         uses: anchore/sbom-action@v0
@@ -103,18 +311,54 @@ jobs:
           path: .
           format: spdx-json
           output-file: release-assets/polkameter.spdx.json
-      - name: Attest release bundles
+      - name: Attest CLI archives and desktop bundles
         uses: actions/attest-build-provenance@v4
         with:
-          subject-path: release-assets/**/*
-      - name: Create release
+          subject-path: release-assets/*
+      - name: Create or update release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
         run: |
           mapfile -d '' assets < <(find release-assets -type f -print0)
           test "${#assets[@]}" -gt 0
-          gh release create "${{ env.RELEASE_TAG }}" \
-            --verify-tag \
-            --title "${{ env.RELEASE_TAG }}" \
-            --generate-notes \
-            "${assets[@]}"
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" --generate-notes
+          fi
+          gh release upload "$RELEASE_TAG" --clobber "${assets[@]}"
+
+  major-tag:
+    name: Move major action tag after successful release
+    concurrency:
+      group: release-major-${{ needs.prepare.outputs.major }}
+      cancel-in-progress: false
+    needs: [prepare, publish, container, crates-io]
+    if: ${{ !contains(needs.prepare.outputs.version, '-') }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+      - name: Update major tag without moving it backwards on a recovery run
+        env:
+          MAJOR: ${{ needs.prepare.outputs.major }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        shell: bash
+        run: |
+          remote=$(git ls-remote --tags origin "refs/tags/v$MAJOR")
+          if [ -n "$remote" ]; then
+            git fetch origin "refs/tags/v$MAJOR:refs/tags/v$MAJOR"
+          fi
+          if git rev-parse "v$MAJOR" >/dev/null 2>&1; then
+            current=$(git show "v$MAJOR:Cargo.toml" | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)
+            newest=$(printf '%s\n' "$current" "$VERSION" | sort -V | tail -1)
+            if [ "$newest" != "$VERSION" ]; then
+              echo "Keeping v$MAJOR at newer version $current"
+              exit 0
+            fi
+          fi
+          git tag -f "v$MAJOR" HEAD
+          git push origin "refs/tags/v$MAJOR" --force

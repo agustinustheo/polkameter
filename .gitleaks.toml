@@ -1,0 +1,6 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Public scenario claim test vectors"
+paths = ['''^plugins/scenarios/tests/vectors/claim\.json$''']

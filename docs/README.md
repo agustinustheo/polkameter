@@ -33,7 +33,8 @@ A run needs three things from you:
 
 ## Where to start
 
-- [Getting started](getting-started.md): build the CLI, install the example plugin and run the example plan.
+- [Install](install.md): download the CLI or use the container.
+- [Getting started](getting-started.md): install the CLI, install the example plugin and run the example plan.
 - [Run a load test](load-test.md): run a plan against a chain and read the verdict.
 - [Run PolkaMeter in CI](ci.md): run plans in a pipeline and check the exit code.
 - [Plans](plans.md): every element of the plan XML.

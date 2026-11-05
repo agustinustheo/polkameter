@@ -17,13 +17,14 @@ PolkaMeter is a load-testing tool for Polkadot SDK chains, modeled on JMeter. An
 
 ## Quick start
 
-Install the CLI from [crates.io](https://crates.io/crates/polkameter). It needs Rust 1.93 or newer:
+Install the prebuilt CLI on Linux or macOS:
 
 ```sh
-cargo install --locked polkameter
+curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
-`cargo install --locked --git https://github.com/agustinustheo/polkameter polkameter` installs the latest unreleased code.
+The script downloads a CLI-only release archive and verifies its SHA-256 checksum. These assets become available with the first release containing this distribution setup. See [Install](docs/install.md) for `cargo binstall polkameter`, Windows archives, containers, version selection and source installation with Rust 1.93 or newer.
 
 From a checkout of this repository, build the example plugin and install it. The example needs no chain:
 
@@ -49,7 +50,7 @@ Run a plan in GitHub Actions without installing anything first. The action build
 
 ```yaml
 - uses: actions/checkout@v7
-- uses: agustinustheo/polkameter@<ref>   # a tag or commit SHA
+- uses: agustinustheo/polkameter@v0
   with:
     plan: plans/transfers.polkameter.xml
     credentials: previewnet-sudo=POLKAMETER_SETUP_SURI
@@ -57,7 +58,7 @@ Run a plan in GitHub Actions without installing anything first. The action build
     POLKAMETER_SETUP_SURI: ${{ secrets.SETUP_SURI }}
 ```
 
-[Run PolkaMeter in CI](https://agustinustheodorus.com/polkameter/ci.html) lists every input and output.
+After a successful stable release, `v0` follows the latest `0.x` release commit. Pin a full commit SHA for an immutable action version. [Run PolkaMeter in CI](https://agustinustheodorus.com/polkameter/ci.html) lists every input and output, including container-based GitLab jobs.
 
 ## Documentation
 

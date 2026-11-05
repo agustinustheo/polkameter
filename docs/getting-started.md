@@ -1,68 +1,47 @@
 # Getting started
 
-You will build the CLI, run the example plan and read its results. You need no chain.
+You will install the CLI, run the example plan and read its results. You need no chain; building the example plugin needs Rust 1.93 or newer.
 
-## 1. Check your Rust version
+## 1. Install the CLI
 
-PolkaMeter needs Rust 1.93 or newer:
+Install the prebuilt CLI on Linux or macOS, then put its directory on your `PATH`:
 
 ```sh
-rustc --version
+curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
 ```
+
+The script verifies the release archive's checksum and installs `polkameter` in `~/.local/bin`. It requires a release containing the CLI-only assets; [Install](install.md) lists other methods and release availability.
+
+## 2. Build the example plugin
+
+Clone [the repository](https://github.com/agustinustheo/polkameter) and open the checkout. From its root, build the example plugin with Rust 1.93:
+
+```sh
+cargo +1.93.0 build --locked -p polkameter-example-plugin
+```
+
+The local build completed with:
 
 ```text
-rustc 1.92.0 (ded5c06cf 2025-12-08)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 29.17s
 ```
 
-With Rust 1.92, the build stops before it compiles anything:
+On a first build, Cargo prints a `Compiling` line for each crate before the `Finished` line. The plugin executable is `target/debug/polkameter-example-plugin` (`.exe` on Windows). Keep using the repository root for the remaining commands.
+
+If release binaries are unavailable, build the CLI from this checkout:
 
 ```sh
-cargo build -p polkameter --bin polkameter
-```
-
-```text
-error: rustc 1.92.0 is not supported by the following packages:
-  polkameter@0.2.0 requires rustc 1.93
-  polkameter@0.2.0 requires rustc 1.93
-  polkameter-chain@0.2.0 requires rustc 1.93
-  polkameter-checks@0.2.0 requires rustc 1.93
-  polkameter-engine@0.2.0 requires rustc 1.93
-  polkameter-files@0.2.0 requires rustc 1.93
-  polkameter-load@0.2.0 requires rustc 1.93
-  polkameter-monitors@0.2.0 requires rustc 1.93
-  polkameter-plugin-sdk@0.2.0 requires rustc 1.93
-```
-
-Run `rustup update` to get the latest stable Rust, then check the version again with `rustc --version`.
-
-## 2. Build the CLI and the example plugin
-
-Clone [the repository](https://github.com/agustinustheo/polkameter) and open the checkout. Run both commands from its root:
-
-```sh
-cargo build -p polkameter --bin polkameter
-cargo build -p polkameter-example-plugin
-```
-
-```text
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.22s
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s
-```
-
-On a first build, cargo prints a `Compiling` line for each crate before the `Finished` line. The builds produce `target/debug/polkameter` and `target/debug/polkameter-example-plugin`. Put the first one on your `PATH` for this shell:
-
-```sh
+cargo +1.93.0 build --locked -p polkameter --bin polkameter
 export PATH="$PWD/target/debug:$PATH"
-which polkameter
+polkameter --version
 ```
+
+The local version check at this checkout returns:
 
 ```text
-~/polkameter/target/debug/polkameter
+polkameter 0.2.0
 ```
-
-The `export` lasts only for the current shell. Run it again in a new terminal.
-
-To put `polkameter` in `~/.cargo/bin` instead, run `cargo install --locked polkameter`. You still need the checkout for the example plugin and plan. `cargo install --locked --git https://github.com/agustinustheo/polkameter polkameter` installs the latest unreleased code.
 
 ## 3. Install the example plugin
 
