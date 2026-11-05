@@ -53,6 +53,12 @@ jobs:
           cargo +${{ env.RUST_VERSION }} clippy -p polkameter-plugin-sdk --no-default-features --features chain --all-targets -- -D warnings
           cargo +${{ env.RUST_VERSION }} clippy -p polkameter-plugin-sdk --no-default-features --features observers --all-targets -- -D warnings
           cargo +${{ env.RUST_VERSION }} test -p polkameter-plugin-sdk --no-default-features
+      - name: Plugin SDK docs without and with features
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: |
+          cargo +${{ env.RUST_VERSION }} doc -p polkameter-plugin-sdk --no-default-features --no-deps
+          cargo +${{ env.RUST_VERSION }} doc -p polkameter-plugin-sdk --all-features --no-deps
       - name: Verify schema, example plans and documentation plans
         run: |
           cargo +${{ env.RUST_VERSION }} build -p polkameter --bin polkameter

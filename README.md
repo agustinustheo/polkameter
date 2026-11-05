@@ -73,7 +73,7 @@ Plugins are written in Rust against one crate, [`polkameter-plugin-sdk`](https:/
 
 ## Development
 
-Run these from a checkout, with Rust 1.93 or newer, as CI does:
+Run these from a checkout, with Rust 1.93 or newer, before you open a pull request. They are the core of CI; [`ci.yml`](.github/workflows/ci.yml) also runs the frontend tests, the plan, distribution and action tests, the dependency audit, the crates.io dry run and the desktop and container builds.
 
 ```sh
 cargo fmt --all -- --check

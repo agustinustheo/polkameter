@@ -7,8 +7,8 @@
 //! | feature     | module         | what it gives                                                  |
 //! | ----------- | -------------- | -------------------------------------------------------------- |
 //! | (default)   | crate root     | the protocol: manifest, requests, responses, `serve`           |
-//! | `chain`     | [`chain`]      | a node over RPC: typed reads, events, submission, keypairs     |
-//! | `observers` | [`observers`]  | run files, metric registry, block walker, series, checks       |
+//! | `chain`     | `chain`        | a node over RPC: typed reads, events, submission, keypairs     |
+//! | `observers` | `observers`    | run files, metric registry, block walker, series, checks       |
 //!
 //! `observers` implies `chain`. Without features the crate does not depend on subxt.
 #![cfg_attr(docsrs, feature(doc_cfg))]
@@ -339,4 +339,233 @@ pub struct StateCheckInput {
 	pub state: Value,
 	pub hashes: Vec<String>,
 	pub at: String,
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use serde_json::json;
+
+	fn object(fields: &[(&str, Schema, bool)]) -> Schema {
+		Schema::Object {
+			fields: fields
+				.iter()
+				.map(|(name, schema, optional)| {
+					((*name).into(), Field { schema: schema.clone(), optional: *optional })
+				})
+				.collect(),
+		}
+	}
+
+	#[test]
+	fn scalar_schemas_accept_their_type_only() {
+		assert!(Schema::String.validate(&json!("a")).is_ok());
+		assert!(Schema::String.validate(&json!(1)).is_err());
+		assert!(Schema::Number.validate(&json!(1.5)).is_ok());
+		assert!(Schema::Number.validate(&json!("1")).is_err());
+		assert!(Schema::Integer.validate(&json!(-3)).is_ok());
+		assert!(Schema::Integer.validate(&json!(u64::MAX)).is_ok());
+		assert!(Schema::Integer.validate(&json!(1.5)).is_err());
+		assert!(Schema::Boolean.validate(&json!(true)).is_ok());
+		assert!(Schema::Boolean.validate(&json!(0)).is_err());
+		for value in [json!(null), json!([1]), json!({"a": 1}), json!("x")] {
+			assert!(Schema::Json.validate(&value).is_ok());
+		}
+		let error = Schema::String.validate(&json!(1)).unwrap_err().to_string();
+		assert_eq!(error, "value does not match String");
+	}
+
+	#[test]
+	fn arrays_validate_every_item() {
+		let schema = Schema::Array { items: Box::new(Schema::Integer) };
+		assert!(schema.validate(&json!([])).is_ok());
+		assert!(schema.validate(&json!([1, 2, 3])).is_ok());
+		assert!(schema.validate(&json!([1, "2"])).is_err());
+		assert_eq!(schema.validate(&json!({})).unwrap_err().to_string(), "expected array");
+	}
+
+	#[test]
+	fn objects_check_required_optional_and_unknown_fields() {
+		let schema = object(&[("name", Schema::String, false), ("age", Schema::Integer, true)]);
+		assert!(schema.validate(&json!({"name": "a"})).is_ok());
+		assert!(schema.validate(&json!({"name": "a", "age": 3})).is_ok());
+		let missing = schema.validate(&json!({"age": 3})).unwrap_err().to_string();
+		assert_eq!(missing, "missing field name");
+		let unknown = schema.validate(&json!({"name": "a", "x": 1})).unwrap_err().to_string();
+		assert_eq!(unknown, "unknown field x");
+		assert!(schema.validate(&json!({"name": "a", "age": "3"})).is_err());
+		assert_eq!(schema.validate(&json!([])).unwrap_err().to_string(), "expected object");
+		let nested = object(&[("inner", schema, false)]);
+		assert!(nested.validate(&json!({"inner": {"name": "a"}})).is_ok());
+		assert!(nested.validate(&json!({"inner": {}})).is_err());
+	}
+
+	#[test]
+	fn operation_validates_inputs_and_outputs() {
+		let op =
+			Operation::new("greet", &[("name", Schema::String)], &[("greeting", Schema::String)]);
+		assert!(!op.read_only);
+		assert!(op.clone().read_only().read_only);
+		assert!(op.validate_inputs(&json!({"name": "a"})).is_ok());
+		assert!(op.validate_inputs(&json!({"name": 1})).is_err());
+		assert!(op.validate_outputs(&json!({"greeting": "hi"})).is_ok());
+		assert!(op.validate_outputs(&json!({})).is_err());
+	}
+
+	#[test]
+	fn manifest_round_trips_and_rejects_unknown_fields() {
+		let manifest = Manifest {
+			id: "hello".into(),
+			version: "0.1.0".into(),
+			protocol: PROTOCOL,
+			operations: BTreeMap::from([(
+				"greet".into(),
+				Operation::new(
+					"Greets",
+					&[("names", Schema::Array { items: Box::new(Schema::String) })],
+					&[("greeting", Schema::String)],
+				)
+				.read_only(),
+			)]),
+			requirements: vec![Requirement {
+				kind: "pallet".into(),
+				target: "chain".into(),
+				name: "People".into(),
+				required: true,
+			}],
+		};
+		let encoded = serde_json::to_value(&manifest).unwrap();
+		assert_eq!(encoded["operations"]["greet"]["inputs"]["names"]["schema"]["type"], "array");
+		assert_eq!(encoded["operations"]["greet"]["read_only"], true);
+		let decoded: Manifest = serde_json::from_value(encoded.clone()).unwrap();
+		assert_eq!(serde_json::to_value(&decoded).unwrap(), encoded);
+		assert_eq!(decoded.operations["greet"].inputs, manifest.operations["greet"].inputs);
+
+		// Defaults: no requirements, not read-only, a field is required.
+		let minimal: Manifest = serde_json::from_value(json!({
+			"id": "x", "version": "1", "protocol": 1,
+			"operations": {"op": {
+				"description": "", "inputs": {"a": {"schema": {"type": "json"}}}, "outputs": {}
+			}}
+		}))
+		.unwrap();
+		assert!(minimal.requirements.is_empty());
+		assert!(!minimal.operations["op"].read_only);
+		assert!(!minimal.operations["op"].inputs["a"].optional);
+
+		let mut extra = encoded;
+		extra["unexpected"] = json!(1);
+		assert!(serde_json::from_value::<Manifest>(extra).is_err());
+		assert!(serde_json::from_value::<Schema>(json!({"type": "date"})).is_err());
+	}
+
+	#[test]
+	fn response_matches_its_request() {
+		let ok = Response::ok(7, json!({"a": 1}));
+		assert_eq!(ok.into_result(7).unwrap(), json!({"a": 1}));
+		assert!(Response::ok(7, json!(1)).into_result(8).is_err());
+		let error = Response::err(7, "boom").into_result(7).unwrap_err().to_string();
+		assert_eq!(error, "plugin operation failed: boom");
+		let both =
+			Response { protocol: PROTOCOL, id: 1, result: Some(json!(1)), error: Some("x".into()) };
+		assert!(both.into_result(1).is_err());
+		let newer = Response { protocol: PROTOCOL + 1, id: 1, result: Some(json!(1)), error: None };
+		assert!(newer.into_result(1).is_err());
+	}
+
+	#[test]
+	fn hex_helpers() {
+		assert_eq!(strip_0x("0xab"), "ab");
+		assert_eq!(strip_0x("ab"), "ab");
+		assert_eq!(strip_0x(""), "");
+		assert_eq!(
+			blake2_hex(b""),
+			"0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8"
+		);
+		let digest = blake2_hex(b"polkameter");
+		assert_eq!(digest.len(), 64);
+		assert!(digest.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+		assert_ne!(digest, blake2_hex(b"polkameter2"));
+	}
+
+	#[test]
+	fn prepared_tx_checks_its_hash() {
+		let tx = PreparedTx::new(&[1, 2, 3], json!({"lane": "a"}));
+		assert_eq!(tx.bytes, "010203");
+		assert_eq!(tx.decode().unwrap(), vec![1, 2, 3]);
+		let prefixed =
+			PreparedTx { bytes: "0x010203".into(), hash: format!("0x{}", tx.hash), ..tx.clone() };
+		assert_eq!(prefixed.decode().unwrap(), vec![1, 2, 3]);
+		let tampered = PreparedTx { bytes: "010204".into(), ..tx.clone() };
+		assert_eq!(tampered.decode().unwrap_err().to_string(), "transaction hash mismatch");
+		let empty =
+			PreparedTx { bytes: String::new(), hash: blake2_hex(&[]), metadata: Value::Null };
+		assert!(empty.decode().is_err());
+		let not_hex = PreparedTx { bytes: "zz".into(), ..tx };
+		assert!(not_hex.decode().is_err());
+	}
+
+	#[test]
+	fn artifacts_round_trip_and_detect_tampering() {
+		let scratch = |name: &str| {
+			std::env::temp_dir().join(format!("polkameter-sdk-{name}-{}", std::process::id()))
+		};
+		let dir = scratch("artifact");
+		let artifact = Artifact::write(&dir, "data.json", &json!({"n": [1, 2]})).unwrap();
+		assert_eq!(artifact.version, 1);
+		let read: Value = artifact.read(&dir).unwrap();
+		assert_eq!(read, json!({"n": [1, 2]}));
+		assert!(Artifact::write(&dir, "a/b.json", &1).is_err());
+		let elsewhere = scratch("elsewhere");
+		std::fs::create_dir_all(&elsewhere).unwrap();
+		assert!(artifact.read::<Value>(&elsewhere).is_err());
+		std::fs::write(dir.join("data.json"), b"{\"n\":[1,3]}").unwrap();
+		let error = artifact.read::<Value>(&dir).unwrap_err().to_string();
+		assert_eq!(error, "artifact checksum mismatch");
+		std::fs::remove_dir_all(dir).unwrap();
+		std::fs::remove_dir_all(elsewhere).unwrap();
+	}
+
+	async fn lines(data: &[u8], capacity: usize) -> Result<Vec<String>> {
+		let mut reader = BufReader::with_capacity(capacity, data);
+		let mut lines = Vec::new();
+		while let Some(line) = read_line(&mut reader).await? {
+			lines.push(line);
+		}
+		Ok(lines)
+	}
+
+	#[tokio::test]
+	async fn read_line_splits_lines_across_buffer_chunks() {
+		let got = lines(b"{\"a\":1}\n\n{\"b\":2}\n", 3).await.unwrap();
+		assert_eq!(got, ["{\"a\":1}\n", "\n", "{\"b\":2}\n"]);
+		assert!(lines(b"", 8).await.unwrap().is_empty());
+	}
+
+	#[tokio::test]
+	async fn read_line_rejects_truncated_and_invalid_messages() {
+		let error = lines(b"{\"a\":1}\n{\"b\"", 4).await.unwrap_err().to_string();
+		assert_eq!(error, "truncated protocol message");
+		assert!(lines(b"\xff\xfe\n", 4).await.is_err());
+	}
+
+	#[tokio::test]
+	async fn read_line_enforces_the_message_limit() {
+		// The limit counts the newline: exactly MAX_MESSAGE_BYTES is accepted.
+		let mut at_limit = vec![b'a'; MAX_MESSAGE_BYTES - 1];
+		at_limit.push(b'\n');
+		let got = lines(&at_limit, 64 * 1024).await.unwrap();
+		assert_eq!(got.len(), 1);
+		assert_eq!(got[0].len(), MAX_MESSAGE_BYTES);
+
+		let mut over = vec![b'a'; MAX_MESSAGE_BYTES];
+		over.push(b'\n');
+		let error = lines(&over, 64 * 1024).await.unwrap_err().to_string();
+		assert_eq!(error, "protocol message too large");
+
+		// A peer that never sends a newline is cut off at the limit, not buffered forever.
+		let endless = vec![b'a'; MAX_MESSAGE_BYTES + 1];
+		let error = lines(&endless, 64 * 1024).await.unwrap_err().to_string();
+		assert_eq!(error, "protocol message too large");
+	}
 }
