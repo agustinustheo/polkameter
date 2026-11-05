@@ -14,7 +14,6 @@ tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
 polkameter.workspace = true
-polkameter-engine.workspace = true
 
 rfd = "0.17.2"
 serde_json.workspace = true

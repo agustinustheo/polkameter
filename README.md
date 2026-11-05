@@ -69,17 +69,22 @@ After a successful stable release, `v0` follows the latest `0.x` release commit.
 
 The documentation site has the getting-started tutorial, the plan, CLI and results references, and the plugin guide: <https://agustinustheodorus.com/polkameter/>
 
+Plugins are written in Rust against one crate, [`polkameter-plugin-sdk`](https://crates.io/crates/polkameter-plugin-sdk). Its `chain` and `observers` features add chain access and run recording; see [the plugin SDK crate](https://agustinustheodorus.com/polkameter/plugins.html#the-plugin-sdk-crate).
+
 ## Development
 
-Run these from a checkout, with Rust 1.93 or newer, as CI does:
+Run these from a checkout, with Rust 1.93 or newer, before you open a pull request. They are the core of CI; [`ci.yml`](.github/workflows/ci.yml) also runs the frontend tests, the plan, distribution and action tests, the dependency audit, the crates.io dry run and the desktop and container builds.
 
 ```sh
 cargo fmt --all -- --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy -p polkameter-plugin-sdk --no-default-features --features chain --all-targets -- -D warnings
 cargo build -p polkameter --bin polkameter
 cargo build -p polkameter-example-plugin
 tests/cli-smoke.sh
 ```
+
+The workspace build turns on every feature of `polkameter-plugin-sdk`, so the second `clippy` line checks the SDK with one feature set alone. CI runs it with no features, `chain` and `observers`.
 
 `tests/cli-smoke.sh` uses the two binaries built above. It runs the example plan locally and through a loopback remote agent.

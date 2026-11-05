@@ -47,7 +47,7 @@ A tutorial links to the reference for details. A reference page links to the exp
 
 11. **Same words everywhere:** PolkaMeter (not Polkameter), plan, run, run directory, plugin, step, load test, transaction, verdict. Headings in sentence case.
 
-12. **Only document what exists.** Do not document the desktop app. Do not describe planned features. The CLI (`polkameter`) and the library crates for plugins are on crates.io at 0.2.0. Install the CLI with `cargo install --locked polkameter`. Do not claim a crate is on crates.io until its release is published there.
+12. **Only document what exists.** Do not document the desktop app. Do not describe planned features. From 0.3.0, two crates are published: the CLI (`polkameter`) and the plugin SDK (`polkameter-plugin-sdk`, with the `chain` and `observers` features). 0.2.0 also published six library crates that 0.3.0 merged into these two; document them only in the migration section of the plugin reference. Install the CLI with `cargo install --locked polkameter`. Do not claim a crate is on crates.io until its release is published there.
 
 ## Reference entry format
 

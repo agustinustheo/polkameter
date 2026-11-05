@@ -3,13 +3,13 @@
 
 use std::{io::Write, path::PathBuf, sync::Arc, time::Duration};
 
-use anyhow::Context as _;
-use clap::{Parser, Subcommand, ValueEnum};
-use polkameter_engine::{
+use crate::engine::{
 	execute::{Outcome, RunOptions, RunState},
 	plan::Plan,
 	plugins::Registry,
 };
+use anyhow::Context as _;
+use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::{Value, json};
 
 use crate::remote::{self, RemoteRunnerTarget};
@@ -187,7 +187,7 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 		Command::Preflight { plan, credential_env, format } => {
 			let (_, plan) = load(&plan)?;
 			let registry = registry(&plan, credential_env)?;
-			let result = polkameter_engine::execute::preflight(&plan, &registry)
+			let result = crate::engine::execute::preflight(&plan, &registry)
 				.await
 				.map_err(|e| CliError::Preflight(e.to_string()))?;
 			write_result(format, &result, "Preflight passed.".into());
@@ -277,10 +277,9 @@ async fn run_local(
 		}
 	});
 	let secrets = available_secrets(&registry);
-	let result = polkameter_engine::execute::run_with_options(
-		plan, registry, &output, cancel, sink, options,
-	)
-	.await;
+	let result =
+		crate::engine::execute::run_with_options(plan, registry, &output, cancel, sink, options)
+			.await;
 	interrupt.abort();
 	let outcome = result.map_err(|e| CliError::Runtime(e.to_string()))?;
 	if let Err(error) = copy_junit(&outcome.artifact_dir, junit.as_deref()) {
@@ -380,22 +379,22 @@ fn one_line(text: &str) -> String {
 
 fn report(path: PathBuf, format: OutputFormat, junit: Option<PathBuf>) -> Result<i32, CliError> {
 	let runtime = |e: anyhow::Error| CliError::Runtime(format!("{e:#}"));
-	polkameter_engine::artifacts::write_outputs(&path)
+	crate::engine::artifacts::write_outputs(&path)
 		.with_context(|| format!("cannot read run directory {}", path.display()))
 		.map_err(runtime)?;
 	if path.join("summary.json").is_file() {
-		polkameter_engine::measurement::check(&path).map_err(runtime)?;
+		crate::engine::measurement::check(&path).map_err(runtime)?;
 	}
 	let secrets = Registry::load()
 		.map(|registry| available_secrets(&registry))
 		.unwrap_or_default();
-	if let Err(error) = polkameter_engine::junit::write(&path, &secrets) {
+	if let Err(error) = crate::engine::junit::write(&path, &secrets) {
 		junit_warning(format, Some(&path), &error.to_string(), &secrets);
 	} else if let Err(error) = copy_junit(&path, junit.as_deref()) {
 		junit_warning(format, Some(&path), &error.to_string(), &secrets);
 	}
 	let execution = path.join("execution.json");
-	let outcome: polkameter_engine::execute::Outcome = serde_json::from_slice(
+	let outcome: crate::engine::execute::Outcome = serde_json::from_slice(
 		&std::fs::read(&execution)
 			.map_err(|e| CliError::Runtime(format!("cannot read {}: {e}", execution.display())))?,
 	)
@@ -422,7 +421,7 @@ fn junit_warning(
 	message: &str,
 	secrets: &[String],
 ) {
-	let event = polkameter_engine::junit::warning(directory, message, secrets);
+	let event = crate::engine::junit::warning(directory, message, secrets);
 	if format == OutputFormat::Json {
 		write_json_line(&event);
 	}
@@ -525,7 +524,7 @@ async fn plugin_command(command: PluginCommand) -> Result<i32, CliError> {
 			PluginCommand::Inspect { scenario } => {
 				let xml = std::fs::read_to_string(&scenario)
 					.with_context(|| format!("cannot read plan {}", scenario.display()))?;
-				polkameter_engine::execute::inspect(&Plan::parse(&xml)?, &registry).await?
+				crate::engine::execute::inspect(&Plan::parse(&xml)?, &registry).await?
 			},
 			PluginCommand::Credential { profile, env } => {
 				registry.credentials.insert(profile, env);

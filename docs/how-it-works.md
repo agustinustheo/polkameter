@@ -78,32 +78,44 @@ Smoke mode ends the load at the first monitor problem, and it exits `1` on a mon
 
 ### The crates
 
-PolkaMeter is a Cargo workspace. The CLI and the remote agent are one binary, `polkameter`, and the engine under it does the work.
+PolkaMeter is a Cargo workspace with two published crates. The CLI and the remote agent are one binary, `polkameter`, and the engine inside that crate does the work. Plugins depend only on the SDK.
 
 | Crate | Path | What it owns |
 | --- | --- | --- |
-| `polkameter` | `crates/cli` | The `polkameter` binary: the commands, the plugin registry commands, the remote agent (`remote.rs`), and the agent's run lifecycle (`plugin_application.rs`). |
-| `polkameter-engine` | `crates/engine` | Plan parsing (`plan.rs`, `xml.rs`), the plugin registry and host (`plugins.rs`), the phases (`execute.rs`), measurement wiring (`measurement.rs`, `wiring.rs`), and `samples.jtl` and the plots (`artifacts.rs`, `plots.rs`). |
-| `polkameter-load` | `crates/load` | The load test runner: transaction sources, the sender, the tracker, the block follower, the rate steps, the stop rules, recovery and the loss check. |
-| `polkameter-chain` | `crates/chain` | One node over RPC: typed reads and events with subxt, and JSON-RPC calls. |
-| `polkameter-monitors` | `crates/monitors` | Monitors that each write one raw file: the metric scraper, the relay recorder, the process sampler, the topology reader, preflight and the block walker. |
-| `polkameter-files` | `crates/files` | The run directory's format: the file writers, the metric registry, the `summary.json` types, the record types and the reader that merges the files. |
-| `polkameter-checks` | `crates/checks` | The evaluator. It reads a finished run's files, runs the outcome checks and writes `summary.json` and `summary.md`. |
-| `polkameter-plugin-sdk` | `crates/plugin-sdk` | The JSON-line protocol between the host and a plugin, and the `Plugin` trait that a plugin implements. |
-| `polkameter-example-plugin` | `plugins/example` | An example plugin. It doubles numbers and waits, and it prepares no transactions. |
+| `polkameter` | `crates/cli` | The `polkameter` binary: the commands, the plugin registry commands, the remote agent (`remote.rs`), and the agent's run lifecycle (`plugin_application.rs`). It also holds the engine and the load runner, described below. |
+| `polkameter-plugin-sdk` | `crates/plugin-sdk` | The JSON-line protocol between the host and a plugin, and the `Plugin` trait that a plugin implements. With the `chain` feature, one node over RPC. With the `observers` feature, the run directory's format, the block walker and the checks. |
+| `polkameter-example-plugin` | `plugins/example` | An example plugin. It doubles numbers and waits, and it prepares no transactions. Not published. |
 
-Dependencies point one way. `polkameter-files`, `polkameter-chain` and `polkameter-plugin-sdk` depend on no other PolkaMeter crate. `polkameter-checks` depends only on `polkameter-files`. `polkameter-load` and `polkameter-monitors` depend on `files` and `chain`. `polkameter-engine` depends on all of them, and `polkameter` depends only on the engine.
+Inside `polkameter`:
+
+| Module | Path | What it owns |
+| --- | --- | --- |
+| `engine` | `crates/cli/src/engine` | Plan parsing (`plan.rs`, `xml.rs`), the plugin registry and host (`plugins.rs`), the phases (`execute.rs`), measurement wiring (`measurement.rs`, `wiring.rs`), and `samples.jtl` and the plots (`artifacts.rs`, `plots.rs`). |
+| `engine::monitors` | `crates/cli/src/engine/monitors` | Monitors that each write one raw file: the metric scraper, the relay recorder, the process sampler, the topology reader and preflight. |
+| `load` | `crates/cli/src/load` | The load test runner: transaction sources, the sender, the tracker, the block follower, the rate steps, the stop rules, recovery and the loss check. |
+
+Inside `polkameter-plugin-sdk`:
+
+| Module | Feature | Path | What it owns |
+| --- | --- | --- | --- |
+| crate root | default | `crates/plugin-sdk/src/lib.rs` | The protocol. |
+| `chain` | `chain` | `crates/plugin-sdk/src/chain` | One node over RPC: typed reads and events with subxt, and JSON-RPC calls. |
+| `observers::files` | `observers` | `crates/plugin-sdk/src/observers/files` | The run directory's format: the file writers, the metric registry, the `summary.json` types, the record types and the reader that merges the files. |
+| `observers::monitors` | `observers` | `crates/plugin-sdk/src/observers/monitors` | The block walker and the series writer that chain recorders, built-in or in a plugin, run under. |
+| `observers::checks` | `observers` | `crates/plugin-sdk/src/observers/checks` | The evaluator. It reads a finished run's files, runs the outcome checks and writes `summary.json` and `summary.md`. |
+
+Dependencies point one way. `polkameter-plugin-sdk` depends on no other PolkaMeter crate, and `polkameter` depends on the SDK with every feature on. The engine and the load runner are public modules of `polkameter` only so the desktop app and the tests can share them; they are not a library API.
 
 ### How a run flows through the crates
 
 1. `engine::execute::run` validates the plan, creates the run directory and opens `events.jsonl`. Every phase event is written there.
-2. `engine::plugins` starts one process for each plugin the plan declares. Each step sends an operation over the `plugin-sdk` protocol and gets its outputs back.
-3. For a load test, `engine::measurement::run` starts the monitors and connects the load to the node through `polkameter-chain`. The load runner sends the prepared transactions and writes its own files.
+2. `engine::plugins` starts one process for each plugin the plan declares. Each step sends an operation over the SDK protocol and gets its outputs back.
+3. For a load test, `engine::measurement::run` starts the monitors and connects the load to the node through the SDK's `chain` module. The load runner sends the prepared transactions and writes its own files.
 4. After the finality wait, `load::loss` gives each transaction its status.
-5. `checks::report::write` reads the files through `polkameter-files`, runs the checks and writes `summary.json` and `summary.md`.
+5. `observers::checks::report::write` reads the files through `observers::files`, runs the checks and writes `summary.json` and `summary.md`.
 6. `engine::artifacts` writes `samples.jtl` and the plots, and `execute` writes `execution.json`.
 
-Each crate writes its own raw files and does not call the others for data. Only `polkameter-files` knows the formats. That is why `polkameter report` can run steps 5 and 6 again from the files alone.
+Each part writes its own raw files and does not call the others for data. Only `observers::files` knows the formats. That is why `polkameter report` can run steps 5 and 6 again from the files alone.
 
 ### Testing
 
@@ -111,7 +123,7 @@ The load tracker is plain code that is tested without a network, and the checks 
 
 ### Where to change things
 
-- A new check: add its metric to the registry in `crates/files`, record it in a monitor if none does, and add the check to one of the lists in `crates/checks/src/outcomes/`.
-- A stop rule or a default threshold: `crates/load/src/rules.rs` holds every rule of the load in one place.
-- A limit that a check compares against: `crates/checks/src/limits.rs`.
+- A new check: add its metric to the registry in `crates/plugin-sdk/src/observers/files/registry.rs`, record it in a monitor if none does, and add the check to one of the lists in `crates/plugin-sdk/src/observers/checks/outcomes/`.
+- A stop rule or a default threshold: `crates/cli/src/load/rules.rs` holds every rule of the load in one place.
+- A limit that a check compares against: `crates/plugin-sdk/src/observers/checks/limits.rs`.
 - The checks to run before a pull request are listed in the Development section of the repository's README.

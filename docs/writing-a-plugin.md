@@ -31,7 +31,7 @@ rust-version = "1.93"
 
 [dependencies]
 anyhow = "1"
-polkameter-plugin-sdk = "0.2"
+polkameter-plugin-sdk = "0.3"
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 ```
@@ -107,7 +107,7 @@ cargo build
 ```text
 ...
    Compiling tokio v1.54.1
-   Compiling polkameter-plugin-sdk v0.2.0
+   Compiling polkameter-plugin-sdk v0.3.0
    Compiling hello-plugin v0.1.0 (~/hello-plugin)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 11.23s
 ```
@@ -188,6 +188,20 @@ A plugin that drives load does three jobs. The [plugin reference](plugins.md) gi
 **State check (optional).** After the run, PolkaMeter samples finalized transactions and calls the operation named by `state-check`. That operation confirms the state the load should leave behind, and returns `checked`, `missing` and `detail`.
 
 **Observers (optional).** A setup step can start a recorder for runtime-specific storage or events, and an evaluate step stops it. The recorder writes its series into the plugin's directory. The evaluate step returns checks that judge those series in the report.
+
+These jobs need two optional features of the SDK. `chain` connects to a node, reads storage and signs transactions. `observers` records series and judges them, and turns on `chain` as well:
+
+```toml
+[dependencies]
+polkameter-plugin-sdk = { version = "0.3", features = ["observers"] }
+```
+
+```rust
+use polkameter_plugin_sdk::chain::{Client, Keypair, fetch};
+use polkameter_plugin_sdk::observers::{CheckResult, RunData, RunDir, walker};
+```
+
+[The plugin SDK crate](plugins.md#the-plugin-sdk-crate) lists what each feature gives.
 
 Before you write one, write down the load: the call, the signer, the number of transactions, and what each one needs from the chain. Check the runtime identity (genesis hash, spec version and transaction version) before the load starts, so stale transactions stop the run rather than get submitted. Keep secrets in credential profiles, not in the plugin's output.
 

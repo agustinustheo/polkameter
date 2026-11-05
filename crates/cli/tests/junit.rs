@@ -172,7 +172,7 @@ fn report_escapes_and_bounds_recorded_messages_and_validates_the_xml() {
 	assert!(!xml.contains('\0'));
 	assert!(!xml.contains('\u{1b}'));
 	assert!(!xml.contains('\u{202e}'));
-	assert!(xml.len() < polkameter_engine::junit::MESSAGE_CHARS * 6 * 2 + 2048);
+	assert!(xml.len() < polkameter::engine::junit::MESSAGE_CHARS * 6 * 2 + 2048);
 	validate(&work.0.join("junit.xml"));
 }
 

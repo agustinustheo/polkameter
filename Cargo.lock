@@ -4122,25 +4122,58 @@ dependencies = [
 
 [[package]]
 name = "polkameter"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
  "clap",
+ "csv",
  "flate2",
- "polkameter-engine",
+ "futures-util",
+ "hex",
+ "parity-scale-codec",
+ "polkameter-plugin-sdk",
  "reqwest",
  "serde",
+ "serde_json",
+ "sp-crypto-hashing",
+ "subxt-rpcs",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-tungstenite",
+ "tokio-util",
+]
+
+[[package]]
+name = "polkameter-desktop"
+version = "0.3.0"
+dependencies = [
+ "polkameter",
+ "rfd",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+]
+
+[[package]]
+name = "polkameter-example-plugin"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "polkameter",
+ "polkameter-plugin-sdk",
  "serde_json",
  "tokio",
  "tokio-util",
 ]
 
 [[package]]
-name = "polkameter-chain"
-version = "0.2.0"
+name = "polkameter-plugin-sdk"
+version = "0.3.0"
 dependencies = [
+ "anyhow",
  "frame-decode",
+ "futures-util",
  "hex",
  "scale-decode",
  "scale-value",
@@ -4152,115 +4185,7 @@ dependencies = [
  "subxt-signer",
  "thiserror 2.0.21",
  "tokio",
-]
-
-[[package]]
-name = "polkameter-checks"
-version = "0.2.0"
-dependencies = [
- "polkameter-files",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "polkameter-desktop"
-version = "0.2.0"
-dependencies = [
- "polkameter",
- "polkameter-engine",
- "rfd",
- "serde_json",
- "tauri",
- "tauri-build",
-]
-
-[[package]]
-name = "polkameter-engine"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "csv",
- "hex",
- "polkameter-chain",
- "polkameter-checks",
- "polkameter-files",
- "polkameter-load",
- "polkameter-monitors",
- "polkameter-plugin-sdk",
- "serde",
- "serde_json",
- "sp-crypto-hashing",
- "subxt-rpcs",
- "tokio",
  "tokio-util",
-]
-
-[[package]]
-name = "polkameter-example-plugin"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "polkameter-engine",
- "polkameter-plugin-sdk",
- "serde_json",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
-name = "polkameter-files"
-version = "0.2.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "polkameter-load"
-version = "0.2.0"
-dependencies = [
- "futures-util",
- "hex",
- "polkameter-chain",
- "polkameter-files",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tokio",
- "tokio-tungstenite",
- "tokio-util",
-]
-
-[[package]]
-name = "polkameter-monitors"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "futures-util",
- "parity-scale-codec",
- "polkameter-chain",
- "polkameter-files",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
-name = "polkameter-plugin-sdk"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "hex",
- "serde",
- "serde_json",
- "sp-crypto-hashing",
- "tokio",
 ]
 
 [[package]]

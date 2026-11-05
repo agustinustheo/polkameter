@@ -16,15 +16,23 @@ name = "polkameter"
 path = "src/main.rs"
 
 [dependencies]
-polkameter-engine.workspace = true
+polkameter-plugin-sdk = { workspace = true, features = ["chain", "observers"] }
 
 anyhow.workspace = true
 axum = "0.8"
 clap = { version = "4", features = ["derive"] }
+csv.workspace = true
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+hex.workspace = true
+parity-scale-codec.workspace = true
 reqwest = { version = "0.13", features = ["json"] }
 serde.workspace = true
 serde_json.workspace = true
+sp-crypto-hashing.workspace = true
+subxt-rpcs.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
+tokio-tungstenite = "0.30"
 tokio-util.workspace = true
 
 [dev-dependencies]

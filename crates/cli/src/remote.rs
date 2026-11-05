@@ -140,10 +140,10 @@ fn is_loopback_http(endpoint: &str) -> bool {
 pub struct PluginRequest {
 	pub xml: String,
 	#[serde(default)]
-	pub options: polkameter_engine::execute::RunOptions,
+	pub options: crate::engine::execute::RunOptions,
 }
 async fn plugin_capabilities() -> AgentResult<Json<serde_json::Value>> {
-	let registry = polkameter_engine::plugins::Registry::load().map_err(bad_request)?;
+	let registry = crate::engine::plugins::Registry::load().map_err(bad_request)?;
 	Ok(Json(
 		serde_json::json!({"protocol":1,"runOptions":{"failOnVerdict":true},"plugins":registry.plugins.iter().map(|(id,p)|serde_json::json!({"id":id,"version":p.version,"blake2":p.blake2})).collect::<Vec<_>>()}),
 	))
@@ -224,7 +224,7 @@ pub async fn plugin_start(
 pub async fn plugin_start_with_options(
 	target: &RemoteRunnerTarget,
 	xml: String,
-	options: polkameter_engine::execute::RunOptions,
+	options: crate::engine::execute::RunOptions,
 ) -> Result<crate::plugin_application::Status, String> {
 	if options.fail_on_verdict {
 		let capabilities: serde_json::Value =
@@ -314,7 +314,7 @@ mod tests {
 		assert!(!request.options.fail_on_verdict);
 		let request = PluginRequest {
 			xml: "plan".into(),
-			options: polkameter_engine::execute::RunOptions { fail_on_verdict: true },
+			options: crate::engine::execute::RunOptions { fail_on_verdict: true },
 		};
 		let json = serde_json::to_value(request).unwrap();
 		assert_eq!(json["options"]["failOnVerdict"], true);
@@ -335,7 +335,7 @@ mod tests {
 		let Err(error) = plugin_start_with_options(
 			&RemoteRunnerTarget { endpoint, bearer_token: "test".into() },
 			"plan".into(),
-			polkameter_engine::execute::RunOptions { fail_on_verdict: true },
+			crate::engine::execute::RunOptions { fail_on_verdict: true },
 		)
 		.await
 		else {
