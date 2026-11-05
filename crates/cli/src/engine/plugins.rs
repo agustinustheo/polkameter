@@ -1,4 +1,4 @@
-use crate::plan::PluginSpec;
+use crate::engine::plan::PluginSpec;
 use anyhow::{Context as _, Result, ensure};
 use polkameter_plugin_sdk::{
 	Context, MAX_MESSAGE_BYTES, Manifest, Operation, PROTOCOL, Request, Response,
@@ -92,7 +92,10 @@ impl Registry {
 		);
 		Ok(manifest)
 	}
-	pub fn resolve_credentials(&self, plan: &crate::plan::Plan) -> Result<BTreeMap<String, Value>> {
+	pub fn resolve_credentials(
+		&self,
+		plan: &crate::engine::plan::Plan,
+	) -> Result<BTreeMap<String, Value>> {
 		plan.credentials
 			.entries
 			.iter()

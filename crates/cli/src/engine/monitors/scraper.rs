@@ -6,16 +6,16 @@
 
 use std::{collections::HashMap, time::Duration};
 
-use polkameter_files::{
+use polkameter_plugin_sdk::observers::files::{
 	FileError, JsonlWriter, ScrapeRecord, now_ms, parse_sample_line,
 	registry::{self, NODE_METRICS},
 };
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
-use polkameter_files::Problems;
+use polkameter_plugin_sdk::observers::files::Problems;
 
-use crate::{Job, Target};
+use crate::engine::monitors::{Job, Target};
 
 const EVERY: Duration = Duration::from_secs(5);
 

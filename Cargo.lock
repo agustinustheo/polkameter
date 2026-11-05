@@ -4127,51 +4127,13 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
- "flate2",
- "polkameter-engine",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
-name = "polkameter-chain"
-version = "0.2.0"
-dependencies = [
- "polkameter-plugin-sdk",
-]
-
-[[package]]
-name = "polkameter-checks"
-version = "0.2.0"
-dependencies = [
- "polkameter-plugin-sdk",
-]
-
-[[package]]
-name = "polkameter-desktop"
-version = "0.2.0"
-dependencies = [
- "polkameter",
- "polkameter-engine",
- "rfd",
- "serde_json",
- "tauri",
- "tauri-build",
-]
-
-[[package]]
-name = "polkameter-engine"
-version = "0.2.0"
-dependencies = [
- "anyhow",
  "csv",
+ "flate2",
  "futures-util",
  "hex",
- "polkameter-monitors",
+ "parity-scale-codec",
  "polkameter-plugin-sdk",
+ "reqwest",
  "serde",
  "serde_json",
  "sp-crypto-hashing",
@@ -4183,38 +4145,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "polkameter-desktop"
+version = "0.2.0"
+dependencies = [
+ "polkameter",
+ "rfd",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+]
+
+[[package]]
 name = "polkameter-example-plugin"
 version = "0.2.0"
 dependencies = [
  "anyhow",
- "polkameter-engine",
+ "polkameter",
  "polkameter-plugin-sdk",
  "serde_json",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
-name = "polkameter-files"
-version = "0.2.0"
-dependencies = [
- "polkameter-plugin-sdk",
-]
-
-[[package]]
-name = "polkameter-monitors"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "futures-util",
- "parity-scale-codec",
- "polkameter-chain",
- "polkameter-files",
- "polkameter-plugin-sdk",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
  "tokio",
  "tokio-util",
 ]

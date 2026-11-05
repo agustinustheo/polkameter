@@ -43,7 +43,7 @@ struct Sample {
 /// and the plots.
 pub fn write_outputs(directory: &Path) -> Result<()> {
 	write_samples(directory)?;
-	crate::plots::write(directory)
+	crate::engine::plots::write(directory)
 }
 
 /// samples.jtl: one row per step and per transaction in the run's event and ledger files.

@@ -13,11 +13,6 @@ rust-version = "1.93"
 [workspace.dependencies]
 subxt-rpcs = "0.51.1"
 polkameter = { path = "crates/cli", version = "0.2.0" }
-polkameter-chain = { path = "crates/chain", version = "0.2.0" }
-polkameter-checks = { path = "crates/checks", version = "0.2.0" }
-polkameter-engine = { path = "crates/engine", version = "0.2.0" }
-polkameter-files = { path = "crates/files", version = "0.2.0" }
-polkameter-monitors = { path = "crates/monitors", version = "0.2.0" }
 polkameter-plugin-sdk = { path = "crates/plugin-sdk", version = "0.2.0" }
 
 anyhow = "1"

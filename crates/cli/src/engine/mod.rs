@@ -5,9 +5,9 @@ pub mod plugins;
 
 pub mod artifacts;
 pub mod junit;
-pub mod load;
 mod machine;
 pub mod measurement;
+pub mod monitors;
 mod plots;
 mod wiring;
 mod xml;

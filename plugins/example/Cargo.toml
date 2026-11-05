@@ -14,5 +14,5 @@ serde_json.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-polkameter-engine.workspace = true
+polkameter.workspace = true
 tokio-util.workspace = true

@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use polkameter_files::{FileError, JsonlWriter, Millis, NodeSample, now_ms};
+use polkameter_plugin_sdk::observers::files::{FileError, JsonlWriter, Millis, NodeSample, now_ms};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 

@@ -38,12 +38,12 @@ fn open_plugin_plan() -> Result<Option<String>, String> {
 		return Ok(None);
 	};
 	let xml = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-	polkameter_engine::plan::Plan::parse(&xml).map_err(|e| e.to_string())?;
+	polkameter::engine::plan::Plan::parse(&xml).map_err(|e| e.to_string())?;
 	Ok(Some(xml))
 }
 #[tauri::command]
 fn save_plugin_plan(xml: String) -> Result<Option<String>, String> {
-	polkameter_engine::plan::Plan::parse(&xml).map_err(|e| e.to_string())?;
+	polkameter::engine::plan::Plan::parse(&xml).map_err(|e| e.to_string())?;
 	let Some(path) = rfd::FileDialog::new()
 		.set_title("Save XML plugin plan")
 		.set_file_name("scenario.polkameter.xml")

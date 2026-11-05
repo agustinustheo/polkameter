@@ -10,11 +10,11 @@
 use std::collections::BTreeMap;
 
 use parity_scale_codec::Decode;
-use polkameter_chain::{
+use polkameter_plugin_sdk::chain::{
 	ChainError, Client, decode_err, events, runtime_call,
 	value::{as_u64, field, nth},
 };
-use polkameter_files::{
+use polkameter_plugin_sdk::observers::files::{
 	Problems, now_ms,
 	registry::{
 		PARA_BACKED, PARA_INCLUDED, PARA_SLOTS, PARA_TIMED_OUT, RELAY_DISPUTES,
@@ -23,7 +23,7 @@ use polkameter_files::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{
+use crate::engine::monitors::{
 	MonitorError,
 	chain_series::ChainSeries,
 	walker::{self, Walk},

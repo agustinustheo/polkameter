@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, fmt::Write as _, fs, io::Write as _, path::Path
 use anyhow::Result;
 use serde_json::Value;
 
-use crate::execute::{redact, redact_text};
+use crate::engine::execute::{redact, redact_text};
 
 /// Maximum message/name length before XML escaping (entities require at most six bytes).
 pub const MESSAGE_CHARS: usize = 2048;

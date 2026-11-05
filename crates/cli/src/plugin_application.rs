@@ -1,5 +1,5 @@
 //! Frontend adapters for the shared XML plugin engine.
-use polkameter_engine::{execute, plan::Plan, plugins::Registry};
+use crate::engine::{execute, plan::Plan, plugins::Registry};
 use serde::Serialize;
 use std::{path::Path, sync::Arc};
 use tokio::sync::Mutex;

@@ -5,18 +5,18 @@
 
 use std::future::Future;
 
-use crate::load::runner::RunEvent;
-use anyhow::Context as _;
-use polkameter_monitors::{
+use crate::engine::monitors::{
 	MonitorError, Scraper, ScraperHandle, Target, chain_series, process, relay,
 };
+use crate::load::runner::RunEvent;
+use anyhow::Context as _;
 use polkameter_plugin_sdk::chain::Client;
 use polkameter_plugin_sdk::observers::files::{Problems, RunDir};
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::{plan::Plan, plugins::Registry};
+use crate::engine::{plan::Plan, plugins::Registry};
 
 type Task = JoinHandle<Result<(), MonitorError>>;
 
@@ -27,7 +27,7 @@ pub fn monitor_targets(plan: &Plan, registry: &Registry) -> anyhow::Result<Optio
 	let topology = registry.topologies.get(&monitors.topology).with_context(|| {
 		format!("topology alias {} is not installed on this host", monitors.topology)
 	})?;
-	Ok(Some(polkameter_monitors::load_targets(topology, monitors.para_id)?))
+	Ok(Some(crate::engine::monitors::load_targets(topology, monitors.para_id)?))
 }
 
 /// Where the monitors read from.

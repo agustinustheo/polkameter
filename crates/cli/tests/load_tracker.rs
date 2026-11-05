@@ -1,6 +1,6 @@
 //! The tracker as a state machine: a fake sender, hand-made replies and block events, no network.
 
-use polkameter_engine::load::{
+use polkameter::load::{
 	Lane, QueueSource, Tx,
 	follower::BlockEvent,
 	sender::Reply,

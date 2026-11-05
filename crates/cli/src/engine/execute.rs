@@ -1,12 +1,12 @@
 //! Execution of declarative steps through the same host in every frontend.
-use crate::{
+use crate::engine::monitors::Job;
+use crate::engine::{
 	artifacts, measurement,
 	plan::{InputSource, Plan, Step, Workflow},
 	plugins::{Plugins, Registry, checksum},
 	wiring,
 };
 use anyhow::{Context as _, Result, bail, ensure};
-use polkameter_monitors::Job;
 use polkameter_plugin_sdk::observers::files::RunDir;
 use polkameter_plugin_sdk::{Artifact, Context, Operation, PreparedTx, Schema, strip_0x};
 use serde::{Deserialize, Serialize};
@@ -341,7 +341,7 @@ async fn check_environment(plan: &Plan, registry: &Registry) -> Result<()> {
 	else {
 		return Ok(());
 	};
-	for warning in polkameter_monitors::preflight::preflight(&targets).await? {
+	for warning in crate::engine::monitors::preflight::preflight(&targets).await? {
 		eprintln!("preflight: {warning}");
 	}
 	let metrics = monitor
@@ -349,7 +349,7 @@ async fn check_environment(plan: &Plan, registry: &Registry) -> Result<()> {
 		.iter()
 		.map(|m| Ok((m.role.parse::<Job>()?, m.name.clone())))
 		.collect::<Result<Vec<_>>>()?;
-	polkameter_monitors::preflight::require_metrics(&targets, &metrics).await?;
+	crate::engine::monitors::preflight::require_metrics(&targets, &metrics).await?;
 	Ok(())
 }
 /// Calibrate during preflight, before any recognition, signing or proving in setup.
@@ -693,8 +693,8 @@ impl Run<'_> {
 				write_json(&path, &value)?;
 			}
 		}
-		if let Err(error) = crate::junit::write(&self.directory, &self.log.secrets) {
-			let event = crate::junit::warning(None, &error.to_string(), &self.log.secrets);
+		if let Err(error) = crate::engine::junit::write(&self.directory, &self.log.secrets) {
+			let event = crate::engine::junit::warning(None, &error.to_string(), &self.log.secrets);
 			let _ = self.log.emit(event);
 		}
 		self.log.emit(json!({"event": "completed", "outcome": outcome}))?;
@@ -997,7 +997,7 @@ async fn check_requirements(plan: &Plan, registry: &Registry, plugins: &Plugins)
 				let targets = wiring::monitor_targets(plan, registry)?
 					.context("metric requirement needs a topology")?;
 				let role = requirement.target.parse::<Job>()?;
-				polkameter_monitors::preflight::require_metrics(
+				crate::engine::monitors::preflight::require_metrics(
 					&targets,
 					&[(role, requirement.name.clone())],
 				)

@@ -1,18 +1,18 @@
 //! The measured load: baseline, rate steps, recovery and reconciliation of prepared transactions,
 //! with the node monitors. It returns the summary; the caller writes the report once plugin checks
 //! have run.
-use crate::load::runner::{Io, Mode, RunOptions, baseline, drain, load as apply_load, recover};
-use crate::load::sender::Sender;
-use crate::load::steps::final_step;
-use crate::load::tracker::{Phase, Tracker};
-use crate::load::{Lane, QueueSource, StateCheck, Tx, TxHash, follower, now_ms, rules};
-use crate::{
+use crate::engine::{
 	execute::{Values, resolve, target_endpoint, transactions},
 	machine,
 	plan::Plan,
 	plugins::{Plugins, Registry},
 	wiring::{Chains, Monitors, monitor_targets},
 };
+use crate::load::runner::{Io, Mode, RunOptions, baseline, drain, load as apply_load, recover};
+use crate::load::sender::Sender;
+use crate::load::steps::final_step;
+use crate::load::tracker::{Phase, Tracker};
+use crate::load::{Lane, QueueSource, StateCheck, Tx, TxHash, follower, now_ms, rules};
 use anyhow::{Context as _, Result, bail};
 use polkameter_plugin_sdk::chain::{ChainError, Client};
 use polkameter_plugin_sdk::observers::files::summary::{
@@ -429,7 +429,7 @@ mod tests {
 		for mode in [Mode::Stress, Mode::Smoke] {
 			for status in [Status::Pass, Status::Warn, Status::Fail, Status::NoResult] {
 				let mut summary: Summary = serde_json::from_str(include_str!(
-					"../../cli/tests/fixtures/smoke-run/summary.json"
+					"../../tests/fixtures/smoke-run/summary.json"
 				))
 				.unwrap();
 				summary.breaking_point = None;
@@ -455,7 +455,7 @@ mod tests {
 		// verdicts or inventing failures. The CLI replay test separately regenerates these checks
 		// from the raw recorded files; `report` itself has no --fail-on-verdict option.
 		let summary: Summary =
-			serde_json::from_str(include_str!("../../cli/tests/fixtures/smoke-run/summary.json"))
+			serde_json::from_str(include_str!("../../tests/fixtures/smoke-run/summary.json"))
 				.unwrap();
 		let checks: Vec<CheckResult> =
 			serde_json::from_value(summary.checks.clone().unwrap()).unwrap();
@@ -479,10 +479,9 @@ mod tests {
 		std::fs::create_dir_all(&root).unwrap();
 		let dir = RunDir::open(&root);
 		for fail_on_verdict in [false, true] {
-			let summary: Summary = serde_json::from_str(include_str!(
-				"../../cli/tests/fixtures/smoke-run/summary.json"
-			))
-			.unwrap();
+			let summary: Summary =
+				serde_json::from_str(include_str!("../../tests/fixtures/smoke-run/summary.json"))
+					.unwrap();
 			let measured = Measured { summary, finals: vec![], mode: Mode::Stress };
 			assert_eq!(
 				report(&dir, measured, &[], fail_on_verdict).unwrap(),
@@ -516,10 +515,9 @@ mod tests {
 			("smoke optional gap", Mode::Smoke, false, Status::Pass, Status::NoResult, 0),
 			("smoke all pass", Mode::Smoke, false, Status::Pass, Status::Pass, 0),
 		] {
-			let mut summary: Summary = serde_json::from_str(include_str!(
-				"../../cli/tests/fixtures/smoke-run/summary.json"
-			))
-			.unwrap();
+			let mut summary: Summary =
+				serde_json::from_str(include_str!("../../tests/fixtures/smoke-run/summary.json"))
+					.unwrap();
 			summary.problems = if problem { vec!["monitor scrape failed".into()] } else { vec![] };
 			let checks =
 				[result("required", required, false), result("from a plugin", optional, true)];

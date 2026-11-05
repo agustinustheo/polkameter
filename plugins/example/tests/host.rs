@@ -1,4 +1,4 @@
-use polkameter_engine::{
+use polkameter::engine::{
 	execute::{self, Outcome, RunState},
 	plan::Plan,
 	plugins::Registry,
