@@ -65,38 +65,39 @@ Phase: measurement
 Phase: baseline
 baseline: 3 probes landed, p50 6.0 s, max 6.0 s
 Phase: load
-step 0 prepared: target 100 tx/s, sent 100 tx/s, 4 blocks, 79.5 tx/s included, reply p95 0.0 s, 2 replies pending, backlog 616
+step 0 prepared: target 100 tx/s, sent 100 tx/s, 4 blocks, 79.8 tx/s included, reply p95 0.0 s, 2 replies pending, backlog 606
 ...
-step 4 prepared: target 500 tx/s, sent 500 tx/s, 5 blocks, 397.6 tx/s included, reply p95 0.0 s, 10 replies pending, backlog 3070
-step 5 prepared: target 600 tx/s, sent 600 tx/s, 5 blocks, 407.6 tx/s included, reply p95 0.1 s, 12 replies pending, backlog 5771
+step 4 prepared: target 500 tx/s, sent 500 tx/s, 5 blocks, 399.7 tx/s included, reply p95 0.0 s, 11 replies pending, backlog 3010
+step 5 prepared: target 600 tx/s, sent 600 tx/s, 5 blocks, 409.6 tx/s included, reply p95 0.0 s, 12 replies pending, backlog 5712
 stop: rate cap: all 6 steps ran
 Phase: recovery
-recovery: load stopped with 5771 txs outstanding; one probe per block for up to 120 s
+recovery: load stopped with 5712 txs outstanding; one probe per block for up to 120 s
 recovery: back (3 probes in a row landed within 12.0 s); backlog 0 left
 Phase: reconciliation
 ...
 #### Result
 
 - **Verdict:** FAIL
-- **Failure onset** (first failed load step): step 5 (600 tx/s): latency, p95 send -> best block 16.7 s
+- **Failure onset** (first failed load step): step 5 (600 tx/s): latency, p95 send -> best block 12.9 s
 - **Max sustained:** 500 tx/s target (step 4), 500 tx/s included
 - **Load stop:** rate cap: all 6 steps ran
-- **Recovery:** back 3 s after the load stopped (3 probes in a row landed within 12.0 s). Backlog at stop 5771 txs, drained after 8 s, at 320.5 tx/s.
-- **Loss check:** 63001 sent: 63001 finalized (0 failed after inclusion), 0 refused, 0 still ready in the pool, 0 seen in a block but not verified final, **0 lost**, 0 unknown. ... State check: 100 of 100 every sampled transaction's signer nonce is past it at block 0x05e2cf0ac0cbd0305415364575a6a2225ec70f0f7c91f7bf688476faf5f4e8d3
+- **Recovery:** back 1 s after the load stopped (3 probes in a row landed within 12.0 s). Backlog at stop 5712 txs, drained after 8 s, at 317.3 tx/s.
+- **Loss check:** 63002 sent: 63002 finalized (0 failed after inclusion), 0 refused, 0 still ready in the pool, 0 seen in a block but not verified final, **0 lost**, 0 unknown. ... State check: 100 of 100 every sampled transaction's signer nonce is past it at block 0xf10f4c80faa8cba181d33faf86bcc712505c030d6b292b808fd6db5a54c88250
 ...
 #### Load steps
 
 | step | target tx/s | duration s | transactions sent | sent/s | included/s | included % | p50 s | p95 s (limit 10.0) | ... | max ours/block | max ref time % | max proof % |
 ...
-| 3 | 400 | 30.0 | 12000 | 400 | 400 | 100.0 | 5.0 | 7.7 | ... | 2406 | 78.2 | 5.4 |
-| 4 | 500 | 30.0 | 15000 | 500 | 500 | 100.0 | 5.3 | 8.2 | ... | 3008 | 97.8 | 6.7 |
-| 5 | 600 | 30.0 | 18001 | 600 | 600 | 100.0 | 7.0 | 16.7 | ... | 3075 | 100.0 | 6.9 |
+| 3 | 400 | 30.0 | 12000 | 400 | 400 | 100.0 | 3.9 | 6.6 | ... | 2409 | 78.3 | 5.4 |
+| 4 | 500 | 30.0 | 15001 | 500 | 500 | 100.0 | 4.1 | 6.8 | ... | 3011 | 97.9 | 6.8 |
+| 5 | 600 | 30.0 | 18001 | 600 | 600 | 100.0 | 6.2 | 12.9 | ... | 3075 | 100.0 | 6.9 |
 ...
-Run completed_with_failures. Artifacts: ~/polkameter/target/runs/run-1793938251606-22106-1
+Run completed_with_failures. Artifacts: ~/polkameter/target/runs/run-1793952055743-80142-1
+PolkaMeter: verdict FAIL: step 5 broke its latency measure (p95 send -> best block 12.9 s); exit 1 because of --fail-on-verdict (the checks are in summary.md)
 1
 ```
 
-The verdict is `FAIL` because the last step broke a limit. At 600 transactions per second, blocks were full: 3,075 remarks used 100% of a block's compute time (ref time). Transactions queued, and the p95 time from send to a block rose to 16.7 s, above the 10-second limit. The chain sustained 500 transactions per second. All 63,001 transactions sent were finalized, none were lost, and the state check found the nonce of every sampled transaction used. [Read the results](reading-results.md) explains each line of `summary.md`.
+The verdict is `FAIL` because the last step broke a limit. At 600 transactions per second, blocks were full: 3,075 remarks used 100% of a block's compute time (ref time). Transactions queued, and the p95 time from send to a block rose to 12.9 s, above the 10-second limit. The chain sustained 500 transactions per second. All 63,002 transactions sent were finalized, none were lost, and the state check found the nonce of every sampled transaction used. [Read the results](reading-results.md) explains each line of `summary.md`.
 
 `--fail-on-verdict` makes a `FAIL` verdict exit with `1`. Leave it out when you explore a chain's limit, and keep it in CI.
 

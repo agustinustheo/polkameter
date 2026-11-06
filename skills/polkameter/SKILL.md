@@ -92,7 +92,7 @@ Work through [checklist.md](checklist.md) and tick items as you go. In short:
 | `less than expected-seconds` or `may have expired; raise mortality` | Raise the prepare step's `mortality` to the suggested value, or set it to `0` |
 | `an earlier prepare step of this run also signs with` | Give the second prepare step another `derivation`, and fund it with its own `fund-accounts` step |
 | Load stop `all N prepared transactions sent` | Raise the prepare step's `count` above the sum of rate times seconds |
-| `credential profile ... is unavailable` or `empty credential profile` | Map the profile with `polkameter plugin credential` and export its variable |
+| `uses profile ..., which is not configured on this host`, or a variable that `is not set` or `is empty` | Map the profile with `polkameter plugin credential` and export its variable |
 
 ## Reference
 
