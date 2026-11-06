@@ -141,7 +141,7 @@ polkameter plugin install target/debug/hello-plugin
 Installed plugin hello 0.1.0 (1 operation) from ~/hello-plugin/target/debug/hello-plugin
 ```
 
-Install reads the manifest and records the plugin's ID, its version and the BLAKE2 hash of the executable. PolkaMeter refuses to run a plugin whose executable has changed since you installed it. Install the plugin again after every rebuild. Otherwise the run stops with `plugin hello version/checksum mismatch`.
+Install reads the manifest and records the plugin's ID, its version and the BLAKE2 hash of the executable. PolkaMeter refuses to run a plugin whose executable has changed since you installed it. Install the plugin again after every rebuild. Otherwise the run stops with ``plugin hello checksum mismatch: … If you rebuilt it, run `polkameter plugin install …` again``.
 
 ## Write a plan that calls it
 

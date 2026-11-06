@@ -49,6 +49,10 @@ A tutorial links to the reference for details. A reference page links to the exp
 
 12. **Only document what exists.** Do not document the desktop app. Do not describe planned features. From 0.3.0, two crates are published: the CLI (`polkameter`) and the plugin SDK (`polkameter-plugin-sdk`, with the `chain` and `observers` features). 0.2.0 also published six library crates that 0.3.0 merged into these two; document them only in the migration section of the plugin reference. Install the CLI with `cargo install --locked polkameter`. Do not claim a crate is on crates.io until its release is published there.
 
+## Troubleshooting entries
+
+Each heading on the troubleshooting page is a message exactly as the CLI prints it, without the `PolkaMeter:` prefix. Write a placeholder as `\<like-this>` for a name and `…` for text that varies, and escape `<` as `\<` outside backticks. When you change a message in the code, change its heading in the same pull request, and update every link to the heading's anchor. Under the heading, paste the real output, then **Cause:** and **Fix:**.
+
 ## Reference entry format
 
 For each element, command or file:
