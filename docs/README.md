@@ -28,12 +28,12 @@ polkameter run examples/plugin-workflow.polkameter.xml --output target/runs
 A run needs three things from you:
 
 - **A plan**: the XML file. It lists the steps, how many users run them and what to check.
-- **Plugins**: programs that supply the steps that depend on the runtime, such as building a transaction.
+- **Plugins**: programs that supply the steps that depend on the runtime, such as building a transaction. The example plan uses the repository's example plugin. PolkaMeter does not build transactions for your runtime. To load your chain, you write a plugin that prepares them; [Writing a plugin](writing-a-plugin.md) shows how.
 - **A chain**: the network under test. The example needs none.
 
 ## Where to start
 
-- [Install](install.md): download the CLI or use the container.
+- [Install](install.md): install the CLI with Cargo. <!-- v0.3.0: remove after release -->From v0.3.0, also download it or use the container.
 - [Getting started](getting-started.md): install the CLI, install the example plugin and run the example plan.
 - [Run a load test](load-test.md): run a plan against a chain and read the verdict.
 - [Run PolkaMeter in CI](ci.md): run plans in a pipeline and check the exit code.

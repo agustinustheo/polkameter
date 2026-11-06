@@ -41,7 +41,7 @@ A tutorial links to the reference for details. A reference page links to the exp
 
 8. **Cut sentences that announce or summarise.** No "This page explains…", "In summary…", "Note that…", "It is important to…". No "simply", "just", "easy", "please", "let's".
 
-9. **Warnings sit next to the step they apply to,** as a blockquote starting with **Warning:**. Use at most one per section.
+9. **Warnings sit next to the step they apply to,** as a blockquote starting with **Warning:**. Use at most one per section. A page that describes an unreleased version may open with one blockquote starting with **Unreleased:**. Put `<!-- vX.Y.Z: remove after release -->` on the line before it, and before every other clause that stops being true at that release.
 
 10. **Commands are copyable.** Say which directory to run them from. Use `polkameter` as the command name; the tutorial shows once how to put it on `PATH`. Mark placeholders as `<like-this>`.
 

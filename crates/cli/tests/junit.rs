@@ -290,7 +290,7 @@ fn invalid_junit_copy_destinations_warn_without_changing_success() {
 		assert!(output.status.success());
 		let stderr = String::from_utf8(output.stderr).unwrap();
 		assert_eq!(stderr.lines().count(), 1, "{stderr}");
-		assert!(stderr.contains("Polkameter warning: JUnit report:"));
+		assert!(stderr.contains("PolkaMeter warning: JUnit report:"));
 		assert!(!stderr.contains("&amp;") && !stderr.contains("&apos;"), "{stderr}");
 		assert!(!stderr.contains(['\t', '\u{1b}', '\u{202e}']), "{stderr}");
 		if destination != work.0 {
@@ -324,7 +324,7 @@ fn invalid_junit_copy_destinations_warn_without_changing_success() {
 			.unwrap();
 		assert!(replay.status.success());
 		assert!(
-			String::from_utf8_lossy(&replay.stderr).contains("Polkameter warning: JUnit report:")
+			String::from_utf8_lossy(&replay.stderr).contains("PolkaMeter warning: JUnit report:")
 		);
 	}
 }
@@ -435,7 +435,7 @@ async fn remote_junit_fetch_and_copy_failures_preserve_success_and_cancellation(
 			assert_eq!(artifact["outcome"]["exit_code"], code);
 			assert!(
 				String::from_utf8_lossy(&output.stderr)
-					.contains("Polkameter warning: JUnit report:")
+					.contains("PolkaMeter warning: JUnit report:")
 			);
 		}
 	}
@@ -493,7 +493,7 @@ fn local_copy_failure_preserves_sigint_exit_130_and_artifact_notification() {
 	let output = child.wait_with_output().unwrap();
 	assert_eq!(output.status.code(), Some(130));
 	assert!(String::from_utf8_lossy(&output.stdout).contains("Run stopped. Artifacts:"));
-	assert!(String::from_utf8_lossy(&output.stderr).contains("Polkameter warning: JUnit report:"));
+	assert!(String::from_utf8_lossy(&output.stderr).contains("PolkaMeter warning: JUnit report:"));
 	let runs: Vec<_> = fs::read_dir(root).unwrap().map(|r| r.unwrap().path()).collect();
 	assert_eq!(runs.len(), 1);
 	let execution: serde_json::Value =

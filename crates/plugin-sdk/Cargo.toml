@@ -1,6 +1,6 @@
 [package]
 name = "polkameter-plugin-sdk"
-description = "The SDK for Polkameter plugins: the JSON-line protocol, plus optional chain access (`chain`) and run recording and checks (`observers`)"
+description = "The SDK for PolkaMeter plugins: the JSON-line protocol, plus optional chain access (`chain`) and run recording and checks (`observers`)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -48,6 +48,9 @@ futures-util = { version = "0.3", default-features = false, features = ["std"], 
 [[test]]
 name = "checks_data"
 required-features = ["observers"]
+
+[lints]
+workspace = true
 
 [package.metadata.docs.rs]
 all-features = true

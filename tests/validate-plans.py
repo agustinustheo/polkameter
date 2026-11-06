@@ -214,7 +214,7 @@ for path, attributes in [
 # Values at and beyond all bounded integer ranges, and each scalar enum/pattern.
 for path, attribute, good, bad, reason, integer_bits in [
     (".", "version", ["1", "+1", " 1 "], ["0", "2", "4294967296"],
-     'expected a version 1 Polkameter plan in its namespace', 32),
+     'expected a version 1 PolkaMeter plan in its namespace', 32),
     (".", "mode", ["stress", "smoke"], ["", "other", " smoke"],
      'invalid `mode`: must be smoke or stress', None),
     (".", "name", [" "], [""],

@@ -1,5 +1,8 @@
 # Run directory
 
+<!-- v0.3.0: remove after release -->
+> **Unreleased:** This page describes v0.3.0. The published v0.2.0 CLI writes the same files except `junit.xml`.
+
 A run writes a directory of raw files. [Read the results](reading-results.md) explains how to interpret them. A plan with a `<load>` element is a load test; other plans write fewer files.
 
 ## The run directory
@@ -35,7 +38,7 @@ The name is `run-<milliseconds>-<pid>-<sequence>`, created in `--output`, or `--
 | `plots/*.svg` | Samples per second; p50, p95, p99 of `elapsed`; failed samples by `responseCode`. |
 | `plugins/<id>/stderr.log` | Standard error of each plugin started. |
 
-No file stores a credential value. Where a plugin or error would echo one, the file shows `[redacted]`.
+The files PolkaMeter writes, including each plugin's `stderr.log`, store no credential value. Where a plugin or error would echo one, the file shows `[redacted]`. Other files that a plugin writes into the run directory are not redacted.
 
 ## Files in a load test
 
@@ -74,6 +77,9 @@ Written after teardown.
 | `failed` | `1` | Any error, including a failed `core.assert-equal` step and a report that could not be written. |
 
 ## junit.xml
+
+<!-- v0.3.0: remove after release -->
+> **Warning:** `junit.xml` is written from v0.3.0. The published v0.2.0 CLI does not write it. To get it now, build the CLI from source, as [Install](install.md#build-from-source) shows.
 
 JUnit XML for GitLab test reports, Jenkins and GitHub test-report actions. Every run attempts to write it after teardown, including failed and stopped runs. `polkameter report` regenerates it from the recorded files.
 

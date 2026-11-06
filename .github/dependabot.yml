@@ -1,9 +1,22 @@
 version: 2
 updates:
+  # Covers .github/workflows, the root action.yml and the local setup action.
+  # Actions are pinned by commit SHA; Dependabot updates the SHA and its version comment.
   - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/setup
+    schedule:
+      interval: weekly
+  # Base image digests in the Dockerfile.
+  - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # The builder's Rust version follows the workspace toolchain (RUST_VERSION); take digest updates only.
+      - dependency-name: rust
+        update-types: [version-update:semver-major, version-update:semver-minor, version-update:semver-patch]
   - package-ecosystem: npm
     directory: /
     schedule:

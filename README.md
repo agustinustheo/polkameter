@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/agustinustheo/polkameter/main/docs/logo-dark.png">
-    <img src="https://raw.githubusercontent.com/agustinustheo/polkameter/main/docs/logo-light.png" alt="Polkameter" width="380">
+    <img src="https://raw.githubusercontent.com/agustinustheo/polkameter/main/docs/logo-light.png" alt="PolkaMeter" width="380">
   </picture>
 </p>
 
@@ -13,7 +13,9 @@
   <a href="https://github.com/agustinustheo/polkameter/stargazers"><img src="https://img.shields.io/github/stars/agustinustheo/polkameter?style=flat-square" alt="Stars"></a>
 </p>
 
-PolkaMeter is a load-testing tool for Polkadot SDK chains, modeled on JMeter. An XML plan lists the steps, and installed plugins supply the chain-specific operations. PolkaMeter submits the transactions a plugin prepares at a controlled rate, measures the chain before and after the load, checks every transaction against the finalized chain, and writes a verdict with JMeter-compatible results.
+PolkaMeter is a load-testing tool for Polkadot SDK chains, modeled on JMeter. An XML plan lists the steps. PolkaMeter submits the transactions a plugin prepares at a controlled rate, measures the chain before and after the load, checks every transaction against the finalized chain, and writes a verdict with JMeter-compatible results.
+
+PolkaMeter does not build transactions for your runtime. To load a chain, you write a plugin that prepares them; [Writing a plugin](https://agustinustheodorus.com/polkameter/writing-a-plugin.html) shows how.
 
 ## Quick start
 
@@ -29,7 +31,7 @@ polkameter --version
 polkameter 0.2.0
 ```
 
-[Install](docs/install.md) covers version selection and source installation. Prebuilt CLI archives, `install.sh`, binstall metadata and containers are available **from v0.3.0**; v0.2.0 has no prebuilt CLI archives.
+[Install](docs/install.md) covers version selection and source installation. <!-- v0.3.0: remove after release --> Prebuilt CLI archives, `install.sh`, binstall metadata and containers are available **from v0.3.0**; v0.2.0 has no prebuilt CLI archives.
 
 From a checkout of this repository, build the example plugin and install it. The example needs no chain:
 
@@ -53,12 +55,13 @@ The run writes a run directory under `target/runs`.
 
 Run a plan in GitHub Actions without installing anything first. The action supports Linux and macOS runners. It runs the plan, uploads the run directory and ends the job with the CLI's exit code. From v0.3.0, it downloads a verified release CLI when available and otherwise builds from source.
 
+<!-- v0.3.0: remove after release (change @v0.2.0 to @v0) -->
 ```yaml
 - uses: actions/checkout@v7
 - uses: agustinustheo/polkameter@v0.2.0   # source build; @v0 is available from v0.3.0
   with:
-    plan: plans/transfers.polkameter.xml
-    credentials: previewnet-sudo=POLKAMETER_SETUP_SURI
+    plan: <plan>
+    credentials: <profile>=POLKAMETER_SETUP_SURI
   env:
     POLKAMETER_SETUP_SURI: ${{ secrets.SETUP_SURI }}
 ```
@@ -69,7 +72,7 @@ After a successful stable release, `v0` follows the latest `0.x` release commit.
 
 The documentation site has the getting-started tutorial, the plan, CLI and results references, and the plugin guide: <https://agustinustheodorus.com/polkameter/>
 
-Plugins are written in Rust against one crate, [`polkameter-plugin-sdk`](https://crates.io/crates/polkameter-plugin-sdk). Its `chain` and `observers` features add chain access and run recording; see [the plugin SDK crate](https://agustinustheodorus.com/polkameter/plugins.html#the-plugin-sdk-crate).
+Plugins are written in Rust against one crate, [`polkameter-plugin-sdk`](https://crates.io/crates/polkameter-plugin-sdk). From v0.3.0, its `chain` and `observers` features add chain access and run recording; see [the plugin SDK crate](https://agustinustheodorus.com/polkameter/plugins.html#the-plugin-sdk-crate). <!-- v0.3.0: remove after release --> Until v0.3.0 is on crates.io, that page shows a pinned Git dependency.
 
 ## Development
 
