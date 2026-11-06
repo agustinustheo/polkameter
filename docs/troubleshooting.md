@@ -54,7 +54,7 @@ PolkaMeter: run failed: assertion verified failed: expected 85, got 84 (details 
 
 **Fix:** Find the reason on this page. `execution.json` in the run directory holds the full error. If a step failed, `events.jsonl` names it in a `step-finished` event with `"success":false`. A failure outside a step, such as the plan's deadline, has no such event, so read `execution.json`.
 
-The line is cut at 300 characters, and long hashes are shortened to 12. `execution.json` keeps the whole message.
+The line is cut at 500 characters, and long hashes are shortened to 12. `execution.json` keeps the whole message.
 
 ### run failed before setup: … (details in …/execution.json)
 

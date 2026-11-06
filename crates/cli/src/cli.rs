@@ -598,7 +598,7 @@ fn write_artifact_written(
 }
 
 /// Longest reason, in characters, that the failure line prints. `execution.json` keeps it all.
-const MAX_REASON_CHARS: usize = 300;
+const MAX_REASON_CHARS: usize = 500;
 
 /// Longest exit reason, in characters, that the line prints: it names checks and the flag at the
 /// end, so it gets more room than an error.
@@ -1235,9 +1235,9 @@ mod tests {
 		assert_eq!(escaped, format!("{}…", "\\u{202e}".repeat(MAX_REASON_CHARS / 8)));
 		assert!(escaped.chars().count() <= MAX_REASON_CHARS + 1);
 		let mixed = one_line(&"a\u{1}\n".repeat(1_000));
-		// Each repeat renders as 9 characters; after 33 of them and an `a` (298), `\u{1}` no
-		// longer fits whole.
-		assert_eq!(mixed, format!("{}a…", "a\\u{1} ⏎ ".repeat(33)));
+		// Each repeat renders as 9 characters; after as many as fit before the last one and an
+		// `a`, `\u{1}` no longer fits whole.
+		assert_eq!(mixed, format!("{}a…", "a\\u{1} ⏎ ".repeat((MAX_REASON_CHARS - 1) / 9)));
 		assert!(mixed.chars().count() <= MAX_REASON_CHARS + 1);
 		let reason = failure_reason(
 			RunLocation::Local,

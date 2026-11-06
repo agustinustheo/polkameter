@@ -711,6 +711,7 @@ pub async fn run_stoppable(
 		options,
 		teardown: Mutex::new(None),
 		phase: Mutex::new(PREFLIGHT.to_owned()),
+		failed_in: Mutex::new(None),
 		exit_reason: Mutex::new(None),
 	};
 	let execute = Box::pin(run.execute(credentials));
@@ -749,6 +750,8 @@ struct Run<'a> {
 	teardown: Mutex<Option<Teardown>>,
 	/// The phase the run is in; `preflight` until setup starts.
 	phase: Mutex<String>,
+	/// The phase the run's phases failed in, kept before teardown enters its own phase.
+	failed_in: Mutex<Option<String>>,
 	/// Why the report's exit code is 1, kept for the outcome.
 	exit_reason: Mutex<Option<String>>,
 }
@@ -800,6 +803,11 @@ impl Run<'_> {
 		if result.is_err() && self.before_setup() {
 			plugins.shutdown(&self.context, &self.stop.force).await;
 			return result;
+		}
+		if result.is_err()
+			&& let (Ok(phase), Ok(mut failed_in)) = (self.phase.lock(), self.failed_in.lock())
+		{
+			*failed_in = Some(phase.clone());
 		}
 		let cleanup = self.teardown(&plugins, &mut values).await;
 		plugins.shutdown(&self.context, &self.stop.force).await;
@@ -1076,8 +1084,16 @@ impl Run<'_> {
 			},
 			Err(error) => (1, RunState::Failed, Some(error)),
 		};
+		// A run whose phases failed keeps that phase; otherwise it failed where it is now, such
+		// as in teardown.
 		let failed_phase = (state == RunState::Failed)
-			.then(|| self.phase.lock().ok().map(|phase| phase.clone()))
+			.then(|| {
+				self.failed_in
+					.lock()
+					.ok()
+					.and_then(|failed_in| failed_in.clone())
+					.or_else(|| self.phase.lock().ok().map(|phase| phase.clone()))
+			})
 			.flatten();
 		let error_location = error
 			.as_ref()
@@ -1530,6 +1546,27 @@ mod calibration_tests {
 		assert!(super::validate_interval(2.0, 1.5).is_ok());
 		assert!(super::validate_interval(2.0, 2.5).is_ok());
 		assert!(super::validate_interval(2.0, 2.51).is_err());
+	}
+
+	#[tokio::test]
+	async fn a_setup_failure_keeps_its_phase_after_teardown() {
+		let plan = Plan::parse(r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="Setup">
+            <setup><step id="check" use="core.assert-equal"><input name="actual" value="1"/><input name="expected" value="2"/></step></setup>
+            <teardown><step id="cleanup" use="core.echo"><input name="value" value="done"/></step></teardown>
+        </polkameter-plan>"#).unwrap();
+		let root = std::env::temp_dir().join(format!(
+			"polkameter-setup-phase-{}-{}",
+			std::process::id(),
+			next_directory_sequence()
+		));
+		let outcome =
+			run(plan, Registry::default(), &root, CancellationToken::new(), Arc::new(|_| {}))
+				.await
+				.unwrap();
+		assert_eq!((outcome.exit_code, outcome.state), (1, RunState::Failed));
+		assert_eq!(outcome.teardown, Some(Teardown::Completed));
+		assert_eq!(outcome.failed_phase.as_deref(), Some("setup"));
+		std::fs::remove_dir_all(root).unwrap();
 	}
 
 	#[tokio::test]

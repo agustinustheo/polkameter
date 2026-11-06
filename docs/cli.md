@@ -116,7 +116,7 @@ Run failed. Artifacts: ~/polkameter/runs/run-1792994214466-72728-1
 PolkaMeter: run failed: plugin exited before responding (details in ~/polkameter/runs/run-1792994214466-72728-1/execution.json)
 ```
 
-The reason stays on one line. Colour and cursor codes are removed, and line breaks show as `⏎`. Other control characters, including the start of other terminal escape sequences such as a window title, are shown escaped, like `\u{1b}`. Hashes of 32 or more hex digits are shortened to their first 12 and `…`. The printed reason is cut at 300 characters with `…`, and `execution.json` keeps the full text. Each message says how to fix the problem before the evidence, so the fix stays on the line.
+The reason stays on one line. Colour and cursor codes are removed, and line breaks show as `⏎`. Other control characters, including the start of other terminal escape sequences such as a window title, are shown escaped, like `\u{1b}`. Hashes of 32 or more hex digits are shortened to their first 12 and `…`. The printed reason is cut at 500 characters with `…`, and `execution.json` keeps the full text. Each message says how to fix the problem before the evidence, so the fix stays on the line.
 
 When the reason points into the plan, the line starts with the plan file, line and column, as `validate` errors do. A run that failed before its setup phase says `run failed before setup:` and exits `3`. It prints no teardown phase, because nothing was submitted:
 
@@ -505,12 +505,12 @@ Every line is one JSON object with these fields:
 
 Keys that PolkaMeter adds to a line are camelCase, as in `summary.json`. Two kinds of nested objects keep the keys of the format they copy, and so may be snake_case:
 
-- `outcome` is `execution.json` (`artifact_dir`, `exit_code`, `failed_phase`, `error_location`, `stop_requested_at`), which [Results](results.md) documents.
+- `outcome` is `execution.json` (`artifact_dir`, `exit_code`, `failed_phase`, `error_location`, `exit_reason`, `stop_requested_at`), which [Results](results.md) documents.
 - The plugin manifests in `preflight` use the plugin protocol's keys, such as `read_only`.
 
 Other rules:
 
-- **Standard error** keeps the human messages in both formats: errors as `PolkaMeter: <message>`, and a failed run's `PolkaMeter: run failed: <reason> (details in …)`, or `run failed before setup:` for exit code 3. The reason line is cut at 300 characters, with hashes shortened to 12; each message says how to fix it before its evidence. A failed run's full reason is the `error` field of the `completed` and `artifact-written` outcomes.
+- **Standard error** keeps the human messages in both formats: errors as `PolkaMeter: <message>`, and a failed run's `PolkaMeter: run failed: <reason> (details in …)`, or `run failed before setup:` for exit code 3. The reason line is cut at 500 characters, with hashes shortened to 12; each message says how to fix it before its evidence. A failed run's full reason is the `error` field of the `completed` and `artifact-written` outcomes.
 - **Load runs** also print `stop:`, `loss check:` and `smoke:` lines, and the summary, to standard error.
 - **Remote runs** print only `artifact-written`, because the agent does not stream events.
 - **Argument errors**, such as an unknown flag, are printed by the argument parser as text and exit `2` before any JSON is written.
