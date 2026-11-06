@@ -33,14 +33,26 @@ pub struct Outcome {
 	pub exit_code: i32,
 	pub state: RunState,
 	pub error: Option<String>,
-	/// How teardown ended; absent when it did not run (the plugins never started).
+	/// How teardown ended; absent when it did not run: the plugins never started, or the run
+	/// failed before its setup phase, so there was nothing to tear down.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub teardown: Option<Teardown>,
+	/// The phase a failed run failed in, such as `preflight` or `setup`. Absent otherwise.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub failed_phase: Option<String>,
+	/// Where in the plan `error` points, when it is about one element. `error` then starts with
+	/// `line L, column C: `.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub error_location: Option<crate::engine::plan::Location>,
 	/// Why a `completed_with_failures` run exits 1: smoke-mode problems, or the verdict and the
 	/// flag that failed it. Absent in every other state.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub exit_reason: Option<String>,
 }
+
+/// The exit code of a run that failed before its setup phase, so before it submitted anything
+/// to a chain: the same code as a failed `polkameter preflight`.
+pub const PREFLIGHT_EXIT_CODE: i32 = 3;
 /// How a run ended. The serialized names are part of `execution.json`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -216,17 +228,74 @@ pub fn transactions(value: &Value, directory: &Path) -> Result<Vec<PreparedTx>> 
 	}
 	Ok(txs)
 }
+/// The built-in operations, in the order the plan reference lists them.
+const CORE_OPERATIONS: [&str; 4] =
+	["core.echo", "core.assert-equal", "core.submit-prepared", "core.submit-setup"];
+
 fn contract<'a>(plugins: &'a Plugins, name: &str) -> Result<Cow<'a, Operation>> {
+	lookup(Contracts::Plugins(plugins), name)?.context("invalid operation")
+}
+
+/// Where operation contracts come from: the started plugins, or only the built-in operations,
+/// for `polkameter validate`, which starts no plugin.
+#[derive(Clone, Copy)]
+enum Contracts<'a> {
+	Plugins(&'a Plugins),
+	CoreOnly,
+}
+
+/// The contract of operation `name`; `None` for a plugin operation without plugins.
+fn lookup<'a>(contracts: Contracts<'a>, name: &str) -> Result<Option<Cow<'a, Operation>>> {
 	if name.starts_with("core.") {
-		return core_contract(name)
-			.map(Cow::Owned)
-			.with_context(|| format!("unknown built-in operation {name}"));
+		let operation = core_contract(name).with_context(|| {
+			let near = crate::engine::plan::closest(name, CORE_OPERATIONS)
+				.map_or_else(String::new, |near| format!("did you mean {near}? "));
+			format!(
+				"unknown built-in operation {name}; {near}the core operations are {}",
+				CORE_OPERATIONS.join(", ")
+			)
+		})?;
+		return Ok(Some(Cow::Owned(operation)));
 	}
+	let Contracts::Plugins(plugins) = contracts else { return Ok(None) };
 	let (plugin, operation) = name.split_once('.').context("invalid operation")?;
-	Ok(Cow::Borrowed(plugins.operation(plugin, operation)?))
+	Ok(Some(Cow::Borrowed(plugins.operation(plugin, operation)?)))
+}
+/// Names a step in an error: `step `id` (plugin.op)`, located at the step's element.
+fn step_error(step: &Step, message: impl std::fmt::Display) -> anyhow::Error {
+	crate::engine::plan::PlanError::at(
+		step.location,
+		format!("step `{}` ({}): {message}", step.id, step.operation),
+	)
+}
+/// The names in `names`, for an error message, or `none`.
+fn listed<'a>(names: impl Iterator<Item = &'a String>) -> String {
+	let names: Vec<_> = names.map(|name| format!("`{name}`")).collect();
+	if names.is_empty() { "none".to_owned() } else { names.join(", ") }
+}
+/// The kind of a JSON value in words, for error messages.
+fn value_kind(value: &Value) -> &'static str {
+	match value {
+		Value::Null => "null",
+		Value::Bool(_) => "a boolean",
+		Value::Number(n) if n.is_i64() || n.is_u64() => "an integer",
+		Value::Number(_) => "a number",
+		Value::String(_) => "a string",
+		Value::Array(_) => "an array",
+		Value::Object(_) => "an object",
+	}
+}
+/// Checks the built-in operations of a plan without starting plugins: their names, inputs,
+/// literals and the references between them. Steps of plugin operations are skipped, and their
+/// outputs accepted as any value; `preflight` checks them against the manifests.
+pub fn validate_core_contracts(plan: &Plan) -> Result<()> {
+	check_contracts(plan, Contracts::CoreOnly)
 }
 /// Validate operation names, literals, references and output types before any mutation.
 fn validate_contracts(plan: &Plan, plugins: &Plugins) -> Result<()> {
+	check_contracts(plan, Contracts::Plugins(plugins))
+}
+fn check_contracts(plan: &Plan, contracts: Contracts<'_>) -> Result<()> {
 	let mut types: BTreeMap<String, Schema> = plan
 		.values("validate")
 		.into_iter()
@@ -242,56 +311,172 @@ fn validate_contracts(plan: &Plan, plugins: &Plugins) -> Result<()> {
 		("user.index".into(), Schema::Integer),
 		("iteration.index".into(), Schema::Integer),
 	]);
+	// Steps whose outputs are known, with their operation; and steps whose contract is unknown
+	// here (plugin operations without plugins), whose outputs may be anything.
+	let mut producers: BTreeMap<&str, (&str, Vec<String>)> = BTreeMap::new();
+	let mut opaque: BTreeSet<&str> = BTreeSet::new();
+	let step_of = |reference: &str| -> Option<String> {
+		reference
+			.strip_prefix("steps.")
+			.and_then(|rest| rest.split('.').next())
+			.map(str::to_owned)
+	};
 	for step in plan.all_steps() {
-		let operation = contract(plugins, &step.operation)?;
+		let Some(operation) =
+			lookup(contracts, &step.operation).map_err(|e| step_error(step, e))?
+		else {
+			opaque.insert(step.id.as_str());
+			continue;
+		};
+		// An unknown name first: it is often a misspelt required input.
+		if let Some(input) =
+			step.inputs.iter().find(|input| !operation.inputs.contains_key(&input.name))
+		{
+			let near = crate::engine::plan::closest(
+				&input.name,
+				operation.inputs.keys().map(String::as_str),
+			)
+			.map_or_else(String::new, |near| format!("did you mean `{near}`? "));
+			return Err(crate::engine::plan::PlanError::at(
+				input.location,
+				format!(
+					"step `{}` ({}): input `{}` is not an input of {}; {near}its inputs are {}",
+					step.id,
+					step.operation,
+					input.name,
+					step.operation,
+					listed(operation.inputs.keys())
+				),
+			));
+		}
 		let input_names =
 			step.inputs.iter().map(|input| input.name.as_str()).collect::<BTreeSet<_>>();
 		for (name, field) in &operation.inputs {
-			ensure!(
-				field.optional || input_names.contains(name.as_str()),
-				"step {} misses input {name}",
-				step.id
-			);
+			if !field.optional && !input_names.contains(name.as_str()) {
+				return Err(step_error(
+					step,
+					format!("missing required input `{name}`; add <input name=\"{name}\" …/>"),
+				));
+			}
 		}
 		for input in &step.inputs {
-			let expected = operation
-				.inputs
-				.get(&input.name)
-				.with_context(|| format!("unknown input {} for {}", input.name, step.operation))?;
+			let name = &input.name;
+			let at = |message: String| {
+				crate::engine::plan::PlanError::at(
+					input.location,
+					format!("step `{}` ({}): input `{name}` {message}", step.id, step.operation),
+				)
+			};
+			// Every name is known: unknown names failed above.
+			let expected = &operation.inputs[name];
 			if let InputSource::Ref(reference) = &input.source {
-				let actual =
-					types.get(reference).with_context(|| format!("unknown output {reference}"))?;
-				ensure!(
-					actual == &expected.schema
-						|| matches!(actual, Schema::Json)
-						|| matches!(expected.schema, Schema::Json),
-					"reference {reference} has incompatible type"
-				);
+				let producer = step_of(reference);
+				if producer.as_deref().is_some_and(|id| opaque.contains(id)) {
+					continue;
+				}
+				let Some(actual) = types.get(reference) else {
+					// `steps.<id>.<output>` with a misspelt output; not `steps.<id>` alone.
+					let known = producer
+						.as_deref()
+						.filter(|_| reference.matches('.').count() == 2)
+						.and_then(|id| producers.get(id).map(|p| (id, p)));
+					return Err(at(match known {
+						Some((id, (operation, outputs))) => format!(
+							"refers to `{reference}`; use one of step `{id}`'s outputs: {} \
+							 ({operation} has no output `{}`)",
+							listed(outputs.iter()),
+							reference.rsplit('.').next().unwrap_or_default()
+						),
+						None => format!(
+							"refers to `{reference}`, which is not an output of an earlier step; \
+							 check the output names with `polkameter plugin inspect <plan>`"
+						),
+					}));
+				};
+				if !(actual == &expected.schema
+					|| matches!(actual, Schema::Json)
+					|| matches!(expected.schema, Schema::Json))
+				{
+					return Err(at(format!(
+						"refers to `{reference}`, which is {}, but {} expects {}",
+						schema_name(actual),
+						step.operation,
+						schema_name(&expected.schema)
+					)));
+				}
 			} else {
-				expected.schema.validate(&input.literal()?)?;
+				let literal = input.literal().map_err(|e| at(e.to_string()))?;
+				if let Err(e) = expected.schema.validate(&literal) {
+					let InputSource::Value(text) = &input.source else { unreachable!() };
+					let expects = schema_name(&expected.schema);
+					let scalar = !matches!(
+						expected.schema,
+						Schema::Array { .. } | Schema::Object { .. } | Schema::Json
+					);
+					return Err(at(if scalar {
+						format!(
+							"has value=\"{text}\", which is {}, but {} expects {expects}",
+							value_kind(&literal),
+							step.operation
+						)
+					} else {
+						format!(
+							"has value=\"{text}\", which {} does not accept ({e}); it expects \
+							 {expects}",
+							step.operation
+						)
+					}));
+				}
 			}
 		}
 		for (name, field) in &operation.outputs {
 			types.insert(format!("steps.{}.{name}", step.id), field.schema.clone());
 		}
+		producers.insert(
+			step.id.as_str(),
+			(step.operation.as_str(), operation.outputs.keys().cloned().collect()),
+		);
 	}
 	for step in &plan.preflight.entries {
-		ensure!(
-			contract(plugins, &step.operation)?.read_only,
-			"preflight operation {} can mutate state",
-			step.operation
-		);
+		let Some(operation) = lookup(contracts, &step.operation)? else { continue };
+		if !operation.read_only {
+			return Err(step_error(
+				step,
+				"this operation can change chain state, so it cannot run in <preflight>; move \
+				 the step to <setup>",
+			));
+		}
 	}
 	if let Some(load) = &plan.load {
-		ensure!(
-			types.contains_key(&load.source) && types.contains_key(&load.probes_ref),
-			"unknown load source output"
-		);
+		let at = |message: String| crate::engine::plan::PlanError::at(load.location, message);
+		for (attribute, reference) in
+			[("source-ref", &load.source), ("probes-ref", &load.probes_ref)]
+		{
+			let unknown = step_of(reference).is_some_and(|id| opaque.contains(id.as_str()));
+			if !unknown && !types.contains_key(reference) {
+				return Err(at(format!(
+					"<load> {attribute} `{reference}` is not an output of a step before <load>; \
+					 check the output names with `polkameter plugin inspect <plan>`"
+				)));
+			}
+		}
 		if let Some(state) = &load.state {
-			contract(plugins, &state.check)?;
+			lookup(contracts, &state.check).map_err(|e| at(format!("<load> state-check: {e}")))?;
 		}
 	}
 	Ok(())
+}
+/// A schema in words, for error messages.
+fn schema_name(schema: &Schema) -> String {
+	match schema {
+		Schema::Json => "any JSON value".into(),
+		Schema::String => "a string".into(),
+		Schema::Number => "a number".into(),
+		Schema::Integer => "an integer".into(),
+		Schema::Boolean => "a boolean".into(),
+		Schema::Array { items } => format!("an array of {}", schema_name(items)),
+		Schema::Object { fields } => format!("an object with fields {}", listed(fields.keys())),
+	}
 }
 fn next_directory_sequence() -> u64 {
 	static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -356,6 +541,8 @@ async fn inspect_plugins(plan: &Plan, registry: &Registry) -> Result<Value> {
 pub async fn preflight(plan: &Plan, registry: &Registry) -> Result<Value> {
 	let mut inspected = inspect(plan, registry).await?;
 	// Preflight never arms setup or load and writes only to its scratch directory.
+	// Every credential the plan declares must resolve, as a run needs it; no value is used here.
+	registry.check_credentials(plan)?;
 	let calibration =
 		with_scratch_plugins(plan, registry, "preflight", async |plugins, context, directory| {
 			check_environment(plan, registry).await?;
@@ -571,6 +758,8 @@ pub async fn run_stoppable(
 		started: Instant::now(),
 		options,
 		teardown: Mutex::new(None),
+		phase: Mutex::new(PREFLIGHT.to_owned()),
+		failed_in: Mutex::new(None),
 		exit_reason: Mutex::new(None),
 	};
 	let execute = Box::pin(run.execute(credentials));
@@ -588,6 +777,10 @@ pub async fn run_stoppable(
 	outcome
 }
 
+/// The phase of a run before setup: credential, plugin, contract, environment and requirement
+/// checks, `<preflight>` steps and calibration.
+const PREFLIGHT: &str = "preflight";
+
 /// The lock file of a run directory, locked while the run is in progress.
 pub const RUN_LOCK: &str = "run.lock";
 
@@ -603,6 +796,10 @@ struct Run<'a> {
 	started: Instant,
 	options: RunOptions,
 	teardown: Mutex<Option<Teardown>>,
+	/// The phase the run is in; `preflight` until setup starts.
+	phase: Mutex<String>,
+	/// The phase the run's phases failed in, kept before teardown enters its own phase.
+	failed_in: Mutex<Option<String>>,
 	/// Why the report's exit code is 1, kept for the outcome.
 	exit_reason: Mutex<Option<String>>,
 }
@@ -618,7 +815,7 @@ impl Run<'_> {
 			_ => "a stop request",
 		};
 		let provisional = json!({
-			"artifact_dir": self.context.artifact_dir,
+			"artifact_dir": self.context.artifact_dir.to_string_lossy(),
 			"exit_code": code,
 			"state": RunState::Stopping,
 			"error": format!("stopped by {reason}; teardown was still running"),
@@ -628,12 +825,38 @@ impl Run<'_> {
 		let _ = redact_plugin_logs(&self.directory, &self.log.redactor);
 	}
 
-	/// Starts the plugins, runs the phases under the whole-run deadline, then tears down.
+	/// Logs and records the phase the run enters.
+	fn enter(&self, phase: &str) -> Result<()> {
+		if let Ok(mut current) = self.phase.lock() {
+			phase.clone_into(&mut current);
+		}
+		self.log.phase(phase)
+	}
+
+	/// Whether the run is still in its preflight checks: setup has not started, so nothing was
+	/// submitted to a chain.
+	fn before_setup(&self) -> bool {
+		self.phase.lock().is_ok_and(|phase| *phase == PREFLIGHT)
+	}
+
+	/// Checks the credentials, starts the plugins, runs the phases under the whole-run deadline,
+	/// then tears down. A run that fails before its setup phase submitted nothing, so it skips
+	/// teardown.
 	async fn execute(&self, credentials: Result<Values>) -> Result<i32> {
+		self.enter(PREFLIGHT)?;
 		let credentials = credentials?;
 		let plugins = self.start_plugins().await?;
 		let mut values = self.values(credentials);
 		let result = self.bounded(Box::pin(self.phases(&plugins, &mut values))).await;
+		if result.is_err() && self.before_setup() {
+			plugins.shutdown(&self.context, &self.stop.force).await;
+			return result;
+		}
+		if result.is_err()
+			&& let (Ok(phase), Ok(mut failed_in)) = (self.phase.lock(), self.failed_in.lock())
+		{
+			*failed_in = Some(phase.clone());
+		}
 		let cleanup = self.teardown(&plugins, &mut values).await;
 		plugins.shutdown(&self.context, &self.stop.force).await;
 		match (result, cleanup) {
@@ -666,7 +889,8 @@ impl Run<'_> {
 	fn values(&self, credentials: Values) -> Values {
 		let mut values = self.plan.values(&self.context.run_id);
 		values.extend(credentials);
-		values.insert("run.directory".into(), json!(self.context.artifact_dir));
+		// Lossy, not a panic, for a directory path that is not UTF-8 (the CLI refuses those).
+		values.insert("run.directory".into(), json!(self.context.artifact_dir.to_string_lossy()));
 		values
 	}
 
@@ -686,21 +910,20 @@ impl Run<'_> {
 	async fn phases(&self, plugins: &Plugins, values: &mut Values) -> Result<i32> {
 		validate_contracts(self.plan, plugins)?;
 		self.write_resolved(plugins)?;
-		self.log.phase("preflight")?;
 		check_environment(self.plan, self.registry).await?;
 		check_requirements(self.plan, self.registry, plugins).await?;
 		self.run_steps(&self.plan.preflight.entries, plugins, values).await?;
 		calibrate(self.plan, &self.directory).await?;
-		self.log.phase("setup")?;
+		self.enter("setup")?;
 		self.run_steps(&self.plan.setup.entries, plugins, values).await?;
 		for workflow in &self.plan.workflows {
 			self.workflow(plugins, values, workflow).await?;
 		}
 		let measured = match &self.plan.load {
 			Some(_) => {
-				self.log.phase("measurement")?;
+				self.enter("measurement")?;
 				let setup_seconds = self.started.elapsed().as_secs();
-				let progress = |phase: &str| self.log.phase(phase);
+				let progress = |phase: &str| self.enter(phase);
 				let measured = measurement::run(
 					self.plan,
 					plugins,
@@ -729,7 +952,7 @@ impl Run<'_> {
 		let mut checks_error = None;
 		let code = match measured {
 			Some(measured) => {
-				self.log.phase("checks")?;
+				self.enter("checks")?;
 				let dir = RunDir::open(&self.context.artifact_dir);
 				let checks = plugin_checks(self.plan, plugins, values).unwrap_or_else(|e| {
 					checks_error = Some(e);
@@ -847,7 +1070,7 @@ impl Run<'_> {
 	/// Before each step, a plugin that a cancellation, crash or timeout ended is started again,
 	/// so its teardown steps can still clean up.
 	async fn teardown(&self, plugins: &Plugins, values: &mut Values) -> Result<()> {
-		self.log.phase("teardown")?;
+		self.enter("teardown")?;
 		let force = &self.stop.force;
 		let mut errors = Vec::new();
 		let mut state = Teardown::Completed;
@@ -926,14 +1149,34 @@ impl Run<'_> {
 			Err(error) if self.cancel.is_cancelled() => {
 				(self.stop.exit_code(), RunState::Stopped, Some(error))
 			},
+			Err(error) if self.before_setup() => {
+				(PREFLIGHT_EXIT_CODE, RunState::Failed, Some(error))
+			},
 			Err(error) => (1, RunState::Failed, Some(error)),
 		};
+		// A run whose phases failed keeps that phase; otherwise it failed where it is now, such
+		// as in teardown.
+		let failed_phase = (state == RunState::Failed)
+			.then(|| {
+				self.failed_in
+					.lock()
+					.ok()
+					.and_then(|failed_in| failed_in.clone())
+					.or_else(|| self.phase.lock().ok().map(|phase| phase.clone()))
+			})
+			.flatten();
+		let error_location = error
+			.as_ref()
+			.and_then(|error| error.downcast_ref::<crate::engine::plan::PlanError>())
+			.and_then(|error| error.location);
 		let mut outcome = Outcome {
 			artifact_dir: self.context.artifact_dir.clone(),
 			exit_code,
 			state,
 			error: error.map(|error| self.log.redactor.text(&error.to_string())),
 			teardown: self.teardown.lock().ok().and_then(|state| *state),
+			failed_phase,
+			error_location,
 			// Only a run the report failed has its reason: a later error or stop decides instead.
 			exit_reason: (state == RunState::CompletedWithFailures)
 				.then(|| self.exit_reason.lock().ok().and_then(|reason| reason.clone()))
@@ -1007,10 +1250,12 @@ fn redact_plugin_logs(directory: &Path, redactor: &Redactor) -> Result<()> {
 /// is appended to the run's error.
 fn fail_report(outcome: &mut Outcome, error: impl std::fmt::Display) {
 	let report = format!("report generation failed: {error}");
-	if outcome.state != RunState::Stopped {
+	// A run that already failed keeps its exit code (3 before setup, else 1).
+	if !matches!(outcome.state, RunState::Stopped | RunState::Failed) {
 		outcome.exit_code = 1;
 		outcome.state = RunState::Failed;
 		outcome.exit_reason = None;
+		outcome.failed_phase = Some("report".into());
 	}
 	outcome.error = Some(match outcome.error.take() {
 		Some(error) => format!("{error}; {report}"),
@@ -1095,15 +1340,29 @@ async fn invoke(
 			.iter()
 			.map(|input| {
 				let value = match &input.source {
-					InputSource::Ref(reference) => resolve(values, reference)?,
-					_ => input.literal()?,
-				};
+					InputSource::Ref(reference) => resolve(values, reference),
+					_ => input.literal(),
+				}
+				.map_err(|e| {
+					anyhow::anyhow!(
+						"step `{}` ({}): input `{}`: {e:#}",
+						step.id,
+						step.operation,
+						input.name
+					)
+				})?;
 				Ok((input.name.clone(), value))
 			})
 			.collect::<Result<serde_json::Map<_, _>>>()?,
 	);
 	let operation = contract(plugins, &step.operation)?;
-	operation.validate_inputs(&inputs)?;
+	operation.validate_inputs(&inputs).map_err(|e| {
+		anyhow::anyhow!(
+			"step `{}` ({}): the inputs do not match the operation: {e:#}",
+			step.id,
+			step.operation
+		)
+	})?;
 	if !step.operation.starts_with("core.") {
 		return plugins.invoke(&step.operation, inputs, context, step.timeout_ms, cancel).await;
 	}
@@ -1373,7 +1632,28 @@ mod calibration_tests {
 	}
 
 	#[tokio::test]
-	async fn calibration_failure_prevents_setup_and_still_runs_teardown() {
+	async fn a_setup_failure_keeps_its_phase_after_teardown() {
+		let plan = Plan::parse(r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="Setup">
+            <setup><step id="check" use="core.assert-equal"><input name="actual" value="1"/><input name="expected" value="2"/></step></setup>
+            <teardown><step id="cleanup" use="core.echo"><input name="value" value="done"/></step></teardown>
+        </polkameter-plan>"#).unwrap();
+		let root = std::env::temp_dir().join(format!(
+			"polkameter-setup-phase-{}-{}",
+			std::process::id(),
+			next_directory_sequence()
+		));
+		let outcome =
+			run(plan, Registry::default(), &root, CancellationToken::new(), Arc::new(|_| {}))
+				.await
+				.unwrap();
+		assert_eq!((outcome.exit_code, outcome.state), (1, RunState::Failed));
+		assert_eq!(outcome.teardown, Some(Teardown::Completed));
+		assert_eq!(outcome.failed_phase.as_deref(), Some("setup"));
+		std::fs::remove_dir_all(root).unwrap();
+	}
+
+	#[tokio::test]
+	async fn calibration_failure_prevents_setup_exits_3_and_skips_teardown() {
 		let plan = Plan::parse(r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="Calibration" timeout-ms="5000">
             <targets><target id="chain" endpoint="ws://127.0.0.1:0"/></targets>
             <setup><step id="prepare" use="core.echo"><input name="value" value="[]"/></step></setup>
@@ -1393,7 +1673,11 @@ mod calibration_tests {
 		let outcome = run(plan, registry, &root, CancellationToken::new(), Arc::new(|_| {}))
 			.await
 			.unwrap();
-		assert_eq!(outcome.exit_code, 1);
+		// Nothing was submitted, so the run exits as preflight does, with nothing to tear down.
+		assert_eq!(outcome.exit_code, PREFLIGHT_EXIT_CODE);
+		assert_eq!(outcome.state, RunState::Failed);
+		assert_eq!(outcome.teardown, None);
+		assert_eq!(outcome.failed_phase.as_deref(), Some("preflight"));
 		assert!(
 			outcome
 				.error
@@ -1410,9 +1694,20 @@ mod calibration_tests {
 				.iter()
 				.any(|event| event["phase"] == "setup" || event["step"] == "prepare")
 		);
-		assert!(events.iter().any(|event| event["step"] == "cleanup"
-			&& event["event"] == "step-finished"
-			&& event["success"] == true));
+		assert!(
+			!events
+				.iter()
+				.any(|event| event["phase"] == "teardown" || event["step"] == "cleanup")
+		);
+		let recorded: Value = serde_json::from_slice(
+			&std::fs::read(outcome.artifact_dir.join("execution.json")).unwrap(),
+		)
+		.unwrap();
+		assert_eq!(
+			(recorded["exit_code"].as_i64(), recorded["state"].as_str()),
+			(Some(3), Some("failed"))
+		);
+		assert_eq!(recorded["failed_phase"], "preflight");
 		std::fs::remove_dir_all(root).unwrap();
 	}
 
@@ -1601,6 +1896,8 @@ mod calibration_tests {
 			state: RunState::Stopped,
 			error: Some("run cancelled".into()),
 			teardown: None,
+			failed_phase: None,
+			error_location: None,
 			exit_reason: None,
 		};
 		fail_report(&mut outcome, "disk full");
@@ -1620,6 +1917,8 @@ mod calibration_tests {
 			state: RunState::CompletedWithFailures,
 			error: None,
 			teardown: None,
+			failed_phase: None,
+			error_location: None,
 			exit_reason: Some("verdict INCONCLUSIVE: …; exit 1 because of …".into()),
 		};
 		fail_report(&mut outcome, "disk full");
@@ -1644,6 +1943,102 @@ mod calibration_tests {
 		assert!(
 			error.to_string().contains("topology alias not-installed is not installed"),
 			"{error:#}"
+		);
+	}
+}
+
+#[cfg(test)]
+mod contract_tests {
+	use super::*;
+	use crate::engine::plan::{Location, PlanError};
+
+	/// The contract error for a plan whose setup is `setup`, and its position.
+	fn failure(setup: &str) -> (String, Option<Location>) {
+		let xml = format!(
+			"<polkameter-plan xmlns=\"https://polkameter.dev/schema/plan\" version=\"1\" \
+			 name=\"x\">\n<targets><target id=\"chain\" endpoint=\"ws://127.0.0.1:9944\"/></targets>\n\
+			 <setup>\n{setup}\n</setup>\n</polkameter-plan>"
+		);
+		let plan = Plan::parse(&xml).unwrap();
+		let error = validate_contracts(&plan, &Plugins::default()).unwrap_err();
+		(error.to_string(), error.downcast_ref::<PlanError>().and_then(|e| e.location))
+	}
+
+	#[test]
+	fn contract_errors_name_the_step_operation_and_input() {
+		let cases = [
+			(
+				"<step id=\"check\" use=\"core.assert-equal\"><input name=\"actual\" value=\"1\"/></step>",
+				(4, 1),
+				"step `check` (core.assert-equal): missing required input `expected`; add <input \
+				 name=\"expected\" …/>",
+			),
+			(
+				"<step id=\"check\" use=\"core.echo\">\n  <input name=\"bogus\" value=\"1\"/></step>",
+				(5, 3),
+				"step `check` (core.echo): input `bogus` is not an input of core.echo; its inputs \
+				 are `value`",
+			),
+			(
+				"<step id=\"send\" use=\"core.submit-prepared\"><input name=\"target\" \
+				 ref=\"run.probeBudget\"/><input name=\"transactions\" value=\"[]\"/></step>",
+				(4, 44),
+				"step `send` (core.submit-prepared): input `target` refers to `run.probeBudget`, \
+				 which is an integer, but core.submit-prepared expects a string",
+			),
+			(
+				"<step id=\"send\" use=\"core.submit-prepared\"><input name=\"target\" value=\"7\"/>\
+				 <input name=\"transactions\" value=\"[]\"/></step>",
+				(4, 44),
+				"step `send` (core.submit-prepared): input `target` has value=\"7\", which is an \
+				 integer, but core.submit-prepared expects a string",
+			),
+			(
+				"<step id=\"a\" use=\"core.echo\"><input name=\"value\" value=\"1\"/></step>\n\
+				 <step id=\"b\" use=\"core.echo\"><input name=\"value\" ref=\"steps.a.missing\"/></step>",
+				(5, 30),
+				"step `b` (core.echo): input `value` refers to `steps.a.missing`; use one of step \
+				 `a`'s outputs: `value` (core.echo has no output `missing`)",
+			),
+			(
+				"<step id=\"x\" use=\"core.nope\"/>",
+				(4, 1),
+				"step `x` (core.nope): unknown built-in operation core.nope; the core operations \
+				 are core.echo, core.assert-equal, core.submit-prepared, core.submit-setup",
+			),
+			(
+				"<step id=\"x\" use=\"core.ecoh\"/>",
+				(4, 1),
+				"unknown built-in operation core.ecoh; did you mean core.echo? the core operations",
+			),
+			(
+				"<step id=\"x\" use=\"core.echo\"><input name=\"valeu\" value=\"1\"/></step>",
+				(4, 30),
+				"input `valeu` is not an input of core.echo; did you mean `value`? its inputs are \
+				 `value`",
+			),
+		];
+		for (setup, (line, column), expected) in cases {
+			let (error, location) = failure(setup);
+			assert!(error.contains(expected), "{setup}: {error}");
+			assert_eq!(location, Some(Location { line, column }), "{setup}: {error}");
+		}
+	}
+
+	#[test]
+	fn a_preflight_step_that_changes_state_is_named() {
+		let xml = "<polkameter-plan xmlns=\"https://polkameter.dev/schema/plan\" version=\"1\" \
+		           name=\"x\"><preflight><step id=\"send\" use=\"core.submit-prepared\"><input \
+		           name=\"target\" value=\"ws://x\"/><input name=\"transactions\" \
+		           value=\"[]\"/></step></preflight></polkameter-plan>";
+		let plan = Plan::parse(xml).unwrap();
+		let error = validate_contracts(&plan, &Plugins::default()).unwrap_err().to_string();
+		assert!(
+			error.contains(
+				"step `send` (core.submit-prepared): this operation can change chain state, so it \
+				 cannot run in <preflight>; move the step to <setup>"
+			),
+			"{error}"
 		);
 	}
 }

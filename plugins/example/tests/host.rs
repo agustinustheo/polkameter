@@ -101,10 +101,19 @@ async fn incompatible_version_and_unknown_operation_fail_before_setup() {
 		(
 			&registry,
 			fixture().replace("version=\"0.1.0\"", "version=\"9.9.9\""),
-			"version/checksum",
+			"plugin example version mismatch: set version=\"0.1.0\" in the plan's <plugin>, or \
+			 install the build the plan expects with `polkameter plugin install \
+			 <path-to-executable>`. The plan expects version 9.9.9, but version 0.1.0 is installed",
 		),
-		(&registry, fixture().replace("example.double", "example.unknown"), "unknown operation"),
-		(&tampered, fixture(), "checksum"),
+		(
+			&registry,
+			fixture().replace("example.double", "example.unknown"),
+			"(example.unknown): unknown operation example.unknown: the installed plugin example \
+			 offers",
+		),
+		(&tampered, fixture(), "plugin example checksum mismatch:"),
+		(&tampered, fixture(), "(BLAKE2 expected wrong, found "),
+		(&tampered, fixture(), "run `polkameter plugin install "),
 	];
 	for (registry, xml, expected) in cases {
 		let error = execute::inspect(&Plan::parse(&xml).unwrap(), registry).await.unwrap_err();
@@ -419,7 +428,8 @@ async fn missing_credential_persists_failed_outcome_before_setup() {
 		"<credentials><credential id=\"admin\" profile=\"missing\"/></credentials><setup>",
 	);
 	let outcome = run(&xml, registry().await, &root).await;
-	assert_eq!(outcome.exit_code, 1);
+	// Before setup, so the run exits as preflight does.
+	assert_eq!(outcome.exit_code, 3);
 	assert!(outcome.error.as_ref().unwrap().contains("not configured"));
 	let persisted: Outcome = serde_json::from_slice(
 		&std::fs::read(outcome.artifact_dir.join("execution.json")).unwrap(),
@@ -493,8 +503,12 @@ async fn teardown_does_not_restart_a_plugin_whose_file_changed() {
 		.unwrap();
 	assert_eq!(outcome.exit_code, 1);
 	let events = read_events(&outcome.artifact_dir);
-	assert!(events.iter().any(|e| e["event"] == "warning"
-		&& e["message"].as_str().is_some_and(|m| m.contains("version/checksum mismatch"))));
+	assert!(events.iter().any(|e| {
+		e["event"] == "warning"
+			&& e["message"]
+				.as_str()
+				.is_some_and(|m| m.contains("plugin example checksum mismatch"))
+	}));
 	assert!(finished(&events, "cleanup").any(|e| e["success"] == false));
 }
 #[tokio::test]

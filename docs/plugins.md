@@ -104,7 +104,7 @@ The registry is a JSON file, `~/.config/polkameter/plugins.json` by default. Set
 | Command | Does |
 | --- | --- |
 | `polkameter plugin install EXECUTABLE` | Records the plugin's ID, version and executable hash. |
-| `polkameter plugin list` | Prints the installed plugins. |
+| `polkameter plugin list` | Prints the installed plugins, the environment variable each credential profile reads (never its value), the topologies and the capabilities. |
 | `polkameter plugin inspect PLAN` | Checks operations against manifests. Prints manifests, requirements, targets and monitor requirements. |
 | `polkameter plugin credential PROFILE ENV` | Maps a plan's credential profile to a variable on this host. |
 | `polkameter plugin topology NAME PATH` | Registers a Zombienet `zombie.json` under an alias. |
@@ -116,16 +116,16 @@ A plan names a credential profile, never the secret. The host reads the mapped v
 
 ## Checksums
 
-`plugin install` records the executable's BLAKE2-256 hash. `plugin inspect`, `preflight` and `run` compare the file on disk with it. A mismatch stops the run:
+`plugin install` records the executable's BLAKE2-256 hash. `plugin inspect`, `preflight` and `run` compare the file on disk with it. A mismatch stops the run, and the message says how to fix it:
 
 ```text
 $ polkameter preflight hello.polkameter.xml
-PolkaMeter: plugin hello version/checksum mismatch
+PolkaMeter: plugin hello checksum mismatch: /work/hello changed after it was installed (BLAKE2 expected 67118f550d8d7677050bd6c904ec2d5a62f7684bb5c6698c13fc9c9d956ecccd, found 1c8d0e612d9a329e953be19f83a7faf49e39df990932099845f180f1c55d0285). If you rebuilt it, run `polkameter plugin install /work/hello` again
 ```
 
-The command exits with code 3.
+The command exits with code 3. A plan whose `<plugin version="…">` differs from the installed version fails with ``plugin hello version mismatch: the plan expects version 0.2.0, but version 0.1.0 is installed from /work/hello. Set version="0.1.0" in the plan's <plugin>, or install the matching build with `polkameter plugin install <path-to-executable>` ``.
 
-A `run` prints the same error as `PolkaMeter: run failed: <error> (details in …)`, writes it to `execution.json` and exits with `1`. Rebuilding changes the hash, so reinstall after every build. After start, the manifest must match the plan's `id`, `version` and `protocol`, or the run fails with `manifest identity mismatch for <plugin id>`.
+A `run` prints the same error as `PolkaMeter: run failed: <error> (details in …)`, writes it to `execution.json` and exits with `1`. Rebuilding changes the hash, so reinstall after every build. After start, the manifest must match the plan's `id`, `version` and `protocol`, or the run fails with ``plugin <id> answered $describe as <id> <version> (protocol <n>), but the plan expects …; run `polkameter plugin install <path>` again``.
 
 ## PreparedTx and the load contract
 

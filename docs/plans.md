@@ -116,7 +116,7 @@ Each element appears at most once, except `workflow`. Execution follows the phas
 | `name` | string | yes | none | not empty | The scenario's title, used in the report |
 | `version` | integer | yes | none | `1` | The plan format version |
 | `mode` | string | no | `stress` | `stress` or `smoke` | Smoke mode also fails the run on monitor problems and on required checks without a result. See [results](results.md#exit-codes) |
-| `timeout-ms` | integer | no | `3600000` | above 0 | The deadline for the run, from plugin start-up to the report. A run that reaches it ends as `failed`, with exit code 1 |
+| `timeout-ms` | integer | no | `3600000` | above 0 | The deadline for the run, from plugin start-up to the report. A run that reaches it ends as `failed`, with exit code 1, or 3 if it was still in its preflight checks |
 
 ### plugins
 
@@ -406,15 +406,15 @@ A `ref` names one of the values below. A reference to anything else is rejected 
 - Setup outputs are copied into every user and iteration of each workflow.
 - A workflow step's outputs are visible only to later steps in the same iteration. They do not reach another user, iteration or workflow.
 - Evaluate and teardown steps can reference preflight and setup outputs. They cannot reference workflow outputs.
-- `polkameter validate` checks that the step exists. It does not check the output name. `preflight` checks the name against the operation's manifest and fails with `unknown output steps.ID.OUTPUT`.
+- `polkameter validate` checks that the step exists. It does not check the output name. `preflight` checks the name against the operation's manifest and fails with ``step `<id>` (<plugin>.<operation>): input `<name>` refers to `steps.ID.OUTPUT`, which is not an output of an earlier step``.
 
 ## Validation rules
 
-The parser and validator run on every command that reads a plan. `polkameter validate` runs the parsing and structure checks only. `polkameter preflight` also checks the installed plugins and runs the read-only preflight steps. A plan with a load, or with steps that read the chain, needs a reachable chain for preflight to pass.
+The parser and validator run on every command that reads a plan. `polkameter validate` runs the parsing and structure checks, and checks the built-in `core.` operations: their names, inputs, literal values and the outputs other steps reference. `polkameter preflight` also checks the installed plugins and runs the read-only preflight steps. A plan with a load, or with steps that read the chain, needs a reachable chain for preflight to pass.
 
 | Element | Limit |
 | --- | --- |
-| Plan file | At most 2 MiB. UTF-8. A leading byte-order mark is accepted |
+| Plan file | A regular file or a pipe of at most 2 MiB (2097152 bytes), so `validate <(envsubst < plan.tmpl)` and `cat plan | polkameter validate /dev/stdin` work. UTF-8; an XML declaration may also say `US-ASCII` or `ISO-8859-1` while the plan is plain ASCII. A leading byte-order mark is accepted. PolkaMeter stops reading one byte past the limit. A named pipe that nothing writes to reads as empty instead of blocking. A directory, socket or device is refused |
 | `polkameter-plan` | `version` is `1`. `xmlns` is the schema namespace. `name` is not empty. `timeout-ms` is above 0 |
 | `plugin` | `protocol` is `1`. `id` is not `core` |
 | `target` | `endpoint` starts with `ws://` or `wss://` |
@@ -432,7 +432,10 @@ The parser and validator run on every command that reads a plan. `polkameter val
 **Parsing** rejects:
 
 - a DOCTYPE, CDATA, or any other `<!` declaration except a comment;
-- processing instructions, except a leading `<?xml ...?>` declaration;
+- `--` inside a comment, and a comment that ends with `--->`;
+- processing instructions, except an XML declaration at the very start of the file;
+- an XML declaration other than `<?xml version="1.x"?>`, optionally followed by `encoding="UTF-8"` and then `standalone="yes"` or `"no"`;
+- characters that XML 1.0 does not allow, such as NUL and other control characters except tab, line feed and carriage return, written literally or as a character reference;
 - text inside elements;
 - nesting deeper than 16 levels;
 - `<` in an attribute value, and duplicate attributes;
@@ -482,6 +485,12 @@ Run `polkameter validate` alongside the [XSD 1.0 schema](https://github.com/agus
 
 ### Errors
 
-The CLI prints each error as `PolkaMeter: <message>` on standard error and exits with code 2. XML syntax errors and errors about an element or attribute give a line and column, such as `line 3, column 6: expected </c>, found </d>`. Other errors, such as references, limits and IDs, name the problem without a position. See [exit codes](cli.md#exit-codes).
+The CLI prints each error as `PolkaMeter: <file>: line <line>, column <column>: <message>` on standard error and exits with code 2. The position is where the element or attribute starts:
+
+```text
+PolkaMeter: plan.polkameter.xml: line 4, column 46: step `check` (core.assert-equal): input `actual` refers to `steps.later.value`, but nothing in the plan defines it; use targets.<id>, credentials.<id>, run.id, run.directory, run.probeBudget, steps.<earlier step>.<output>, or in a workflow user.index or iteration.index
+```
+
+An error about a step names the step's ID and its operation, and, for an input, the input's name. It says how to fix the plan. Errors about the file itself, such as its size or encoding, have no position. With `--format json`, the same error is also printed as a JSON line with the `file`, `line` and `column` fields; see [output formats](cli.md#output-formats). See [exit codes](cli.md#exit-codes).
 
 For what each phase does, see [How a run works](how-it-works.md).

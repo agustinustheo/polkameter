@@ -1268,6 +1268,8 @@ mod tests {
 				},
 				error: None,
 				teardown: None,
+				failed_phase: None,
+				error_location: None,
 				exit_reason: None,
 			}),
 			..Status::default()
