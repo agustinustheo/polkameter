@@ -180,7 +180,8 @@ fn a_block_gap_counts_in_the_steps_it_spans() {
 	let f0 = final_step(&t.steps[0][0], None);
 	assert_eq!(f0.blocks.max_block_gap_ms, Some(24_000), "the stall in step 0 is step 0's");
 	assert_eq!(f0.blocks.mean_block_gap_ms, Some(30_000.0), "one block in 30 s");
-	let stop = rules::check_step(&t.steps[0], &t.lanes()[0].source, 0, 6_000.0, &rules::RULES);
+	let stop =
+		rules::check_step(&t.steps[0], &t.lanes()[0].source, 0, 6_000.0, &rules::RULES, false);
 	assert_eq!(stop.map(|s| (s.rule, s.step)), Some((Rule::SlowBlocks, Some(0))));
 	t.start_step(1, &[1.0], 30_000).unwrap();
 	block(&mut t, 3, 34_000, Some(28_000), &[]);

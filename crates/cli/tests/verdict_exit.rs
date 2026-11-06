@@ -39,6 +39,10 @@ async fn agent(
 	started: Arc<AtomicBool>,
 ) -> (String, tokio::task::JoinHandle<()>) {
 	let code = expected_code(policy, verdict);
+	let flag = if verdict == "FAIL" { "--fail-on-verdict" } else { "--fail-on-inconclusive" };
+	let reason = (code == 1).then(|| {
+		format!("verdict {verdict}: test; exit 1 because of {flag} (the checks are in summary.md)")
+	});
 	let app = Router::new()
 		.route("/plugins", get(move || async move { Json(capabilities) }))
 		.route(
@@ -55,7 +59,8 @@ async fn agent(
 			get(move || async move {
 				let state = if code == 0 { "completed" } else { "completed_with_failures" };
 				Json(json!({"id":"test", "state":state, "outcome":{
-					"artifact_dir":"/agent/run-test", "exit_code":code, "state":state, "error":null
+					"artifact_dir":"/agent/run-test", "exit_code":code, "state":state, "error":null,
+					"exit_reason":reason
 				}}))
 			}),
 		);
@@ -113,6 +118,14 @@ async fn run_flags_are_sent_to_the_agent_and_return_its_exit_code() {
 			let event: Value = serde_json::from_slice(&output.stdout).unwrap();
 			assert_eq!(event["event"], "artifact-written");
 			assert_eq!(event["outcome"]["exit_code"], code);
+			// The agent's recorded reason is printed once the run has ended, and only then.
+			let stderr = String::from_utf8_lossy(&output.stderr);
+			assert_eq!(
+				stderr
+					.contains(&format!("PolkaMeter: remote run: verdict {verdict}: test; exit 1")),
+				code == 1,
+				"{policy:?} {verdict}: {stderr}"
+			);
 			server.abort();
 		}
 	}
@@ -143,6 +156,66 @@ async fn fail_on_inconclusive_refuses_an_agent_without_the_option() {
 	let (endpoint, server) = agent(older, (true, false), "FAIL", started.clone()).await;
 	assert_eq!(run_remote(&endpoint, (true, false)).await.status.code(), Some(1));
 	assert!(started.load(Ordering::SeqCst));
+	server.abort();
+}
+
+/// A fake agent that accepts any options and ends the run with `outcome`.
+async fn agent_ending(outcome: Value) -> (String, tokio::task::JoinHandle<()>) {
+	let capabilities = json!({"runOptions":{"failOnVerdict":true,"failOnInconclusive":true}});
+	let state = outcome["state"].clone();
+	let app = Router::new()
+		.route("/plugins", get(move || async move { Json(capabilities) }))
+		.route("/runs", post(|| async { Json(json!({"id":"test", "state":"running"})) }))
+		.route(
+			"/runs/test",
+			get(
+				move || async move { Json(json!({"id":"test", "state":state, "outcome":outcome})) },
+			),
+		);
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}", listener.local_addr().unwrap());
+	let server = tokio::spawn(async move {
+		axum::serve(listener, app).await.unwrap();
+	});
+	(endpoint, server)
+}
+
+/// A smoke-mode run fails on a required check with no result whatever the flags: the client
+/// prints the agent's reason, which does not blame --fail-on-inconclusive.
+#[tokio::test]
+async fn a_smoke_failure_is_not_blamed_on_the_flags() {
+	let reason = "smoke mode fails the run on monitor problems and required checks with no \
+	              result, whatever the --fail-on flags; fix this one: no silent loss: state check \
+	              timed out (the checks are in summary.md)";
+	for policy in POLICIES {
+		let (endpoint, server) = agent_ending(json!({
+			"artifact_dir":"/agent/run-test", "exit_code":1, "state":"completed_with_failures",
+			"error":null, "exit_reason":reason
+		}))
+		.await;
+		let output = run_remote(&endpoint, policy).await;
+		let stderr = String::from_utf8_lossy(&output.stderr);
+		assert_eq!(output.status.code(), Some(1), "{stderr}");
+		assert!(stderr.contains(&format!("PolkaMeter: remote run: {reason}\n")), "{stderr}");
+		assert!(!stderr.contains("because of --fail-on"), "{stderr}");
+		let event: Value = serde_json::from_slice(&output.stdout).unwrap();
+		assert_eq!(event["outcome"]["exit_reason"], reason);
+		server.abort();
+	}
+}
+
+/// A run stopped during teardown has no exit reason: nothing blames a flag for its 143.
+#[tokio::test]
+async fn a_stopped_run_prints_no_verdict_reason() {
+	let (endpoint, server) = agent_ending(json!({
+		"artifact_dir":"/agent/run-test", "exit_code":143, "state":"stopped",
+		"error":"run stopped during teardown"
+	}))
+	.await;
+	let output = run_remote(&endpoint, (true, true)).await;
+	let stderr = String::from_utf8_lossy(&output.stderr);
+	assert_eq!(output.status.code(), Some(143), "{stderr}");
+	assert!(!stderr.contains("verdict") && !stderr.contains("because of"), "{stderr}");
 	server.abort();
 }
 

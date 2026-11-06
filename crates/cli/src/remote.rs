@@ -1268,6 +1268,7 @@ mod tests {
 				},
 				error: None,
 				teardown: None,
+				exit_reason: None,
 			}),
 			..Status::default()
 		}

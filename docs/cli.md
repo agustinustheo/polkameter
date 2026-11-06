@@ -84,13 +84,15 @@ polkameter run --remote URL --remote-token-env ENV_VAR [--junit PATH] [--fail-on
 | `--shutdown-grace SECONDS` | seconds | no | `20` | none | How long a stopping run gets to finish teardown after SIGINT or SIGTERM. See [stop a run](#stop-a-run) |
 | `--format` | enum | no | `human` | `human` or `json` | See [output formats](#output-formats) |
 
-When a verdict makes the run exit `1`, a line on standard error says why. It names the stop rule, or the checks that failed or have no result:
+When a verdict makes the run exit `1`, a line on standard error says why, after teardown, once the run ended `completed_with_failures`. It names the stop rule, or the checks that failed or have no result:
 
 ```text
 PolkaMeter: verdict INCONCLUSIVE: required checks with no result: no silent loss; exit 1 because of --fail-on-inconclusive (the checks are in summary.md)
 ```
 
-With `--remote`, the agent applies `--fail-on-verdict` and `--fail-on-inconclusive` and records the exit code in its run directory. The line above is in the agent's log. If the agent does not support a flag you pass, the client refuses to start the run; update the agent first.
+The line blames a flag only when the flag decides the exit. A smoke-mode run fails on a monitor problem or a required check with no result whatever the flags, and its line says so: `PolkaMeter: smoke mode fails the run on monitor problems and required checks with no result, whatever the --fail-on flags; fix this one: …`. A run that ends `failed` or `stopped` prints its own reason instead. `execution.json` keeps the full line as [`exit_reason`](results.md#executionjson).
+
+With `--remote`, the agent applies `--fail-on-verdict` and `--fail-on-inconclusive` and records the exit code and `exit_reason` in its run directory. The client prints the reason as `PolkaMeter: remote run: <reason>`. If the agent does not support a flag you pass, the client refuses to start the run; update the agent first.
 
 ```sh
 polkameter run examples/plugin-workflow.polkameter.xml --output runs

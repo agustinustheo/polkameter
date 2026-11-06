@@ -140,19 +140,22 @@ The `fail-on` input decides which [load verdicts](reading-results.md#did-it-pass
 | `verdict` | passes | passes | fails | passes | `--fail-on-verdict` |
 | `error` (default in v0.2.0) | passes | passes | passes | passes | none |
 
-A failed run fails the job under every policy, and a plan without a load test has no verdict to fail on. The action uploads artifacts whatever the verdict.
+A failed run fails the job under every policy, and a plan without a load test has no verdict to fail on. A smoke-mode plan (`mode="smoke"`) fails the job on a monitor problem or a required check with no result under every policy, `error` included, so changing `fail-on` does not help there: fix the monitor or the missing result. The action uploads artifacts whatever the verdict.
 
-An `INCONCLUSIVE` verdict means the run did not show whether the chain holds the load: the load ended before its rate cap, or a required check has no result. The job summary then ends with a "Why this job failed" section that names the stop or the checks, and the job log has a matching error annotation. [Read the results](reading-results.md#what-to-do-about-inconclusive) says how to fix it. To let an `INCONCLUSIVE` run pass while you fix it, set `fail-on: verdict`:
+When the verdict or smoke mode fails the job, the job summary ends with a "Why this job failed" section, and the job log has a matching error annotation. Both take the reason from `exit_reason` in [`execution.json`](results.md#executionjson):
 
+- **`FAIL`:** the chain broke a stress criterion under load: the load stopped on a failure, a failure mode was found, a step broke a measure, or a check failed. A ramp plan that pushes the chain until it breaks usually ends `FAIL`. To keep such a job green and read the `verdict` output instead, set `fail-on: error`.
+- **`INCONCLUSIVE`:** the run did not show whether the chain holds the load: the load ended before its rate cap, or a required check has no result. [Read the results](reading-results.md#what-to-do-about-inconclusive) says how to fix it. To let an `INCONCLUSIVE` run pass while you fix it, set `fail-on: verdict`.
+- **Smoke mode:** the section names the monitor problem or the check with no result, and says that `fail-on` does not change it.
+
+<!-- v0.3.0: remove after release (change @v0.2.0 to @v0) -->
 ```yaml
       - id: load
-        uses: agustinustheo/polkameter@v0
+        uses: agustinustheo/polkameter@v0.2.0
         with:
           plan: <plan>
           fail-on: verdict
 ```
-
-With `version` set to a CLI older than v0.3.0, such as `version: 0.2.0`, the CLI has no `--fail-on-inconclusive`. The default policy then fails only on `FAIL`, and the action warns. The action checks `polkameter run --help` for the flag, so a source build of any ref works the same way.
 
 With `fail-on: error`, a stress-mode load run exits `0` even when its verdict is `FAIL`. A later step can inspect the `verdict` output even when the action failed:
 

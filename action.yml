@@ -172,8 +172,10 @@ runs:
           verdict) run_args+=(--fail-on-verdict) ;;
           verdict-or-inconclusive)
             run_args+=(--fail-on-verdict)
-            # A CLI from before v0.3.0 rejects the flag; ask its help rather than its version,
-            # so a source build of any ref is judged by what it accepts.
+            # The installed CLI is this action's own release or source build, which has the
+            # flag (v0.2.0 release assets do not match the installer's names, so version: 0.2.0
+            # builds this ref). Ask its help anyway, so a CLI without the flag warns instead of
+            # failing every run on an unknown argument.
             run_help=$(polkameter run --help 2>&1 || true)
             case "$run_help" in
               *--fail-on-inconclusive*)
@@ -247,28 +249,59 @@ runs:
           fi
         fi
 
-        # Say why the job fails when only the INCONCLUSIVE verdict fails it.
-        if [ "$code" -eq 1 ] && [ "$verdict" = INCONCLUSIVE ] && [ "$fail_on_inconclusive" = true ] \
-          && [ "$finished" = true ] \
+        # Say why the job fails when the report failed the run: smoke mode or the verdict. The CLI
+        # records why in execution.json (exit_reason); it is redacted once the run finished.
+        if [ "$code" -eq 1 ] && [ "$finished" = true ] \
           && [ "$(jq -r '.state // empty' "$run_dir/execution.json" 2>/dev/null)" = completed_with_failures ]; then
-          # The rules that make a verdict INCONCLUSIVE, on one line for the annotation.
-          reason=$( { jq -r '[
-              (if (.stop.rule // "") != "rate cap"
-                then "the load ended on \"\(.stop.rule // "unknown")\" before reaching its rate cap" else empty end),
-              ([.checks[]? | select(.status == "no result" and (.optional | not)) | .check]
-                | select(length > 0) | "required checks with no result: " + join(", "))
-            ] | join("; ")' "$run_dir/summary.json" 2>/dev/null || true; } | tr '\r\n' '  ')
+          reason=$( { jq -r '.exit_reason // empty' "$run_dir/execution.json" 2>/dev/null || true; } | tr '\r\n' '  ')
           reason=${reason% }
-          reason=${reason:-see the outcome checks in summary.md}
-          echo "::error title=PolkaMeter verdict INCONCLUSIVE::${reason//%/%25}. fail-on: verdict-or-inconclusive (the default) fails the job on INCONCLUSIVE; set fail-on: verdict to fail only on FAIL."
-          {
-            echo
-            echo "### Why this job failed"
-            echo
-            echo "The load verdict is **INCONCLUSIVE**: $reason. The run did not show whether the chain holds the load, and \`fail-on: verdict-or-inconclusive\` (the default) fails the job on that."
-            echo
-            echo "Fix what kept the run from a result (see [reading the results](https://github.com/agustinustheo/polkameter/blob/main/docs/reading-results.md#did-it-pass)), or set \`fail-on: verdict\` on this step to fail only on \`FAIL\`."
-          } >> "$GITHUB_STEP_SUMMARY"
+          # Smoke mode fails on monitor problems and required checks with no result whatever
+          # fail-on is, as the CLI does: then the policy is not what to change.
+          smoke_failed=$(jq -r 'if .mode == "smoke" and ((.problems // [] | length) > 0
+              or any(.checks[]?; .status == "no result" and (.optional | not))) then "true" else "false" end' \
+            "$run_dir/summary.json" 2>/dev/null || echo false)
+          results="https://github.com/agustinustheo/polkameter/blob/main/docs/reading-results.md"
+          if [ "$smoke_failed" = true ]; then
+            reason=${reason% (the checks are in summary.md)}
+            reason=${reason#smoke mode fails the run on * flags; fix this one: }
+            reason=${reason#smoke mode fails the run on * flags; fix these: }
+            reason=${reason:-a monitor problem or a required check with no result; see summary.md}
+            echo "::error title=PolkaMeter smoke run failed::${reason//%/%25}. Smoke mode fails the job on this whatever fail-on is set to; changing fail-on does not help."
+            {
+              echo
+              echo "### Why this job failed"
+              echo
+              echo "This smoke-mode run (\`mode=\"smoke\"\`) failed on: $reason."
+              echo
+              echo "Smoke mode fails the run on any monitor problem or required check with no result, whatever \`fail-on\` is set to, so \`fail-on: verdict\` or \`fail-on: error\` does not help. Fix the missing result or the monitor problem (see [what to do about INCONCLUSIVE]($results#what-to-do-about-inconclusive)), or run the plan in stress mode."
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$verdict" = INCONCLUSIVE ] && [ "$fail_on_inconclusive" = true ]; then
+            reason=${reason%%; exit 1 because of *}
+            reason=${reason#verdict INCONCLUSIVE: }
+            reason=${reason:-see the outcome checks in summary.md}
+            echo "::error title=PolkaMeter verdict INCONCLUSIVE::${reason//%/%25}. fail-on: verdict-or-inconclusive (the default) fails the job on INCONCLUSIVE; set fail-on: verdict to fail only on FAIL."
+            {
+              echo
+              echo "### Why this job failed"
+              echo
+              echo "The load verdict is **INCONCLUSIVE**: $reason. The run did not show whether the chain holds the load, and \`fail-on: verdict-or-inconclusive\` (the default) fails the job on that."
+              echo
+              echo "Fix what kept the run from a result (see [what to do about INCONCLUSIVE]($results#what-to-do-about-inconclusive)), or set \`fail-on: verdict\` on this step to fail only on \`FAIL\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$verdict" = FAIL ] && [ "$FAIL_ON" != error ]; then
+            reason=${reason%%; exit 1 because of *}
+            reason=${reason#verdict FAIL: }
+            reason=${reason:-see the outcome checks in summary.md}
+            echo "::error title=PolkaMeter verdict FAIL::${reason//%/%25}. fail-on: $FAIL_ON fails the job on FAIL; set fail-on: error to fail only when the run itself fails."
+            {
+              echo
+              echo "### Why this job failed"
+              echo
+              echo "The load verdict is **FAIL**: $reason. FAIL means the chain broke a stress criterion under load: the load stopped on a failure, a failure mode was found, a step broke a measure, or a check failed. \`fail-on: $FAIL_ON\` fails the job on that."
+              echo
+              echo "See [did it pass?]($results#did-it-pass) for the rules. A ramp plan that pushes the chain until it breaks usually ends FAIL; to keep such a job green and read the verdict from the \`verdict\` output instead, set \`fail-on: error\` on this step."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
         fi
     - name: Stage the run artifact
       id: stage

@@ -64,6 +64,16 @@ PolkaMeter: verdict INCONCLUSIVE: required checks with no result: no silent loss
 
 **Fix:** See [what to do about INCONCLUSIVE](reading-results.md#what-to-do-about-inconclusive). To let the run pass meanwhile, drop the flag, or set `fail-on: verdict` on the action step. A `verdict FAIL: …; exit 1 because of --fail-on-verdict` line works the same way for a `FAIL` verdict.
 
+### smoke mode fails the run on monitor problems and required checks with no result
+
+```text
+PolkaMeter: smoke mode fails the run on monitor problems and required checks with no result, whatever the --fail-on flags; fix this one: no silent loss: state check timed out (the checks are in summary.md)
+```
+
+**Cause:** A smoke-mode plan (`mode="smoke"`) found a monitor problem or a required check with no result. Smoke mode exits `1` on these whatever the flags, so dropping `--fail-on-inconclusive` or setting `fail-on: verdict` or `fail-on: error` on the action step does not help. The `smoke:` lines before it list every problem.
+
+**Fix:** Fix the monitor or the cause the check's detail names, then run again. See [what to do about INCONCLUSIVE](reading-results.md#what-to-do-about-inconclusive). To let the run pass while the problem stays, run the plan in stress mode.
+
 ### teardown failed: teardown was interrupted by a forced stop
 
 ```text

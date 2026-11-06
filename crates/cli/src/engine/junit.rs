@@ -391,18 +391,23 @@ fn inconclusive_reason(summary: &Value) -> Option<String> {
 }
 
 /// The execution case's detail: the run's error, or for a run that completed with failures and
-/// no error, its exit code and load verdict (an exit policy or smoke mode failed it).
+/// no error, why it exits 1: its recorded `exit_reason` (smoke problems, or the verdict and the
+/// flag), else, for a recording from before 0.3.0, its exit code and load verdict.
 fn execution_detail(summary: &Value, outcome: &Value) -> String {
 	let error = text(outcome, "error");
-	let verdict = text(&summary["verdict"], "result");
-	if error.is_empty()
-		&& text(outcome, "state") == "completed_with_failures"
-		&& !verdict.is_empty()
-	{
-		let code = outcome["exit_code"].as_i64().unwrap_or(1);
-		return format!("exit code {code} with load verdict {verdict}");
+	if !error.is_empty() || text(outcome, "state") != "completed_with_failures" {
+		return error.into();
 	}
-	error.into()
+	let reason = text(outcome, "exit_reason");
+	if !reason.is_empty() {
+		return reason.into();
+	}
+	let verdict = text(&summary["verdict"], "result");
+	if verdict.is_empty() {
+		return String::new();
+	}
+	let code = outcome["exit_code"].as_i64().unwrap_or(1);
+	format!("exit code {code} with load verdict {verdict}")
 }
 
 fn add_section(
@@ -862,6 +867,22 @@ mod tests {
 		);
 		let xml = render(&suites, Path::new("/run"));
 		assert!(xml.contains("failures=\"1\""), "{xml}");
+	}
+
+	#[test]
+	fn execution_case_names_the_recorded_exit_reason() {
+		let summary: Value =
+			serde_json::from_str(include_str!("../../tests/fixtures/smoke-run/summary.json"))
+				.unwrap();
+		let reason = "smoke mode fails the run on monitor problems and required checks with no \
+		              result, whatever the --fail-on flags; fix this one: no silent loss: no data \
+		              (the checks are in summary.md)";
+		let outcome = json!({"state":"completed_with_failures","exit_code":1,"error":null,
+			"exit_reason":reason});
+		let suites = suites(&Value::Null, ok(vec![]), &summary, &outcome).unwrap();
+		let execution = &suites[0].cases[0];
+		assert_eq!(execution.status, Status::Failed);
+		assert_eq!(execution.message, format!("completed_with_failures: {reason}"));
 	}
 
 	#[test]

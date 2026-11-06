@@ -187,12 +187,17 @@ fn not_observed(ms: Millis) -> String {
 }
 
 /// The rules checked at the end of each step for one lane, on it and on the step before (settled by now).
+///
+/// `last` is true after the plan's last step. A flood that is empty only then was sized to the
+/// plan: every step ran, so that is the rate cap, not budget used up. A flood that ran out during
+/// the last step still is budget used up when the step sent too little.
 pub fn check_step(
 	steps: &[StepStats],
 	source: &QueueSource,
 	unsent_kib: u64,
 	block_ms: f64,
 	rules: &Rules,
+	last: bool,
 ) -> Option<Stop> {
 	let cur = final_step(steps.last()?, None);
 	let prev = steps.len().checked_sub(2).map(|i| final_step(&steps[i], None));
@@ -248,7 +253,7 @@ pub fn check_step(
 			format!("a block every {} s, against {} s at the start", secs(gap), secs(block_ms)),
 		));
 	}
-	if source.exhausted() || (slow_send && cur.starved_ticks > 0) {
+	if (!last && source.exhausted()) || (slow_send && cur.starved_ticks > 0) {
 		return Some(Stop::new(Rule::BudgetUsedUp, step, source.starved_reason()));
 	}
 	slow_send.then(|| {
@@ -372,7 +377,7 @@ mod tests {
 			}),
 			step(1, |_| ()),
 		];
-		let stop = check_step(&steps, &source(), 0, 6_000.0, &RULES).unwrap();
+		let stop = check_step(&steps, &source(), 0, 6_000.0, &RULES, false).unwrap();
 		assert_eq!(
 			(stop.rule, stop.step, stop.class),
 			(Rule::PoolRefuses, Some(0), Some(Class::Graceful))
@@ -392,6 +397,7 @@ mod tests {
 			0,
 			4_000.0,
 			&RULES,
+			false,
 		)
 		.unwrap();
 		assert_eq!((stop.rule, stop.class), (Rule::SlowBlocks, Some(Class::Hard)));
@@ -410,6 +416,7 @@ mod tests {
 			0,
 			6_000.0,
 			&RULES,
+			false,
 		)
 		.unwrap();
 		assert_eq!(stop.rule, Rule::SlowBlocks, "{}", stop.detail);
@@ -463,6 +470,7 @@ mod tests {
 			0,
 			6_000.0,
 			&RULES,
+			false,
 		)
 		.unwrap();
 		assert_eq!((stop.rule, stop.class), (Rule::GeneratorLimit, None));
@@ -476,8 +484,28 @@ mod tests {
 			0,
 			6_000.0,
 			&RULES,
+			false,
 		)
 		.unwrap();
+		assert_eq!(stop.rule, Rule::BudgetUsedUp);
+	}
+
+	#[test]
+	fn a_flood_sized_to_the_plan_ends_on_the_rate_cap() {
+		// Every tx sent at the full rate: the flood is empty at the end of the step.
+		let empty = QueueSource::new(vec![], vec![], "coins");
+		let full_rate = [step(0, |_| ())];
+		assert!(empty.exhausted());
+		let before_last = check_step(&full_rate, &empty, 0, 6_000.0, &RULES, false).unwrap();
+		assert_eq!(before_last.rule, Rule::BudgetUsedUp, "a later step has nothing to send");
+		assert_eq!(check_step(&full_rate, &empty, 0, 6_000.0, &RULES, true), None);
+		// Ran out during the last step and sent too little: still budget used up.
+		let short = [step(0, |s| {
+			s.sent = 500;
+			s.included = 500;
+			s.starved_ticks = 3;
+		})];
+		let stop = check_step(&short, &empty, 0, 6_000.0, &RULES, true).unwrap();
 		assert_eq!(stop.rule, Rule::BudgetUsedUp);
 	}
 }

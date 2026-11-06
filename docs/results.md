@@ -70,6 +70,7 @@ Written after teardown. When a run is stopped, a provisional `execution.json` wi
 | `state` | How the run ended, as below. |
 | `error` | Error text, redacted. `null` if none. |
 | `teardown` | `completed` (every teardown step succeeded), `failed` (every step ran, at least one failed) or `interrupted` (a forced stop ended it). Absent if teardown did not run, because the plugins never started. |
+| `exit_reason` | Only when `state` is `completed_with_failures`: why the run exits `1`, redacted. Either the smoke-mode problems (`smoke mode fails the run on …`), or the verdict, what made it, and the flag that failed the run (`verdict INCONCLUSIVE: …; exit 1 because of --fail-on-inconclusive …`). The CLI prints it on standard error and the GitHub Action shows it in the job summary. From v0.3.0. |
 | `stop_requested_at` | Only in a provisional outcome: when the stop was requested, in milliseconds. |
 
 | `state` | `exit_code` | When |
@@ -105,7 +106,7 @@ This excerpt comes from the recorded smoke fixture after `report`, with its dire
 
 | Recorded result | Suite and testcase | JUnit result |
 | --- | --- | --- |
-| Plan execution | `plan`, `execution` | Completed: passed. Failed or completed with failures: `<failure>`. Stopped: `<skipped>`. Captures errors outside steps, including plugin startup. A run that completed with failures and no error, such as one that `--fail-on-inconclusive` failed, gives its exit code and load verdict. |
+| Plan execution | `plan`, `execution` | Completed: passed. Failed or completed with failures: `<failure>`. Stopped: `<skipped>`. Captures errors outside steps, including plugin startup. A run that completed with failures gives its `exit_reason`: the smoke-mode problems, or the verdict and the flag that failed it. An older recording without `exit_reason` gives its exit code and load verdict. |
 | Plan steps and assertions | One suite per nonempty `preflight`, `setup`, `evaluate`, `teardown` section; step ID as testcase name | Success: passed. Assertion failure, step error or interrupted step: `<failure>`. Step never started: `<skipped>`. |
 | Workflow steps | One `workflow:<id>` suite per workflow; step ID plus user and iteration for individual failures | Passing invocations aggregate into one case per step with a count. First 100 failures per step remain individual cases; further failures aggregate with a count and a pointer to `events.jsonl`. Missing invocations aggregate into one skipped case per step. |
 | Load outcome `pass` or `info` | `load test`, `<outcome>: <check>` | Passed, with status and detail in `<system-out>`. |
@@ -229,8 +230,8 @@ Breaking-point rules record a result, and the load goes on. The other rules end 
 | **Stall**: no new best block for this long, not counting time the block follower was reconnecting | hard | 30 s | `stall-ms` |
 | **Finality stall**: no new finalized block for this long, not counting time the block follower was reconnecting | hard | 60 s | `finality-stall-ms` |
 | **Node down**: the node stayed unreachable for 15 s of reconnect attempts, a connection dropped more than 5 times in 60 s, or a local node's process restarted | hard | 15 s; 5 drops in 60 s (fixed) | none |
-| **Rate cap**: every step ran | none | none | none |
-| **Budget used up**: prepared transactions ran out, or a short step had nothing to send | none | none | none |
+| **Rate cap**: every step ran, including when the flood ran out exactly after the last step | none | none | none |
+| **Budget used up**: the prepared flood transactions ran out before the last step finished, or a short step had nothing to send | none | none | none |
 | **Generator limit**: sent share of target rate below minimum, or the load tool paused over 5 s between sends, or the machine was suspended for over 5 s | none | 95%; 5 s between sends (fixed) | `min-send-ratio` |
 | **Smoke error**: monitor problem, smoke mode only | none | none | none |
 
