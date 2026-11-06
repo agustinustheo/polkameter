@@ -1,4 +1,5 @@
-//! A Polkadot SDK node over RPC: typed reads, events and submission.
+//! A Polkadot SDK node over RPC: typed reads, events and submission, plus signed transactions
+//! and test signers for any runtime.
 //!
 //! [`Client`] connects to one node. [`Client::finalized`] pins a block, and [`fetch`],
 //! [`entries`] and [`events`] read it. [`Client::call_data`] encodes a call from its pallet and
@@ -6,9 +7,10 @@
 //! [`Client::submit`] sends one.
 //!
 //! A load plugin uses these to prepare transactions before the load starts: read what it needs,
-//! encode the calls, sign them with a [`Keypair`] at explicit nonces from [`Client::nonce`], and
-//! return them as [`PreparedTx`](crate::PreparedTx) values. To sign, use the subxt client from
-//! [`Client::api`].
+//! sign the calls with a [`TxBuilder`] from [`Client::tx_builder`] at explicit nonces from
+//! [`Client::nonce`], and return them as [`PreparedTx`](crate::PreparedTx) values.
+//! [`TxBuilder::sign_batch`] signs many calls for one signer with consecutive nonces, and
+//! [`derive_range`] derives many test signers from one secret URI with [`keypair`].
 //!
 //! ```no_run
 //! use polkameter_plugin_sdk::PreparedTx;
@@ -44,11 +46,16 @@
 #![warn(missing_docs, clippy::needless_pass_by_value, clippy::too_many_lines)]
 
 pub mod client;
+pub mod keys;
 pub mod reads;
+pub mod sign;
 pub mod tx;
 pub mod value;
 
 pub use client::{AtBlock, ChainError, Client, Fault, LayoutChanged, Refusal, decode_err, hex0x};
+pub use keys::{
+	KeyError, account_id, derive, derive_range, junctions, keypair, parse_account, ss58,
+};
 pub use reads::{
 	Event, calls, entries, events, failed_extrinsics, fetch, has_prefix, runtime_call,
 };
@@ -59,6 +66,7 @@ pub use scale_decode::DecodeAsType;
 #[doc(hidden)]
 /// Part of the plugin API (used by out-of-tree plugins).
 pub use scale_value as scale_value_reexport;
+pub use sign::{AccountInfo, Call, Mortality, SignError, TxBuilder, TxParams, account_at};
 /// A dynamic SCALE value: the fields of a call for [`Client::call_data`], or a storage key.
 /// Re-exported from subxt, so a plugin does not need its own subxt dependency.
 pub use subxt::dynamic::Value;

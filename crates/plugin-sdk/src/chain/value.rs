@@ -66,6 +66,16 @@ pub fn as_u64(v: &Value) -> Option<u64> {
 	}
 }
 
+/// A number up to `u128`, such as a balance, through any single-field wrappers.
+pub fn as_u128(v: &Value) -> Option<u128> {
+	match &v.value {
+		ValueDef::Primitive(Primitive::U128(n)) => Some(*n),
+		ValueDef::Primitive(Primitive::I128(n)) => u128::try_from(*n).ok(),
+		ValueDef::Primitive(_) | ValueDef::BitSequence(_) => None,
+		_ => only_child(v).and_then(as_u128),
+	}
+}
+
 /// 32 bytes, through any single-field wrappers.
 pub fn as_bytes32(v: &Value) -> Option<[u8; 32]> {
 	let bytes: Vec<u8> = children(v)

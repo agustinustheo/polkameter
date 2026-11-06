@@ -5,7 +5,7 @@ The SDK for [PolkaMeter](https://github.com/agustinustheo/polkameter) plugins. A
 | Feature | Module | What it gives |
 | --- | --- | --- |
 | (default) | `polkameter_plugin_sdk` | The protocol: `Plugin`, `serve`, `Manifest`, `Operation`, `Schema`, `Context`, `Artifact`, `PreparedTx`, `StateCheckInput`. |
-| `chain` | `polkameter_plugin_sdk::chain` | A Polkadot SDK node over RPC: `Client`, typed storage reads, events, signing and submission (subxt). |
+| `chain` | `polkameter_plugin_sdk::chain` | A Polkadot SDK node over RPC: `Client`, typed storage reads, events and submission (subxt). Signed transactions for any runtime from its metadata (`TxBuilder`: explicit nonce, mortality and tip, batches with consecutive nonces), test signers from secret URIs (`keypair`, `derive_range`), and account nonce and balances. |
 | `observers` | `polkameter_plugin_sdk::observers` | Recording and judging a run: `RunDir`, the metric registry, the finalized-block `walker`, `ChainSeries`, `RunData` and check verdicts. Implies `chain`. |
 
 <!-- v0.3.0: remove after release -->
