@@ -29,10 +29,10 @@ flowchart TD
 5. **Load test.** The baseline sends one probe per block with no load. The load sends transactions at the plan's rate steps or ramp until a stop rule ends it. Recovery probes once per block until the chain is back or `recovery-seconds` runs out. Then the run waits for finality and checks every transaction.
 6. **Evaluate.** Evaluate steps run, and plugins can return checks from them.
 7. **Judge.** The built-in checks run on the recorded data, and the verdict follows.
-8. **Teardown.** Teardown steps run even after a failure, and then the plugins shut down.
+8. **Teardown.** Teardown steps run even after a failure in setup or later, and then the plugins shut down. A run that fails in preflight submitted nothing, so it skips teardown and exits `3`.
 9. **Report.** The run writes its outcome, `samples.jtl` and the plots.
 
-The run as a whole has a deadline, the plan's `timeout-ms`, one hour by default. An error in preflight, setup, a workflow or an evaluate step ends the run as `failed`. A stop rule that fires during the load is a result, not an error, so the report is still written.
+The run as a whole has a deadline, the plan's `timeout-ms`, one hour by default. An error in preflight, setup, a workflow or an evaluate step ends the run as `failed`, with exit code 3 in preflight and 1 after it. A stop rule that fires during the load is a result, not an error, so the report is still written.
 
 ## Plan validation
 

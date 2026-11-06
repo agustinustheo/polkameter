@@ -36,7 +36,7 @@ FULL = plan('''
   <setup><step id="prepare" use="example.prepare">
     <input name="value" value="21"/>
   </step></setup>
-  <workflow id="users"><step id="echo" use="core.echo"/></workflow>
+  <workflow id="users"><step id="echo" use="core.echo"><input name="value" ref="user.index"/></step></workflow>
   <load target="chain" source-ref="steps.prepare.flood" probes-ref="steps.prepare.probes">
     <rate tx-per-second="0" seconds="1"/>
   </load>
@@ -98,7 +98,8 @@ def published_plans():
         else:
             continue
         for index, body in enumerate(blocks, 1):
-            if re.search(r"<polkameter-plan(?:\s|/?>)", body):
+            # A plan starts with markup; CLI output that quotes an element name is not one.
+            if body.lstrip().startswith("<") and re.search(r"<polkameter-plan(?:\s|/?>)", body):
                 yield f"{path.relative_to(ROOT)} block {index}", body.strip()
 
 
@@ -181,7 +182,8 @@ def scalar_case(label, xml, path, attribute, value, valid, reason, integer_bits=
     """Distinguish integer parse failures from in-range values violating a rule."""
     if not valid and integer_bits is not None:
         if value.startswith("-") or int(value) >= 2 ** integer_bits:
-            reason = f"invalid `{attribute}`:"
+            element = "polkameter-plan" if path == "." else path.rsplit("p:", 1)[-1]
+            reason = f"`{attribute}` on <{element}> must be a whole number from 0 to"
     case(label, xml, valid, cli_error=None if valid else reason,
          schema_error=None if valid else schema_attribute(path, attribute))
 
@@ -224,7 +226,7 @@ for path, attribute, good, bad, reason, integer_bits in [
     (".", "version", ["1", "+1", " 1 "], ["0", "2", "4294967296"],
      'unsupported plan version', 32),
     (".", "mode", ["stress", "smoke"], ["", "other", " smoke"],
-     'invalid `mode`: must be smoke or stress', None),
+     '`mode` on <polkameter-plan> must be smoke or stress', None),
     (".", "name", [" "], [""],
      '`name` on <polkameter-plan> must not be empty', None),
     (".", "timeout-ms", ["1", "+1", "18446744073709551615"], ["0", "-1", "18446744073709551616"],
@@ -240,7 +242,7 @@ for path, attribute, good, bad, reason, integer_bits in [
      'a target must be a WebSocket RPC URL', None),
     ("p:credentials/p:credential", "profile", [" "], [""],
      'credential `admin` needs a `profile`', None),
-    ("p:setup/p:step", "use", ["core.any-name_0"], ["core", "core.a.b", "core."],
+    ("p:setup/p:step", "use", ["example.any-name_0"], ["core", "core.a.b", "core."],
      {'core': 'step `prepare`: use="core" must name an operation as <plugin>.<operation>',
       'core.a.b': 'step `prepare`: use="core.a.b" has an invalid operation name `a.b`',
       'core.': 'step `prepare`: use="core." has an invalid operation name ``'}, None),
@@ -265,7 +267,7 @@ for path, attribute, good, bad, reason, integer_bits in [
     ("p:load/p:rate", "seconds", ["1", "4294967295"], ["0", "4294967296"],
      'step 0: 0 s at', 32),
     ("p:monitors", "para-id", ["0", "+0", "1", "999", "1000", "1999", "2000", "4294967295"], ["-0", "-1", "4294967296"],
-     'invalid `para-id`:', 32),
+     '`para-id` on <monitors> must be a whole number from 0 to', 32),
 ]:
     for valid, values in [(True, good), (False, bad)]:
         for value in values:
@@ -365,7 +367,8 @@ for section in ["plugins", "targets", "credentials", "preflight", "setup", "load
     node = root.find(f"{{{NAMESPACE}}}{section}")
     if node is None:
         node = ET.SubElement(root, f"{{{NAMESPACE}}}{section}")
-        ET.SubElement(node, f"{{{NAMESPACE}}}step", id=f"{section}-step", use="core.echo")
+        step = ET.SubElement(node, f"{{{NAMESPACE}}}step", id=f"{section}-step", use="core.echo")
+        ET.SubElement(step, f"{{{NAMESPACE}}}input", name="value", value="1")
     case(f"single {section} before duplication", ET.tostring(root, encoding="unicode"))
     root.append(ET.fromstring(ET.tostring(node)))
     # Avoid duplicate-ID errors, so this exercises the singleton check specifically.

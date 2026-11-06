@@ -104,7 +104,7 @@ The registry is a JSON file, `~/.config/polkameter/plugins.json` by default. Set
 | Command | Does |
 | --- | --- |
 | `polkameter plugin install EXECUTABLE` | Records the plugin's ID, version and executable hash. |
-| `polkameter plugin list` | Prints the installed plugins. |
+| `polkameter plugin list` | Prints the installed plugins, the environment variable each credential profile reads (never its value), the topologies and the capabilities. |
 | `polkameter plugin inspect PLAN` | Checks operations against manifests. Prints manifests, requirements, targets and monitor requirements. |
 | `polkameter plugin credential PROFILE ENV` | Maps a plan's credential profile to a variable on this host. |
 | `polkameter plugin topology NAME PATH` | Registers a Zombienet `zombie.json` under an alias. |

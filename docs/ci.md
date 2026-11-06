@@ -125,8 +125,9 @@ The action fails the job with the exit code of `polkameter run`:
 | Exit code | Meaning | Job |
 | --- | --- | --- |
 | `0` | The run completed. | Passes |
-| `1` | The run failed: a plugin error, a failed `core.assert-equal` step or a deadline. A setup problem found when the run starts, such as a plugin that is not installed, a plugin checksum or version mismatch, or an unset credential variable, also exits `1`; the message on standard error says which. In smoke mode, also a monitor problem or a required check with no result. With `fail-on: verdict`, also a `FAIL` verdict. | Fails |
+| `1` | The run failed after its setup phase started: a plugin error, a failed `core.assert-equal` step or a deadline. In smoke mode, also a monitor problem or a required check with no result. With `fail-on: verdict`, also a `FAIL` verdict. | Fails |
 | `2` | The plan or the arguments are invalid. An invalid plan fails earlier, in the `validate` step. | Fails |
+| `3` | The run failed before its setup phase, so it submitted nothing to the chain and skipped teardown: a plugin that is not installed, a plugin checksum or version mismatch, an unmapped profile or an unset or empty credential variable, a step input that does not match its operation, or a failed `<preflight>` step or calibration. The message on standard error says which, and where in the plan. | Fails |
 | `130` | The run was stopped with SIGINT, for example when the job was cancelled. | Fails |
 | `143` | The run was stopped with SIGTERM. | Fails |
 

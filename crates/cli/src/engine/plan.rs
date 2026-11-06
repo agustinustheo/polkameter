@@ -1,4 +1,4 @@
-use crate::engine::xml::{self, Element, error_at};
+use crate::engine::xml::{self, Element};
 pub use crate::engine::xml::{Location, PlanError};
 use crate::load::runner::Mode;
 use anyhow::{Result, bail, ensure};
@@ -8,7 +8,6 @@ use std::{
 	collections::{BTreeMap, BTreeSet},
 	fmt::Display,
 	path::Path,
-	str::FromStr,
 };
 
 pub const NAMESPACE: &str = "https://polkameter.dev/schema/plan";
@@ -19,13 +18,15 @@ pub const MAX_PLAN_BYTES: usize = 2 * 1024 * 1024;
 /// The limit as the error messages state it.
 const MAX_PLAN_SIZE: &str = "2 MiB (2097152 bytes)";
 
-/// Reads a plan file as UTF-8 text, reading at most [`MAX_PLAN_BYTES`] + 1 bytes. A directory,
-/// FIFO, socket or device is refused without blocking on it, so a CI job cannot hang on a wrong
-/// path.
+/// Reads a plan file as UTF-8 text, reading at most [`MAX_PLAN_BYTES`] + 1 bytes. A regular file
+/// or, on Unix, a pipe or FIFO is read: `validate <(envsubst < plan.tmpl)` and
+/// `cat plan | polkameter validate /dev/stdin` work. A FIFO that no process writes to reads as
+/// empty instead of blocking. Directories, sockets and devices are refused, so a CI job cannot
+/// hang on a wrong path. Text that is not UTF-8 is a [`PlanError`] at the first invalid byte.
 pub fn read_plan(path: &Path) -> Result<String> {
 	use std::io::Read as _;
 	let shown = path.display();
-	let file = open_regular(path).map_err(|e| anyhow::anyhow!("cannot read plan {shown}: {e}"))?;
+	let file = open_plan(path).map_err(|e| anyhow::anyhow!("cannot read plan {shown}: {e}"))?;
 	let mut bytes = Vec::new();
 	let limit = u64::try_from(MAX_PLAN_BYTES).unwrap_or(u64::MAX) + 1;
 	file.take(limit)
@@ -36,21 +37,30 @@ pub fn read_plan(path: &Path) -> Result<String> {
 		"plan {shown} is larger than the {MAX_PLAN_SIZE} limit; split the plan or remove unused \
 		 content"
 	);
+	ensure!(
+		!bytes.is_empty(),
+		"plan {shown} is empty; if it comes from a pipe or FIFO, check that the command writing \
+		 it succeeded"
+	);
+	// A UTF-16 byte-order mark, or `<` with a zero byte beside it, as UTF-16 writes it.
+	let utf16 =
+		matches!(bytes[..], [0xFF, 0xFE, ..] | [0xFE, 0xFF, ..] | [b'<', 0, ..] | [0, b'<', ..]);
+	ensure!(!utf16, "plan {shown} is UTF-16 text; save it as UTF-8, the encoding PolkaMeter reads");
 	String::from_utf8(bytes).map_err(|e| {
 		let valid = e.utf8_error().valid_up_to();
 		let text = std::str::from_utf8(&e.as_bytes()[..valid]).unwrap_or_default();
-		let location = Location::of(text, valid);
-		anyhow::anyhow!(
-			"plan {shown} is not UTF-8 text ({location}); save it as UTF-8, the encoding \
-			 PolkaMeter reads"
+		PlanError::at(
+			Location::of(text, valid),
+			"the plan is not UTF-8 text; save it as UTF-8, the encoding PolkaMeter reads",
 		)
 	})
 }
 
-/// Opens `path` for reading if it is a regular file (following symbolic links). On Unix the file
-/// is opened without blocking and then checked, so a FIFO is never waited on and cannot be
-/// swapped in between the check and the open.
-fn open_regular(path: &Path) -> std::io::Result<std::fs::File> {
+/// Opens `path` for reading if it is a regular file or, on Unix, a pipe or FIFO (following
+/// symbolic links). On Unix the file is opened without blocking, so opening a FIFO never waits
+/// for a writer, and then checked, so it cannot be swapped between the check and the open. Reads
+/// then block again, up to the end of the data.
+fn open_plan(path: &Path) -> std::io::Result<std::fs::File> {
 	let mut options = std::fs::OpenOptions::new();
 	options.read(true);
 	#[cfg(unix)]
@@ -62,18 +72,28 @@ fn open_regular(path: &Path) -> std::io::Result<std::fs::File> {
 	refuse_irregular(&std::fs::metadata(path)?)?;
 	let file = options.open(path)?;
 	refuse_irregular(&file.metadata()?)?;
+	#[cfg(unix)]
+	{
+		use nix::fcntl::{FcntlArg, OFlag, fcntl};
+		let flags = OFlag::from_bits_retain(fcntl(&file, FcntlArg::F_GETFL)?);
+		fcntl(&file, FcntlArg::F_SETFL(flags - OFlag::O_NONBLOCK))?;
+	}
 	Ok(file)
 }
 
 fn refuse_irregular(metadata: &std::fs::Metadata) -> std::io::Result<()> {
 	let kind = metadata.file_type();
-	if kind.is_file() {
+	#[cfg(unix)]
+	let pipe = std::os::unix::fs::FileTypeExt::is_fifo(&kind);
+	#[cfg(not(unix))]
+	let pipe = false;
+	if kind.is_file() || pipe {
 		return Ok(());
 	}
 	Err(std::io::Error::other(if kind.is_dir() {
 		"it is a directory; pass a plan file such as plan.polkameter.xml"
 	} else {
-		"it is not a regular file (a FIFO, socket or device); save the plan to a file first"
+		"it is a socket or device, not a plan file; pass a plan file such as plan.polkameter.xml"
 	}))
 }
 
@@ -174,28 +194,68 @@ impl Attr for Mode {
 	}
 }
 macro_rules! numeric_attr {
-	($($t:ty)*) => {$(
+	($($t:ty: $what:expr),*) => {$(
 		impl Attr for $t {
 			fn parse_attr(text: &str) -> std::result::Result<Self, String> {
 				text.trim_matches([' ', '\t', '\r', '\n'])
 					.parse()
-					.map_err(|e: <$t as FromStr>::Err| e.to_string())
+					.map_err(|_| format!("must be {}, found `{text}`", $what))
 			}
 		}
 	)*};
 }
-numeric_attr!(u32 u64 usize f64);
+numeric_attr!(
+	u32: format!("a whole number from 0 to {}", u32::MAX),
+	u64: format!("a whole number from 0 to {}", u64::MAX),
+	usize: format!("a whole number from 0 to {}", usize::MAX),
+	f64: "a number, such as 2 or 0.5"
+);
+
+/// The candidate closest to `name` by edit distance, if it is close enough to be a likely typo.
+pub(crate) fn closest<'a>(
+	name: &str,
+	candidates: impl IntoIterator<Item = &'a str>,
+) -> Option<&'a str> {
+	let limit = (name.chars().count().div_ceil(3)).max(1);
+	candidates
+		.into_iter()
+		.map(|candidate| (edit_distance(name, candidate), candidate))
+		.filter(|&(distance, _)| distance <= limit)
+		.min_by_key(|&(distance, _)| distance)
+		.map(|(_, candidate)| candidate)
+}
+
+/// The Levenshtein distance between `a` and `b`, in characters.
+fn edit_distance(a: &str, b: &str) -> usize {
+	let b: Vec<char> = b.chars().collect();
+	let mut row: Vec<usize> = (0..=b.len()).collect();
+	for (i, ca) in a.chars().enumerate() {
+		let mut diagonal = row[0];
+		row[0] = i + 1;
+		for (j, cb) in b.iter().enumerate() {
+			let above = row[j + 1];
+			row[j + 1] = (above + 1).min(row[j] + 1).min(diagonal + usize::from(ca != *cb));
+			diagonal = above;
+		}
+	}
+	row[b.len()]
+}
+
+/// `names` in backticks, joined with commas, for an error message.
+fn backticked<'a>(names: impl IntoIterator<Item = &'a str>) -> String {
+	names.into_iter().map(|name| format!("`{name}`")).collect::<Vec<_>>().join(", ")
+}
 
 impl Element<'_> {
 	fn err(&self, msg: impl Display) -> anyhow::Error {
-		error_at(self.src, self.offset, msg)
+		self.error_at(self.offset, msg)
 	}
 	fn opt<T: Attr>(&self, name: &str) -> Result<Option<T>> {
 		let Some((_, value, at)) = self.attrs.iter().find(|a| a.0 == name) else {
 			return Ok(None);
 		};
 		let parsed = T::parse_attr(value)
-			.map_err(|e| error_at(self.src, *at, format!("invalid `{name}`: {e}")))?;
+			.map_err(|e| self.error_at(*at, format!("`{name}` on <{}> {e}", self.name)))?;
 		Ok(Some(parsed))
 	}
 	fn req<T: Attr>(&self, name: &str) -> Result<T> {
@@ -212,7 +272,7 @@ impl Element<'_> {
 			[child] => T::from_xml(child).map(Some),
 			[_, extra, ..] => {
 				let msg = format!("<{name}> may appear once in <{}>", self.name);
-				Err(error_at(self.src, extra.offset, msg))
+				Err(self.error_at(extra.offset, msg))
 			},
 		}
 	}
@@ -222,12 +282,32 @@ impl Element<'_> {
 	/// Rejects attributes and children that no reader consumed; `attrs` and `kids` list them.
 	fn finish(&self, attrs: &[&str], kids: &[&str]) -> Result<()> {
 		if let Some((key, _, at)) = self.attrs.iter().find(|a| !attrs.contains(&a.0)) {
-			let msg = format!("unknown attribute `{key}` on <{}>", self.name);
-			return Err(error_at(self.src, *at, msg));
+			let name = self.name;
+			let mut msg = format!("unknown attribute `{key}` on <{name}>");
+			match closest(key, attrs.iter().copied()) {
+				Some(near) => msg += &format!("; did you mean `{near}`? "),
+				None => msg += "; ",
+			}
+			if attrs.is_empty() {
+				msg += &format!("<{name}> takes no attributes");
+			} else {
+				msg += &format!("<{name}> allows {}", backticked(attrs.iter().copied()));
+			}
+			return Err(self.error_at(*at, msg));
 		}
 		if let Some(child) = self.children.iter().find(|c| !kids.contains(&c.name)) {
-			let msg = format!("unknown element <{}> in <{}>", child.name, self.name);
-			return Err(error_at(self.src, child.offset, msg));
+			let mut msg = format!("unknown element <{}> in <{}>", child.name, self.name);
+			match closest(child.name, kids.iter().copied()) {
+				Some(near) => msg += &format!("; did you mean <{near}>? "),
+				None => msg += "; ",
+			}
+			if kids.is_empty() {
+				msg += &format!("<{}> has no child elements", self.name);
+			} else {
+				let allowed: Vec<_> = kids.iter().map(|kid| format!("<{kid}>")).collect();
+				msg += &format!("<{}> may contain {}", self.name, allowed.join(", "));
+			}
+			return Err(self.error_at(child.offset, msg));
 		}
 		Ok(())
 	}
@@ -1040,7 +1120,10 @@ mod tests {
 	fn rejects_non_ascii_whitespace_around_numbers() {
 		let xml = plan("timeout-ms=\"\u{a0}7\"");
 		let error = Plan::parse(&xml).unwrap_err().to_string();
-		assert!(error.contains("invalid `timeout-ms`"), "{error}");
+		assert!(
+			error.contains("`timeout-ms` on <polkameter-plan> must be a whole number from 0 to"),
+			"{error}"
+		);
 		assert_eq!(Plan::parse(&plan("timeout-ms=\"\t7\r\n\"")).unwrap().timeout_ms, 7);
 	}
 
@@ -1103,24 +1186,106 @@ mod tests {
 		assert!(error.contains("it is a directory; pass a plan file"), "{error}");
 		let latin1 = scratch.0.join("latin1.xml");
 		std::fs::write(&latin1, b"<a>\n  caf\xe9</a>").unwrap();
-		let error = read_plan(&latin1).unwrap_err().to_string();
-		assert!(error.contains("latin1.xml is not UTF-8 text (line 2, column 6)"), "{error}");
+		let error = read_plan(&latin1).unwrap_err();
+		let located = error.downcast_ref::<PlanError>().expect("a located error");
+		assert_eq!(located.location, Some(Location { line: 2, column: 6 }));
+		assert!(located.message.starts_with("the plan is not UTF-8 text; save it as UTF-8"));
+		for (name, bytes) in [
+			("bom-le.xml", &b"\xff\xfe<\0a\0/\0>\0"[..]),
+			("bom-be.xml", &b"\xfe\xff\0<\0a\0/\0>"[..]),
+			("no-bom.xml", &b"<\0a\0/\0>\0"[..]),
+		] {
+			let path = scratch.0.join(name);
+			std::fs::write(&path, bytes).unwrap();
+			let error = read_plan(&path).unwrap_err().to_string();
+			assert!(error.contains(&format!("{name} is UTF-16 text; save it as UTF-8")), "{error}");
+		}
+		let empty = scratch.0.join("empty.xml");
+		std::fs::write(&empty, b"").unwrap();
+		let error = read_plan(&empty).unwrap_err().to_string();
+		assert!(error.contains("empty.xml is empty"), "{error}");
 	}
 
 	#[cfg(unix)]
 	#[test]
-	fn refuses_a_fifo_without_waiting_for_a_writer() {
+	fn reads_a_fifo_and_does_not_wait_when_nothing_writes_to_it() {
 		let scratch = Scratch::new("fifo");
 		let fifo = scratch.0.join("plan.xml");
 		let status = std::process::Command::new("mkfifo").arg(&fifo).status().unwrap();
 		assert!(status.success());
+		// With a writer, as with `validate <(envsubst < plan.tmpl)`: the whole plan is read, also
+		// when it arrives in pieces.
+		let writer = {
+			let fifo = fifo.clone();
+			std::thread::spawn(move || {
+				use std::io::Write as _;
+				let mut file = std::fs::OpenOptions::new().write(true).open(fifo).unwrap();
+				file.write_all(b"<a>").unwrap();
+				file.flush().unwrap();
+				std::thread::sleep(std::time::Duration::from_millis(200));
+				file.write_all(b"</a>").unwrap();
+			})
+		};
+		// The writer blocks in open until a reader is there; give it a reader that waits.
+		let read = loop {
+			let text = read_plan(&fifo);
+			match text {
+				Ok(text) => break text,
+				// Opened before the writer: no writer yet reads as empty. Try again.
+				Err(error) if error.to_string().contains("is empty") => {
+					std::thread::sleep(std::time::Duration::from_millis(10));
+				},
+				Err(error) => panic!("{error}"),
+			}
+		};
+		writer.join().unwrap();
+		assert_eq!(read, "<a></a>");
+		// Without a writer, reading ends at once with an empty plan instead of blocking.
 		let (sender, receiver) = std::sync::mpsc::channel();
 		let path = fifo.clone();
 		std::thread::spawn(move || sender.send(read_plan(&path).map_err(|e| e.to_string())));
-		// Nothing ever opens the FIFO for writing, so a blocking open would never return.
 		let result = receiver.recv_timeout(std::time::Duration::from_secs(10));
 		let error = result.expect("reading a FIFO blocked").unwrap_err();
-		assert!(error.contains("it is not a regular file (a FIFO, socket or device)"), "{error}");
+		assert!(error.contains("plan.xml is empty"), "{error}");
+	}
+
+	#[test]
+	fn number_and_attribute_errors_say_what_is_allowed() {
+		let cases = [
+			(
+				plan("timeout-ms=\"ten\""),
+				"`timeout-ms` on <polkameter-plan> must be a whole number from 0 to \
+				 18446744073709551615, found `ten`",
+			),
+			(
+				plan("timeout\u{2d}m=\"1\""),
+				"unknown attribute `timeout-m` on <polkameter-plan>; did you mean `timeout-ms`? \
+				 <polkameter-plan> allows `version`, `xmlns`, `name`, `timeout-ms`, `mode`",
+			),
+			(
+				plan("colour=\"1\""),
+				"unknown attribute `colour` on <polkameter-plan>; <polkameter-plan> allows",
+			),
+			(
+				format!(
+					"<polkameter-plan xmlns=\"{NAMESPACE}\" version=\"1\" name=\"x\"><setpu/></polkameter-plan>"
+				),
+				"unknown element <setpu> in <polkameter-plan>; did you mean <setup>? <polkameter-plan> \
+				 may contain <plugins>",
+			),
+			(
+				format!(
+					"<polkameter-plan xmlns=\"{NAMESPACE}\" version=\"1\" name=\"x\"><workflow id=\"w\" \
+					 users=\"-1\"/></polkameter-plan>"
+				),
+				"`users` on <workflow> must be a whole number from 0 to 4294967295, found `-1`",
+			),
+		];
+		for (xml, expected) in cases {
+			let (error, location) = failure(&xml);
+			assert!(error.contains(expected), "{xml}: {error}");
+			assert!(location.is_some(), "{xml}");
+		}
 	}
 
 	/// The error for `xml`, and its position.

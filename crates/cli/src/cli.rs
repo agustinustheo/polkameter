@@ -34,7 +34,8 @@ use crate::{
 	after_long_help = "Examples:\n  polkameter plugin install target/release/my-plugin\n  polkameter validate \
 	                   plan.polkameter.xml\n  polkameter preflight plan.polkameter.xml\n  polkameter \
 	                   run plan.polkameter.xml --output runs\n\nExit codes: 0 success, 1 failed run, \
-	                   2 invalid input or usage, 3 preflight failed, 130 SIGINT, 143 SIGTERM."
+	                   2 invalid input or usage, 3 preflight or setup checks failed (nothing \
+	                   submitted), 130 SIGINT, 143 SIGTERM."
 )]
 struct Cli {
 	#[command(subcommand)]
@@ -52,14 +53,14 @@ enum Command {
 		#[command(subcommand)]
 		command: PluginCommand,
 	},
-	/// Check a plan's XML and structure, without plugins or a chain.
+	/// Check a plan's XML, structure and built-in operations, without plugins or a chain.
 	///
 	/// Exits 2 and names the file, line and column of the first problem when the plan is invalid.
 	#[command(
 		after_long_help = "Example:\n  polkameter validate examples/plugin-workflow.polkameter.xml"
 	)]
 	Validate {
-		/// The plan file (`*.polkameter.xml`, at most 2 MiB).
+		/// The plan file (`*.polkameter.xml`, at most 2 MiB), or a pipe such as /dev/stdin.
 		plan: PathBuf,
 		#[arg(long, value_enum, default_value_t = OutputFormat::Human, help = FORMAT_HELP)]
 		format: OutputFormat,
@@ -67,12 +68,13 @@ enum Command {
 	/// Check installed plugins, required evidence and read-only steps, without submitting.
 	///
 	/// Starts the plan's plugins, checks every operation and input against their manifests,
-	/// checks the chain and runs the <preflight> steps. Exits 3 when a check fails.
+	/// checks that every credential's variable is set, checks the chain and runs the <preflight>
+	/// steps. Exits 3 when a check fails.
 	#[command(
 		after_long_help = "Example:\n  polkameter preflight examples/plugin-workflow.polkameter.xml"
 	)]
 	Preflight {
-		/// The plan file (`*.polkameter.xml`, at most 2 MiB).
+		/// The plan file (`*.polkameter.xml`, at most 2 MiB), or a pipe such as /dev/stdin.
 		plan: PathBuf,
 		/// Environment variable for the plan's only credential, instead of its configured profile.
 		#[arg(long, value_name = "ENV_VAR")]
@@ -83,13 +85,15 @@ enum Command {
 	/// Run a plan locally or through an authenticated remote agent.
 	///
 	/// A local run writes a run-* directory under --output with events, results, summary.md and
-	/// junit.xml. A remote run sends the plan to an agent, which keeps the run directory.
+	/// junit.xml. A remote run sends the plan to an agent, which keeps the run directory. Exits 3
+	/// when the run fails before its setup phase, so before it submits anything, as preflight
+	/// does; teardown is then skipped.
 	#[command(after_long_help = "Examples:\n  polkameter run plan.polkameter.xml --output runs \
 	                             --junit reports/polkameter.xml\n  polkameter run \
 	                             plan.polkameter.xml --remote https://agent.example:9901 \
 	                             --remote-token-env POLKAMETER_AGENT_TOKEN")]
 	Run {
-		/// The plan file (`*.polkameter.xml`, at most 2 MiB).
+		/// The plan file (`*.polkameter.xml`, at most 2 MiB), or a pipe such as /dev/stdin.
 		plan: PathBuf,
 		/// Local artifact root. Required unless --remote is used because remote agents own their
 		/// artifact root.
@@ -149,7 +153,7 @@ enum PluginCommand {
 		after_long_help = "Example:\n  polkameter plugin inspect examples/plugin-workflow.polkameter.xml"
 	)]
 	Inspect {
-		/// The plan file (`*.polkameter.xml`, at most 2 MiB).
+		/// The plan file (`*.polkameter.xml`, at most 2 MiB), or a pipe such as /dev/stdin.
 		#[arg(value_name = "PLAN")]
 		scenario: PathBuf,
 	},
@@ -163,7 +167,9 @@ enum PluginCommand {
 		/// The plugin executable; it must answer the `$describe` request.
 		executable: PathBuf,
 	},
-	/// List installed plugins as JSON.
+	/// List installed plugins, credential profile variables, topologies and capabilities as JSON.
+	///
+	/// Credentials show the environment variable each profile reads, never its value.
 	List,
 	/// Map a credential profile to an environment variable on this host.
 	///
@@ -300,7 +306,8 @@ impl CliError {
 			line["valid"] = json!(false);
 		}
 		if let Some(file) = &self.file {
-			line["file"] = json!(file);
+			// A path that is not UTF-8 is shown with replacement characters, as on standard error.
+			line["file"] = json!(file.to_string_lossy());
 		}
 		if let Some(location) = self.location {
 			line["line"] = json!(location.line);
@@ -342,7 +349,7 @@ pub fn main() -> i32 {
 		Ok(runtime) => runtime.block_on(execute(cli)),
 		Err(error) => Err(CliError::runtime(format!("cannot start the async runtime: {error}"))),
 	};
-	match result {
+	let code = match result {
 		Ok(code) => code,
 		Err(error) => {
 			eprintln!("{PRODUCT_NAME}: {error}");
@@ -351,14 +358,18 @@ pub fn main() -> i32 {
 			}
 			error.exit_code()
 		},
-	}
+	};
+	exit_code_after_output(code, STDOUT_FAILED.load(Ordering::Relaxed))
 }
 
 async fn execute(cli: Cli) -> Result<i32, CliError> {
 	match cli.command {
 		Command::Plugin { command } => plugin_command(command).await,
-		Command::Validate { plan, format } => {
-			let (_, plan) = load(&plan)?;
+		Command::Validate { plan: path, format } => {
+			let (_, plan) = load(&path)?;
+			// Built-in operations are checked here too; plugin operations need preflight.
+			crate::engine::execute::validate_core_contracts(&plan)
+				.map_err(|e| CliError::in_plan(ErrorKind::Invalid, &path, &e))?;
 			write_result(
 				format,
 				&json!({"event":"validation","valid":true,"plan":plan.name}),
@@ -406,15 +417,22 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 						grace,
 					);
 					let target = remote_target(endpoint, remote_token_env)?;
-					let remote = RemoteRun { target, xml, options, junit, limits };
+					let remote = RemoteRun { target, xml, options, junit, limits, path };
 					run_plugin_remote(remote, format, &mut signals).await
 				},
 				None => {
 					let output = output.ok_or_else(|| {
 						CliError::invalid("--output is required without --remote".into())
 					})?;
+					if output.to_str().is_none() {
+						return Err(CliError::invalid(format!(
+							"--output {} is not a UTF-8 path; plugins receive the run directory \
+							 as text, so choose a directory whose path is UTF-8",
+							output.display()
+						)));
+					}
 					let registry = registry(&plan, credential_env)?;
-					let local = LocalRun { plan, registry, output, options, junit, grace };
+					let local = LocalRun { plan, registry, output, options, junit, grace, path };
 					run_local(local, format, &mut signals).await
 				},
 			}
@@ -443,9 +461,13 @@ fn teardown_budget(plan: &Plan) -> Duration {
 
 /// The plan's XML, which remote runs send as-is, and its parsed form.
 fn load(path: &Path) -> Result<(String, Plan), CliError> {
-	let xml = read_plan(path).map_err(|e| CliError {
-		file: Some(path.to_owned()),
-		..CliError::invalid(format!("{e:#}"))
+	let xml = read_plan(path).map_err(|e| {
+		// Text that is not UTF-8 has a position; the other read errors already name the file.
+		if e.downcast_ref::<PlanError>().is_some() {
+			CliError::in_plan(ErrorKind::Invalid, path, &e)
+		} else {
+			CliError { file: Some(path.to_owned()), ..CliError::invalid(format!("{e:#}")) }
+		}
 	})?;
 	let plan = Plan::parse(&xml).map_err(|e| CliError::in_plan(ErrorKind::Invalid, path, &e))?;
 	Ok((xml, plan))
@@ -464,12 +486,15 @@ fn registry(plan: &Plan, credential_env: Option<String>) -> Result<Registry, Cli
 			)));
 		};
 		registry.credentials.insert(credential.profile.clone(), variable);
+		registry.flag_profile = Some(credential.profile.clone());
 	}
 	Ok(registry)
 }
 
 /// A local run and where its results go.
 struct LocalRun {
+	/// The plan file, for messages that point into it.
+	path: PathBuf,
 	plan: Plan,
 	registry: Registry,
 	output: PathBuf,
@@ -483,7 +508,7 @@ async fn run_local(
 	format: OutputFormat,
 	signals: &mut Signals,
 ) -> Result<i32, CliError> {
-	let LocalRun { plan, registry, output, options, junit, grace } = run;
+	let LocalRun { path, plan, registry, output, options, junit, grace } = run;
 	let stop = Stop::default();
 	let sink = Arc::new(move |event: Value| {
 		if format == OutputFormat::Json {
@@ -526,7 +551,7 @@ async fn run_local(
 	if let Err(error) = copy_junit(&outcome.artifact_dir, junit.as_deref()) {
 		junit_warning(format, Some(&outcome.artifact_dir), &error.to_string(), &secrets);
 	}
-	write_artifact_written(format, RunLocation::Local, &outcome);
+	write_artifact_written(format, RunLocation::Local, &path, &outcome);
 	Ok(outcome.exit_code)
 }
 
@@ -538,18 +563,30 @@ enum RunLocation {
 }
 
 /// Reports a finished run's artifacts. A failed run also prints its reason to standard error in
-/// both formats.
-fn write_artifact_written(format: OutputFormat, location: RunLocation, outcome: &Outcome) {
+/// both formats. When the reason points into the plan, the JSON line also has the plan's `file`,
+/// `line` and `column`, as an `error` line does.
+fn write_artifact_written(
+	format: OutputFormat,
+	location: RunLocation,
+	plan: &Path,
+	outcome: &Outcome,
+) {
 	let label = match location {
 		RunLocation::Local => "Run",
 		RunLocation::Remote => "Remote run",
 	};
+	let mut line = json!({"event":"artifact-written","outcome":outcome});
+	if let Some(at) = outcome.error_location.filter(|_| outcome.state == RunState::Failed) {
+		line["file"] = json!(plan.to_string_lossy());
+		line["line"] = json!(at.line);
+		line["column"] = json!(at.column);
+	}
 	write_result(
 		format,
-		&json!({"event":"artifact-written","outcome":outcome}),
+		&line,
 		format!("{label} {}. Artifacts: {}", outcome.state, outcome.artifact_dir.display()),
 	);
-	if let Some(reason) = failure_reason(location, outcome) {
+	if let Some(reason) = failure_reason(location, plan, outcome) {
 		eprintln!("{PRODUCT_NAME}: {reason}");
 	}
 }
@@ -557,31 +594,76 @@ fn write_artifact_written(format: OutputFormat, location: RunLocation, outcome: 
 /// Longest reason, in characters, that the failure line prints. `execution.json` keeps it all.
 const MAX_REASON_CHARS: usize = 300;
 
-/// The one-line reason for a failed run, naming the file that holds the details.
-fn failure_reason(location: RunLocation, outcome: &Outcome) -> Option<String> {
+/// The one-line reason for a failed run, naming the file that holds the details. A reason that
+/// points into the plan starts with the plan file, as plan errors do: `plan.xml: line 4, …`. A
+/// run that failed before setup says so: it exits 3 and submitted nothing.
+fn failure_reason(location: RunLocation, plan: &Path, outcome: &Outcome) -> Option<String> {
 	if outcome.state != RunState::Failed {
 		return None;
 	}
-	let error = one_line(outcome.error.as_deref().unwrap_or("no reason recorded"));
+	let mut error = outcome.error.clone().unwrap_or_else(|| "no reason recorded".into());
+	if outcome.error_location.is_some() {
+		error = format!("{}: {error}", plan.display());
+	}
+	let error = one_line(&error);
+	let failed = if outcome.exit_code == crate::engine::execute::PREFLIGHT_EXIT_CODE {
+		"failed before setup"
+	} else {
+		"failed"
+	};
 	let execution = outcome.artifact_dir.join("execution.json");
 	Some(match location {
 		RunLocation::Local => {
-			format!("run failed: {error} (details in {})", execution.display())
+			format!("run {failed}: {error} (details in {})", execution.display())
 		},
-		RunLocation::Remote => {
-			format!("remote run failed: {error} (details in {} on the agent)", execution.display())
-		},
+		RunLocation::Remote => format!(
+			"remote run {failed}: {error} (details in {} on the agent)",
+			execution.display()
+		),
 	})
+}
+
+/// Hex runs at least this long are hashes; one-line reasons show their first
+/// [`SHORT_HASH_CHARS`] characters. `execution.json` keeps them whole.
+const LONG_HASH_CHARS: usize = 32;
+const SHORT_HASH_CHARS: usize = 12;
+
+/// `text` with every run of [`LONG_HASH_CHARS`] or more hex digits cut to its first
+/// [`SHORT_HASH_CHARS`] and `…`, so that a message's fix fits on the line after its hashes.
+fn shorten_hashes(text: &str) -> String {
+	let mut out = String::with_capacity(text.len());
+	let mut run = String::new();
+	let flush = |run: &mut String, out: &mut String| {
+		if run.len() >= LONG_HASH_CHARS {
+			out.push_str(&run[..SHORT_HASH_CHARS]);
+			out.push('…');
+		} else {
+			out.push_str(run);
+		}
+		run.clear();
+	};
+	for c in text.chars() {
+		if c.is_ascii_hexdigit() {
+			run.push(c);
+		} else {
+			flush(&mut run, &mut out);
+			out.push(c);
+		}
+	}
+	flush(&mut run, &mut out);
+	out
 }
 
 /// `text` made safe for one terminal line. CSI escape sequences (colours, cursor movement) are
 /// removed, line breaks become ` ⏎ `, and other control characters, including the ESC of any other
-/// escape sequence, and bidirectional-override characters are escaped as `\u{…}`. The rendered
-/// line is cut to at most [`MAX_REASON_CHARS`] characters, never inside an escape, followed by `…`.
+/// escape sequence, and bidirectional-override characters are escaped as `\u{…}`. Hashes are
+/// shortened (see [`shorten_hashes`]). The rendered line is cut to at most [`MAX_REASON_CHARS`]
+/// characters, never inside an escape, followed by `…`.
 fn one_line(text: &str) -> String {
 	let mut line = String::new();
 	let mut length = 0;
-	let mut chars = text.trim().chars().peekable();
+	let text = shorten_hashes(text.trim());
+	let mut chars = text.chars().peekable();
 	while let Some(c) = chars.next() {
 		let piece = match c {
 			// CSI sequence: ESC [ parameters final-byte.
@@ -781,22 +863,58 @@ fn write_json_line(value: &Value) {
 
 /// Set once standard output is gone, for example after `| head -1` exits.
 static STDOUT_CLOSED: AtomicBool = AtomicBool::new(false);
+/// Set once a write to standard output failed for another reason, such as a full disk.
+static STDOUT_FAILED: AtomicBool = AtomicBool::new(false);
 
 /// Writes `text` and a newline to standard output. When the reader has closed the pipe, output
 /// stops silently and the command carries on: a run still finishes, writes its results and
-/// exits with its own code.
+/// exits with its own code. Any other failure, such as a full disk, is reported once on standard
+/// error; output stops, the command carries on, and it exits 1 instead of 0 (see
+/// [`exit_code_after_output`]).
 fn write_stdout(text: &str) {
-	if STDOUT_CLOSED.load(Ordering::Relaxed) {
+	if STDOUT_CLOSED.load(Ordering::Relaxed) || STDOUT_FAILED.load(Ordering::Relaxed) {
 		return;
 	}
 	let mut stdout = std::io::stdout().lock();
-	let written = stdout
-		.write_all(text.as_bytes())
-		.and_then(|()| stdout.write_all(b"\n"))
-		.and_then(|()| stdout.flush());
-	if written.is_err() {
-		STDOUT_CLOSED.store(true, Ordering::Relaxed);
+	let written = write_line(&mut stdout, text);
+	match written.map_err(|error| classify_stdout_error(&error)) {
+		Ok(()) => {},
+		Err(StdoutError::Closed) => STDOUT_CLOSED.store(true, Ordering::Relaxed),
+		Err(StdoutError::Failed(error)) => {
+			if !STDOUT_FAILED.swap(true, Ordering::Relaxed) {
+				eprintln!("{PRODUCT_NAME}: cannot write to standard output: {error}");
+			}
+		},
 	}
+}
+
+fn write_line(out: &mut impl Write, text: &str) -> std::io::Result<()> {
+	out.write_all(text.as_bytes())?;
+	out.write_all(b"\n")?;
+	out.flush()
+}
+
+/// Why a write to standard output failed.
+#[derive(Debug, Eq, PartialEq)]
+enum StdoutError {
+	/// The reader went away (`| head -1`): not an error.
+	Closed,
+	/// Anything else, such as a full disk or a file over its size limit.
+	Failed(String),
+}
+
+fn classify_stdout_error(error: &std::io::Error) -> StdoutError {
+	if error.kind() == std::io::ErrorKind::BrokenPipe {
+		StdoutError::Closed
+	} else {
+		StdoutError::Failed(error.to_string())
+	}
+}
+
+/// The process's exit code: the command's, or 1 when it succeeded but its output could not be
+/// written.
+fn exit_code_after_output(code: i32, output_failed: bool) -> i32 {
+	if output_failed && code == 0 { 1 } else { code }
 }
 
 async fn plugin_command(command: PluginCommand) -> Result<i32, CliError> {
@@ -805,7 +923,15 @@ async fn plugin_command(command: PluginCommand) -> Result<i32, CliError> {
 	let result = match command {
 		PluginCommand::List => {
 			let registry = Registry::read(&path).map_err(invalid)?;
-			serde_json::to_value(&registry.plugins).map_err(|e| invalid(e.into()))?
+			// Credentials are listed by variable name; no value is read.
+			json!({
+				"plugins": registry.plugins,
+				"credentials": registry.credentials,
+				"topologies": registry.topologies.iter()
+					.map(|(alias, file)| (alias.clone(), file.to_string_lossy().into_owned()))
+					.collect::<std::collections::BTreeMap<_, _>>(),
+				"capabilities": registry.capabilities,
+			})
 		},
 		PluginCommand::Inspect { scenario } => {
 			let (_, plan) = load(&scenario)?;
@@ -868,6 +994,8 @@ async fn plugin_command(command: PluginCommand) -> Result<i32, CliError> {
 /// plugin` commands do not lose each other's changes, and replaces the file atomically.
 fn update_registry(path: &Path, change: impl FnOnce(&mut Registry)) -> Result<(), CliError> {
 	let invalid = |e: anyhow::Error| CliError::invalid(format!("{e:#}"));
+	// Through a symbolic link: the lock, the temporary file and the write go to its target.
+	let path = &Registry::resolve(path).map_err(invalid)?;
 	let _lock = Registry::lock(path).map_err(invalid)?;
 	let mut registry = Registry::read(path).map_err(invalid)?;
 	change(&mut registry);
@@ -876,6 +1004,8 @@ fn update_registry(path: &Path, change: impl FnOnce(&mut Registry)) -> Result<()
 
 /// A remote run: the agent, the plan, and where a JUnit copy goes.
 struct RemoteRun {
+	/// The plan file, for messages that point into it.
+	path: PathBuf,
 	target: RemoteRunnerTarget,
 	xml: String,
 	options: RunOptions,
@@ -888,7 +1018,7 @@ async fn run_plugin_remote(
 	format: OutputFormat,
 	signals: &mut Signals,
 ) -> Result<i32, CliError> {
-	let RemoteRun { target, xml, options, junit, limits } = run;
+	let RemoteRun { path, target, xml, options, junit, limits } = run;
 	let followed = remote::follow_run(&target, xml, options, signals, &limits)
 		.await
 		.map_err(CliError::runtime)?;
@@ -924,7 +1054,7 @@ async fn run_plugin_remote(
 	if let (Some(signal), RunState::Stopped) = (signal, outcome.state) {
 		outcome.exit_code = signal.exit_code();
 	}
-	write_artifact_written(format, RunLocation::Remote, &outcome);
+	write_artifact_written(format, RunLocation::Remote, &path, &outcome);
 	Ok(outcome.exit_code)
 }
 
@@ -1000,9 +1130,13 @@ mod tests {
 			state,
 			error: error.map(Into::into),
 			teardown: None,
+			failed_phase: None,
+			error_location: None,
 		};
 		let execution = std::path::Path::new("runs/run-1").join("execution.json");
-		let local = |state, error| failure_reason(RunLocation::Local, &outcome(state, error));
+		let local = |state, error| {
+			failure_reason(RunLocation::Local, Path::new("plan.xml"), &outcome(state, error))
+		};
 		assert_eq!(
 			local(RunState::Failed, Some("assertion check failed")),
 			Some(format!(
@@ -1011,7 +1145,11 @@ mod tests {
 			))
 		);
 		assert_eq!(
-			failure_reason(RunLocation::Remote, &outcome(RunState::Failed, Some("boom"))),
+			failure_reason(
+				RunLocation::Remote,
+				Path::new("plan.xml"),
+				&outcome(RunState::Failed, Some("boom"))
+			),
 			Some(format!(
 				"remote run failed: boom (details in {} on the agent)",
 				execution.display()
@@ -1052,18 +1190,88 @@ mod tests {
 		assert!(mixed.chars().count() <= MAX_REASON_CHARS + 1);
 		let reason = failure_reason(
 			RunLocation::Local,
+			Path::new("plan.xml"),
 			&Outcome {
 				artifact_dir: PathBuf::from("runs/run-1"),
 				exit_code: 1,
 				state: RunState::Failed,
 				error: Some(format!("a\nb\u{1b}[1m{long}")),
 				teardown: None,
+				failed_phase: None,
+				error_location: None,
 			},
 		)
 		.unwrap();
 		assert!(!reason.contains('\n') && !reason.contains('\u{1b}'));
 		assert!(reason.starts_with("run failed: a ⏎ bxxx"));
 		assert!(reason.len() < MAX_REASON_CHARS + 100);
+	}
+
+	#[test]
+	fn only_a_closed_pipe_is_a_quiet_stdout_error() {
+		use std::io::{Error, ErrorKind};
+		assert_eq!(classify_stdout_error(&Error::from(ErrorKind::BrokenPipe)), StdoutError::Closed);
+		for kind in [ErrorKind::StorageFull, ErrorKind::FileTooLarge, ErrorKind::Other] {
+			assert!(matches!(classify_stdout_error(&Error::from(kind)), StdoutError::Failed(_)));
+		}
+		/// A writer that fails as a full disk does.
+		struct Full;
+		impl Write for Full {
+			fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+				Err(std::io::Error::from(ErrorKind::StorageFull))
+			}
+			fn flush(&mut self) -> std::io::Result<()> {
+				Ok(())
+			}
+		}
+		let error = write_line(&mut Full, "x").unwrap_err();
+		assert!(matches!(classify_stdout_error(&error), StdoutError::Failed(_)));
+		// Output that could not be written fails a command that succeeded, and keeps any other code.
+		assert_eq!(exit_code_after_output(0, true), 1);
+		assert_eq!(exit_code_after_output(0, false), 0);
+		for code in [1, 2, 3, 130, 143] {
+			assert_eq!(exit_code_after_output(code, true), code);
+		}
+	}
+
+	#[test]
+	fn the_fix_survives_the_reason_cap() {
+		let path = format!("/home/runner/work/{}/target/release/my-plugin", "deep/".repeat(12));
+		let hash = "0123456789abcdef".repeat(8);
+		let other = "fedcba9876543210".repeat(8);
+		let fix = format!("if you rebuilt it, run `polkameter plugin install {path}` again");
+		let error = format!(
+			"line 3, column 5: plugin example checksum mismatch: {fix}. {path} changed after it \
+			 was installed (BLAKE2 expected {hash}, found {other})"
+		);
+		let outcome = Outcome {
+			artifact_dir: PathBuf::from("runs/run-1"),
+			exit_code: crate::engine::execute::PREFLIGHT_EXIT_CODE,
+			state: RunState::Failed,
+			error: Some(error),
+			teardown: None,
+			failed_phase: Some("preflight".into()),
+			error_location: Some(Location { line: 3, column: 5 }),
+		};
+		let reason = failure_reason(RunLocation::Local, Path::new("plan.xml"), &outcome).unwrap();
+		assert!(
+			reason
+				.starts_with("run failed before setup: plan.xml: line 3, column 5: plugin example"),
+			"{reason}"
+		);
+		assert!(reason.contains(&fix), "{reason}");
+		// Hashes are shortened on the line; execution.json keeps them whole.
+		let short = Outcome {
+			error: outcome.error.as_ref().map(|error| error.replace(&path, "/opt/my-plugin")),
+			..outcome.clone()
+		};
+		let reason = failure_reason(RunLocation::Local, Path::new("plan.xml"), &short).unwrap();
+		assert!(reason.contains("expected 0123456789ab…, found fedcba987654…)"), "{reason}");
+		assert!(short.error.as_deref().unwrap().contains(&hash));
+		assert_eq!(
+			shorten_hashes("abc 0123456789abcdef deadbeef"),
+			"abc 0123456789abcdef deadbeef"
+		);
 	}
 
 	#[test]

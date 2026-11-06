@@ -69,7 +69,9 @@ Written after teardown. When a run is stopped, a provisional `execution.json` wi
 | `exit_code` | The code the `run` command returns. |
 | `state` | How the run ended, as below. |
 | `error` | Error text, redacted. `null` if none. |
-| `teardown` | `completed` (every teardown step succeeded), `failed` (every step ran, at least one failed) or `interrupted` (a forced stop ended it). Absent if teardown did not run, because the plugins never started. |
+| `teardown` | `completed` (every teardown step succeeded), `failed` (every step ran, at least one failed) or `interrupted` (a forced stop ended it). Absent if teardown did not run: the run failed or stopped before its setup phase, so nothing was submitted. |
+| `failed_phase` | Only when `state` is `failed`: the phase the run failed in, such as `preflight`, `setup`, `measurement` or `teardown`. |
+| `error_location` | Only when `error` points into the plan: `{"line": …, "column": …}`, as `validate` reports positions. `error` then starts with `line L, column C: `. |
 | `stop_requested_at` | Only in a provisional outcome: when the stop was requested, in milliseconds. |
 
 | `state` | `exit_code` | When |
@@ -78,7 +80,8 @@ Written after teardown. When a run is stopped, a provisional `execution.json` wi
 | `completed_with_failures` | `1` | A `FAIL` verdict with `--fail-on-verdict`, or a smoke-mode monitor problem or required check with no result. |
 | `stopped` | `130` or `143` | `130` after SIGINT (Ctrl-C) or a remote stop request, `143` after SIGTERM, including a stop during teardown. |
 | `stopping` | `130` or `143` | Provisional. If it is still there after the process ended, the run was killed before it could write its outcome. |
-| `failed` | `1` | Any error, including a failed `core.assert-equal` step and a report that could not be written. |
+| `failed` | `3` | An error before the setup phase (`failed_phase` is `preflight`): a credential, plugin install or manifest problem, a step input that does not match its operation, missing chain evidence, a failed `<preflight>` step or calibration. Nothing was submitted, and teardown did not run. |
+| `failed` | `1` | Any other error, including a failed `core.assert-equal` step in setup and a report that could not be written. |
 
 ## junit.xml
 

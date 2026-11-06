@@ -33,7 +33,12 @@ pub fn write(
 		path: dir.path.join("summary.md").display().to_string(),
 		source,
 	})?;
-	eprintln!("\n{md}");
+	// Not `eprintln!`, which panics when standard error is closed (`2>&-`, or a reader that
+	// exited); the summary is already in summary.md.
+	{
+		use std::io::Write as _;
+		let _ = writeln!(std::io::stderr(), "\n{md}");
+	}
 	Ok(checks)
 }
 

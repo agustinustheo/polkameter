@@ -72,11 +72,16 @@ polkameter plugin list
 
 ```text
 {
-  "example": {
+  "capabilities": [],
+  "credentials": {},
+  "plugins": {
+    "example": {
 ...
-    "executable": "~/polkameter/target/debug/polkameter-example-plugin",
-    "version": "0.1.0"
-  }
+      "executable": "~/polkameter/target/debug/polkameter-example-plugin",
+      "version": "0.1.0"
+    }
+  },
+  "topologies": {}
 }
 ```
 

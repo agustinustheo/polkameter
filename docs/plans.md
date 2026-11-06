@@ -116,7 +116,7 @@ Each element appears at most once, except `workflow`. Execution follows the phas
 | `name` | string | yes | none | not empty | The scenario's title, used in the report |
 | `version` | integer | yes | none | `1` | The plan format version |
 | `mode` | string | no | `stress` | `stress` or `smoke` | Smoke mode also fails the run on monitor problems and on required checks without a result. See [results](results.md#exit-codes) |
-| `timeout-ms` | integer | no | `3600000` | above 0 | The deadline for the run, from plugin start-up to the report. A run that reaches it ends as `failed`, with exit code 1 |
+| `timeout-ms` | integer | no | `3600000` | above 0 | The deadline for the run, from plugin start-up to the report. A run that reaches it ends as `failed`, with exit code 1, or 3 if it was still in its preflight checks |
 
 ### plugins
 
@@ -410,11 +410,11 @@ A `ref` names one of the values below. A reference to anything else is rejected 
 
 ## Validation rules
 
-The parser and validator run on every command that reads a plan. `polkameter validate` runs the parsing and structure checks only. `polkameter preflight` also checks the installed plugins and runs the read-only preflight steps. A plan with a load, or with steps that read the chain, needs a reachable chain for preflight to pass.
+The parser and validator run on every command that reads a plan. `polkameter validate` runs the parsing and structure checks, and checks the built-in `core.` operations: their names, inputs, literal values and the outputs other steps reference. `polkameter preflight` also checks the installed plugins and runs the read-only preflight steps. A plan with a load, or with steps that read the chain, needs a reachable chain for preflight to pass.
 
 | Element | Limit |
 | --- | --- |
-| Plan file | A regular file of at most 2 MiB (2097152 bytes). UTF-8. A leading byte-order mark is accepted. PolkaMeter stops reading one byte past the limit, and refuses a directory, FIFO, socket or device without waiting on it |
+| Plan file | A regular file or a pipe of at most 2 MiB (2097152 bytes), so `validate <(envsubst < plan.tmpl)` and `cat plan | polkameter validate /dev/stdin` work. UTF-8; an XML declaration may also say `US-ASCII` or `ISO-8859-1` while the plan is plain ASCII. A leading byte-order mark is accepted. PolkaMeter stops reading one byte past the limit. A named pipe that nothing writes to reads as empty instead of blocking. A directory, socket or device is refused |
 | `polkameter-plan` | `version` is `1`. `xmlns` is the schema namespace. `name` is not empty. `timeout-ms` is above 0 |
 | `plugin` | `protocol` is `1`. `id` is not `core` |
 | `target` | `endpoint` starts with `ws://` or `wss://` |
