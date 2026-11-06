@@ -208,3 +208,43 @@ fn remote_run_failure_names_the_run_directory_on_the_agent() {
 		)
 	);
 }
+
+#[test]
+fn a_run_that_fails_before_setup_names_the_plan_position_and_exits_3() {
+	let work = WorkDirectory::new("contract");
+	// `core.echo` has no input `valeu`; the run finds this before its setup phase.
+	let plan = FAILING_PLAN.replace(
+		r#"<step id="check" use="core.assert-equal"><input name="actual" value="1"/><input name="expected" value="2"/></step>"#,
+		r#"<step id="check" use="core.echo"><input name="valeu" value="1"/></step>"#,
+	);
+	std::fs::write(work.path().join("plan.xml"), plan).unwrap();
+	let (code, _, stderr) = run(work.path(), "human");
+	let run_dir = work.run_directory("runs");
+	assert_eq!(code, 3, "{stderr}");
+	let plan_path = work.path().join("plan.xml");
+	assert_eq!(
+		stderr,
+		format!(
+			"Phase: preflight\nPolkaMeter: run failed before setup: {}: line 4, column 38: step \
+			 `check` (core.echo): input `valeu` is not an input of core.echo; did you mean \
+			 `value`? its inputs are `value` (details in {})\n",
+			plan_path.display(),
+			run_dir.join("execution.json").display()
+		)
+	);
+	let execution: Value =
+		serde_json::from_slice(&std::fs::read(run_dir.join("execution.json")).unwrap()).unwrap();
+	assert_eq!(execution["exit_code"], 3);
+	assert_eq!(execution["state"], "failed");
+	assert_eq!(execution["failed_phase"], "preflight");
+	assert_eq!(execution["error_location"], serde_json::json!({"line": 4, "column": 38}));
+	assert!(execution.get("teardown").is_none());
+
+	let (code, stdout, _) = run(work.path(), "json");
+	assert_eq!(code, 3);
+	let last: Value = serde_json::from_str(stdout.lines().last().unwrap()).unwrap();
+	assert_eq!(last["event"], "artifact-written");
+	assert_eq!(last["file"], plan_path.display().to_string());
+	assert_eq!((last["line"].as_u64(), last["column"].as_u64()), (Some(4), Some(38)));
+	assert!(!stdout.contains(r#""phase":"teardown""#), "{stdout}");
+}

@@ -11,6 +11,17 @@
 /// `PolkaMeter: <message>` and `PolkaMeter warning: <message>`.
 pub const PRODUCT_NAME: &str = "PolkaMeter";
 
+/// Replaces the standard `eprintln!` in this crate: it writes a line to standard error and ignores
+/// a failed write. The standard macro panics when standard error is a closed pipe, as in
+/// `polkameter run … 2>&1 | head -1`, which would abort a run halfway. Defined before the
+/// modules, so its textual scope covers all of them.
+macro_rules! eprintln {
+	($($arg:tt)*) => {{
+		use std::io::Write as _;
+		let _ = writeln!(std::io::stderr(), $($arg)*);
+	}};
+}
+
 pub mod cli;
 #[doc(hidden)]
 pub mod engine;
