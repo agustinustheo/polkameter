@@ -70,14 +70,15 @@ Written after teardown. When a run is stopped, a provisional `execution.json` wi
 | `state` | How the run ended, as below. |
 | `error` | Error text, redacted. `null` if none. |
 | `teardown` | `completed` (every teardown step succeeded), `failed` (every step ran, at least one failed) or `interrupted` (a forced stop ended it). Absent if teardown did not run: the run failed or stopped before its setup phase, so nothing was submitted. |
-| `failed_phase` | Only when `state` is `failed`: the phase the run failed in, such as `preflight`, `setup`, `measurement` or `teardown`. |
+| `failed_phase` | Only when `state` is `failed`: the phase the run failed in, such as `preflight`, `setup`, `measurement`, `teardown`, or `report` when the report could not be written. |
 | `error_location` | Only when `error` points into the plan: `{"line": …, "column": …}`, as `validate` reports positions. `error` then starts with `line L, column C: `. |
+| `exit_reason` | Only when `state` is `completed_with_failures`: why the run exits `1`, redacted. Either the smoke-mode problems (`smoke mode fails the run on …`), or the verdict, what made it, and the flag that failed the run (`verdict INCONCLUSIVE: …; exit 1 because of --fail-on-inconclusive …`). The CLI prints it on standard error and the GitHub Action shows it in the job summary. From v0.3.0. |
 | `stop_requested_at` | Only in a provisional outcome: when the stop was requested, in milliseconds. |
 
 | `state` | `exit_code` | When |
 | --- | --- | --- |
 | `completed` | `0` | No error. |
-| `completed_with_failures` | `1` | A `FAIL` verdict with `--fail-on-verdict`, or a smoke-mode monitor problem or required check with no result. |
+| `completed_with_failures` | `1` | A `FAIL` verdict with `--fail-on-verdict`, an `INCONCLUSIVE` verdict with `--fail-on-inconclusive`, or a smoke-mode monitor problem or required check with no result. |
 | `stopped` | `130` or `143` | `130` after SIGINT (Ctrl-C) or a remote stop request, `143` after SIGTERM, including a stop during teardown. |
 | `stopping` | `130` or `143` | Provisional. If it is still there after the process ended, the run was killed before it could write its outcome. |
 | `failed` | `3` | An error before the setup phase (`failed_phase` is `preflight`): a credential, plugin install or manifest problem, a step input that does not match its operation, missing chain evidence, a failed `<preflight>` step or calibration. Nothing was submitted, and teardown did not run. |
@@ -108,18 +109,18 @@ This excerpt comes from the recorded smoke fixture after `report`, with its dire
 
 | Recorded result | Suite and testcase | JUnit result |
 | --- | --- | --- |
-| Plan execution | `plan`, `execution` | Completed: passed. Failed or completed with failures: `<failure>`. Stopped: `<skipped>`. Captures errors outside steps, including plugin startup. |
+| Plan execution | `plan`, `execution` | Completed: passed. Failed or completed with failures: `<failure>`. Stopped: `<skipped>`. Captures errors outside steps, including plugin startup. A run that completed with failures gives its `exit_reason`: the smoke-mode problems, or the verdict and the flag that failed it. An older recording without `exit_reason` gives its exit code and load verdict. |
 | Plan steps and assertions | One suite per nonempty `preflight`, `setup`, `evaluate`, `teardown` section; step ID as testcase name | Success: passed. Assertion failure, step error or interrupted step: `<failure>`. Step never started: `<skipped>`. |
 | Workflow steps | One `workflow:<id>` suite per workflow; step ID plus user and iteration for individual failures | Passing invocations aggregate into one case per step with a count. First 100 failures per step remain individual cases; further failures aggregate with a count and a pointer to `events.jsonl`. Missing invocations aggregate into one skipped case per step. |
 | Load outcome `pass` or `info` | `load test`, `<outcome>: <check>` | Passed, with status and detail in `<system-out>`. |
 | Load outcome `fail` | Same | `<failure>` with status and detail. |
 | Load outcome `warn` | Same | Passed, with `warn:` and detail in `<system-out>`. |
 | Load outcome `no result` | Same, including optional checks | `<skipped>` with the missing-data reason. |
-| Overall load verdict | `load test`, `overall verdict` | `PASS`: passed; `WARN`: passed with output; `FAIL`: `<failure>`; `INCONCLUSIVE` or absent verdict: `<skipped>`. |
+| Overall load verdict | `load test`, `overall verdict` | `PASS`: passed; `WARN`: passed with output; `FAIL`: `<failure>`; `INCONCLUSIVE` or absent verdict: `<skipped>`. An `INCONCLUSIVE` case names the stop rule or the required checks with no result. |
 
 Section suites keep CI results grouped like the plan. Individual workflow failure names distinguish concurrent users and repeated iterations. Plugin check names include their source evaluate step, and repeated labels get a counter. Truncated names retain their identity suffix and a stable hash of the full name; XML sanitization collisions get a counter. Older recordings without `plan.json` use event phases for suites and can only list steps that were recorded.
 
-Warnings remain successful because JUnit has no warning state; testcase output keeps the warning visible in CI views that expose captured output. A missing result is skipped because no assertion could be made. The overall load verdict is a separate case so a breaking point or stop-rule failure still fails the test report even when every outcome check passes.
+Warnings remain successful because JUnit has no warning state; testcase output keeps the warning visible in CI views that expose captured output. A missing result is skipped because no assertion could be made. When `--fail-on-inconclusive` fails a run on an `INCONCLUSIVE` verdict, the `execution` case is a `<failure>`, so the report is not all green. The overall load verdict is a separate case so a breaking point or stop-rule failure still fails the test report even when every outcome check passes.
 
 | Field | Meaning |
 | --- | --- |
@@ -133,7 +134,7 @@ Reports are bounded to 4 MiB, below the 5 MB target and GitLab's 30 MB per-repor
 
 JUnit generation, fetch and copy errors warn on stderr and emit a `warning` event; local warnings are appended to `events.jsonl`, while remote client fetch/copy warnings appear in the client's JSON event stream. They preserve the execution outcome, exit code (including cancellation 130) and artifact notification. If the event file is also unwritable, warning persistence is best effort. `report` uses available credential values from the local registry to redact its JUnit inputs. Without those credentials it relies on the already-redacted recordings; it cannot redact secrets it does not know, including secrets in imported or older unredacted recordings.
 
-JUnit failures do not change the CLI's exit policy. `report` still exits zero after a successful rebuild, and `run` still follows [exit codes](cli.md#exit-codes), including `--fail-on-verdict`.
+JUnit failures do not change the CLI's exit policy. `report` still exits zero after a successful rebuild, and `run` still follows [exit codes](cli.md#exit-codes), including `--fail-on-verdict` and `--fail-on-inconclusive`.
 
 ## summary.md
 
@@ -185,7 +186,7 @@ The `verdict` object in `summary.json` after running `polkameter report /tmp/pol
 
 The verdict uses the existing stop, failure modes, breaking point and checks. `breakingPoint` gives the failure onset; `maxSustained` gives the preceding step. Reasons remain in `stop.detail`, `breakingPoint.detail`, `failureModes` and `checks`, without copies inside `verdict`.
 
-[Read the results](reading-results.md#did-it-pass) lists the verdict rules. `--fail-on-verdict` changes the run's exit policy only; it does not change these rules.
+[Read the results](reading-results.md#did-it-pass) lists the verdict rules. `--fail-on-verdict` and `--fail-on-inconclusive` change the run's exit policy only; they do not change these rules.
 
 ## Loss accounting
 
@@ -232,8 +233,8 @@ Breaking-point rules record a result, and the load goes on. The other rules end 
 | **Stall**: no new best block for this long, not counting time the block follower was reconnecting | hard | 30 s | `stall-ms` |
 | **Finality stall**: no new finalized block for this long, not counting time the block follower was reconnecting | hard | 60 s | `finality-stall-ms` |
 | **Node down**: the node stayed unreachable for 15 s of reconnect attempts, a connection dropped more than 5 times in 60 s, or a local node's process restarted | hard | 15 s; 5 drops in 60 s (fixed) | none |
-| **Rate cap**: every step ran | none | none | none |
-| **Budget used up**: prepared transactions ran out, or a short step had nothing to send | none | none | none |
+| **Rate cap**: every step ran, including when the flood ran out exactly after the last step | none | none | none |
+| **Budget used up**: the prepared flood transactions ran out before the last step finished, or a short step had nothing to send | none | none | none |
 | **Generator limit**: sent share of target rate below minimum, or the load tool paused over 5 s between sends, or the machine was suspended for over 5 s | none | 95%; 5 s between sends (fixed) | `min-send-ratio` |
 | **Smoke error**: monitor problem, smoke mode only | none | none | none |
 

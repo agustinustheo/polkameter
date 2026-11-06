@@ -121,7 +121,7 @@ If the sampled process ends during the run, the node probably restarted. PolkaMe
 
 A stress run measures where the chain stops keeping up, and finding that point is its job. By default, the exit code reports whether PolkaMeter finished without an error of its own. A breaking point, a `FAIL` verdict or a failed check goes into `summary.json` and `summary.md` without changing the default exit code.
 
-Smoke mode ends the load at the first monitor problem, and it exits `1` on a monitor problem or on a required check with no result. To also exit `1` on a `FAIL` verdict in either mode, use `polkameter run --fail-on-verdict`, or set `fail-on: verdict` on the [GitHub Action](ci.md#what-fails-the-job).
+Smoke mode ends the load at the first monitor problem, and it exits `1` on a monitor problem or on a required check with no result. To also exit `1` on a `FAIL` verdict in either mode, use `polkameter run --fail-on-verdict`; for an `INCONCLUSIVE` verdict, use `--fail-on-inconclusive`. The [GitHub Action](ci.md#what-fails-the-job) fails the job on both by default.
 
 ## For contributors
 

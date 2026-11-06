@@ -43,6 +43,10 @@ pub struct Outcome {
 	/// `line L, column C: `.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub error_location: Option<crate::engine::plan::Location>,
+	/// Why a `completed_with_failures` run exits 1: smoke-mode problems, or the verdict and the
+	/// flag that failed it. Absent in every other state.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub exit_reason: Option<String>,
 }
 
 /// The exit code of a run that failed before its setup phase, so before it submitted anything
@@ -586,6 +590,9 @@ pub struct RunOptions {
 	/// Return exit code 1 when the load report's overall verdict is FAIL.
 	#[serde(default)]
 	pub fail_on_verdict: bool,
+	/// Return exit code 1 when the load report's overall verdict is INCONCLUSIVE.
+	#[serde(default)]
+	pub fail_on_inconclusive: bool,
 }
 
 /// Exit code of a run stopped by `Stop::request` without an explicit code (SIGINT, `/stop`).
@@ -704,6 +711,7 @@ pub async fn run_stoppable(
 		options,
 		teardown: Mutex::new(None),
 		phase: Mutex::new(PREFLIGHT.to_owned()),
+		exit_reason: Mutex::new(None),
 	};
 	let execute = Box::pin(run.execute(credentials));
 	let mut execute = std::pin::pin!(execute);
@@ -741,6 +749,8 @@ struct Run<'a> {
 	teardown: Mutex<Option<Teardown>>,
 	/// The phase the run is in; `preflight` until setup starts.
 	phase: Mutex<String>,
+	/// Why the report's exit code is 1, kept for the outcome.
+	exit_reason: Mutex<Option<String>>,
 }
 
 impl Run<'_> {
@@ -883,7 +893,9 @@ impl Run<'_> {
 					checks_error = Some(e);
 					Vec::new()
 				});
-				measurement::report(&dir, measured, &checks, self.options.fail_on_verdict)?
+				let exit = measurement::report(&dir, measured, &checks, self.options)?;
+				*self.exit_reason.lock().unwrap_or_else(|e| e.into_inner()) = exit.reason;
+				exit.code
 			},
 			None => 0,
 		};
@@ -1079,6 +1091,11 @@ impl Run<'_> {
 			teardown: self.teardown.lock().ok().and_then(|state| *state),
 			failed_phase,
 			error_location,
+			// Only a run the report failed has its reason: a later error or stop decides instead.
+			exit_reason: (state == RunState::CompletedWithFailures)
+				.then(|| self.exit_reason.lock().ok().and_then(|reason| reason.clone()))
+				.flatten()
+				.map(|reason| redact_text(&reason, &self.log.secrets)),
 		};
 		// Samples and plots come from the raw files.
 		for error in [redacted, artifacts::write_outputs(&self.directory)]
@@ -1139,6 +1156,8 @@ fn fail_report(outcome: &mut Outcome, error: impl std::fmt::Display) {
 	if !matches!(outcome.state, RunState::Stopped | RunState::Failed) {
 		outcome.exit_code = 1;
 		outcome.state = RunState::Failed;
+		outcome.exit_reason = None;
+		outcome.failed_phase = Some("report".into());
 	}
 	outcome.error = Some(match outcome.error.take() {
 		Some(error) => format!("{error}; {report}"),
@@ -1750,6 +1769,7 @@ mod calibration_tests {
 			teardown: None,
 			failed_phase: None,
 			error_location: None,
+			exit_reason: None,
 		};
 		fail_report(&mut outcome, "disk full");
 		assert_eq!((outcome.exit_code, outcome.state), (130, RunState::Stopped));
@@ -1757,6 +1777,26 @@ mod calibration_tests {
 			outcome.error.as_deref(),
 			Some("run cancelled; report generation failed: disk full")
 		);
+	}
+
+	#[test]
+	fn a_failed_report_drops_the_verdict_exit_reason() {
+		// The verdict no longer decides the exit once the run failed for another reason.
+		let mut outcome = Outcome {
+			artifact_dir: PathBuf::new(),
+			exit_code: 1,
+			state: RunState::CompletedWithFailures,
+			error: None,
+			teardown: None,
+			failed_phase: None,
+			error_location: None,
+			exit_reason: Some("verdict INCONCLUSIVE: …; exit 1 because of …".into()),
+		};
+		fail_report(&mut outcome, "disk full");
+		assert_eq!((outcome.exit_code, outcome.state), (1, RunState::Failed));
+		assert_eq!(outcome.exit_reason, None);
+		let json = serde_json::to_value(&outcome).unwrap();
+		assert!(json.get("exit_reason").is_none(), "{json}");
 	}
 
 	#[tokio::test]

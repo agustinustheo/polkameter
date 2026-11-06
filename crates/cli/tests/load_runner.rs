@@ -51,8 +51,18 @@ fn setup(
 	boot: fn() -> Option<u64>,
 	restarts: Problems,
 ) -> (Tracker<FakeSender>, Io, RunOptions) {
+	setup_with(name, boot, restarts, 200)
+}
+
+/// [`setup`] with a flood of `flood` txs.
+fn setup_with(
+	name: &str,
+	boot: fn() -> Option<u64>,
+	restarts: Problems,
+	flood: u32,
+) -> (Tracker<FakeSender>, Io, RunOptions) {
 	let dir = RunDir::create(std::path::Path::new(env!("CARGO_TARGET_TMPDIR")), name).unwrap();
-	let txs: Vec<Tx> = (0..200u32).map(|n| Tx::new(n.to_le_bytes().to_vec())).collect();
+	let txs: Vec<Tx> = (0..flood).map(|n| Tx::new(n.to_le_bytes().to_vec())).collect();
 	let lane = Lane { call: "Test.call", source: QueueSource::new(txs, vec![], "txs") };
 	let (replies_tx, replies) = tokio::sync::mpsc::unbounded_channel();
 	let mut t = Tracker::new(
@@ -129,6 +139,29 @@ async fn steps_run_on_monotonic_time() {
 	// 2 then 3 tx/s; the bucket starts empty, so the first step sends one fewer at most.
 	assert!((39..=40).contains(&steps[0].sent), "{}", steps[0].sent);
 	assert!((59..=60).contains(&steps[1].sent), "{}", steps[1].sent);
+}
+
+/// A flood with exactly the txs the plan sends is empty after the last step: every step ran, so
+/// the load ends on the rate cap, not on budget used up (which would make the verdict
+/// INCONCLUSIVE). A flood that runs out during the last step is still budget used up.
+#[tokio::test(start_paused = true)]
+async fn a_flood_sized_to_the_plan_reaches_the_rate_cap() {
+	// What the plan sends on the paused clock, from a flood larger than it needs.
+	let (t, stop, _) = run("sized-probe", boot_awake, Problems::default()).await;
+	assert_eq!(stop.rule, Rule::RateCap, "{}", stop.detail);
+	let sent: u64 = t.steps[0].iter().map(|s| final_step(s, None).sent).sum();
+	assert!((99..=100).contains(&sent), "2 tx/s for 20 s, then 3 tx/s for 20 s: {sent}");
+
+	let (mut t, mut io, opts) =
+		setup_with("sized", boot_awake, Problems::default(), u32::try_from(sent).unwrap());
+	let stop = load(&mut t, &mut io, &opts).await.unwrap();
+	assert!(t.lanes()[0].source.exhausted(), "the flood was sized to the plan");
+	assert_eq!((stop.rule, stop.step), (Rule::RateCap, Some(1)), "{}", stop.detail);
+	assert_eq!(stop.detail, "all 2 steps ran");
+
+	let (mut t, mut io, opts) = setup_with("short", boot_awake, Problems::default(), 50);
+	let stop = load(&mut t, &mut io, &opts).await.unwrap();
+	assert_eq!((stop.rule, stop.step), (Rule::BudgetUsedUp, Some(1)), "{}", stop.detail);
 }
 
 #[tokio::test(start_paused = true)]

@@ -67,8 +67,8 @@ Preflight passed.
 Runs a plan. A local run writes a run directory under `--output`. A remote run sends the plan's XML to an agent, which runs it and keeps the run directory there.
 
 ```sh
-polkameter run [--output DIR] [--junit PATH] [--credential-env ENV_VAR] [--fail-on-verdict] [--shutdown-grace SECONDS] [--format human|json] PLAN
-polkameter run --remote URL --remote-token-env ENV_VAR [--junit PATH] [--fail-on-verdict] [--shutdown-grace SECONDS] [--format human|json] PLAN
+polkameter run [--output DIR] [--junit PATH] [--credential-env ENV_VAR] [--fail-on-verdict] [--fail-on-inconclusive] [--shutdown-grace SECONDS] [--format human|json] PLAN
+polkameter run --remote URL --remote-token-env ENV_VAR [--junit PATH] [--fail-on-verdict] [--fail-on-inconclusive] [--shutdown-grace SECONDS] [--format human|json] PLAN
 ```
 
 | Name | Type | Required | Default | Limits | Meaning |
@@ -78,12 +78,21 @@ polkameter run --remote URL --remote-token-env ENV_VAR [--junit PATH] [--fail-on
 | `--junit PATH` | path | no | none | <!-- v0.3.0: remove after release -->from v0.3.0 | A local copy of the run directory's `junit.xml`, including for a remote run. Parent directories are created |
 | `--credential-env` | variable name | no | none | not with `--remote`; the plan declares exactly one credential | Reads the only credential from this variable |
 | `--fail-on-verdict` | flag | no | off | none | Exit `1` on a `FAIL` load verdict, after writing the report and running teardown. Other verdicts and plans without a load test keep their exit code |
+| `--fail-on-inconclusive` | flag | no | off | <!-- v0.3.0: remove after release -->from v0.3.0 | Exit `1` on an `INCONCLUSIVE` load verdict, after writing the report and running teardown. Add `--fail-on-verdict` to also exit `1` on `FAIL` |
 | `--remote URL` | URL | no | none | `https://`, or `http://` to a loopback address with a port | The agent's endpoint. See [remote agent](#remote-agent) |
 | `--remote-token-env` | variable name | with `--remote` | none | needs `--remote` | The variable that holds the agent's bearer token |
 | `--shutdown-grace SECONDS` | seconds | no | `20` | none | How long a stopping run gets to finish teardown after SIGINT or SIGTERM. See [stop a run](#stop-a-run) |
 | `--format` | enum | no | `human` | `human` or `json` | See [output formats](#output-formats) |
 
-With `--remote`, the agent applies `--fail-on-verdict` and records the exit code in its run directory. If the agent does not support the flag, the client refuses to start the run; update the agent first.
+When a verdict makes the run exit `1`, a line on standard error says why, after teardown, once the run ended `completed_with_failures`. It names the stop rule, or the checks that failed or have no result:
+
+```text
+PolkaMeter: verdict INCONCLUSIVE: required checks with no result: no silent loss; exit 1 because of --fail-on-inconclusive (the checks are in summary.md)
+```
+
+The line blames a flag only when the flag decides the exit. A smoke-mode run fails on a monitor problem or a required check with no result whatever the flags, and its line says so: `PolkaMeter: smoke mode fails the run on monitor problems and required checks with no result, whatever the --fail-on flags; fix this one: …`. A run that ends `failed` or `stopped` prints its own reason instead. `execution.json` keeps the full line as [`exit_reason`](results.md#executionjson).
+
+With `--remote`, the agent applies `--fail-on-verdict` and `--fail-on-inconclusive` and records the exit code and `exit_reason` in its run directory. The client prints the reason as `PolkaMeter: remote run: <reason>`. If the agent does not support a flag you pass, the client refuses to start the run; update the agent first.
 
 ```sh
 polkameter run examples/plugin-workflow.polkameter.xml --output runs
@@ -400,7 +409,7 @@ curl http://127.0.0.1:9901/health
 
 Every route except `/health` needs `Authorization: Bearer TOKEN`. A missing or wrong token gets `401 Unauthorized`. Requests and responses are JSON; a plan is sent as `{"xml": "..."}`.
 
-`POST /runs` also accepts `"options": {"failOnVerdict": true}`; the default is `false`. `GET /plugins` advertises support as `"runOptions": {"failOnVerdict": true}`.
+`POST /runs` also accepts `"options": {"failOnVerdict": true, "failOnInconclusive": true}`; each defaults to `false`. `GET /plugins` advertises support for each as `"runOptions": {"failOnVerdict": true, "failOnInconclusive": true}`. An agent ignores options it does not know, so a client checks this first.
 
 `POST /runs` also accepts a `"runId"` chosen by the client, with the same character rules as other run IDs. Sending the same `runId` again returns that run instead of starting another, so a client whose start request lost its answer can repeat it. While the first request is still being admitted, a repeat gets `503` and should be retried. `polkameter run --remote` always sends one.
 
@@ -427,7 +436,7 @@ The client checks each run ID: at most 128 characters, from letters, digits, `-`
 | Code | Meaning | Typical cause |
 | --- | --- | --- |
 | `0` | A command succeeded, or a run ended `completed` | Nothing to fix |
-| `1` | A run ended `failed` after its setup phase started, or `completed_with_failures`, or a `report` or remote request failed, or the output could not be written | A plugin crashed or errored in setup or later, a deadline or assertion failed, or the agent refused a request. A smoke-mode load run also exits 1 on a monitor problem or a missing required check. With `--fail-on-verdict`, a `FAIL` verdict also exits 1. A command that would exit 0 exits 1 when standard output fails, for example on a full disk |
+| `1` | A run ended `failed` after its setup phase started, or `completed_with_failures`, or a `report` or remote request failed, or the output could not be written | A plugin crashed or errored in setup or later, a deadline or assertion failed, or the agent refused a request. A smoke-mode load run also exits 1 on a monitor problem or a missing required check. With `--fail-on-verdict`, a `FAIL` verdict also exits 1, and with `--fail-on-inconclusive`, an `INCONCLUSIVE` verdict. A command that would exit 0 exits 1 when standard output fails, for example on a full disk |
 | `2` | Invalid input or usage | A malformed or invalid plan, a plan file over 2 MiB or that is a directory, socket or device, a bad flag or argument, an `--output` path that is not UTF-8, an unreadable or corrupt registry, a failed `plugin` subcommand, a wrong remote endpoint or token variable, or a `summary.json` that `report` cannot rewrite (unknown `schemaVersion`) |
 | `3` | Preflight or setup checks failed | `preflight` failed, or a `run` failed before its setup phase, so it submitted nothing: a credential that is not mapped, unset or empty, a plugin not installed, a checksum, version or manifest mismatch, an operation or input that does not match its manifest, a preflight step that can change state or fails, a chain that lacks required evidence, no calibration answer from the chain, or an unregistered `<monitors>` alias |
 | `130` | Stopped by SIGINT | Ctrl-C during a run, or a remote run that the agent stopped on request. `agent serve` also exits `130` after SIGINT |
@@ -437,7 +446,7 @@ A stopped run usually ran its teardown and wrote its results, but not always: a 
 
 A `run` that exits `3` failed before its setup phase. It submitted nothing to the chain and skipped teardown, because there was nothing to undo. Its `execution.json` has `state` `failed`, `exit_code` `3` and `failed_phase` `preflight`. Run `polkameter preflight <plan>` before `run` to find these problems without creating a run directory.
 
-By default, a stress-mode load run exits `0` whatever its verdict. Add `--fail-on-verdict` to exit `1` on `FAIL`. This uses the existing failed-run code; `WARN` and `INCONCLUSIVE` do not trigger it. See [reading the results](reading-results.md).
+By default, a stress-mode load run exits `0` whatever its verdict. Add `--fail-on-verdict` to exit `1` on `FAIL`, and `--fail-on-inconclusive` to exit `1` on `INCONCLUSIVE`. Both use the existing failed-run code; `WARN` never triggers them. The [GitHub Action](ci.md#what-fails-the-job) passes both by default. See [reading the results](reading-results.md).
 
 ## Environment variables
 
