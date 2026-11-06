@@ -1,7 +1,7 @@
 # Getting started
 
 <!-- v0.3.0: remove after release -->
-> **Unreleased:** The published CLI is v0.2.0. This page shows its output, and the output of a v0.3.0 build from source where the two differ.
+> **Unreleased:** The published CLI is v0.2.0, and step 1 installs it. The other outputs on this page come from v0.3.0, built from source in step 2. Notes give the v0.2.0 output where it differs.
 
 You will install the CLI, run the example plan and read its results. You need no chain; building the example plugin needs Rust 1.93 or newer.
 
@@ -38,9 +38,9 @@ The local build completed with:
 
 On a first build, Cargo prints a `Compiling` line for each crate before the `Finished` line. The plugin executable is `target/debug/polkameter-example-plugin` (`.exe` on Windows). Keep using the repository root for the remaining commands.
 
+<!-- v0.3.0: remove after release (this paragraph and the two blocks below) -->
 To use the v0.3.0 CLI before its release, such as for `junit.xml`, build it from this checkout instead:
 
-<!-- v0.3.0: remove after release -->
 ```sh
 cargo +1.93.0 build --locked -p polkameter --bin polkameter
 export PATH="$PWD/target/debug:$PATH"

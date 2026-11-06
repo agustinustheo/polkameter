@@ -28,6 +28,13 @@ export PATH="$HOME/.local/bin:$PATH"
 polkameter --version
 ```
 
+<!-- v0.3.0: remove after release (replace with the output of a successful install) -->
+Until v0.3.0 is published, the script stops before installing anything and exits with code `1`:
+
+```text
+polkameter: v0.2.0 has no prebuilt CLI archive; install with cargo install --locked polkameter, or pick a newer version
+```
+
 ### Choose a version or directory
 
 Pass a version to select a release instead of the latest stable release. Set `POLKAMETER_INSTALL_DIR` on the `sh` process to choose a directory:
@@ -92,11 +99,25 @@ Use Rust 1.93 or newer to compile the CLI from a published crates.io version:
 cargo install --locked polkameter
 ```
 
-To build the current repository code instead, such as v0.3.0 before its release:
+```text
+...
+  Installing ~/.cargo/bin/polkameter
+   Installed package `polkameter v0.2.0` (executable `polkameter`)
+```
+
+To build the current repository code instead<!-- v0.3.0: remove after release -->, such as v0.3.0 before its release:
 
 ```sh
 cargo install --locked --git https://github.com/agustinustheo/polkameter polkameter
 ```
+
+```text
+...
+  Installing ~/.cargo/bin/polkameter
+   Installed package `polkameter v0.3.0 (https://github.com/agustinustheo/polkameter#58921b7d)` (executable `polkameter`)
+```
+
+A source build can take 10 minutes or more.
 
 Cargo installs the executable in `~/.cargo/bin` by default. You still need to build and install the plugins required by your plan; see [Getting started](getting-started.md).
 

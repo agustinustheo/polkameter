@@ -116,6 +116,7 @@ From the `hello-plugin` directory:
 cargo build
 ```
 
+<!-- v0.3.0: remove after release (replace with the crates.io build output) -->
 ```text
 ...
    Compiling polkameter-plugin-sdk v0.3.0 (https://github.com/agustinustheo/polkameter?rev=58921b7d506f9987db68fc8084b2fb8f13649f94#58921b7d)

@@ -8,6 +8,15 @@ The SDK for [PolkaMeter](https://github.com/agustinustheo/polkameter) plugins. A
 | `chain` | `polkameter_plugin_sdk::chain` | A Polkadot SDK node over RPC: `Client`, typed storage reads, events, signing and submission (subxt). |
 | `observers` | `polkameter_plugin_sdk::observers` | Recording and judging a run: `RunDir`, the metric registry, the finalized-block `walker`, `ChainSeries`, `RunData` and check verdicts. Implies `chain`. |
 
+<!-- v0.3.0: remove after release -->
+> **Unreleased:** Version 0.3 is not on crates.io or docs.rs yet; both have 0.2.0. Until the release, the lines below fail with `failed to select a version`. Depend on a commit of the repository instead, with the features you need:
+>
+> ```toml
+> polkameter-plugin-sdk = { git = "https://github.com/agustinustheo/polkameter", rev = "58921b7d506f9987db68fc8084b2fb8f13649f94", features = ["observers"] }
+> ```
+>
+> To read the API documentation, run `cargo doc -p polkameter-plugin-sdk --all-features --open` in a checkout.
+
 Add one of these lines to `[dependencies]`. For the protocol only:
 
 ```toml

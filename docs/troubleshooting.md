@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Find the message you see below. Each heading is the message as the CLI prints it, without the `PolkaMeter:` prefix. The v0.2.0 CLI spells the prefix `Polkameter:`. The entries that start with `error:` are printed by Cargo or by the argument parser.
+Find the message you see below. Each heading is the message as the CLI prints it, without the `PolkaMeter:` prefix. <!-- v0.3.0: remove after release -->The v0.2.0 CLI spells the prefix `Polkameter:`. The entries that start with `error:` are printed by Cargo or by the argument parser.
 
 ## Building and installing
 
@@ -39,7 +39,7 @@ For more information, try '--help'.
 
 **Cause:** `--junit` and `junit.xml` are available from v0.3.0. The published v0.2.0 CLI rejects the flag and exits with code `2`.
 
-**Fix:** Drop `--junit`, or build the CLI from source with `cargo install --locked --git https://github.com/agustinustheo/polkameter polkameter`. Check the version with `polkameter --version`.
+**Fix:** Drop `--junit`, or build the CLI from source with `cargo install --locked --git https://github.com/agustinustheo/polkameter --rev 58921b7d506f9987db68fc8084b2fb8f13649f94 polkameter`. Check the version with `polkameter --version`.
 
 ## Runs
 

@@ -12,7 +12,10 @@ use anyhow::Context as _;
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::{Value, json};
 
-use crate::remote::{self, RemoteRunnerTarget};
+use crate::{
+	PRODUCT_NAME,
+	remote::{self, RemoteRunnerTarget},
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "polkameter", version, about = "Headless Polkadot SDK load testing")]
@@ -159,14 +162,14 @@ pub fn main() -> i32 {
 	let runtime = match tokio::runtime::Runtime::new() {
 		Ok(runtime) => runtime,
 		Err(error) => {
-			eprintln!("PolkaMeter could not start its async runtime: {error}");
+			eprintln!("{PRODUCT_NAME} could not start its async runtime: {error}");
 			return 1;
 		},
 	};
 	match runtime.block_on(execute(cli)) {
 		Ok(code) => code,
 		Err(error) => {
-			eprintln!("PolkaMeter: {error}");
+			eprintln!("{PRODUCT_NAME}: {error}");
 			error.exit_code()
 		},
 	}
@@ -319,7 +322,7 @@ fn write_artifact_written(format: OutputFormat, location: RunLocation, outcome: 
 		format!("{label} {}. Artifacts: {}", outcome.state, outcome.artifact_dir.display()),
 	);
 	if let Some(reason) = failure_reason(location, outcome) {
-		eprintln!("PolkaMeter: {reason}");
+		eprintln!("{PRODUCT_NAME}: {reason}");
 	}
 }
 

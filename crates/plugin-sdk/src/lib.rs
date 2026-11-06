@@ -587,10 +587,27 @@ impl PreparedTx {
 }
 /// Input of a load plan's `state-check` operation: a sample of the transactions the run finalized,
 /// with the plan's state reference. `hashes` and `at` are lowercase hex without `0x`.
+///
+/// The operation returns `checked`, `missing` and `detail`.
+///
+/// ```
+/// use polkameter_plugin_sdk::StateCheckInput;
+/// use serde_json::json;
+///
+/// let input: StateCheckInput = serde_json::from_value(json!({
+///     "target": "ws://127.0.0.1:9944",
+///     "state": {"expected": 40},
+///     "hashes": ["5c0b2f…"],
+///     "at": "9a1e…",
+/// }))?;
+/// assert_eq!(input.target, "ws://127.0.0.1:9944");
+/// # anyhow::Ok(())
+/// ```
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct StateCheckInput {
-	/// The ID of the load's target in the plan.
+	/// The WebSocket endpoint of the load's target, from its `<target endpoint="...">`, such as
+	/// `ws://127.0.0.1:9944`. Connect to it to read the state.
 	pub target: String,
 	/// The plan's state reference.
 	pub state: Value,

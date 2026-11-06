@@ -141,7 +141,7 @@ A `PreparedTx` is one transaction a plugin prepared before the load:
 
 A `<load>` takes two `PreparedTx` lists, inline or as an `Artifact`: `source-ref` is the flood, and `probes-ref` holds the probes for baseline and recovery. The lists share no transaction, and each hash is sent at most once. The [probe budget](plans.md#load) sets how many probes to reserve, and exhausting the list is a stop reason. `<rate>` and `<ramp>` set the pace; [Plans](plans.md) covers `<thresholds>`.
 
-With `state-check` and `state-ref`, PolkaMeter calls the named operation on a sample of finalized transactions. The operation receives `target`, `state`, `hashes` and `at`, where `hashes` and `at` are lowercase hex without `0x`. It returns `checked`, `missing` and `detail`.
+With `state-check` and `state-ref`, PolkaMeter calls the named operation on a sample of finalized transactions. The operation receives `target` (the target's WebSocket endpoint, such as `ws://127.0.0.1:9944`), `state`, `hashes` and `at`, where `hashes` and `at` are lowercase hex without `0x`. It returns `checked`, `missing` and `detail`.
 
 `core.submit-prepared` waits for an RPC reply. `core.submit-setup` also waits for finalized inclusion, checks dispatch and Sudo results, and returns transaction hashes and the finalized block hash. After a submit times out, the transaction may still be accepted, so PolkaMeter never retries it.
 
