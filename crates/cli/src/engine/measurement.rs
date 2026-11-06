@@ -160,6 +160,8 @@ pub async fn run(
 	};
 	follow.cancel();
 	tracker.set_phase(Phase::Done, now_ms())?;
+	// The run window ends here: scrape now, so it ends on fresh samples.
+	monitors.scraper.scrape_now().await;
 	// The node's CPU and memory per step come from node.jsonl, complete once the sampler stopped.
 	monitors.stop_sampling().await?;
 	let samples: Vec<NodeSample> = dir.read_jsonl("node.jsonl")?;

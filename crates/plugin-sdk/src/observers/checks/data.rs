@@ -108,10 +108,12 @@ pub struct CounterReset(pub String);
 /// How late after an edge its scrape may land, in ms (scrapes are 5 s apart).
 const EDGE_SCRAPE_MS: f64 = 1000.0;
 
-/// The latest a node's scrape may land after a window edge and still stand for that edge, in ms:
-/// one scrape interval (5 s) plus the scrape timeout (5 s). Without such a scrape the edge has
-/// no fresh value, and [`RunData::gap`] names it.
-pub const MAX_EDGE_LAG_MS: f64 = 10_000.0;
+/// How long the scraper waits for a node's answer, in ms: a scrape lands at most this long after
+/// it was asked for.
+pub const SCRAPE_TIMEOUT_MS: f64 = 5_000.0;
+
+/// The scrape interval assumed for a node with fewer than two recorded scrapes, in ms.
+const DEFAULT_SCRAPE_INTERVAL_MS: f64 = 5_000.0;
 
 /// The jobs whose series are not scraped from a node: the load tool's and chain recorders'
 /// (`stress`) and plugins' (`plugin`). They change on events, so they have no scrape to miss.
@@ -180,6 +182,21 @@ pub struct RunData {
 	node_first: HashMap<(String, String), f64>,
 	/// Each scraped node's good scrapes, by (job, instance): sorted times.
 	node_scrapes: HashMap<(String, String), Vec<f64>>,
+	/// Each scraped node's longest edge lag a scrape may have, in ms: see [`RunData::edge_lag_ms`].
+	node_lag: HashMap<(String, String), f64>,
+}
+
+/// The scrape interval of a node, from the times it was asked (good and failed scrapes): the
+/// 75th percentile of the gaps between them. Step and phase edges add extra scrapes, which
+/// split some periodic gaps; the percentile looks past those.
+fn scrape_interval(attempts: &[f64]) -> f64 {
+	let mut gaps: Vec<f64> =
+		attempts.windows(2).map(|p| p[1] - p[0]).filter(|g| *g > 0.0).collect();
+	if gaps.is_empty() {
+		return DEFAULT_SCRAPE_INTERVAL_MS;
+	}
+	gaps.sort_by(f64::total_cmp);
+	gaps[(gaps.len() * 3 / 4).min(gaps.len() - 1)]
 }
 
 impl RunData {
@@ -188,6 +205,7 @@ impl RunData {
 		let block_interval_s = summary.network.block_interval_s;
 		let mut node_first: HashMap<(String, String), f64> = HashMap::new();
 		let mut node_scrapes: HashMap<(String, String), Vec<f64>> = HashMap::new();
+		let mut node_attempts: HashMap<(String, String), Vec<f64>> = HashMap::new();
 		for (name, list) in &store {
 			for s in list {
 				if let Some(p) = s.points.first() {
@@ -196,16 +214,44 @@ impl RunData {
 				}
 				let unscraped =
 					s.labels.get("job").is_some_and(|j| UNSCRAPED_JOBS.contains(&j.as_str()));
-				if name != SCRAPE_FAILED && !unscraped {
-					node_scrapes.entry(node(s)).or_default().extend(s.points.iter().map(|p| p.t));
+				if unscraped {
+					continue;
+				}
+				let times = s.points.iter().map(|p| p.t);
+				node_attempts.entry(node(s)).or_default().extend(times.clone());
+				if name != SCRAPE_FAILED {
+					node_scrapes.entry(node(s)).or_default().extend(times);
 				}
 			}
 		}
-		for times in node_scrapes.values_mut() {
+		for times in node_scrapes.values_mut().chain(node_attempts.values_mut()) {
 			times.sort_by(f64::total_cmp);
 			times.dedup();
 		}
-		Self { store, summary, block_interval_s, node_first, node_scrapes }
+		let node_lag = node_attempts
+			.iter()
+			.map(|(n, t)| (n.clone(), 2.0 * scrape_interval(t) + SCRAPE_TIMEOUT_MS))
+			.collect();
+		Self { store, summary, block_interval_s, node_first, node_scrapes, node_lag }
+	}
+
+	/// The longest a node's scrape may land after a window edge and still stand for that edge,
+	/// in ms: twice the node's scrape interval plus [`SCRAPE_TIMEOUT_MS`], so one failed scrape
+	/// at an edge still leaves the edge fresh. The interval comes from the scrapes the run
+	/// recorded (good and failed), so a slower scraper gets a longer limit. Unscraped nodes and
+	/// nodes without records get the limit of a 5 s interval.
+	/// Part of the plugin API (used by out-of-tree plugins).
+	pub fn edge_lag_ms(&self, job: &str, instance: &str) -> f64 {
+		self.node_lag
+			.get(&(job.to_owned(), instance.to_owned()))
+			.copied()
+			.unwrap_or(2.0 * DEFAULT_SCRAPE_INTERVAL_MS + SCRAPE_TIMEOUT_MS)
+	}
+
+	/// True when the run recorded any scrape, good or failed, of a node of `job` (`collator`,
+	/// `collator-relay`, `validator`): the plan monitored that kind of node.
+	pub(crate) fn monitors_job(&self, job: &str) -> bool {
+		self.node_lag.keys().any(|(j, _)| j == job)
 	}
 
 	fn first_scrape(&self, s: &Series) -> Option<f64> {
@@ -216,34 +262,50 @@ impl RunData {
 		value_at(s, t, self.first_scrape(s))
 	}
 
-	/// Why the node series of `name` matching `filter` cannot give fresh values at both edges
-	/// of `w`; `None` when they can. Every node with such a series needs a good scrape at most
-	/// [`MAX_EDGE_LAG_MS`] after each edge; otherwise the value at that edge would come from a
-	/// later or older scrape (stale), so a check over `w` should have no result. Series the load
-	/// tool, the chain recorders or plugins write change on events and are never stale here.
+	/// Why the node series of `name` matching `filter` cannot give a right value at both edges
+	/// of `w`; `None` when they can. Use it for counters and histograms. At each edge, every node
+	/// with such a series needs either
+	///
+	/// - a good scrape at most [`RunData::edge_lag_ms`] after the edge, or
+	/// - for each of its matching series, a good scrape before and after the edge with the same
+	///   value: the counter did not move across the edge, so its value there is exact however
+	///   far apart the scrapes are.
+	///
+	/// Otherwise the value at that edge would come from a scrape too late to say on which side of
+	/// the edge the counter moved (stale), so a check over `w` should have no result. Series the
+	/// load tool, the chain recorders or plugins write change on events and are never stale here.
 	/// Part of the plugin API (used by out-of-tree plugins).
 	pub fn gap(&self, name: &str, filter: Filter<'_>, w: &Window) -> Option<String> {
-		let mut nodes: Vec<(String, String)> = self
+		let scraped: Vec<&Series> = self
 			.series(name, filter)
 			.into_iter()
 			.filter(|s| s.labels.get("job").is_none_or(|j| !UNSCRAPED_JOBS.contains(&j.as_str())))
-			.map(node)
 			.collect();
+		let mut nodes: Vec<(String, String)> = scraped.iter().map(|s| node(s)).collect();
 		nodes.sort();
 		nodes.dedup();
 		for n in nodes {
 			let times = self.node_scrapes.get(&n).map_or(&[][..], Vec::as_slice);
+			let lag = self.edge_lag_ms(&n.0, &n.1);
 			for (edge, t) in [("start", w.start), ("end", w.end)] {
 				let i = times.partition_point(|x| *x < t);
-				if times.get(i).is_none_or(|x| *x > t + MAX_EDGE_LAG_MS) {
-					return Some(format!(
-						"{}: no scrape of {} {} within {} s after its {edge}",
-						w.label,
-						n.0,
-						n.1,
-						num(MAX_EDGE_LAG_MS / 1000.0)
-					));
+				if times.get(i).is_some_and(|x| *x <= t + lag) {
+					continue;
 				}
+				let flat = |s: &&&Series| {
+					let i = s.points.partition_point(|p| p.t < t);
+					i > 0 && s.points.get(i).is_some_and(|p| p.value == s.points[i - 1].value)
+				};
+				if scraped.iter().filter(|s| node(s) == n).all(|s| flat(&s)) {
+					continue;
+				}
+				return Some(format!(
+					"{}: no scrape of {} {} within {} s after its {edge}",
+					w.label,
+					n.0,
+					n.1,
+					num((lag / 1000.0).round())
+				));
 			}
 		}
 		None

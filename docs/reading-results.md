@@ -32,7 +32,9 @@ Three separate things tell you how a run ended:
 
 The outcome checks table at the end of `summary.md` gives each check a status: `pass`, `warn`, `fail`, `info` or `no result`. In the example, the relay slots check failed. A failed check makes the verdict FAIL, as a breaking point does.
 
-A check never passes on data it does not have. If a node's metrics were not scraped near the start or end of a step, if a node restarted, or if a step recorded nothing the check needs, the check is `no result` and its detail says why. A required check with no result makes the verdict INCONCLUSIVE. If a scrape failed in the middle of a step, the check keeps its status and its detail ends with `failed scrapes:`. [Checks](results.md#checks) lists each check's rules.
+A check never passes on data it does not have. If a node's metrics were not scraped near the start or end of a step, if a node restarted, or if a step recorded nothing the check needs, that step has no data. A failure measured in another step still makes the check `fail`; otherwise the check is `no result` and its detail says why. A required check with no result makes the verdict INCONCLUSIVE. [Checks](results.md#checks) lists each check's rules.
+
+A check whose nodes the plan does not monitor at all is `no result` with a detail starting `not applicable:`. It is optional and does not change the verdict.
 
 ## How much load did the chain take?
 

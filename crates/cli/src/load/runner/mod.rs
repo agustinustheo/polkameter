@@ -70,6 +70,8 @@ impl std::str::FromStr for Mode {
 pub enum RunEvent {
 	/// A step started or ended: scrape now, so the window starts and ends on fresh samples.
 	StepEdge(u32),
+	/// A phase (baseline, recovery) started: scrape now, for the same reason.
+	PhaseEdge,
 }
 
 /// How to run.
@@ -163,6 +165,7 @@ pub async fn baseline<S: Submit>(
 	opts: &RunOptions,
 ) -> Result<Baseline, RunError> {
 	t.set_phase(Phase::Baseline, now_ms())?;
+	let _ = io.events.send(RunEvent::PhaseEdge);
 	let deadline =
 		now_ms() + (opts.baseline_probes as u64 + 10) * (opts.block_interval_s * 1000.0) as u64;
 	let mut tick = interval(200);
@@ -222,6 +225,7 @@ pub async fn recover<S: Submit>(
 	threshold_ms: Millis,
 ) -> Result<Recovery, RunError> {
 	t.set_phase(Phase::Recovery, now_ms())?;
+	let _ = io.events.send(RunEvent::PhaseEdge);
 	let stopped_at = now_ms();
 	let backlog_at_stop = t.outstanding().len() as u64;
 	eprintln!(

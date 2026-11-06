@@ -7,23 +7,14 @@ use serde::Serialize;
 use crate::observers::checks::{
 	Check, LIMITS, Status, Verdict,
 	data::{COLLATOR, CounterReset, Label, Phase, RunData, Window, count_above, quantile},
-	outcomes::{coverage, long_enough},
+	outcomes::{also_missing, failed_scrapes, gaps, long_enough, no_data},
 };
 
 const VALIDATOR: (&str, &str) = ("job", "validator");
 const FUNNEL: (&str, &str) = ("job", "collator-relay");
-/// The relay chain's block interval: a window of two or more must see a finalized relay block
-/// and, with parachains running, a PVF execution.
+/// The relay chain's block interval: a window of two or more must see a PVF execution while
+/// parachains run.
 const RELAY_BLOCK_S: f64 = 6.0;
-
-/// The long windows in which the relay recorder read no finalized relay block, by label.
-fn without_relay_blocks<'a>(windows: impl IntoIterator<Item = (&'a Window, f64)>) -> Vec<String> {
-	windows
-		.into_iter()
-		.filter(|(w, relay_blocks)| *relay_blocks == 0.0 && long_enough(w, RELAY_BLOCK_S))
-		.map(|(w, _)| w.label.to_string())
-		.collect()
-}
 
 /// The `para` label of the observed parachain; empty when the run declared none, so its series
 /// are absent and the checks have no result.
@@ -89,6 +80,9 @@ fn worst_violation(windows: &[WindowSlots]) -> Option<&WindowSlots> {
 		.max_by(|a, b| a.extra.total_cmp(&b.extra))
 }
 
+/// The recorder counts a relay block, and the slots in it, when it reads the block after
+/// finality, so finality lag moves both into a later window together. A window without relay
+/// blocks is therefore not missing data; only a run in which the recorder read none is.
 fn relay_slots(d: &RunData) -> Result<Verdict, CounterReset> {
 	let para = para(d);
 	let (Some(base), true) = (
@@ -98,41 +92,21 @@ fn relay_slots(d: &RunData) -> Result<Verdict, CounterReset> {
 		return Ok(Verdict::new(Status::NoResult, "no relay recorder data"));
 	};
 	let idle = slots(d, &base)?;
-	if idle.relay_blocks == 0.0 {
-		return Ok(Verdict::new(
-			Status::NoResult,
-			"the relay recorder read no finalized relay block in the baseline",
-		));
-	}
-	let idle_rate = idle.missed / idle.relay_blocks;
-	let load = d.load_windows();
-	let windows = load
-		.iter()
-		.map(|w| {
-			let s = slots(d, w)?;
-			Ok(WindowSlots {
+	// Without a relay block in the baseline there is no idle rate: every missed slot counts.
+	let idle_rate = if idle.relay_blocks > 0.0 { idle.missed / idle.relay_blocks } else { 0.0 };
+	let mut windows = Vec::new();
+	let mut missing = Vec::new();
+	for w in d.load_windows() {
+		match slots(d, &w) {
+			Ok(s) => windows.push(WindowSlots {
 				window: w.label,
 				extra: s.missed - idle_rate * s.relay_blocks,
 				slots: s,
-			})
-		})
-		.collect::<Result<Vec<_>, CounterReset>>()?;
-	let unread =
-		without_relay_blocks(load.iter().zip(windows.iter().map(|s| s.slots.relay_blocks)));
-	if !unread.is_empty() {
-		return Ok(Verdict::new(
-			Status::NoResult,
-			format!("the relay recorder read no finalized relay block in {}", unread.join(", ")),
-		)
-		.with(serde_json::json!({ "idle": idle, "windows": windows })));
+			}),
+			Err(reset) => missing.push(format!("{}: a node restarted: {reset}", w.label)),
+		}
 	}
-	if idle.offered + windows.iter().map(|s| s.slots.offered).sum::<f64>() == 0.0 {
-		return Ok(Verdict::new(
-			Status::NoResult,
-			format!("no relay slot was offered to parachain {para}"),
-		));
-	}
-	let bad = worst_violation(&windows);
+	let numbers = serde_json::json!({ "idle": idle, "windows": windows });
 	let split = |s: &Slots| {
 		format!(
 			"not built {} (collator), not backed {} (PVF, delivery or statements; forks not measured yet), timed out {} (availability)",
@@ -141,36 +115,85 @@ fn relay_slots(d: &RunData) -> Result<Verdict, CounterReset> {
 			num(s.timed_out)
 		)
 	};
-	let detail = match bad {
-		Some(b) => format!(
-			"{}: missed {} of {} slots, {} more than at idle: {}",
+	if let Some(b) = worst_violation(&windows) {
+		let detail = format!(
+			"{}: missed {} of {} slots, {} more than at idle: {}{}",
 			b.window,
 			num(b.slots.missed),
 			num(b.slots.offered),
 			to_fixed(b.extra, 1),
-			split(&b.slots)
-		),
-		None => format!(
-			"every step and recovery within {} missed slot of idle (idle: {} of {})",
-			LIMITS.max_extra_missed_slots,
-			num(idle.missed),
-			num(idle.offered)
-		),
+			split(&b.slots),
+			also_missing(&missing)
+		);
+		return Ok(Verdict::new(Status::Fail, detail).with(numbers));
+	}
+	if !missing.is_empty() {
+		return Ok(no_data(&missing, "").with(numbers));
+	}
+	let relay_blocks =
+		idle.relay_blocks + windows.iter().map(|s| s.slots.relay_blocks).sum::<f64>();
+	if relay_blocks == 0.0 {
+		return Ok(Verdict::new(
+			Status::NoResult,
+			"the relay recorder read no finalized relay block in the run",
+		)
+		.with(numbers));
+	}
+	if idle.offered + windows.iter().map(|s| s.slots.offered).sum::<f64>() == 0.0 {
+		return Ok(Verdict::new(
+			Status::NoResult,
+			format!("no relay slot was offered to parachain {para}"),
+		)
+		.with(numbers));
+	}
+	let idle_note = if idle.relay_blocks > 0.0 {
+		String::new()
+	} else {
+		"; the baseline read no finalized relay block, so idle counts as no missed slot".into()
 	};
-	let status = if bad.is_some() { Status::Fail } else { Status::Pass };
-	Ok(Verdict::new(status, detail).with(serde_json::json!({ "idle": idle, "windows": windows })))
+	let detail = format!(
+		"every step and recovery within {} missed slot of idle (idle: {} of {}){idle_note}",
+		LIMITS.max_extra_missed_slots,
+		num(idle.missed),
+		num(idle.offered)
+	);
+	Ok(Verdict::new(Status::Pass, detail).with(numbers))
 }
 
 fn no_timeouts_or_disputes(d: &RunData) -> Result<Verdict, CounterReset> {
+	if !d.has("polkameter_relay_finalized_blocks_total", &[]) {
+		return Ok(Verdict::new(Status::NoResult, "no relay recorder data"));
+	}
 	let w = d.run();
+	let run = std::slice::from_ref(&w);
 	let para = para(d);
 	let timed_out =
 		d.increase("polkameter_para_timed_out_total", &[("para", para.as_str())], &w)?;
 	let relay = d.increase("polkameter_relay_dispute_total", &[], &w)?;
 	let disputes = "polkadot_parachain_candidate_disputes_total";
-	let raised = d.diff(disputes, &[VALIDATOR], &w)?;
-	if !d.has("polkameter_relay_finalized_blocks_total", &[]) {
-		return Ok(Verdict::new(Status::NoResult, "no relay recorder data"));
+	let mut missing: Vec<String> =
+		gaps(d, disputes, &[VALIDATOR], run).into_iter().flatten().collect();
+	let raised = match d.diff(disputes, &[VALIDATOR], &w) {
+		Ok(raised) if missing.is_empty() => raised,
+		Ok(_) => None,
+		Err(reset) => {
+			missing.push(format!("run: a node restarted: {reset}"));
+			None
+		},
+	};
+	let note = failed_scrapes(d, &[VALIDATOR], run);
+	let detail = format!(
+		"parachain candidates timed out {}; disputes on the relay {}, raised by validators {}{}{note}",
+		num(timed_out),
+		num(relay),
+		raised.map_or("-".into(), num),
+		also_missing(&missing)
+	);
+	if timed_out + relay + raised.unwrap_or(0.0) > 0.0 {
+		return Ok(Verdict::new(Status::Fail, detail));
+	}
+	if !missing.is_empty() {
+		return Ok(no_data(&missing, &note));
 	}
 	if d.increase("polkameter_relay_finalized_blocks_total", &[], &w)? == 0.0 {
 		return Ok(Verdict::new(
@@ -178,18 +201,7 @@ fn no_timeouts_or_disputes(d: &RunData) -> Result<Verdict, CounterReset> {
 			"the relay recorder read no finalized relay block in the run",
 		));
 	}
-	let failed_scrapes = match coverage(d, disputes, &[VALIDATOR], std::slice::from_ref(&w)) {
-		Ok(note) => note,
-		Err(no_result) => return Ok(no_result),
-	};
-	let bad = timed_out + relay + raised.unwrap_or(0.0) > 0.0;
-	let detail = format!(
-		"parachain candidates timed out {}; disputes on the relay {}, raised by validators {}{failed_scrapes}",
-		num(timed_out),
-		num(relay),
-		raised.map_or("-".into(), num)
-	);
-	Ok(Verdict::new(if bad { Status::Fail } else { Status::Pass }, detail))
+	Ok(Verdict::new(Status::Pass, detail))
 }
 
 #[derive(Serialize)]
@@ -203,78 +215,83 @@ struct PvfWindow {
 	invalid: f64,
 }
 
+/// One window's PVF numbers.
+fn pvf_window(d: &RunData, w: &Window) -> Result<PvfWindow, CounterReset> {
+	let exec = d.buckets("polkadot_pvf_execution_time", &[VALIDATOR], w)?;
+	let queued = d.buckets("polkadot_pvf_execution_queued_time", &[VALIDATOR], w)?;
+	Ok(PvfWindow {
+		runs: exec
+			.as_ref()
+			.and_then(|b| b.iter().find(|(le, _)| le.is_infinite()))
+			.map_or(0.0, |x| x.1),
+		over2s: count_above(exec.as_ref(), LIMITS.backing_timeout_s).unwrap_or(0.0),
+		p95_s: quantile(exec.as_ref(), 0.95),
+		queue_p95_s: quantile(queued.as_ref(), 0.95),
+		invalid: d.increase(
+			"polkadot_parachain_validation_requests_total",
+			&[VALIDATOR, ("validity", "invalid")],
+			w,
+		)?,
+		window: w.label,
+	})
+}
+
 fn pvf_time(d: &RunData) -> Result<Verdict, CounterReset> {
-	if !d.has("polkadot_pvf_execution_time_bucket", &[VALIDATOR]) {
+	let bucket = "polkadot_pvf_execution_time_bucket";
+	if !d.has(bucket, &[VALIDATOR]) {
 		return Ok(Verdict::new(Status::NoResult, "no validator metrics"));
 	}
 	let timeout = LIMITS.backing_timeout_s;
 	let load = d.load_windows();
-	let failed_scrapes =
-		match coverage(d, "polkadot_pvf_execution_time_bucket", &[VALIDATOR], &load) {
-			Ok(note) => note,
-			Err(no_result) => return Ok(no_result),
-		};
+	let note = failed_scrapes(d, &[VALIDATOR], &load);
 	let mut windows = Vec::new();
-	let mut unobserved = Vec::new();
-	for w in &load {
-		let w = w.clone();
-		let exec = d.buckets("polkadot_pvf_execution_time", &[VALIDATOR], &w)?;
-		let queued = d.buckets("polkadot_pvf_execution_queued_time", &[VALIDATOR], &w)?;
-		let runs = exec
-			.as_ref()
-			.and_then(|b| b.iter().find(|(le, _)| le.is_infinite()))
-			.map_or(0.0, |x| x.1);
-		if runs == 0.0 && long_enough(&w, RELAY_BLOCK_S) {
-			unobserved.push(w.label.to_string());
+	let mut missing = Vec::new();
+	for (w, gap) in load.iter().zip(gaps(d, bucket, &[VALIDATOR], &load)) {
+		if let Some(gap) = gap {
+			missing.push(gap);
+			continue;
 		}
-		windows.push(PvfWindow {
-			runs,
-			over2s: count_above(exec.as_ref(), timeout).unwrap_or(0.0),
-			p95_s: quantile(exec.as_ref(), 0.95),
-			queue_p95_s: quantile(queued.as_ref(), 0.95),
-			invalid: d.increase(
-				"polkadot_parachain_validation_requests_total",
-				&[VALIDATOR, ("validity", "invalid")],
-				&w,
-			)?,
-			window: w.label,
-		});
+		match pvf_window(d, w) {
+			Ok(p) if p.runs == 0.0 && long_enough(w, RELAY_BLOCK_S) => {
+				missing.push(format!("{}: the validators recorded no PVF execution", w.label))
+			},
+			Ok(p) => windows.push(p),
+			Err(reset) => missing.push(format!("{}: a node restarted: {reset}", w.label)),
+		}
 	}
-	if !unobserved.is_empty() || windows.iter().all(|w| w.runs == 0.0) {
-		let which =
-			if unobserved.is_empty() { "any window".to_owned() } else { unobserved.join(", ") };
-		return Ok(Verdict::new(
-			Status::NoResult,
-			format!("the validators recorded no PVF execution in {which}{failed_scrapes}"),
-		)
-		.with(serde_json::json!({ "windows": windows })));
-	}
+	let numbers = serde_json::json!({ "windows": windows });
 	let slow: Vec<String> = windows
 		.iter()
 		.filter(|s| s.over2s > 0.0 || s.invalid > 0.0)
 		.map(|s| s.window.to_string())
 		.collect();
+	if !slow.is_empty() {
+		let detail = format!(
+			"{}: PVF runs over {} s or invalid validations (a timeout counts as invalid){}{note}",
+			slow.join(", "),
+			num(timeout),
+			also_missing(&missing)
+		);
+		return Ok(Verdict::new(Status::Warn, detail).with(numbers));
+	}
+	if !missing.is_empty() {
+		return Ok(no_data(&missing, &note).with(numbers));
+	}
+	if windows.iter().all(|w| w.runs == 0.0) {
+		let none = ["the validators recorded no PVF execution in any window".to_owned()];
+		return Ok(no_data(&none, &note).with(numbers));
+	}
 	let mut by_p95: Vec<&PvfWindow> = windows.iter().collect();
 	by_p95.sort_by(|a, b| b.p95_s.unwrap_or(0.0).total_cmp(&a.p95_s.unwrap_or(0.0)));
 	let worst = by_p95.first();
-	let detail = if slow.is_empty() {
-		format!(
-			"no run over {} s; highest p95 {} s in {}, queue p95 {} s",
-			num(timeout),
-			worst.and_then(|w| w.p95_s).map_or("-".into(), num),
-			worst.map_or("-".to_owned(), |w| w.window.to_string()),
-			worst.and_then(|w| w.queue_p95_s).map_or("-".into(), num)
-		)
-	} else {
-		format!(
-			"{}: PVF runs over {} s or invalid validations (a timeout counts as invalid)",
-			slow.join(", "),
-			num(timeout)
-		)
-	};
-	let status = if slow.is_empty() { Status::Pass } else { Status::Warn };
-	Ok(Verdict::new(status, detail + &failed_scrapes)
-		.with(serde_json::json!({ "windows": windows })))
+	let detail = format!(
+		"no run over {} s; highest p95 {} s in {}, queue p95 {} s{note}",
+		num(timeout),
+		worst.and_then(|w| w.p95_s).map_or("-".into(), num),
+		worst.map_or("-".to_owned(), |w| w.window.to_string()),
+		worst.and_then(|w| w.queue_p95_s).map_or("-".into(), num)
+	);
+	Ok(Verdict::new(Status::Pass, detail).with(numbers))
 }
 
 fn collation_funnel(d: &RunData) -> Result<Verdict, CounterReset> {
@@ -283,17 +300,11 @@ fn collation_funnel(d: &RunData) -> Result<Verdict, CounterReset> {
 		return Ok(Verdict::new(Status::NoResult, "no metrics from the collator's relay node"));
 	}
 	let w = d.run();
-	let failed_scrapes = match coverage(d, generated_total, &[FUNNEL], std::slice::from_ref(&w)) {
-		Ok(note) => note,
-		Err(no_result) => return Ok(no_result),
-	};
+	let run = std::slice::from_ref(&w);
+	let missing: Vec<String> =
+		gaps(d, generated_total, &[FUNNEL], run).into_iter().flatten().collect();
+	let note = failed_scrapes(d, &[FUNNEL], run);
 	let generated = d.diff(generated_total, &[FUNNEL], &w)?;
-	if generated.unwrap_or(0.0) == 0.0 {
-		return Ok(Verdict::new(
-			Status::NoResult,
-			format!("the collator's relay node recorded no generated collation{failed_scrapes}"),
-		));
-	}
 	let expired = |state: &str| {
 		d.increase("polkadot_parachain_collation_expired_count", &[FUNNEL, ("state", state)], &w)
 	};
@@ -304,16 +315,27 @@ fn collation_funnel(d: &RunData) -> Result<Verdict, CounterReset> {
 	let inc_sum =
 		d.increase("polkadot_parachain_collation_inclusion_latency_sum", &[FUNNEL], &w)?;
 	let latency = if inc_n > 0.0 { Some(inc_sum / inc_n) } else { None };
+	// An expired collation was counted, whatever the edges; a pass needs fresh edges.
 	let any = advertised + fetched + backed > 0.0;
-	let status = if any || latency.unwrap_or(1.0) > 1.5 { Status::Warn } else { Status::Pass };
+	let warn = any || latency.unwrap_or(1.0) > 1.5;
+	let numbers = serde_json::json!({ "generated": generated, "lost": { "advertised": advertised, "fetched": fetched, "backed": backed }, "inclusionLatency": latency });
+	if !warn && !missing.is_empty() {
+		return Ok(no_data(&missing, &note).with(numbers));
+	}
+	if !warn && generated.unwrap_or(0.0) == 0.0 {
+		let none = ["the collator's relay node recorded no generated collation".to_owned()];
+		return Ok(no_data(&none, &note).with(numbers));
+	}
 	let detail = format!(
-		"expired after advertised {} (delivery), after fetched {} (validation or backing), after backed {} (availability); backed to included {} relay blocks on average{failed_scrapes}",
+		"expired after advertised {} (delivery), after fetched {} (validation or backing), after backed {} (availability); backed to included {} relay blocks on average{}{note}",
 		num(advertised),
 		num(fetched),
 		num(backed),
-		latency.map_or("-".into(), |l| to_fixed(l, 2))
+		latency.map_or("-".into(), |l| to_fixed(l, 2)),
+		also_missing(&missing)
 	);
-	Ok(Verdict::new(status, detail).with(serde_json::json!({ "generated": generated, "lost": { "advertised": advertised, "fetched": fetched, "backed": backed }, "inclusionLatency": latency })))
+	let status = if warn { Status::Warn } else { Status::Pass };
+	Ok(Verdict::new(status, detail).with(numbers))
 }
 
 /// The PVF checks.

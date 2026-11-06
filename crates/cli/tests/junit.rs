@@ -103,6 +103,49 @@ fn recorded_report_matches_golden_validates_and_copies() {
 }
 
 #[test]
+fn one_failed_scrape_after_the_run_start_keeps_the_recorded_results() {
+	let work = Work::new("failed-scrape");
+	copy_fixture(&work);
+	// The run starts with the baseline phase; validator eve's first scrape after it fails, so
+	// its next good scrape lands about 10 s after the edge.
+	let start = 1_791_020_815_470u64;
+	let path = work.0.join("scrapes.jsonl");
+	let mut first = true;
+	let lines: Vec<String> = fs::read_to_string(&path)
+		.unwrap()
+		.lines()
+		.map(|line| {
+			let mut r: serde_json::Value = serde_json::from_str(line).unwrap();
+			if first && r["instance"] == "eve" && r["t"].as_u64().unwrap() > start {
+				first = false;
+				r["text"] = serde_json::Value::Null;
+				r["error"] = "operation timed out".into();
+				return r.to_string();
+			}
+			line.to_owned()
+		})
+		.collect();
+	assert!(!first);
+	fs::write(&path, lines.join("\n") + "\n").unwrap();
+	let output = work.cli().arg("report").arg(&work.0).output().unwrap();
+	assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+	let summary: serde_json::Value =
+		serde_json::from_str(&fs::read_to_string(work.0.join("summary.json")).unwrap()).unwrap();
+	let check = |name: &str| {
+		summary["checks"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|c| c["check"] == name)
+			.unwrap()
+			.clone()
+	};
+	let disputes = check("no timed-out candidates or disputes");
+	assert_eq!(disputes["status"], "pass", "{disputes}");
+	assert_eq!(check("PVF time on validators (level 2, all parachains)")["status"], "pass");
+}
+
+#[test]
 fn report_refuses_an_unknown_summary_schema_and_rewrites_nothing() {
 	let work = Work::new("schema");
 	copy_fixture(&work);

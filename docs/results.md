@@ -252,7 +252,7 @@ Checks run on the recorded series, in this order. A check whose metric the node 
 | --- | --- | --- |
 | block production: why blocks end | Why each block ended: weight, size, deadline, or no more transactions. | `info`. `no result` if the collator recorded no block at all. |
 | block production: build time within the authoring deadline | Build time against 2 s. | `warn`: a block over 2.5 s, or p95 at 2.5 s. `fail`: over 5% of blocks above 2.5 s. `no result`: no built block in a window of two block intervals or more. |
-| pvf: relay slots (level 1) | Slots missed above idle: not built, not backed, timed out. | `fail`: a window misses over one slot above idle. `no result`: no finalized relay block in the baseline or in a window of 12 s or more, or no slot offered to the parachain. |
+| pvf: relay slots (level 1) | Slots missed above idle: not built, not backed, timed out. | `fail`: a window misses over one slot above idle. `no result`: no finalized relay block in the whole run, or no slot offered to the parachain. |
 | pvf: no timed-out candidates or disputes | Timed-out candidates; relay disputes. | `fail` if any. `no result`: no finalized relay block in the run. |
 | pvf: PVF time on validators (level 2, all parachains) | Validation time. | `warn`: a validation over 2 s, or an invalid result. `no result`: no PVF execution in a window of 12 s or more. |
 | pvf: collation funnel | Collations expired after advertisement, fetch or backing; mean backing-to-inclusion time. | `warn`: any expired, or mean over 1.5 relay blocks. `no result`: no collation generated. |
@@ -264,11 +264,19 @@ Checks run on the recorded series, in this order. A check whose metric the node 
 
 Statuses: `pass` (no problem found), `warn` (a `WARN` verdict unless the verdict is `FAIL`), `fail` (a `FAIL` verdict), `info` (a number to read, not judged), `no result` (data missing or stale, nothing observed, or a node restarted inside the window).
 
-A check that reads node metrics needs a fresh scrape at both ends of each window it judges: one at most 10 s after the window starts and one at most 10 s after it ends. If a node did not answer in time, the check is `no result` and its detail names the node and the window, for example `stale node metrics: step 1: no scrape of collator Collator-1502 within 10 s after its end`.
+A check judges each window (a step, or recovery) it has data for. A window has no data in three cases:
 
-If a scrape failed inside a window but both ends are fresh, the check keeps its status and its detail ends with the failures, for example `; failed scrapes: 2 in step 1`. The run check `monitors recorded everything` also warns about them.
+- **Stale metrics.** A node was not scraped soon enough after the window started or ended. PolkaMeter scrapes every node at each step and phase edge, and every 5 s. A scrape may land up to twice the node's scrape interval plus the 5 s scrape timeout after the edge (15 s at a 5 s interval), so one failed scrape at an edge is tolerated. If a counter has the same value in the scrapes on both sides of the edge, any gap is tolerated. The detail names the node, for example `stale node metrics: step 1: no scrape of collator Collator-1502 within 15 s after its end`.
+- **A node restarted.** A counter went down anywhere in the window, for example `step 0: a node restarted: substrate_proposer_block_constructed went down from 100 to 0 in step 0`.
+- **Nothing recorded.** The window lasted long enough for something to happen and nothing did, such as no built block in two block intervals.
 
-A counter that goes down anywhere in a window means the node restarted. The check is `no result`, with a detail such as `a node restarted: substrate_proposer_block_constructed_bucket went down from 100 to 0 in step 0`.
+A failure or warning measured in any window decides the status. Its detail ends with the windows that had no data, for example `; no data for step 1: the collator recorded no built block`. Without a failure or warning, a window without data makes the check `no result`. A check passes only when every window had data.
+
+If a scrape failed inside a window but the window's edges are fresh, the check keeps its status and its detail ends with the failures, for example `; failed scrapes: 2 in step 1`. The run check `monitors recorded everything` also warns about them.
+
+The relay chain recorder counts a relay block, and the slots in it, when it reads the block after finality. Finality lag can move both into a later window, so a window without relay blocks is not missing data. Only a run without any is.
+
+If the plan does not monitor what a check reads, the check is `no result` with a detail starting `not applicable:`, for example `not applicable: no collator node is monitored`. Such a check is optional, so it does not make the verdict `INCONCLUSIVE`. A plan without `<monitors>` records no relay chain and no node metrics. A monitored node that never answered is different: its checks stay required and have `no result`.
 
 The limits are in `crates/plugin-sdk/src/observers/checks/limits.rs`; they are placeholders until the load target and budgets are agreed. Plugin checks come after the built-in ones and count toward the verdict the same way. An `optional` plugin check with no result does not make the verdict `INCONCLUSIVE`.
 

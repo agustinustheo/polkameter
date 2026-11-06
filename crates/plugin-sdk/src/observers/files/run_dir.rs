@@ -2,7 +2,7 @@
 
 use std::{
 	fs::{self, File, OpenOptions},
-	io::{BufWriter, Write},
+	io::{BufRead, BufReader, BufWriter, Write},
 	path::{Path, PathBuf},
 };
 
@@ -54,23 +54,37 @@ impl RunDir {
 		&self,
 		name: &str,
 	) -> Result<Vec<T>, FileError> {
+		let mut out = Vec::new();
+		self.each_jsonl(name, |record| out.push(record))?;
+		Ok(out)
+	}
+
+	/// Hands every record of a raw file to `f`, one line at a time, so a large file is never
+	/// held whole; a missing file has none.
+	pub(crate) fn each_jsonl<T: serde::de::DeserializeOwned>(
+		&self,
+		name: &str,
+		mut f: impl FnMut(T),
+	) -> Result<(), FileError> {
 		let path = self.path.join(name);
-		let text = match fs::read_to_string(&path) {
-			Ok(text) => text,
-			Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+		let file = match File::open(&path) {
+			Ok(file) => file,
+			Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
 			Err(e) => return Err(io(&path)(e)),
 		};
-		text.lines()
-			.enumerate()
-			.filter(|(_, l)| !l.is_empty())
-			.map(|(i, l)| {
-				serde_json::from_str(l).map_err(|source| FileError::Record {
-					path: path.display().to_string(),
-					line: i + 1,
-					source,
-				})
-			})
-			.collect()
+		for (i, line) in BufReader::new(file).lines().enumerate() {
+			let line = line.map_err(io(&path))?;
+			if line.is_empty() {
+				continue;
+			}
+			let record = serde_json::from_str(&line).map_err(|source| FileError::Record {
+				path: path.display().to_string(),
+				line: i + 1,
+				source,
+			})?;
+			f(record);
+		}
+		Ok(())
 	}
 }
 
