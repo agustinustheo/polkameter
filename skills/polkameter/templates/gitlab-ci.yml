@@ -1,0 +1,35 @@
+# Load-test a dev chain with PolkaMeter's substrate plugin. Add this job to .gitlab-ci.yml.
+# It needs PolkaMeter v0.3.0 or newer, and a Linux x86_64 runner. Commit dev-chain.sh from the
+# PolkaMeter repository (scripts/dev-chain.sh) and a short plan, such as
+# remarks-ci.polkameter.xml, to plans/.
+load-test:
+  image: debian:bookworm-slim
+  variables:
+    POLKAMETER_VERSION: "0.3.0"
+    POLKAMETER_DEV_CHAIN_DIR: "$CI_PROJECT_DIR/.dev-chain"
+    POLKAMETER_PLUGIN_REGISTRY: /tmp/polkameter-plugins.json
+    # //Alice is funded on the dev chain. On a shared network, use a masked CI/CD variable.
+    POLKAMETER_SUBSTRATE_SEED: //Alice
+  cache:
+    key:
+      files: [dev-chain.sh]
+    paths: [.dev-chain/bin]
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends ca-certificates curl
+    - curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh | sh -s -- "$POLKAMETER_VERSION"
+    - export PATH="$HOME/.local/bin:$PATH"
+  script:
+    - bash dev-chain.sh start
+    - polkameter plugin install "$HOME/.local/bin/polkameter-substrate-plugin"
+    - polkameter plugin credential substrate-dev POLKAMETER_SUBSTRATE_SEED
+    - polkameter validate plans/remarks-ci.polkameter.xml
+    - polkameter run plans/remarks-ci.polkameter.xml --output polkameter-runs --junit test-results/polkameter.xml --fail-on-verdict
+  after_script:
+    - bash dev-chain.sh stop
+  artifacts:
+    when: always
+    reports:
+      junit: test-results/polkameter.xml
+    paths:
+      - polkameter-runs/
+      - test-results/polkameter.xml

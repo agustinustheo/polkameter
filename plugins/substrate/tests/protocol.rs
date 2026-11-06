@@ -155,4 +155,18 @@ async fn polkameter_installs_it_and_accepts_the_example_plans() {
 		assert_eq!(plugin.id, "substrate", "{name}");
 		assert_eq!(plugin.version, env!("CARGO_PKG_VERSION"), "{name}: plugin version");
 	}
+	// The Agent Skill bundles copies of the example plans; they must not drift.
+	let templates = concat!(env!("CARGO_MANIFEST_DIR"), "/../../skills/polkameter/templates");
+	for (template, example) in [
+		("remarks", "substrate-remarks"),
+		("remarks-ci", "substrate-remarks-ci"),
+		("transfers-ci", "substrate-transfers-ci"),
+	] {
+		let read = |path: String| std::fs::read_to_string(path).unwrap();
+		assert_eq!(
+			read(format!("{templates}/{template}.polkameter.xml")),
+			read(format!("{examples}/{example}.polkameter.xml")),
+			"skills/polkameter/templates/{template}.polkameter.xml differs from examples/{example}.polkameter.xml"
+		);
+	}
 }
