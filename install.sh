@@ -81,14 +81,25 @@ else
 fi
 actual=${actual%% *}
 [ "$actual" = "$expected" ] || fail 'SHA-256 verification failed'
-case "${POLKAMETER_VERIFY_ATTESTATION:-auto}" in
+verify=${POLKAMETER_VERIFY_ATTESTATION:-auto}
+case "$verify" in
     0) printf 'polkameter: attestation verification disabled; only the checksum was verified.\n' >&2 ;;
     auto|1)
         if command -v gh >/dev/null 2>&1; then
-            gh attestation verify "$temporary/$asset" --repo agustinustheo/polkameter \
+            # gh cannot query attestations anonymously, even for a public repository.
+            # It exits 4 when it has no github.com credentials (gh help exit-codes).
+            status=0
+            gh attestation verify "$temporary/$asset" --repo agustinustheo/polkameter --hostname github.com \
                 --signer-workflow agustinustheo/polkameter/.github/workflows/release.yml \
-                --source-ref "refs/tags/v$version" || fail 'attestation verification failed; see the release recovery and trust documentation'
-        elif [ "${POLKAMETER_VERIFY_ATTESTATION:-auto}" = 1 ]; then
+                --source-ref "refs/tags/v$version" || status=$?
+            case "$status:$verify" in
+                0:*) ;;
+                4:1) fail 'gh must be authenticated to github.com to verify attestations; run gh auth login or set GH_TOKEN' ;;
+                4:auto) printf 'polkameter: gh is not authenticated to github.com; only the checksum was verified. Run gh auth login or set GH_TOKEN to verify the build attestation.\n' >&2 ;;
+                # An expired or invalid token also exits 1, like a failed verification.
+                *) fail "attestation verification failed (gh exit $status). If gh's github.com credentials are expired or invalid, run gh auth login or set a valid GH_TOKEN; POLKAMETER_VERIFY_ATTESTATION=0 accepts the checksum only. Otherwise see the release recovery and trust documentation" ;;
+            esac
+        elif [ "$verify" = 1 ]; then
             fail 'gh is required to verify attestations'
         else
             printf 'polkameter: gh is unavailable; only the checksum was verified.\n' >&2

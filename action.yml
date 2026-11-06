@@ -21,7 +21,7 @@ inputs:
     required: false
     default: auto
   version:
-    description: Release version (X.Y.Z or vX.Y.Z). Empty uses a full release tag or the package version for a moving major tag; other refs build from source.
+    description: Release version (X.Y.Z or vX.Y.Z, optionally with a prerelease such as -rc.1). Empty uses a full release tag or the package version for a moving major tag; other refs build from source.
     required: false
     default: ""
   verify-attestation:
@@ -49,13 +49,25 @@ inputs:
     required: false
     default: error
   upload:
-    description: Upload the run directory as a workflow artifact.
+    description: Upload the run's reports as a workflow artifact. Skipped with a notice on GitHub Enterprise Server.
     required: false
     default: "true"
-  artifact-name:
-    description: Name of the uploaded run artifact.
+  upload-raw-plugin-files:
+    description: Also upload files that plugins wrote into the run directory. PolkaMeter does not redact them.
     required: false
-    default: polkameter-run
+    default: "false"
+  artifact-name:
+    description: Name of the uploaded run artifact. Empty derives a name unique to the job, attempt and action step.
+    required: false
+    default: ""
+  artifact-retention-days:
+    description: Days to keep the run artifact, 1 to 90. Empty uses the repository setting.
+    required: false
+    default: ""
+  artifact-size-limit-mb:
+    description: Upload at most this many MiB of run records; larger records are omitted and listed. Reports are always kept. 0 means no limit.
+    required: false
+    default: "500"
   toolchain:
     description: Rust toolchain that builds PolkaMeter or plugin-crates. It must be 1.93 or newer.
     required: false
@@ -79,6 +91,15 @@ outputs:
   verdict:
     description: Load verdict (PASS, WARN, FAIL or INCONCLUSIVE), or empty when no verdict was written.
     value: ${{ steps.run.outputs.verdict }}
+  artifact-name:
+    description: Name of the run artifact, or empty when nothing was staged.
+    value: ${{ steps.stage.outputs.artifact-name }}
+  artifact-path:
+    description: Directory holding the staged artifact files, or empty when nothing was staged.
+    value: ${{ steps.stage.outputs.artifact-path }}
+  artifact-id:
+    description: ID of the uploaded run artifact, or empty when it was not uploaded.
+    value: ${{ steps.upload.outputs.artifact-id }}
 runs:
   using: composite
   steps:
@@ -91,6 +112,14 @@ runs:
           error|verdict) ;;
           *) echo "::error::fail-on must be error or verdict"; exit 2 ;;
         esac
+    - name: Validate artifact inputs
+      shell: bash
+      env:
+        UPLOAD: ${{ inputs.upload }}
+        RAW_PLUGIN_FILES: ${{ inputs.upload-raw-plugin-files }}
+        SIZE_LIMIT_MB: ${{ inputs.artifact-size-limit-mb }}
+        RETENTION_DAYS: ${{ inputs.artifact-retention-days }}
+      run: python3 "$GITHUB_ACTION_PATH/scripts/action-stage-artifact.py" --check
     - name: Install released PolkaMeter or select source
       id: install
       shell: bash
@@ -106,7 +135,7 @@ runs:
       if: steps.install.outputs.needs-toolchain == 'true'
       with:
         toolchain: ${{ inputs.toolchain }}
-    - uses: Swatinem/rust-cache@v2
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       if: steps.install.outputs.install-method == 'source'
       with:
         # A target dir of its own, so restoring the cache never overwrites the
@@ -191,13 +220,35 @@ runs:
           fi
         fi
         echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
-        cat "$run_dir/summary.md" >> "$GITHUB_STEP_SUMMARY"
-    - name: Upload the run
+        if [ -f "$run_dir/summary.md" ]; then
+          # PolkaMeter redacts summary.md only when the run finishes normally.
+          if python3 "$GITHUB_ACTION_PATH/scripts/action-stage-artifact.py" --finished "$run_dir"; then
+            cat "$run_dir/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::notice::The run did not finish normally, so its summary.md was not redacted; it is left out of the job summary."
+          fi
+        fi
+    - name: Stage the run artifact
+      id: stage
       if: always() && inputs.upload == 'true' && steps.run.outputs.run-dir
-      uses: actions/upload-artifact@v7
+      shell: bash
+      env:
+        RUN_DIR: ${{ steps.run.outputs.run-dir }}
+        ARTIFACT_NAME: ${{ inputs.artifact-name }}
+        UPLOAD: ${{ inputs.upload }}
+        RAW_PLUGIN_FILES: ${{ inputs.upload-raw-plugin-files }}
+        SIZE_LIMIT_MB: ${{ inputs.artifact-size-limit-mb }}
+        RETENTION_DAYS: ${{ inputs.artifact-retention-days }}
+      run: python3 "$GITHUB_ACTION_PATH/scripts/action-stage-artifact.py"
+    - name: Upload the run
+      id: upload
+      if: always() && steps.stage.outputs.upload == 'true'
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
-        name: ${{ inputs.artifact-name }}
-        path: ${{ steps.run.outputs.run-dir }}
+        name: ${{ steps.stage.outputs.artifact-name }}
+        path: ${{ steps.stage.outputs.artifact-path }}
+        retention-days: ${{ inputs.artifact-retention-days }}
+        if-no-files-found: error
     - name: Fail the job if the plan failed
       shell: bash
       env:
