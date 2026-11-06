@@ -15,3 +15,19 @@ regexes = [
     '''^0x6e3eca98010a7a2bf699f6323350bfd12f646d9418efb4d3629aa8460630100a$''',
     '''^0xfa198387d23c2428fa9c65448d0b65c79b3f5a98e0d86a139f72d3c99706a9ae$''',
 ]
+
+# Made-up test values in the redaction tests, not credentials: an endpoint key and a credential
+# that the tests check are redacted. Match the rule, exact paths AND exact values.
+[[allowlists]]
+description = "Redaction test fixtures"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = [
+    '''^crates/cli/src/engine/measurement\.rs$''',
+    '''^crates/cli/src/redact\.rs$''',
+]
+regexTarget = "secret"
+regexes = [
+    '''^APIKEY0123456789$''',
+    '''^0123456789-secret$''',
+]
