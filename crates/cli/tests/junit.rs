@@ -49,9 +49,8 @@ fn validate(path: &Path) {
 	}
 }
 
-#[test]
-fn recorded_report_matches_golden_validates_and_copies() {
-	let work = Work::new("fixture");
+/// Copies the recorded smoke run's input files (not its golden outputs) into `work`.
+fn copy_fixture(work: &Work) {
 	let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/smoke-run");
 	for entry in fs::read_dir(&fixture).unwrap() {
 		let path = entry.unwrap().path();
@@ -63,6 +62,12 @@ fn recorded_report_matches_golden_validates_and_copies() {
 			fs::copy(&path, work.0.join(path.file_name().unwrap())).unwrap();
 		}
 	}
+}
+
+#[test]
+fn recorded_report_matches_golden_validates_and_copies() {
+	let work = Work::new("fixture");
+	copy_fixture(&work);
 	let copy = work.0.join("reports/load.xml");
 	let output = work
 		.cli()
@@ -79,6 +84,9 @@ fn recorded_report_matches_golden_validates_and_copies() {
 	let normalized = xml.replace(&work.0.display().to_string(), "/runs/smoke-run");
 	assert_eq!(normalized, include_str!("fixtures/smoke-run/junit.xml"));
 	validate(&xml_path);
+	// samples.jtl: JMeter CSV, workflow and setup steps stamped with their start time.
+	let jtl = fs::read_to_string(work.0.join("samples.jtl")).unwrap();
+	assert_eq!(jtl, include_str!("fixtures/smoke-run/samples.jtl"));
 	// Rebuilding is deterministic and accepts a destination equal to the default file.
 	assert!(
 		work.cli()
@@ -92,6 +100,77 @@ fn recorded_report_matches_golden_validates_and_copies() {
 			.success()
 	);
 	assert_eq!(xml, fs::read_to_string(xml_path).unwrap());
+}
+
+#[test]
+fn one_failed_scrape_after_the_run_start_keeps_the_recorded_results() {
+	let work = Work::new("failed-scrape");
+	copy_fixture(&work);
+	// The run starts with the baseline phase; validator eve's first scrape after it fails, so
+	// its next good scrape lands about 10 s after the edge.
+	let start = 1_791_020_815_470u64;
+	let path = work.0.join("scrapes.jsonl");
+	let mut first = true;
+	let lines: Vec<String> = fs::read_to_string(&path)
+		.unwrap()
+		.lines()
+		.map(|line| {
+			let mut r: serde_json::Value = serde_json::from_str(line).unwrap();
+			if first && r["instance"] == "eve" && r["t"].as_u64().unwrap() > start {
+				first = false;
+				r["text"] = serde_json::Value::Null;
+				r["error"] = "operation timed out".into();
+				return r.to_string();
+			}
+			line.to_owned()
+		})
+		.collect();
+	assert!(!first);
+	fs::write(&path, lines.join("\n") + "\n").unwrap();
+	let output = work.cli().arg("report").arg(&work.0).output().unwrap();
+	assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+	let summary: serde_json::Value =
+		serde_json::from_str(&fs::read_to_string(work.0.join("summary.json")).unwrap()).unwrap();
+	let check = |name: &str| {
+		summary["checks"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|c| c["check"] == name)
+			.unwrap()
+			.clone()
+	};
+	let disputes = check("no timed-out candidates or disputes");
+	assert_eq!(disputes["status"], "pass", "{disputes}");
+	assert_eq!(check("PVF time on validators (level 2, all parachains)")["status"], "pass");
+}
+
+#[test]
+fn report_refuses_an_unknown_summary_schema_and_rewrites_nothing() {
+	let work = Work::new("schema");
+	copy_fixture(&work);
+	let path = work.0.join("summary.json");
+	let mut summary: serde_json::Value =
+		serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+	for (version, shown) in [(Some(serde_json::json!(2)), "2"), (None, "missing")] {
+		match &version {
+			Some(v) => summary["schemaVersion"] = v.clone(),
+			None => {
+				summary.as_object_mut().unwrap().remove("schemaVersion");
+			},
+		}
+		let text = serde_json::to_string_pretty(&summary).unwrap();
+		fs::write(&path, &text).unwrap();
+		let output = work.cli().arg("report").arg(&work.0).output().unwrap();
+		assert_eq!(output.status.code(), Some(2));
+		let stderr = String::from_utf8_lossy(&output.stderr);
+		assert!(stderr.contains(&format!("has schemaVersion {shown}")), "{stderr}");
+		assert!(stderr.contains("reads and writes only schemaVersion 1"), "{stderr}");
+		assert_eq!(fs::read_to_string(&path).unwrap(), text);
+		for derived in ["summary.md", "junit.xml", "samples.jtl", "plots"] {
+			assert!(!work.0.join(derived).exists(), "{derived} was written");
+		}
+	}
 }
 
 #[test]

@@ -93,8 +93,10 @@ pub struct BlockRecord {
 }
 
 /// CPU and memory of the node under load (`node.jsonl`), as `ps` reports them, rounded.
+/// Fields may be added: build one with [`NodeSample::new`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub struct NodeSample {
 	/// When sampled.
 	pub t: Millis,
@@ -102,6 +104,16 @@ pub struct NodeSample {
 	pub cpu_pct: Option<i64>,
 	/// Resident memory.
 	pub rss_mi_b: u64,
+	/// The process sampled: a new one after the node restarted.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub pid: Option<u32>,
+}
+
+impl NodeSample {
+	/// A sample of process `pid` at `t`.
+	pub fn new(t: Millis, cpu_pct: Option<i64>, rss_mi_b: u64, pid: Option<u32>) -> Self {
+		Self { t, cpu_pct, rss_mi_b, pid }
+	}
 }
 
 /// What a run of best blocks held (part of a step record and of recovery).

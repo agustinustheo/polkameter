@@ -198,6 +198,8 @@ With a `<load>`, it rebuilds the built-in and plugin checks, `summary.json`, `su
 
 `report` exits 0 when the rebuild succeeds, even if the outcome is `failed`. Check the `Status:` line or `execution.json`'s `state`.
 
+If `summary.json` has a `schemaVersion` other than `1`, or none, `report` changes no file and exits 2. See [rebuilding a report](results.md#rebuilding-a-report).
+
 ```sh
 polkameter report runs/run-1792255021142-12303-1
 ```
@@ -409,7 +411,7 @@ The client checks each run ID: at most 128 characters, from letters, digits, `-`
 | --- | --- | --- |
 | `0` | A command succeeded, or a run ended `completed` | Nothing to fix |
 | `1` | A run ended `failed` or `completed_with_failures`, or a `report` or remote request failed | A plugin crashed or errored, a deadline or assertion failed, a credential was unavailable, or the agent refused a request. A smoke-mode load run also exits 1 on a monitor problem or a missing required check. With `--fail-on-verdict`, a `FAIL` verdict also exits 1 |
-| `2` | Invalid input or usage | A malformed or invalid plan, a bad flag or argument, an unreadable registry, or a wrong remote endpoint or token variable |
+| `2` | Invalid input or usage | A malformed or invalid plan, a bad flag or argument, an unreadable registry, a wrong remote endpoint or token variable, or a `summary.json` that `report` cannot rewrite (unknown `schemaVersion`) |
 | `3` | Preflight failed | A plugin not installed, a checksum or version mismatch, an operation missing from its manifest, a preflight step that can change state, no calibration answer from the chain, or an unregistered `<monitors>` alias |
 | `130` | Stopped by SIGINT | Ctrl-C during a run, or a remote run that the agent stopped on request. `agent serve` also exits `130` after SIGINT |
 | `143` | Stopped by SIGTERM | A CI system cancelled the job or hit its timeout, or the agent of a remote run received SIGTERM. `agent serve` also exits `143` after SIGTERM |
@@ -426,7 +428,7 @@ By default, a stress-mode load run exits `0` whatever its verdict. Add `--fail-o
 | --- | --- | --- |
 | `POLKAMETER_PLUGIN_REGISTRY` | Commands that use installed plugins | Path of the plugin registry (JSON). Default: `~/.config/polkameter/plugins.json` |
 | `HOME`, `USERPROFILE` | The default registry path | Home directory for the default path. `USERPROFILE` is used if `HOME` is unset. If neither is set, set `POLKAMETER_PLUGIN_REGISTRY` |
-| `POLKAMETER_NODE_PID` | Load runs with `<monitors>` | The node's process ID, for CPU and memory. If unset, PolkaMeter finds the process on the RPC port with `lsof`, then `ss`. If none is found, no CPU or memory is recorded |
+| `POLKAMETER_NODE_PID` | Load runs | The node's process ID, for CPU and memory. If unset and the target URL is loopback, PolkaMeter finds the process on the RPC port with `lsof`, then `ss`, skipping port forwarders such as `ssh`. If none is found, no CPU or memory is recorded. See [Node CPU and memory](how-it-works.md#node-cpu-and-memory) |
 | `POLKAMETER_AGENT_TOKEN` | `agent serve` | Default name of the token variable, used when `--token-env` is not given. At least 32 characters, at least 8 of them different |
 
 Plugins start with a cleared environment. Only `PATH`, `TMPDIR`, `TEMP`, `SYSTEMROOT`, `SSL_CERT_FILE` and `SSL_CERT_DIR` are passed on. A plugin receives credential values only as step inputs.

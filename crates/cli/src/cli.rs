@@ -440,8 +440,37 @@ fn one_line(text: &str) -> String {
 	line
 }
 
+/// Refuses a `summary.json` this version cannot rewrite: one without a `schemaVersion`, or with
+/// a version other than the one it writes. A run without a summary (no load test) passes.
+fn check_summary_version(directory: &std::path::Path) -> Result<(), CliError> {
+	use polkameter_plugin_sdk::observers::files::summary::SCHEMA_VERSION;
+	let path = directory.join("summary.json");
+	let bytes = match std::fs::read(&path) {
+		Ok(bytes) => bytes,
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+		Err(e) => return Err(CliError::Runtime(format!("cannot read {}: {e}", path.display()))),
+	};
+	let summary: Value = serde_json::from_slice(&bytes)
+		.map_err(|e| CliError::Invalid(format!("{} is not valid JSON: {e}", path.display())))?;
+	let unsupported = |found: String| {
+		CliError::Invalid(format!(
+			"{} has schemaVersion {found}, but polkameter {} reads and writes only schemaVersion \
+			 {SCHEMA_VERSION}; report it with the polkameter version that recorded the run. \
+			 Nothing was rewritten",
+			path.display(),
+			env!("CARGO_PKG_VERSION"),
+		))
+	};
+	match summary.get("schemaVersion") {
+		Some(Value::Number(n)) if n.as_u64() == Some(u64::from(SCHEMA_VERSION)) => Ok(()),
+		Some(other) => Err(unsupported(other.to_string())),
+		None => Err(unsupported("missing".into())),
+	}
+}
+
 fn report(path: PathBuf, format: OutputFormat, junit: Option<PathBuf>) -> Result<i32, CliError> {
 	let runtime = |e: anyhow::Error| CliError::Runtime(format!("{e:#}"));
+	check_summary_version(&path)?;
 	crate::engine::artifacts::write_outputs(&path)
 		.with_context(|| format!("cannot read run directory {}", path.display()))
 		.map_err(runtime)?;

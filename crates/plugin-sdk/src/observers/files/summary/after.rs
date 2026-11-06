@@ -119,8 +119,11 @@ pub struct StateSample {
 /// Our flood txs counted again on the finalized chain, block by block. The tracker reads best
 /// blocks, so a reorg can hide an inclusion from it (the block that replaced the one it read) or
 /// keep one the chain dropped (a block on the abandoned fork).
+///
+/// Fields may be added: start from `OnChain::default()` and set the fields.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub struct OnChain {
 	/// The finalized blocks walked, first and last.
 	pub blocks: (u32, u32),
@@ -132,6 +135,15 @@ pub struct OnChain {
 	pub only_on_fork: u64,
 	/// Counted by the tracker in one block, finalized in another.
 	pub moved: u64,
+	/// Failed in a best block the finalized chain dropped, and not failed on the finalized chain
+	/// (dispatched successfully in a finalized block, or in none). Not in `failed_in_block`.
+	/// Left out of the file when 0.
+	#[serde(default, skip_serializing_if = "is_zero")]
+	pub failed_only_on_fork: u64,
+}
+
+pub(super) fn is_zero(n: &u64) -> bool {
+	*n == 0
 }
 
 /// One flood tx the loss check found nowhere: a line of lost.jsonl.
@@ -157,8 +169,11 @@ pub struct LostTx {
 /// Every sent flood tx has one status, and the statuses partition `sent`: `included`, `refused`,
 /// `in_pool`, `lost`, `unverified` and `unknown` add up to it. A `None` count (`in_pool`, `lost`)
 /// was not counted, and its txs fall under the other statuses.
+///
+/// Fields may be added: start from `Loss::default()` and set the fields.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub struct Loss {
 	/// Successful RPC replies (not a dispatch-success count).
 	#[serde(default)]
@@ -175,7 +190,8 @@ pub struct Loss {
 	pub sent: u64,
 	/// Included in a finalized block, read by the walk.
 	pub included: u64,
-	/// Failed after inclusion, in a best or a finalized block.
+	/// Failed after inclusion: in the finalized block when the tx is in one, else in the best
+	/// block while finality is not verified. A failure only on a fork is `on_chain.failed_only_on_fork`.
 	pub failed_in_block: u64,
 	/// Refused at submit.
 	pub refused: u64,
@@ -194,4 +210,8 @@ pub struct Loss {
 	pub finalized: Option<Finality>,
 	/// The state check.
 	pub state: Option<StateSample>,
+	/// Why the plan's state check gave no result (an error or a timeout); `None` when it ran or
+	/// the plan has none. The "no silent loss" check is then "no result".
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub state_error: Option<String>,
 }

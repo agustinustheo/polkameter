@@ -9,7 +9,9 @@ use std::{
 };
 
 use polkameter_plugin_sdk::chain::{Client, tx_hash};
-use polkameter_plugin_sdk::observers::files::summary::{Finality, Loss, LostTx, NodePool, OnChain};
+use polkameter_plugin_sdk::observers::files::summary::{
+	Finality, Loss, LostTx, NodePool, StateSample,
+};
 use serde::Serialize;
 
 use crate::load::{scenario::StateCheck, source::TxHash, tracker::FloodTx};
@@ -25,8 +27,6 @@ pub struct Settled<'a> {
 	pub flood: &'a HashMap<TxHash, FloodTx>,
 	/// The block the tracker saw each included flood tx in.
 	pub included_in: &'a HashMap<TxHash, u32>,
-	/// Included flood txs that did not fail, in send order.
-	pub included_ok: &'a [TxHash],
 	/// The highest block with one of ours.
 	pub last_ours_block: u32,
 	/// The first block the tracker read.
@@ -45,7 +45,8 @@ pub async fn loss_check(
 	finality_wait_ms: u64,
 ) -> (Loss, Vec<LostTx>, Vec<serde_json::Value>) {
 	let mut notes = Vec::new();
-	let mut loss = Loss { sent: run.flood.len() as u64, ..Loss::default() };
+	let mut loss = Loss::default();
+	loss.sent = run.flood.len() as u64;
 	// Snapshot the pool first, then require finality through the best head observed
 	// after listing it. A tx can leave the pool while we walk, but cannot disappear
 	// between a late pool snapshot and an earlier chain cutoff. The reads are awaited in
@@ -96,8 +97,10 @@ pub async fn loss_check(
 		&& on_chain.is_some()
 		&& loss.finalized.as_ref().is_some_and(|f| f.waited_for_it);
 	let found = on_chain.as_ref().map(|(_, _, found)| found);
-	let rows =
-		ledger(run.flood, run.included_in, found, &finalized_failed, ready.as_ref(), cutoff, known);
+	// Finalized dispatch evidence settles every tx: the walk ran up to the head it needed.
+	let settled = on_chain.is_some() && loss.finalized.as_ref().is_some_and(|f| f.waited_for_it);
+	let evidence = Evidence { found, finalized_failed: &finalized_failed, settled };
+	let rows = ledger(run.flood, run.included_in, &evidence, ready.as_ref(), cutoff, known);
 	let count = |status: Status| rows.iter().filter(|r| r.status == status).count() as u64;
 	loss.accepted = run.flood.values().filter(|tx| tx.accepted).count() as u64;
 	loss.included = count(Status::Finalized);
@@ -108,38 +111,36 @@ pub async fn loss_check(
 	loss.lost = known.then(|| count(Status::Lost));
 	loss.failed_in_block = rows.iter().filter(|r| r.failed).count() as u64;
 	if let Some((first, last, _)) = &on_chain {
-		loss.on_chain = OnChain {
-			blocks: (*first, *last),
-			included: loss.included,
-			missed: rows.iter().filter(|r| r.finalized.is_some() && r.best.is_none()).count()
-				as u64,
-			only_on_fork: rows.iter().filter(|r| r.finalized.is_none() && r.best.is_some()).count()
-				as u64,
-			moved: rows
-				.iter()
-				.filter(|r| matches!((r.best, r.finalized), (Some(b), Some(f)) if b != f))
-				.count() as u64,
-		};
+		let c = &mut loss.on_chain;
+		c.blocks = (*first, *last);
+		c.included = loss.included;
+		c.missed = rows.iter().filter(|r| r.finalized.is_some() && r.best.is_none()).count() as u64;
+		c.only_on_fork =
+			rows.iter().filter(|r| r.finalized.is_none() && r.best.is_some()).count() as u64;
+		c.moved = rows
+			.iter()
+			.filter(|r| matches!((r.best, r.finalized), (Some(b), Some(f)) if b != f))
+			.count() as u64;
+		c.failed_only_on_fork = rows.iter().filter(|r| r.failed_on_fork).count() as u64;
 	}
 	loss.node_pool = node_pool.await;
 	let at = finalized.as_ref().ok().map(|(_, at)| *at);
-	if let (Some(check), Some(at), false) = (state, at, run.included_ok.is_empty()) {
-		let ok: Vec<_> = run
-			.included_ok
-			.iter()
-			.filter(|hash| {
-				found.is_some_and(|f| f.contains_key(*hash)) && !finalized_failed.contains(*hash)
-			})
-			.copied()
-			.collect();
-		let n = STATE_SAMPLE.min(ok.len());
-		let sample: Vec<TxHash> = (0..n).map(|i| ok[i * ok.len() / n]).collect();
-		if !sample.is_empty() {
-			match check.check(client, &sample, at).await {
-				Ok(s) => loss.state = Some(s),
-				Err(e) => notes.push(format!("state check: {e}")),
-			}
+	if let Some(check) = state {
+		let ok = state_candidates(run.flood, found, &finalized_failed);
+		let result =
+			state_check(
+				&ok,
+				at,
+				|sample, at| async move { check.check(client, &sample, at).await },
+			)
+			.await;
+		if let Err(e) = &result {
+			notes.push(format!("state check: {e}"));
 		}
+		(loss.state, loss.state_error) = match result {
+			Ok(sample) => (sample, None),
+			Err(e) => (None, Some(e)),
+		};
 	}
 	let lost_rows: Vec<&Row> = rows.iter().filter(|r| r.status == Status::Lost).collect();
 	if lost_rows.len() > LOST_DETAILED {
@@ -175,6 +176,43 @@ pub async fn loss_check(
 	let mut records: Vec<serde_json::Value> = rows.into_iter().map(|r| r.json).collect();
 	records.sort_by_key(|record| record["sentAt"].as_u64());
 	(loss, lost, records)
+}
+
+/// The txs the state check samples: every flood tx in a finalized block whose dispatch did not
+/// fail there, in send order. The finalized chain decides, not the tracker's best blocks: a tx
+/// that failed on a dropped fork and succeeded in the finalized block is checked too.
+fn state_candidates(
+	flood: &HashMap<TxHash, FloodTx>,
+	found: Option<&HashMap<TxHash, u32>>,
+	finalized_failed: &HashSet<TxHash>,
+) -> Vec<TxHash> {
+	let Some(found) = found else { return Vec::new() };
+	let mut ok: Vec<(&TxHash, &FloodTx)> = flood
+		.iter()
+		.filter(|(hash, _)| found.contains_key(*hash) && !finalized_failed.contains(*hash))
+		.collect();
+	ok.sort_by_key(|(hash, tx)| (tx.sent_at, **hash));
+	ok.into_iter().map(|(hash, _)| *hash).collect()
+}
+
+/// The plan's state check over a sample of `ok` (finalized, not failed) at the finalized block
+/// `at`. `Ok(None)`: nothing to check (no tx finalized without failing). `Err`: the configured
+/// check gave no result (it errored or timed out, or there is no finalized block to read).
+async fn state_check<F>(
+	ok: &[TxHash],
+	at: Option<[u8; 32]>,
+	check: impl FnOnce(Vec<TxHash>, [u8; 32]) -> F,
+) -> Result<Option<StateSample>, String>
+where
+	F: std::future::Future<Output = Result<StateSample, polkameter_plugin_sdk::chain::ChainError>>,
+{
+	let Some(at) = at else { return Err("no finalized block to check state at".into()) };
+	let n = STATE_SAMPLE.min(ok.len());
+	if n == 0 {
+		return Ok(None);
+	}
+	let sample: Vec<TxHash> = (0..n).map(|i| ok[i * ok.len() / n]).collect();
+	check(sample, at).await.map(Some).map_err(|e| e.to_string())
 }
 
 /// Where a flood tx ended, as `transactions.jsonl` writes it: exclusive, the first that holds.
@@ -226,16 +264,40 @@ struct Row<'a> {
 	status: Status,
 	best: Option<u32>,
 	finalized: Option<u32>,
+	/// Failed after inclusion, by the best evidence there is (see [`dispatch`]).
 	failed: bool,
+	/// Failed only in a best block the finalized chain dropped.
+	failed_on_fork: bool,
 	json: serde_json::Value,
 }
 
-/// One row per flood tx. `found` is the finalized walk (`None` when it did not run).
+/// What the finalized chain says, for the ledger.
+struct Evidence<'a> {
+	/// The finalized walk: the block each of our txs is in (`None` when it did not run).
+	found: Option<&'a HashMap<TxHash, u32>>,
+	/// Of those, the ones with an `ExtrinsicFailed` event.
+	finalized_failed: &'a HashSet<TxHash>,
+	/// The walk reached the head the check needed: a tx in no finalized block is in none.
+	settled: bool,
+}
+
+/// Whether a tx failed after inclusion: (failed, failed only on a fork). The finalized block's
+/// events decide when there is one. A best-block failure counts only while finality is not
+/// settled; once it is, a failure in a block the finalized chain dropped is a fork-only failure,
+/// counted apart, not a failure of the run.
+fn dispatch(failed_in_best: bool, failed_finalized: Option<bool>, settled: bool) -> (bool, bool) {
+	match failed_finalized {
+		Some(failed) => (failed, failed_in_best && !failed),
+		None if settled => (false, failed_in_best),
+		None => (failed_in_best, false),
+	}
+}
+
+/// One row per flood tx.
 fn ledger<'a>(
 	flood: &'a HashMap<TxHash, FloodTx>,
 	included_in: &HashMap<TxHash, u32>,
-	found: Option<&HashMap<TxHash, u32>>,
-	finalized_failed: &HashSet<TxHash>,
+	evidence: &Evidence<'_>,
 	ready: Option<&HashSet<TxHash>>,
 	cutoff: Option<u32>,
 	known: bool,
@@ -244,24 +306,19 @@ fn ledger<'a>(
 		.iter()
 		.map(|(hash, tx)| {
 			let best = included_in.get(hash).copied();
-			let finalized = found.and_then(|f| f.get(hash)).copied();
+			let finalized = evidence.found.and_then(|f| f.get(hash)).copied();
 			let ready = ready.map(|pool| pool.contains(hash));
 			let status = classify(tx, best, finalized, ready, known);
-			let failed_finalized = finalized.map(|_| finalized_failed.contains(hash));
+			let failed_finalized = finalized.map(|_| evidence.finalized_failed.contains(hash));
+			let (failed, failed_on_fork) =
+				dispatch(tx.failed_in_block, failed_finalized, evidence.settled);
 			let json = serde_json::json!({"version":1,"hash":hex::encode(hash),"step":tx.step,
 				"sentAt":tx.sent_at,"poolSnapshotBlock":cutoff,"accepted":tx.accepted,
 				"replyMs":tx.reply_ms,"inclusionMs":tx.inclusion_ms,"bestBlock":best,
 				"failedInBestBlock":tx.failed_in_block,"finalizedBlock":finalized,
-				"failedInFinalizedBlock":failed_finalized,"inReadyPool":ready,"status":status});
-			Row {
-				hash: *hash,
-				tx,
-				status,
-				best,
-				finalized,
-				failed: tx.failed_in_block || failed_finalized == Some(true),
-				json,
-			}
+				"failedInFinalizedBlock":failed_finalized,"failedOnlyOnFork":failed_on_fork,
+				"inReadyPool":ready,"status":status});
+			Row { hash: *hash, tx, status, best, finalized, failed, failed_on_fork, json }
 		})
 		.collect()
 }
@@ -306,11 +363,11 @@ async fn wait_finalized(
 	block: u32,
 	finality_wait_ms: u64,
 ) -> Result<(u32, [u8; 32]), polkameter_plugin_sdk::chain::ChainError> {
-	let deadline = crate::load::now_ms() + finality_wait_ms;
+	let deadline = tokio::time::Instant::now() + Duration::from_millis(finality_wait_ms);
 	loop {
 		let at = client.finalized().await?;
 		let number = at.block_number() as u32;
-		if number >= block || crate::load::now_ms() > deadline {
+		if number >= block || tokio::time::Instant::now() > deadline {
 			return Ok((number, at.block_hash().0));
 		}
 		tokio::time::sleep(Duration::from_secs(2)).await;
@@ -347,9 +404,11 @@ mod tests {
 				ready.insert(hash);
 			}
 		}
-		let on_chain = walked.then_some(&found);
+		let failed = HashSet::new();
+		let evidence =
+			Evidence { found: walked.then_some(&found), finalized_failed: &failed, settled: known };
 		let pool = pool_listed.then_some(&ready);
-		let rows = ledger(&flood, &included_in, on_chain, &HashSet::new(), pool, Some(12), known);
+		let rows = ledger(&flood, &included_in, &evidence, pool, Some(12), known);
 		for row in &rows {
 			let want = cases[row.tx.sent_at as usize].5;
 			assert_eq!(row.status, want, "{name}: tx {}", row.tx.sent_at);
@@ -415,5 +474,85 @@ mod tests {
 				(true, false, None, None, false, Unknown),
 			],
 		);
+	}
+
+	/// A tx failed in a best block on a fork, then dispatched successfully in the finalized block.
+	#[test]
+	fn a_fork_failure_does_not_count_once_the_finalized_block_succeeded() {
+		let hash = [7; 32];
+		let tx = FloodTx { accepted: true, failed_in_block: true, ..Default::default() };
+		let flood = HashMap::from([(hash, tx)]);
+		let included_in = HashMap::from([(hash, 10)]);
+		let found = HashMap::from([(hash, 11)]);
+		let none = HashSet::new();
+		let evidence = Evidence { found: Some(&found), finalized_failed: &none, settled: true };
+		let rows = ledger(&flood, &included_in, &evidence, Some(&HashSet::new()), Some(12), true);
+		assert_eq!(rows[0].status, Finalized);
+		assert!(!rows[0].failed, "finalized success wins over the fork's failure");
+		assert!(rows[0].failed_on_fork, "the fork failure is counted apart");
+		assert_eq!(rows[0].json["failedOnlyOnFork"], true);
+		// Failed in the finalized block too: a failure, and not a fork-only one.
+		let failed = HashSet::from([hash]);
+		let evidence = Evidence { found: Some(&found), finalized_failed: &failed, settled: true };
+		let rows = ledger(&flood, &included_in, &evidence, Some(&HashSet::new()), Some(12), true);
+		assert!(rows[0].failed && !rows[0].failed_on_fork);
+	}
+
+	/// A tx failed on a dropped fork, then succeeded in the finalized block: the tracker never
+	/// counted it as a success, but the state check must still read it.
+	#[test]
+	fn state_check_candidates_come_from_the_finalized_chain() {
+		let (a, b, c) = ([1; 32], [2; 32], [3; 32]);
+		let tx =
+			|sent_at, failed_in_block| FloodTx { sent_at, failed_in_block, ..Default::default() };
+		let flood = HashMap::from([(a, tx(3, true)), (b, tx(1, false)), (c, tx(2, false))]);
+		let found = HashMap::from([(a, 11), (b, 10), (c, 10)]);
+		let failed = HashSet::from([c]);
+		assert_eq!(state_candidates(&flood, Some(&found), &failed), [b, a]);
+		assert!(state_candidates(&flood, None, &failed).is_empty(), "no walk, no candidates");
+	}
+
+	#[test]
+	fn dispatch_uses_finalized_evidence_when_there_is_some() {
+		// (failed in best, failed in finalized, settled) -> (failed, failed only on a fork)
+		for (best, finalized, settled, want) in [
+			(true, Some(false), true, (false, true)),
+			(true, Some(true), true, (true, false)),
+			(false, Some(true), true, (true, false)),
+			(false, Some(false), true, (false, false)),
+			// Settled, in no finalized block: its best block was dropped.
+			(true, None, true, (false, true)),
+			// Not settled: the best block is the only evidence.
+			(true, None, false, (true, false)),
+			(false, None, false, (false, false)),
+		] {
+			assert_eq!(dispatch(best, finalized, settled), want, "{best} {finalized:?} {settled}");
+		}
+	}
+
+	#[test]
+	fn a_state_check_without_a_result_is_an_error_not_a_pass() {
+		use polkameter_plugin_sdk::chain::ChainError;
+		let ok = [[1; 32], [2; 32]];
+		let run = |at, result: Result<StateSample, ChainError>| {
+			futures_util::FutureExt::now_or_never(state_check(&ok, at, |sample, _| {
+				assert_eq!(sample.len(), 2);
+				std::future::ready(result)
+			}))
+			.expect("ready")
+		};
+		let timeout = ChainError::Timeout("plugin state check: timed out after 60 s".into());
+		assert_eq!(
+			run(Some([0; 32]), Err(timeout)).unwrap_err(),
+			"plugin state check: timed out after 60 s"
+		);
+		let sample = StateSample { checked: 2, missing: 0, detail: "ok".into() };
+		assert_eq!(run(Some([0; 32]), Ok(sample.clone())), Ok(Some(sample.clone())));
+		assert!(run(None, Ok(sample)).unwrap_err().contains("no finalized block"));
+		let nothing =
+			futures_util::FutureExt::now_or_never(state_check(&[], Some([0; 32]), |_, _| {
+				std::future::ready(Err(ChainError::Timeout("never called".into())))
+			}));
+		assert_eq!(nothing, Some(Ok(None)), "nothing finalized: nothing to check");
 	}
 }

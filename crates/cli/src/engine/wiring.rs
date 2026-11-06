@@ -44,6 +44,8 @@ pub struct Monitors {
 	pub scraper: ScraperHandle,
 	/// What the monitors could not record.
 	pub problems: Problems,
+	/// Node restarts the process sampler saw: the load stops on node down.
+	pub node_restarts: Problems,
 	/// Cancelled when a monitor fails with an error of our own: the load loop stops at once.
 	pub tool_failed: CancellationToken,
 	stop_sampling: CancellationToken,
@@ -71,7 +73,7 @@ where
 	})
 }
 
-/// Step edges: scrape now, so a step window starts and ends on fresh samples.
+/// Step and phase edges: scrape now, so a window starts and ends on fresh samples.
 async fn step_edges(
 	mut rx: broadcast::Receiver<RunEvent>,
 	scraper: ScraperHandle,
@@ -81,7 +83,7 @@ async fn step_edges(
 		tokio::select! {
 			() = stop.cancelled() => return Ok(()),
 			e = rx.recv() => match e {
-				Ok(RunEvent::StepEdge(_)) => { scraper.scrape_now().await; }
+				Ok(RunEvent::StepEdge(_) | RunEvent::PhaseEdge) => { scraper.scrape_now().await; }
 				// A missed step edge makes a step window wrong: an error of our tools.
 				Err(broadcast::error::RecvError::Lagged(n)) => return Err(MonitorError::Tool(format!("run events lagged by {n}: step edges missed"))),
 				Err(broadcast::error::RecvError::Closed) => return Ok(()),
@@ -99,7 +101,7 @@ impl Monitors {
 		events: &broadcast::Sender<RunEvent>,
 		chains: Chains<'_>,
 	) -> Result<Self, MonitorError> {
-		let problems = Problems::default();
+		let (problems, node_restarts) = (Problems::default(), Problems::default());
 		let [failed, stop, stop_sampling, stop_chain] =
 			std::array::from_fn(|_| CancellationToken::new());
 
@@ -110,15 +112,20 @@ impl Monitors {
 			spawn(step_edges(events.subscribe(), handle.clone(), stop.clone()), &failed),
 		];
 
-		let sampler = match process::find_pid(chains.node_url).await {
-			Some(pid) => Some(spawn(
-				process::NodeSampler::new(pid, dir.jsonl("node.jsonl")?).run(stop_sampling.clone()),
-				&failed,
-			)),
-			None => {
-				eprintln!(
-					"node: no PID for the node under load (set POLKAMETER_NODE_PID); no CPU or memory recorded"
+		let ps = process::Ps::new(chains.node_url);
+		let sampler = match process::find_pid(chains.node_url, &ps).await {
+			Ok(pid) => {
+				let sampler = process::NodeSampler::new(
+					pid,
+					ps,
+					dir.jsonl("node.jsonl")?,
+					problems.clone(),
+					node_restarts.clone(),
 				);
+				Some(spawn(sampler.run(stop_sampling.clone()), &failed))
+			},
+			Err(why) => {
+				eprintln!("node: {why}; no CPU or memory recorded");
 				None
 			},
 		};
@@ -140,6 +147,7 @@ impl Monitors {
 		Ok(Self {
 			scraper: handle,
 			problems,
+			node_restarts,
 			tool_failed: failed,
 			stop_sampling,
 			stop_chain,

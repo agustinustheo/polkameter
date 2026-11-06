@@ -30,6 +30,13 @@ pub struct Measured {
 	mode: Mode,
 }
 
+impl Measured {
+	/// What the run shows but does not count as a problem, for the event log.
+	pub fn warnings(&self) -> &[String] {
+		&self.summary.warnings
+	}
+}
+
 /// File of the plugin check results, kept so `polkameter report` can write the same summary.
 const PLUGIN_CHECKS: &str = "plugin-checks.json";
 
@@ -61,18 +68,7 @@ pub async fn run(
 			),
 		"insufficient probe reserve"
 	);
-	let lanes = vec![Lane {
-		call: "prepared",
-		source: QueueSource::new(
-			flood.iter().map(|t| Ok(Tx::new(t.decode()?))).collect::<Result<Vec<_>>>()?,
-			probes.iter().map(|t| Ok(Tx::new(t.decode()?))).collect::<Result<Vec<_>>>()?,
-			"prepared transactions",
-		),
-	}];
-	let mut seen = std::collections::HashSet::new();
-	for tx in flood.iter().chain(&probes) {
-		anyhow::ensure!(seen.insert(&tx.hash), "duplicate transaction in flood/probe sources");
-	}
+	let lanes = vec![Lane { call: "prepared", source: prepared_source(&flood, &probes)? }];
 	let state_check = load
 		.state
 		.as_ref()
@@ -110,7 +106,13 @@ pub async fn run(
 	let sender = Sender::open(&url, load.connections, replies_tx).await?;
 	let follow = CancellationToken::new();
 	let _follow_guard = follow.clone().drop_guard();
-	follower::start(client.clone(), client.normal_limit().await?, blocks_tx, follow.clone());
+	follower::start(
+		client.clone(),
+		url.clone(),
+		client.normal_limit().await?,
+		blocks_tx,
+		follow.clone(),
+	);
 	let mut tracker = Tracker::new(
 		lanes,
 		sender,
@@ -125,6 +127,8 @@ pub async fn run(
 		events,
 		problems: monitors.problems.clone(),
 		tool_failed: monitors.tool_failed.clone(),
+		boot: crate::load::clock::boot_ms,
+		restarts: monitors.node_restarts.clone(),
 	};
 
 	let phases = async {
@@ -160,12 +164,23 @@ pub async fn run(
 	};
 	follow.cancel();
 	tracker.set_phase(Phase::Done, now_ms())?;
+	// The run window ends here: scrape now, so it ends on fresh samples.
+	monitors.scraper.scrape_now().await;
 	// The node's CPU and memory per step come from node.jsonl, complete once the sampler stopped.
 	monitors.stop_sampling().await?;
 	let samples: Vec<NodeSample> = dir.read_jsonl("node.jsonl")?;
 	recovery.node = NodeMax::over(&samples, recovery_window.0, recovery_window.1);
 	let finals = write_steps(dir, &tracker, &samples)?;
 	progress("reconciliation")?;
+	// The connection of the start may have dropped during the run (the follower and the sender
+	// reconnect on their own): the loss check reads on a live one.
+	let client = match client.best_number().await {
+		Ok(_) => client,
+		Err(e) => {
+			eprintln!("loss check: the RPC connection dropped ({e}); reconnecting");
+			Client::connect(&url).await.unwrap_or(client)
+		},
+	};
 	let (loss, lost) = loss_check(
 		&client,
 		&monitors,
@@ -181,10 +196,18 @@ pub async fn run(
 	}
 	lost_out.flush()?;
 	let unreadable = tracker.unreadable.clone();
+	let gaps: Vec<String> = tracker.observation_gaps.iter().map(ToString::to_string).collect();
+	let unobserved_ms = tracker.unobserved_ms(now_ms());
+	// A node that went down is a problem too: smoke mode exits 1 on it. A reconnect to another
+	// node is a warning only: behind a load balancer it is a healthy node.
+	let node_down = tracker.node_down.clone().map(|why| format!("node down: {why}"));
+	let warnings = tracker.warnings.clone();
 	tracker.finish()?.close();
 	monitors.stop_chain().await?;
 	let mut problems = monitors.problems.all();
 	problems.extend(unreadable.into_iter().map(|u| format!("blocks: {u}")));
+	problems.extend(gaps);
+	problems.extend(node_down);
 	monitors.stop().await?;
 
 	// Summary.
@@ -223,6 +246,8 @@ pub async fn run(
 		loss,
 		baseline: base,
 		problems,
+		warnings,
+		unobserved_ms,
 		network: Network {
 			url,
 			para_id: plan.monitors.as_ref().map(|m| m.para_id),
@@ -237,6 +262,33 @@ pub async fn run(
 	// Plugin checks read it, with the raw files, before the report adds the checks.
 	dir.write_json("summary.json", &summary)?;
 	Ok(Measured { summary, finals, mode })
+}
+
+/// The lane's source from the prepared flood and probe transactions. Each is decoded, and two
+/// with the same bytes are refused wherever they are (flood or probes), whatever the spelling
+/// of their hash (`0x` prefix or not, letter case): the tracker keys every tx by its 32-byte hash.
+fn prepared_source(
+	flood: &[polkameter_plugin_sdk::PreparedTx],
+	probes: &[polkameter_plugin_sdk::PreparedTx],
+) -> Result<QueueSource> {
+	let mut seen = std::collections::HashSet::new();
+	let mut decode = |txs: &[polkameter_plugin_sdk::PreparedTx], what: &str| {
+		txs.iter()
+			.enumerate()
+			.map(|(i, t)| {
+				let tx = Tx::new(t.decode()?);
+				anyhow::ensure!(
+					seen.insert(tx.hash),
+					"duplicate transaction in flood/probe sources: {what} {i} has hash 0x{} again",
+					hex::encode(tx.hash)
+				);
+				Ok(tx)
+			})
+			.collect::<Result<Vec<_>>>()
+	};
+	let flood = decode(flood, "flood transaction")?;
+	let probes = decode(probes, "probe transaction")?;
+	Ok(QueueSource::new(flood, probes, "prepared transactions"))
 }
 
 /// Writes the checks (the plugins' after the built-in ones), summary.json and summary.md,
@@ -268,7 +320,6 @@ async fn loss_check<S: crate::load::submit::Submit>(
 	finality_wait_ms: u64,
 	state: Option<&dyn crate::load::StateCheck>,
 ) -> (Loss, Vec<LostTx>) {
-	let included_ok: Vec<_> = tracker.included_ok.concat();
 	let scraper = monitors.scraper.clone();
 	let node_pool = async move {
 		scraper.scrape_now().await;
@@ -279,7 +330,6 @@ async fn loss_check<S: crate::load::submit::Submit>(
 		})
 	};
 	let settled = crate::load::loss::Settled {
-		included_ok: &included_ok,
 		last_ours_block: tracker.last_ours_block.max(tracker.last_fetched),
 		flood: &tracker.flood,
 		included_in: &tracker.included_in,
@@ -424,6 +474,25 @@ impl StateCheck for PluginState {
 mod tests {
 	use super::*;
 	use polkameter_plugin_sdk::observers::checks::{CheckResult, Status, Verdict};
+
+	#[test]
+	fn the_same_transaction_spelled_twice_is_a_duplicate() {
+		use polkameter_plugin_sdk::PreparedTx;
+		let a = PreparedTx::new(&[1, 2, 3], serde_json::Value::Null);
+		let b = PreparedTx::new(&[4, 5, 6], serde_json::Value::Null);
+		let prefixed = PreparedTx { hash: format!("0x{}", a.hash), ..a.clone() };
+		let byte_prefixed = PreparedTx { bytes: format!("0x{}", a.bytes), ..a.clone() };
+		assert!(prepared_source(&[a.clone(), b.clone()], &[]).is_ok());
+		for (flood, probes) in [
+			(vec![a.clone(), prefixed.clone()], vec![]),
+			(vec![a.clone(), byte_prefixed], vec![]),
+			(vec![a.clone()], vec![prefixed]),
+			(vec![b.clone()], vec![b.clone()]),
+		] {
+			let error = prepared_source(&flood, &probes).unwrap_err().to_string();
+			assert!(error.contains("duplicate transaction"), "{error}");
+		}
+	}
 
 	#[test]
 	fn fail_on_verdict_only_fails_the_existing_fail_status() {

@@ -2,7 +2,11 @@
 use anyhow::Result;
 use serde::Serialize;
 use serde_json::Value;
-use std::{fs, path::Path};
+use std::{
+	fs,
+	io::{BufRead as _, BufReader},
+	path::Path,
+};
 
 /// Column names of samples.jtl, in the order of `Sample`'s fields.
 const HEADER: [&str; 13] = [
@@ -46,21 +50,30 @@ pub fn write_outputs(directory: &Path) -> Result<()> {
 	crate::engine::plots::write(directory)
 }
 
-/// samples.jtl: one row per step and per transaction in the run's event and ledger files.
+/// The records of a JSON-lines file, read one line at a time.
+fn records(path: &Path) -> Result<impl Iterator<Item = Result<Value>>> {
+	let lines = BufReader::new(fs::File::open(path)?).lines();
+	Ok(lines.map(|line| Ok(serde_json::from_str(&line?)?)))
+}
+
+/// samples.jtl: one row per step and per transaction in the run's event and ledger files, which
+/// are read one line at a time. As in JMeter, `timeStamp` is when a sample started and `elapsed`
+/// how long it took: a step's start is its finish time minus its elapsed time.
 fn write_samples(directory: &Path) -> Result<()> {
 	let mut out = csv::WriterBuilder::new()
 		.has_headers(false)
 		.from_path(directory.join("samples.jtl"))?;
 	out.write_record(HEADER)?;
-	for line in fs::read_to_string(directory.join("events.jsonl"))?.lines() {
-		let event: Value = serde_json::from_str(line)?;
+	for event in records(&directory.join("events.jsonl"))? {
+		let event = event?;
 		if event["event"] != "step-finished" {
 			continue;
 		}
 		let success = event["success"] == true;
+		let elapsed = event["elapsedMs"].as_u64().unwrap_or(0);
 		out.serialize(Sample {
-			time_stamp: event["timestamp"].as_u64().unwrap_or(0),
-			elapsed: event["elapsedMs"].as_u64().unwrap_or(0),
+			time_stamp: event["timestamp"].as_u64().unwrap_or(0).saturating_sub(elapsed),
+			elapsed,
 			label: format!("step:{}", event["step"].as_str().unwrap_or("unknown")),
 			response_code: if success { "STEP_OK" } else { "STEP_FAILED" }.into(),
 			response_message: event["error"].as_str().unwrap_or("").into(),
@@ -76,8 +89,8 @@ fn write_samples(directory: &Path) -> Result<()> {
 	}
 	let ledger = directory.join("transactions.jsonl");
 	if ledger.exists() {
-		for line in fs::read_to_string(ledger)?.lines() {
-			let tx: Value = serde_json::from_str(line)?;
+		for tx in records(&ledger)? {
+			let tx = tx?;
 			let success = tx["status"] == "finalized" && tx["failedInFinalizedBlock"] == false;
 			out.serialize(Sample {
 				time_stamp: tx["sentAt"].as_u64().unwrap_or(0),
@@ -98,4 +111,41 @@ fn write_samples(directory: &Path) -> Result<()> {
 	}
 	out.flush()?;
 	Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn samples_are_jmeter_csv_stamped_with_their_start() {
+		let dir = std::env::temp_dir().join(format!("polkameter-jtl-{}", std::process::id()));
+		fs::create_dir_all(&dir).unwrap();
+		let message = "refused, \"bad\"\nsecond line";
+		let events = [
+			serde_json::json!({"event":"step-started","step":"a","timestamp":1000}),
+			serde_json::json!({"event":"step-finished","step":"a","user":0,"iteration":1,
+				"success":false,"error":message,"elapsedMs":9000,"timestamp":10000}),
+		];
+		let text: String = events.iter().map(|e| format!("{e}\n")).collect();
+		fs::write(dir.join("events.jsonl"), text).unwrap();
+		write_samples(&dir).unwrap();
+		let jtl = fs::read_to_string(dir.join("samples.jtl")).unwrap();
+		assert!(jtl.starts_with(&format!("{}\n", HEADER.join(","))));
+		// RFC 4180 quoting, which JMeter's CSV reader also reads: quotes doubled, field quoted.
+		assert!(jtl.contains("\"refused, \"\"bad\"\"\nsecond line\""), "{jtl}");
+		let mut reader = csv::Reader::from_path(dir.join("samples.jtl")).unwrap();
+		assert_eq!(reader.headers().unwrap(), HEADER.as_slice());
+		let rows: Vec<csv::StringRecord> = reader.records().map(Result::unwrap).collect();
+		assert_eq!(rows.len(), 1);
+		// timeStamp is the start (finish 10000 minus 9000 elapsed), as JMeter expects.
+		assert_eq!(&rows[0][0], "1000");
+		assert_eq!(&rows[0][1], "9000");
+		assert_eq!(&rows[0][2], "step:a");
+		assert_eq!(&rows[0][3], "STEP_FAILED");
+		assert_eq!(&rows[0][4], message);
+		assert_eq!(&rows[0][5], "user:0:iteration:1");
+		assert_eq!(&rows[0][6], "false");
+		fs::remove_dir_all(&dir).unwrap();
+	}
 }

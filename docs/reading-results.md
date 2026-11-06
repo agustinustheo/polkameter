@@ -32,6 +32,10 @@ Three separate things tell you how a run ended:
 
 The outcome checks table at the end of `summary.md` gives each check a status: `pass`, `warn`, `fail`, `info` or `no result`. In the example, the relay slots check failed. A failed check makes the verdict FAIL, as a breaking point does.
 
+A check never passes on data it does not have. If a node's metrics were not scraped near the start or end of a step, if a node restarted, or if a step recorded nothing the check needs, that step has no data. A failure measured in another step still makes the check `fail`; otherwise the check is `no result` and its detail says why. A required check with no result makes the verdict INCONCLUSIVE. [Checks](results.md#checks) lists each check's rules.
+
+A check whose nodes the plan does not monitor at all is `no result` with a detail starting `not applicable:`. It is optional and does not change the verdict.
+
 ## How much load did the chain take?
 
 The `Load steps` table has one row per step. It has 17 columns. This copy keeps the main ones:
@@ -58,15 +62,29 @@ The table lists every rule. The three breaking point rules do not stop the load.
 | Pool refuses | Graceful. More than 10% of submissions are refused, in this step or the one before |
 | Pool intake | Graceful. The node is slow to accept submissions: p95 reply above 5 s, or a submit waited that long |
 | Slow blocks | Hard. The mean block gap is more than twice the plan's `block-interval-seconds` |
-| Stall | Hard. No new best block for 30 s |
-| Finality stall | Hard. No new finalized block for 60 s |
-| Node down | Hard. The node closed an RPC connection |
+| Stall | Hard. No new best block for 30 s, not counting time PolkaMeter was reconnecting |
+| Finality stall | Hard. No new finalized block for 60 s, not counting time PolkaMeter was reconnecting |
+| Node down | Hard. The node stayed unreachable for 15 s, kept dropping the connection, or a local node's process restarted |
 | Rate cap | Every step ran. The ramp finished |
 | Budget used up | The prepared transactions ran out |
-| Generator limit | The load tool could not send at least 95% of the target rate |
+| Generator limit | The load tool could not send at least 95% of the target rate, or the machine was suspended |
 | Smoke error | A monitor problem, in smoke mode only |
 
 [Results](results.md#stop-rules-and-thresholds) lists the default thresholds. The [plan](plans.md#thresholds) can change them.
+
+If an RPC connection drops and PolkaMeter reconnects, the run goes on. The lost time is listed under problems, and the "monitors recorded everything" check warns. The time is left out of the stall rules, but the time around it still counts. If blocks went unobserved for longer than 30 s in all, that check has no result and the verdict cannot be PASS.
+
+If the reconnect reached a node with a different peer ID or sync starting block, the result lists a warning: "reconnected to a different node (load balancer, or the node restarted)". It does not change the verdict. If you do not use a load balancer, check the node's logs for a restart.
+
+## Which step does a number belong to?
+
+A transaction counts in the step that sent it, wherever it lands. Its inclusion, its latency and its share of `included/s` stay with that step, even if it lands during the next step or during recovery. So `included/s` of a step is its own transactions included, divided by the step's length. It does not count what the step before left in the pool.
+
+Blocks count in the step they arrive in. A block gap counts in the steps it spans, each for the part inside it. For example, if blocks stop 6 s before step 0 ends and resume 18 s into step 1, step 0 records a 6 s gap and step 1 an 18 s gap.
+
+The example run was recorded with an earlier version, which counted `included/s` and block gaps by the time a block arrived. So its step 0 shows `0` included/s, although all 60 of its transactions were included. With the current rule it shows `2`.
+
+[Which step a number belongs to](how-it-works.md#which-step-a-number-belongs-to) explains why.
 
 ## How slow did it get?
 
@@ -94,6 +112,10 @@ Only `lost` counts as lost. The loss check line in `summary.md` gives the totals
 ```
 
 Every load run creates `lost.jsonl`, which lists the first 1000 lost transactions, one per line. An empty file means no confirmed losses, not that nothing was lost. A transaction is `lost` only when PolkaMeter could read the finalized chain and the pool. Without that evidence it stays `unverified` or `unknown`, so check those two counts in the loss check line before you call a run loss-free. Any lost transaction makes the verdict FAIL. [Loss accounting](results.md#loss-accounting) defines each status.
+
+`0 failed after inclusion` counts dispatch failures on the finalized chain. A transaction that failed in a fork block and then succeeded in the finalized block does not count there; the loss check line lists it apart.
+
+If the plan has a state check and it errors or times out, the loss check line says `State check: no result`. The "no silent loss" check is then `no result`, so the verdict is INCONCLUSIVE rather than PASS.
 
 ## Did the chain recover?
 

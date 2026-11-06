@@ -47,16 +47,16 @@ The files PolkaMeter writes, including each plugin's `stderr.log`, store no cred
 | --- | --- | --- |
 | `calibration.json` | Configured and measured block interval; 25% tolerance. | |
 | `summary.json` | The summary as data. | |
-| `steps.jsonl` | Per step and lane: target rate, sent, included, refused, p50 and p95 latency, node CPU and memory. | |
+| `steps.jsonl` | Per step and lane: target rate, sent, included, refused, p50 and p95 latency, block gaps, node CPU and memory. [Which step a number belongs to](how-it-works.md#which-step-a-number-belongs-to). | |
 | `load.jsonl` | The load tool's `polkameter_*` metrics. | |
-| `blocks.jsonl` | Each best block, and the gap since the previous one. | |
+| `blocks.jsonl` | Each best block, and the gap since the previous one. The gap is `null` for the first block after the block follower reconnected. | |
 | `transactions.jsonl` | Each sent transaction and its [status](#loss-accounting). | |
 | `lost.jsonl` | Each lost transaction, the first 1000. `loss.lost` holds the full count. Empty if none. | |
 | `plugin-checks.json` | Checks from evaluate steps. Empty if none. | |
 | `resolved-targets.json` | Scrape targets resolved from the topology, and its hash. | `<monitors>` |
 | `scrapes.jsonl` | Raw `/metrics` per node; `error` if a node did not answer. | `<monitors>` to hold records |
 | `chain.jsonl` | The relay recorder's series for the observed parachain. | `<monitors>` to hold records |
-| `node.jsonl` | Node CPU and memory during the load. | `POLKAMETER_NODE_PID`, or the node's RPC port listening |
+| `node.jsonl` | Node CPU and memory during the load, and the process ID sampled. | A node on this machine: `POLKAMETER_NODE_PID`, or a loopback RPC URL. See [Node CPU and memory](how-it-works.md#node-cpu-and-memory). |
 | `plugins/<id>/series.jsonl`, `metrics.json` | A plugin's series and metric declarations. | A plugin that records metrics |
 
 ## execution.json
@@ -168,12 +168,14 @@ The `verdict` object in `summary.json` after running `polkameter report /tmp/pol
 | `rules` | Effective thresholds, camel case (`minIncludedRatio`). |
 | `stop` | `rule`, `detail`, `step`, `class`. |
 | `breakingPoint` | `step`, `targetRate`, `measure` (`included`, `latency` or `refused`), `detail`. `null` if none. |
-| `maxSustained` | `step`, `targetRate`, `includedPerS` of the step before. The last step if none. |
+| `maxSustained` | `step`, `targetRate`, `includedPerS` of the step before. The last step if none. `includedPerS` is the transactions sent in that step that a block included, at any time, divided by the step's length. It does not count the step before's backlog. |
 | `failureModes` | `class` and `what` per failure. See [Failure modes](#failure-modes). |
 | `recovery` | `measured`, `recovered`, `seconds`, `backlogAtStop`, `backlogAtEnd`, `drainedSeconds`, `drainPerS`, `probes`, `blocks`, `node`. |
 | `loss` | Transaction counts. See [Loss accounting](#loss-accounting). |
 | `baseline` | `probes`, `p50Ms`, `maxMs` of the probes before the load. |
-| `problems` | What the monitors could not record. |
+| `problems` | What the monitors could not record, including each RPC connection that dropped and reconnected, and a node process that restarted. |
+| `warnings` | What the run shows but does not count as a problem: a reconnect that reached a different node, behind a load balancer or after a restart. Present when not empty. |
+| `unobservedMs` | Time the block follower was reconnecting, when no block could be seen. Present when above 0. |
 | `network`, `runner` | Node URL, parachain ID, runtime spec version, block interval; CPU count and model. |
 | `steps` | Number of load steps. |
 | `checks` | `outcome`, `check`, `status`, `detail`, `numbers` if any. `"optional": true` on optional checks only. |
@@ -202,13 +204,14 @@ The `loss` object in `summary.json`:
 | `sent` | Transactions sent; the statuses add up to it. |
 | `accepted` | Submits with a successful RPC reply, not dispatch successes. |
 | `included` | In a finalized block the walk read. |
-| `failedInBlock` | Failed in a best or finalized block. |
+| `failedInBlock` | Dispatch failed. The finalized block's events decide when the transaction is in one; otherwise the best block's, while finality is not verified. |
 | `refused`, `unverified`, `unknown` | Count of each status. |
 | `inPool`, `lost` | Count of each. `null` if the pool or chain is unreadable. |
-| `onChain` | Finalized blocks walked; `missed`, `onlyOnFork`, `moved` against the tracker. |
+| `onChain` | Finalized blocks walked; `missed`, `onlyOnFork`, `moved` against the tracker. `failedOnlyOnFork`, present when above 0: failed only in a block the finalized chain dropped, so not in `failedInBlock`. |
 | `nodePool` | The node's mempool and ready counts after the run. |
 | `finalized` | Last block with a run transaction, the finalized block at the wait's end, and whether it finalized in time. |
-| `state` | Chain-state check of 100 included transactions: `checked`, `missing`, `detail`. Only with a state check. |
+| `state` | Chain-state check of up to 100 transactions that the finalized chain holds and that did not fail there: `checked`, `missing`, `detail`. Only with a state check. |
+| `stateError` | Why the plan's state check gave no result: an error, a timeout, or no finalized block to read. Present only then. The "no silent loss" check is then `no result`, and the verdict cannot be `PASS`. |
 | `note` | Why something is missing. |
 
 ## Stop rules and thresholds
@@ -222,16 +225,18 @@ Breaking-point rules record a result, and the load goes on. The other rules end 
 | **Refused**: refused share above the maximum | breaking point | 1% | `max-refused-ratio` |
 | **Pool refuses**: refused share above the limit, this step or the last | graceful | 10% | `pool-refuses-ratio` |
 | **Pool intake**: p95 submit reply above the limit, or one submit waited that long, or node stopped reading submits | graceful | 5 s | `max-submit-reply-ms` |
-| **Slow blocks**: mean block gap above factor times `block-interval-seconds` | hard | 2.0 | `max-block-gap-factor` |
-| **Stall**: no new best block for this long | hard | 30 s | `stall-ms` |
-| **Finality stall**: no new finalized block for this long | hard | 60 s | `finality-stall-ms` |
-| **Node down**: node closed an RPC connection | hard | none | none |
+| **Slow blocks**: mean block gap above factor times `block-interval-seconds`; a step with no new block counts its whole length | hard | 2.0 | `max-block-gap-factor` |
+| **Stall**: no new best block for this long, not counting time the block follower was reconnecting | hard | 30 s | `stall-ms` |
+| **Finality stall**: no new finalized block for this long, not counting time the block follower was reconnecting | hard | 60 s | `finality-stall-ms` |
+| **Node down**: the node stayed unreachable for 15 s of reconnect attempts, a connection dropped more than 5 times in 60 s, or a local node's process restarted | hard | 15 s; 5 drops in 60 s (fixed) | none |
 | **Rate cap**: every step ran | none | none | none |
 | **Budget used up**: prepared transactions ran out, or a short step had nothing to send | none | none | none |
-| **Generator limit**: sent share of target rate below minimum, or the load tool paused over 5 s between sends | none | 95%; 5 s between sends (fixed) | `min-send-ratio` |
+| **Generator limit**: sent share of target rate below minimum, or the load tool paused over 5 s between sends, or the machine was suspended for over 5 s | none | 95%; 5 s between sends (fixed) | `min-send-ratio` |
 | **Smoke error**: monitor problem, smoke mode only | none | none | none |
 
 Ratios accept values above 0 up to 1. Factors and durations must be above 0. Set them in the plan's [`<thresholds>`](plans.md#thresholds).
+
+A dropped RPC connection that reconnects is a problem, not a stop. [Why a dropped connection is not a chain failure](how-it-works.md#why-a-dropped-connection-is-not-a-chain-failure) explains it.
 
 ## Recovery
 
@@ -260,19 +265,33 @@ Checks run on the recorded series, in this order. A check whose metric the node 
 
 | Outcome: check | Judges | Status |
 | --- | --- | --- |
-| block production: why blocks end | Why each block ended: weight, size, deadline, or no more transactions. | `info` |
-| block production: build time within the authoring deadline | Build time against 2 s. | `warn`: a block over 2.5 s, or p95 at 2.5 s. `fail`: over 5% of blocks above 2.5 s. |
-| pvf: relay slots (level 1) | Slots missed above idle: not built, not backed, timed out. | `fail`: a window misses over one slot above idle. |
-| pvf: no timed-out candidates or disputes | Timed-out candidates; relay disputes. | `fail` if any. |
-| pvf: PVF time on validators (level 2, all parachains) | Validation time. | `warn`: a validation over 2 s, or an invalid result. |
-| pvf: collation funnel | Collations expired after advertisement, fetch or backing; mean backing-to-inclusion time. | `warn`: any expired, or mean over 1.5 relay blocks. |
-| pool: no silent loss | Accepted transactions in no block, without error. | `fail` if any. `no result` if the pool cannot be listed. |
-| pool: the burst drains | Probes in time, backlog drained, no empty block while over 10 transactions waited. | `fail` unless all three hold. |
-| pool: refusals are clean | Refusals by reason. | `fail`: no code. `warn`: run stopped at pool intake. |
-| pool: pool work leaves time for blocks | Pool maintenance p95; validation backlog. | `fail`: p95 over half the block interval. `warn`: over 1000 waiting for validation. |
-| run: monitors recorded everything | Monitor problems. | `warn` if any. |
+| block production: why blocks end | Why each block ended: weight, size, deadline, or no more transactions. | `info`. `no result` if the collator recorded no block at all. |
+| block production: build time within the authoring deadline | Build time against 2 s. | `warn`: a block over 2.5 s, or p95 at 2.5 s. `fail`: over 5% of blocks above 2.5 s. `no result`: no built block in a window of two block intervals or more. |
+| pvf: relay slots (level 1) | Slots missed above idle: not built, not backed, timed out. | `fail`: a window misses over one slot above idle. `no result`: no finalized relay block in the whole run, or no slot offered to the parachain. |
+| pvf: no timed-out candidates or disputes | Timed-out candidates; relay disputes. | `fail` if any. `no result`: no finalized relay block in the run. |
+| pvf: PVF time on validators (level 2, all parachains) | Validation time. | `warn`: a validation over 2 s, or an invalid result. `no result`: no PVF execution in a window of 12 s or more. |
+| pvf: collation funnel | Collations expired after advertisement, fetch or backing; mean backing-to-inclusion time. | `warn`: any expired, or mean over 1.5 relay blocks. `no result`: no collation generated. |
+| pool: no silent loss | Accepted transactions in no block, without error. | `fail` if any. `no result` if the pool cannot be listed, or if the plan's state check gave no result. |
+| pool: the burst drains | Probes in time, backlog drained, no empty block while over 10 transactions waited. | `fail` unless all three hold. `no result` if all three hold but the collator's metrics are stale at the start or end of recovery. |
+| pool: refusals are clean | Refusals by error code. | `fail`: a refusal without an error code. `warn`: run stopped at pool intake. |
+| pool: pool work leaves time for blocks | Pool maintenance p95; validation backlog. | `fail`: p95 over half the block interval. `warn`: over 1000 waiting for validation. `no result`: no pool maintenance recorded. |
+| run: monitors recorded everything | Monitor problems, and time blocks were not observed. | `warn` if any problem. `no result` if blocks went unobserved for longer than `stall-ms` in all. |
 
-Statuses: `pass` (no problem found), `warn` (a `WARN` verdict unless the verdict is `FAIL`), `fail` (a `FAIL` verdict), `info` (a number to read, not judged), `no result` (data missing, or a node restarted inside the window).
+Statuses: `pass` (no problem found), `warn` (a `WARN` verdict unless the verdict is `FAIL`), `fail` (a `FAIL` verdict), `info` (a number to read, not judged), `no result` (data missing or stale, nothing observed, or a node restarted inside the window).
+
+A check judges each window (a step, or recovery) it has data for. A window has no data in three cases:
+
+- **Stale metrics.** A node was not scraped soon enough after the window started or ended. PolkaMeter scrapes every node at each step and phase edge, and every 5 s. A scrape may land up to twice the node's scrape interval plus the 5 s scrape timeout after the edge (15 s at a 5 s interval), so one failed scrape at an edge is tolerated. If a counter has the same value in the scrapes on both sides of the edge, any gap is tolerated. The detail names the node, for example `stale node metrics: step 1: no scrape of collator Collator-1502 within 15 s after its end`.
+- **A node restarted.** A counter went down anywhere in the window, for example `step 0: a node restarted: substrate_proposer_block_constructed went down from 100 to 0 in step 0`.
+- **Nothing recorded.** The window lasted long enough for something to happen and nothing did, such as no built block in two block intervals.
+
+A failure or warning measured in any window decides the status. Its detail ends with the windows that had no data, for example `; no data for step 1: the collator recorded no built block`. Without a failure or warning, a window without data makes the check `no result`. A check passes only when every window had data.
+
+If a scrape failed inside a window but the window's edges are fresh, the check keeps its status and its detail ends with the failures, for example `; failed scrapes: 2 in step 1`. The run check `monitors recorded everything` also warns about them.
+
+The relay chain recorder counts a relay block, and the slots in it, when it reads the block after finality. Finality lag can move both into a later window, so a window without relay blocks is not missing data. Only a run without any is.
+
+If the plan does not monitor what a check reads, the check is `no result` with a detail starting `not applicable:`, for example `not applicable: no collator node is monitored`. Such a check is optional, so it does not make the verdict `INCONCLUSIVE`. A plan without `<monitors>` records no relay chain and no node metrics. A monitored node that never answered is different: its checks stay required and have `no result`.
 
 The limits are in `crates/plugin-sdk/src/observers/checks/limits.rs`; they are placeholders until the load target and budgets are agreed. Plugin checks come after the built-in ones and count toward the verdict the same way. An `optional` plugin check with no result does not make the verdict `INCONCLUSIVE`.
 
@@ -295,7 +314,7 @@ One header row, then 13 columns.
 
 | Column | Step rows | Transaction rows (load test) |
 | --- | --- | --- |
-| `timeStamp` | Event time, in milliseconds | `sentAt` |
+| `timeStamp` | Start time: the finish time minus `elapsedMs`, in milliseconds | `sentAt` |
 | `elapsed` | `elapsedMs` of the step | `inclusionMs`, or `replyMs` without inclusion |
 | `label` | `step:<step id>` | `load:step:<step index>` |
 | `responseCode` | `STEP_OK` or `STEP_FAILED` | Transaction status |
@@ -306,6 +325,12 @@ One header row, then 13 columns.
 | `Latency` | `0` | `replyMs` |
 | `Connect` | `0` | `0` |
 | `allThreads`, `grpThreads` | `1` | `1` |
+
+The file follows JMeter's CSV results format. The header names are JMeter's own, so a tool that reads columns by header name finds them. Columns are separated by commas. A value with a comma, a double quote or a line break is put in double quotes, and a double quote inside it is doubled. As in JMeter, `timeStamp` is when a sample started, in milliseconds since the Unix epoch, and `elapsed` is how long it took.
+
+JMeter writes more columns by default, such as `dataType`, `failureMessage`, `URL` and `IdleTime`. `samples.jtl` leaves them out.
+
+If a run was reported by an earlier version, its step rows have the finish time in `timeStamp`. Run `polkameter report` on the run directory to rewrite them.
 
 ## events.jsonl
 
@@ -319,7 +344,7 @@ Each event has a `timestamp` in milliseconds and `version` `2`. Credentials are 
 | `step-finished` | `step`, `elapsedMs`, `success`, `error`, `user`, `iteration` | A step ends. |
 | `cleanup-failed` | `error`, `errors` | Teardown steps failed. `errors` lists every failure, and `error` joins them. |
 | `plugin-restarted` | `plugin` | A plugin that crashed, timed out or was stopped was started again for a teardown step. |
-| `warning` | `message` | Something did not stop the run, such as a plugin that could not be restarted or a JUnit file that could not be written. |
+| `warning` | `message` | Something did not stop the run: a load test that reconnected to a different node (written when the measurement ends), a plugin that could not be restarted, or a JUnit file that could not be generated, fetched, copied or written. |
 | `completed` | `outcome` | The run ended, with the same outcome as `execution.json`. |
 
 `--format json` adds `artifact-written`, `report` and `validation` lines, which are not written to `events.jsonl`.
@@ -338,3 +363,9 @@ Each command's exit code, and what sets it, is in the [CLI reference](cli.md#exi
 | With `<load>` | Also the checks, `summary.json` and `summary.md` |
 
 The result comes only from the files, so you can copy a run directory to another machine and report it there.
+
+`polkameter report` rewrites `summary.json` only if its `schemaVersion` is the one this version writes, `1`. If the version is different or missing, it changes no file and exits `2`:
+
+```text
+PolkaMeter: runs/run-1/summary.json has schemaVersion 2, but polkameter 0.3.0 reads and writes only schemaVersion 1; report it with the polkameter version that recorded the run. Nothing was rewritten
+```
