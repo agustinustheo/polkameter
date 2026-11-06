@@ -303,10 +303,40 @@ fn a_follower_reconnect_leaves_out_only_the_time_not_observed() {
 	assert_eq!(st.unobserved_ms, 38_000);
 	assert_eq!(st.max_gap_ms, Some(19_000), "the gaps around the outage, not the outage");
 	assert!(t.observation_gaps[0].to_string().contains("reconnected after 38.0 s"));
-	// A node that came back as another process is down.
-	t.on_block(BlockEvent::NodeRestarted("the node restarted".into()), 61_000)
+	// A node that stayed unreachable is down.
+	t.on_block(BlockEvent::Unreachable("not reachable for 15 s".into()), 61_000)
 		.unwrap();
 	assert_eq!(rule(&t, 61_000), Some(Rule::NodeDown));
+}
+
+/// Behind a load balancer a reconnect can land on another, healthy node: that is a warning, not
+/// node down, and the load goes on while blocks come. A chain that is really dead still stops
+/// on a stall, whichever node answers.
+#[test]
+fn a_reconnect_to_another_node_is_a_warning_and_a_dead_chain_still_stalls() {
+	let mut t = tracker("other-node", vec![tx(1)], vec![]);
+	t.set_phase(Phase::Ramp, 0).unwrap();
+	t.start_step(0, &[1.0], 0).unwrap();
+	t.on_block(BlockEvent::Finalized { number: 1, seen_at: 1_000 }, 1_000).unwrap();
+	block(&mut t, 1, 1_000, None, &[]);
+	let why = "reconnected to a different node (load balancer, or the node restarted): its peer ID changed from a to b";
+	t.on_block(BlockEvent::Disconnected { at: 2_000, reason: "stream ended".into() }, 2_000)
+		.unwrap();
+	t.on_block(BlockEvent::OtherNode(why.into()), 3_000).unwrap();
+	t.on_block(BlockEvent::Reconnected { at: 3_000 }, 3_000).unwrap();
+	assert_eq!(t.node_down, None);
+	assert_eq!(t.warnings, [why]);
+	// The same node again on a later reconnect is not listed twice.
+	t.on_block(BlockEvent::OtherNode(why.into()), 3_000).unwrap();
+	assert_eq!(t.warnings.len(), 1);
+	assert_eq!(rule(&t, 4_000), None, "the load goes on");
+	// No block after the reconnect: 30 s observed without one is a stall.
+	assert_eq!(rule(&t, 31_000), None, "29 s observed");
+	assert_eq!(rule(&t, 33_000), Some(Rule::Stall), "31 s observed");
+	// Blocks come, finality does not: a finality stall.
+	block(&mut t, 2, 32_000, None, &[]);
+	block(&mut t, 3, 50_000, None, &[]);
+	assert_eq!(rule(&t, 63_000), Some(Rule::FinalityStall), "61 s observed after finalized 1");
 }
 
 /// Best blocks keep coming, finality does not, and the follower reconnects every 10 s: the

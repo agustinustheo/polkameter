@@ -164,6 +164,7 @@ The `verdict` object in `summary.json` after running `polkameter report /tmp/pol
 | `loss` | Transaction counts. See [Loss accounting](#loss-accounting). |
 | `baseline` | `probes`, `p50Ms`, `maxMs` of the probes before the load. |
 | `problems` | What the monitors could not record, including each RPC connection that dropped and reconnected, and a node process that restarted. |
+| `warnings` | What the run shows but does not count as a problem: a reconnect that reached a different node, behind a load balancer or after a restart. Present when not empty. |
 | `unobservedMs` | Time the block follower was reconnecting, when no block could be seen. Present when above 0. |
 | `network`, `runner` | Node URL, parachain ID, runtime spec version, block interval; CPU count and model. |
 | `steps` | Number of load steps. |
@@ -217,7 +218,7 @@ Breaking-point rules record a result, and the load goes on. The other rules end 
 | **Slow blocks**: mean block gap above factor times `block-interval-seconds`; a step with no new block counts its whole length | hard | 2.0 | `max-block-gap-factor` |
 | **Stall**: no new best block for this long, not counting time the block follower was reconnecting | hard | 30 s | `stall-ms` |
 | **Finality stall**: no new finalized block for this long, not counting time the block follower was reconnecting | hard | 60 s | `finality-stall-ms` |
-| **Node down**: the node stayed unreachable for 15 s of reconnect attempts, a connection dropped more than 5 times in 60 s, or the node restarted | hard | 15 s; 5 drops in 60 s (fixed) | none |
+| **Node down**: the node stayed unreachable for 15 s of reconnect attempts, a connection dropped more than 5 times in 60 s, or a local node's process restarted | hard | 15 s; 5 drops in 60 s (fixed) | none |
 | **Rate cap**: every step ran | none | none | none |
 | **Budget used up**: prepared transactions ran out, or a short step had nothing to send | none | none | none |
 | **Generator limit**: sent share of target rate below minimum, or the load tool paused over 5 s between sends, or the machine was suspended for over 5 s | none | 95%; 5 s between sends (fixed) | `min-send-ratio` |
@@ -312,6 +313,7 @@ Each event has a `timestamp` in milliseconds and `version` `2`. Credentials are 
 | `step-progress` | `step`, `elapsedMs` | Every 5 seconds while a step runs. |
 | `step-finished` | `step`, `elapsedMs`, `success`, `error`, `user`, `iteration` | A step ends. |
 | `cleanup-failed` | `error` | A teardown step failed. |
+| `warning` | `message` | A load test reconnected to a different node; written when the measurement ends. Also when JUnit generation, fetch or copy failed. |
 | `completed` | `outcome` | The run ended, with the same outcome as `execution.json`. |
 
 `--format json` adds `artifact-written`, `report` and `validation` lines, which are not written to `events.jsonl`.

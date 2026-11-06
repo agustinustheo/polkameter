@@ -226,6 +226,11 @@ pub struct Summary {
 	pub baseline: Baseline,
 	/// What the monitors could not record.
 	pub problems: Vec<String>,
+	/// What the run shows but does not count as a problem: a block follower reconnect that
+	/// reached a different node (a load balancer, or the node restarted). Left out of the file
+	/// when empty.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub warnings: Vec<String>,
 	/// Time the block follower was disconnected (reconnecting), when no block could be seen.
 	/// Left out of the file when 0. More than the stall limit makes "monitors recorded
 	/// everything" a no result: a stall could hide in it.

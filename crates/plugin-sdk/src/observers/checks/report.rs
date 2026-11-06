@@ -311,6 +311,11 @@ fn render_summary(s: &Summary, steps: &[FinalStep], d: &RunData, checks: &[Check
         format!("- **Baseline:** {} probes before the load, p50 {} s, max {} s", s.baseline.probes, to_fixed(s.baseline.p50_ms as f64 / 1000.0, 1), to_fixed(s.baseline.max_ms as f64 / 1000.0, 1)),
         format!("- **Network:** spec {}, {} s blocks at start", s.network.spec_version, num(s.network.block_interval_s)),
         format!("- **Runner:** {} CPUs ({})", s.runner.cpus, s.runner.cpu_model.as_deref().unwrap_or("?")),
+    ]);
+	if !s.warnings.is_empty() {
+		lines.push(format!("- **Warnings:** {}", s.warnings.join("; ")));
+	}
+	lines.extend([
         String::new(),
         "#### Load steps".into(),
         String::new(),
@@ -461,6 +466,23 @@ mod tests {
 		assert!(md.contains("- **Load stop:** rate cap"));
 		assert!(!md.contains("- **Failure:**"));
 		assert!(md.contains("pool validations (all)"));
+	}
+
+	/// A reconnect to another node is shown as a warning, and the verdict does not change.
+	#[test]
+	fn a_warning_is_shown_and_does_not_change_the_verdict() {
+		let mut s = summary();
+		let data = RunData::new(Default::default(), s.clone());
+		let plain = markdown(&s, &[], &data, &[]);
+		assert!(!plain.contains("- **Warnings:**"));
+		let why = "reconnected to a different node (load balancer, or the node restarted): its peer ID changed from a to b";
+		s.warnings = vec![why.into()];
+		let md = markdown(&s, &[], &data, &[]);
+		assert!(md.contains(&format!("- **Warnings:** {why}")), "{md}");
+		assert_eq!(overall_status(&s, &[]), overall_status(&summary(), &[]));
+		let json = serde_json::to_value(&s).unwrap();
+		assert_eq!(json["warnings"][0], why);
+		assert!(serde_json::to_value(summary()).unwrap().get("warnings").is_none());
 	}
 
 	#[test]

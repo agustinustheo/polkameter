@@ -107,7 +107,8 @@ pub struct Io {
 	/// A clock that counts sleep ([`crate::load::clock::boot_ms`]), only to see that the
 	/// machine was suspended; a test changes it.
 	pub boot: fn() -> Option<Millis>,
-	/// Node restarts the process sampler saw (the node's PID changed): node down.
+	/// Node restarts the process sampler saw (the node's PID changed): node down, in the load and
+	/// in recovery.
 	pub restarts: Problems,
 }
 
@@ -138,6 +139,12 @@ pub(super) fn interval(ms: u64) -> tokio::time::Interval {
 	let mut i = tokio::time::interval(Duration::from_millis(ms));
 	i.set_missed_tick_behavior(MissedTickBehavior::Skip);
 	i
+}
+
+/// Why the node is down, if it is: the block follower lost it, or the process sampler saw its PID
+/// change (a local node that restarted). Both the load and recovery end on it.
+pub(super) fn node_down<S: Submit>(t: &Tracker<S>, io: &Io) -> Option<String> {
+	t.node_down.clone().or_else(|| io.restarts.all().into_iter().next())
 }
 
 /// Waits for the next input; true for a tick. Replies and blocks go straight to the tracker.
@@ -239,7 +246,7 @@ pub async fn recover<S: Submit>(
 	let deadline = started + Duration::from_secs(u64::from(opts.recovery_s));
 	let (mut back_at, mut drained_at, mut last_log) = (None, None, started);
 	let mut tick = interval(500);
-	while Instant::now() < deadline && t.closed_by_node == 0 && t.node_down.is_none() {
+	while Instant::now() < deadline && t.closed_by_node == 0 && node_down(t, io).is_none() {
 		if !next(t, io, &mut tick).await? {
 			continue;
 		}
@@ -275,10 +282,13 @@ pub async fn recover<S: Submit>(
 		opts.rules.probes_in_a_row,
 		secs(threshold_ms as f64)
 	);
-	let detail = match back_at {
-		Some(_) => landed,
-		None if t.recovery_blocks.is_empty() => format!("no new block in {} s", opts.recovery_s),
-		None => format!("after {} s no {landed}", opts.recovery_s),
+	let detail = match (back_at, node_down(t, io)) {
+		(Some(_), _) => landed,
+		(None, Some(why)) => format!("node down: {why}"),
+		(None, None) if t.recovery_blocks.is_empty() => {
+			format!("no new block in {} s", opts.recovery_s)
+		},
+		(None, None) => format!("after {} s no {landed}", opts.recovery_s),
 	};
 	let r = Recovery {
 		measured: true,

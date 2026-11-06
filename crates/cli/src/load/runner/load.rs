@@ -8,7 +8,7 @@ use polkameter_plugin_sdk::observers::files::{
 };
 use tokio::time::Instant;
 
-use super::{Io, Mode, RunError, RunEvent, RunOptions, interval, next};
+use super::{Io, Mode, RunError, RunEvent, RunOptions, interval, next, node_down};
 use crate::load::{
 	now_ms,
 	rules::{LiveState, check_step, live_failure, measure_violation, secs},
@@ -110,7 +110,7 @@ async fn send_step<S: Submit>(
 			finalized: t.last_finalized.1,
 			unobserved_since_block: t.unobserved_between(t.last_head.0, now),
 			unobserved_since_finalized: t.unobserved_between(t.last_finalized.0, now),
-			node_down: t.node_down.clone().or_else(|| io.restarts.all().into_iter().next()),
+			node_down: node_down(t, io),
 			smoke_problems: if opts.mode == Mode::Smoke { io.problems.all() } else { Vec::new() },
 		};
 		if let Some(stop) = live_failure(&live, &opts.rules) {

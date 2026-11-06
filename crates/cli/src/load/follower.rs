@@ -12,8 +12,13 @@
 //! an observation gap, not a chain stall, and the first block after it has no gap to the block
 //! before. The blocks missed meanwhile are filled in below the next best block. A node that stays
 //! unreachable for the backoff (about 15 s), or that drops the connection again and again, is
-//! [`BlockEvent::Unreachable`]; a node that comes back as another process is
-//! [`BlockEvent::NodeRestarted`]. Both are node down.
+//! [`BlockEvent::Unreachable`]: node down. A reconnect that lands on another node, or on the same
+//! node restarted, is [`BlockEvent::OtherNode`]: a warning only. Behind a load balancer a
+//! reconnect can reach another healthy node; a chain that is really down still trips the stall
+//! and finality stall rules.
+//!
+//! Every read the heads task makes has [`REQUEST`] to answer and gives way to `stop`, so a node
+//! that never answers cannot hold the task past the end of the run.
 
 use std::{collections::HashSet, future::Future, time::Duration};
 
@@ -75,9 +80,10 @@ pub enum BlockEvent {
 	/// The node stayed unreachable for the whole reconnect backoff, or kept dropping the
 	/// connection: the node is down.
 	Unreachable(String),
-	/// After a reconnect the node is another process (a new peer ID or starting block): it
-	/// restarted, which counts as node down.
-	NodeRestarted(String),
+	/// After a reconnect the node is another process (a new peer ID or starting block): a load
+	/// balancer sent the connection to another node, or the node restarted. A warning, not node
+	/// down: the stall rules judge whether the chain still produces blocks.
+	OtherNode(String),
 	/// An answer did not decode as our types: an error of our tools, the run stops.
 	Tool(String),
 }
@@ -108,6 +114,27 @@ const MAX_FILL: usize = 64;
 /// Best-block read errors in a row that count as a lost connection.
 const ERRORS_IN_A_ROW: u32 = 3;
 
+/// The longest one read of the heads task may take, as one reconnect attempt.
+pub const REQUEST: Duration = Duration::from_secs(5);
+
+/// `read`, failed as a timeout if the node does not answer within [`REQUEST`].
+async fn bounded<T>(
+	what: &str,
+	read: impl Future<Output = Result<T, ChainError>>,
+) -> Result<T, ChainError> {
+	tokio::time::timeout(REQUEST, read).await.unwrap_or_else(|_| {
+		Err(ChainError::Timeout(format!("{what}: no answer in {} s", REQUEST.as_secs())))
+	})
+}
+
+/// `work`, unless `stop` is cancelled first.
+async fn until_stopped<T>(stop: &CancellationToken, work: impl Future<Output = T>) -> Option<T> {
+	tokio::select! {
+		() = stop.cancelled() => None,
+		out = work => Some(out),
+	}
+}
+
 /// Starts both tasks; they end at `stop`. `url` opens the connection again when it drops.
 pub fn start(
 	client: Client,
@@ -122,8 +149,8 @@ pub fn start(
 	tokio::spawn(fetcher(current, limit, out, queue, stop));
 }
 
-/// Who the node is, to see that it restarted while the follower was away: its peer ID, and
-/// the block it started syncing at (`system_syncState.startingBlock`, fixed for a process).
+/// Who the node is, to see that a reconnect reached another process: its peer ID, and the block
+/// it started syncing at (`system_syncState.startingBlock`, fixed for a process).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Identity {
 	/// `system_localPeerId`.
@@ -134,27 +161,43 @@ pub struct Identity {
 
 impl Identity {
 	async fn read(client: &Client) -> Self {
-		let peer_id = client.request::<String>("system_localPeerId", rpc_params![]).await.ok();
-		let sync = client.request::<serde_json::Value>("system_syncState", rpc_params![]).await;
-		Self { peer_id, starting_block: sync.ok().and_then(|s| s["startingBlock"].as_u64()) }
+		let peer_id = bounded(
+			"system_localPeerId",
+			client.request::<String>("system_localPeerId", rpc_params![]),
+		);
+		let sync = bounded(
+			"system_syncState",
+			client.request::<serde_json::Value>("system_syncState", rpc_params![]),
+		);
+		let (peer_id, sync) = tokio::join!(peer_id, sync);
+		Self {
+			peer_id: peer_id.ok(),
+			starting_block: sync.ok().and_then(|s| s["startingBlock"].as_u64()),
+		}
 	}
 
-	/// Why `now` is another process than `self`, if it is. A value either side could not read
+	/// Why `now` is another process than `self`, if it is: a load balancer sent the
+	/// connection to another node, or the node restarted. A value either side could not read
 	/// tells nothing.
-	pub fn restarted(&self, now: &Identity) -> Option<String> {
+	pub fn other_node(&self, now: &Identity) -> Option<String> {
+		const WHY: &str = "reconnected to a different node (load balancer, or the node restarted)";
 		if let (Some(a), Some(b)) = (&self.peer_id, &now.peer_id)
 			&& a != b
 		{
-			return Some(format!("the node restarted: its peer ID changed from {a} to {b}"));
+			return Some(format!("{WHY}: its peer ID changed from {a} to {b}"));
 		}
 		if let (Some(a), Some(b)) = (self.starting_block, now.starting_block)
 			&& a != b
 		{
-			return Some(format!(
-				"the node restarted: it started again at block {b} (it had started at {a})"
-			));
+			return Some(format!("{WHY}: its sync starting block changed from {a} to {b}"));
 		}
 		None
+	}
+
+	/// Takes what `now` could read: the next reconnect compares with the node last followed.
+	pub fn update(&mut self, now: Identity) {
+		self.peer_id = now.peer_id.or(self.peer_id.take());
+		self.starting_block = now.starting_block.or(self.starting_block);
 	}
 }
 
@@ -189,7 +232,8 @@ impl Session {
 /// Follows best and finalized blocks; when the connection drops, reports it, opens it again
 /// (connected means subscribed) and follows on. Blocks below the first new best block after a
 /// reconnect are filled in, as after a reorg. A node that cannot be reached within the backoff,
-/// that keeps dropping the connection, or that came back as another process is down.
+/// or that keeps dropping the connection, is down; one that came back as another process is a
+/// warning.
 async fn heads(
 	client: Client,
 	url: String,
@@ -201,7 +245,12 @@ async fn heads(
 	let backoff = Backoff::default();
 	let mut followed = Followed::default();
 	let mut drops = Drops::default();
-	let mut session = Session::subscribe(client).await;
+	let first = tokio::time::timeout(backoff.attempt, Session::subscribe(client));
+	let mut session = match until_stopped(&stop, first).await {
+		None => return,
+		Some(Ok(session)) => session,
+		Some(Err(_)) => Err("subscribing got no answer in time".into()),
+	};
 	loop {
 		let reason = match session {
 			Ok(s) => {
@@ -231,9 +280,12 @@ async fn heads(
 				return;
 			},
 		};
-		if let Some(why) = followed.identity.as_ref().and_then(|id| id.restarted(&s.identity)) {
-			eprintln!("blocks: {why}");
-			let _ = out.send(BlockEvent::NodeRestarted(why));
+		if let Some(id) = followed.identity.as_mut() {
+			if let Some(why) = id.other_node(&s.identity) {
+				eprintln!("blocks: {why}");
+				let _ = out.send(BlockEvent::OtherNode(why));
+			}
+			id.update(s.identity.clone());
 		}
 		let at = now_ms();
 		eprintln!("blocks: reconnected after {:.1} s", at.saturating_sub(lost_at) as f64 / 1000.0);
@@ -252,7 +304,7 @@ struct Followed {
 	first: Option<u32>,
 	/// The next block queued is the first after a reconnect.
 	after_gap: bool,
-	/// Who the node was on the first connection.
+	/// Who the node was on the last connection.
 	identity: Option<Identity>,
 }
 
@@ -269,7 +321,7 @@ async fn follow(
 	// the first probes would be sent on old blocks and land "fast".
 	let first = match f.first {
 		Some(first) => first,
-		None => match client.best_number().await {
+		None => match until_stopped(stop, bounded("best number", client.best_number())).await? {
 			Ok(n) => *f.first.insert(n),
 			Err(e) => return Some(format!("best number: {e}")),
 		},
@@ -298,7 +350,8 @@ async fn follow(
 						let (number, hash, seen_at) = (b.number() as u32, b.hash().0, now_ms());
 						let _ = out.send(BlockEvent::Head { number, seen_at });
 						let after_gap = std::mem::take(&mut f.after_gap);
-						match fill_in(b.header().parent_hash.0, number, first, &f.seen, |h| client.parent(h)).await {
+						let walk = fill_in(b.header().parent_hash.0, number, first, &f.seen, |h| bounded("parent header", client.parent(h)));
+						match until_stopped(stop, walk).await? {
 							Ok(missing) => for (h, n) in missing {
 								f.seen.insert(h);
 								let _ = queue.send((h, n, seen_at, true, false));
@@ -495,28 +548,62 @@ mod tests {
 		assert_eq!(fill(&chain, h(6), 7, 5, &[]), [(h(5), 5), (h(6), 6)]);
 	}
 
+	/// Behind a load balancer a reconnect can reach another healthy node: a new peer ID or sync
+	/// starting block is a warning that names both causes, not a restart.
 	#[test]
-	fn a_new_peer_id_or_starting_block_is_a_restart() {
+	fn a_new_peer_id_or_starting_block_is_another_node() {
 		let id = |peer: Option<&str>, start| Identity {
 			peer_id: peer.map(str::to_owned),
 			starting_block: start,
 		};
 		let before = id(Some("12D3a"), Some(100));
-		assert_eq!(before.restarted(&id(Some("12D3a"), Some(100))), None);
+		assert_eq!(before.other_node(&id(Some("12D3a"), Some(100))), None);
+		let why = before.other_node(&id(Some("12D3b"), Some(100))).unwrap();
 		assert!(
-			before
-				.restarted(&id(Some("12D3b"), Some(100)))
-				.unwrap()
-				.contains("peer ID changed")
+			why.starts_with(
+				"reconnected to a different node (load balancer, or the node restarted)"
+			),
+			"{why}"
 		);
+		assert!(why.contains("peer ID changed from 12D3a to 12D3b"), "{why}");
 		// The node key is kept on disk: the same peer ID, but it started again.
-		assert!(
-			before
-				.restarted(&id(Some("12D3a"), Some(140)))
-				.unwrap()
-				.contains("started again at block 140")
-		);
+		let why = before.other_node(&id(Some("12D3a"), Some(140))).unwrap();
+		assert!(why.contains("sync starting block changed from 100 to 140"), "{why}");
 		// What could not be read tells nothing.
-		assert_eq!(before.restarted(&id(None, None)), None);
+		assert_eq!(before.other_node(&id(None, None)), None);
+		// The next reconnect compares with the node last followed, keeping what it could not read.
+		let mut last = before.clone();
+		last.update(id(Some("12D3b"), None));
+		assert_eq!(last, id(Some("12D3b"), Some(100)));
+		assert_eq!(last.other_node(&id(Some("12D3b"), Some(100))), None);
+	}
+
+	/// A read the node never answers fails after [`REQUEST`], and `stop` ends a walk that is still
+	/// waiting: neither holds the heads task past the run.
+	#[tokio::test(start_paused = true)]
+	async fn a_read_that_never_answers_times_out_and_stop_ends_it() {
+		let started = tokio::time::Instant::now();
+		let never = std::future::pending::<Result<u32, ChainError>>();
+		let err = bounded("best number", never).await.unwrap_err();
+		assert!(err.to_string().contains("best number: no answer in 5 s"), "{err}");
+		assert_eq!(started.elapsed(), REQUEST);
+
+		// A fill-in walk whose parent reads never answer ends with an error, not never.
+		let seen = HashSet::new();
+		let walk = fill_in(h(9), 10, 1, &seen, |_| {
+			bounded("parent header", std::future::pending::<Result<[u8; 32], ChainError>>())
+		});
+		assert!(walk.await.unwrap_err().to_string().contains("parent header"));
+
+		let stop = CancellationToken::new();
+		let cancel = stop.clone();
+		tokio::spawn(async move {
+			tokio::time::sleep(Duration::from_millis(300)).await;
+			cancel.cancel();
+		});
+		let started = tokio::time::Instant::now();
+		let walk = fill_in(h(9), 10, 1, &seen, |_| std::future::pending());
+		assert!(until_stopped(&stop, walk).await.is_none());
+		assert_eq!(started.elapsed(), Duration::from_millis(300));
 	}
 }

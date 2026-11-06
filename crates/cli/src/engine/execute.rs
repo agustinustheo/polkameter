@@ -528,6 +528,9 @@ impl Run<'_> {
 			},
 			None => None,
 		};
+		for warning in measured.iter().flat_map(measurement::Measured::warnings) {
+			self.log.emit(json!({"event": "warning", "message": warning}))?;
+		}
 		let evaluated = self.run_steps(&self.plan.evaluate.entries, plugins, values).await;
 		// The report keeps the built-in evidence even when a plugin check is malformed; that error
 		// is the run's, after the report is written.

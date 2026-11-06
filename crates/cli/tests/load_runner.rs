@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use polkameter::load::{
 	Lane, Plan, QueueSource, Tx,
 	rules::RULES,
-	runner::{Io, Mode, RunOptions, load},
+	runner::{Io, Mode, RunOptions, load, recover},
 	sender::Reply,
 	steps::final_step,
 	submit::Submit,
@@ -45,15 +45,12 @@ fn boot_suspended() -> Option<u64> {
 	Some(now + SLEPT.load(Ordering::Relaxed))
 }
 
-async fn run(
+/// A tracker in the load, a healthy chain (a new best block every 6 s) and the runner's inputs.
+fn setup(
 	name: &str,
 	boot: fn() -> Option<u64>,
 	restarts: Problems,
-) -> (
-	Tracker<FakeSender>,
-	polkameter_plugin_sdk::observers::files::summary::Stop,
-	std::time::Duration,
-) {
+) -> (Tracker<FakeSender>, Io, RunOptions) {
 	let dir = RunDir::create(std::path::Path::new(env!("CARGO_TARGET_TMPDIR")), name).unwrap();
 	let txs: Vec<Tx> = (0..200u32).map(|n| Tx::new(n.to_le_bytes().to_vec())).collect();
 	let lane = Lane { call: "Test.call", source: QueueSource::new(txs, vec![], "txs") };
@@ -82,7 +79,7 @@ async fn run(
 		}
 	});
 	let (events, _) = tokio::sync::broadcast::channel(64);
-	let mut io = Io {
+	let io = Io {
 		replies,
 		blocks,
 		events,
@@ -100,6 +97,19 @@ async fn run(
 		baseline_probes: 0,
 		block_interval_s: 6.0,
 	};
+	(t, io, opts)
+}
+
+async fn run(
+	name: &str,
+	boot: fn() -> Option<u64>,
+	restarts: Problems,
+) -> (
+	Tracker<FakeSender>,
+	polkameter_plugin_sdk::observers::files::summary::Stop,
+	std::time::Duration,
+) {
+	let (mut t, mut io, opts) = setup(name, boot, restarts);
 	let virtual_start = tokio::time::Instant::now();
 	let stop = load(&mut t, &mut io, &opts).await.unwrap();
 	(t, stop, virtual_start.elapsed())
@@ -137,4 +147,22 @@ async fn a_node_restart_the_sampler_saw_is_node_down() {
 	let (_, stop, _) = run("restarted", boot_awake, restarts).await;
 	assert_eq!((stop.rule, stop.step), (Rule::NodeDown, Some(0)), "{}", stop.detail);
 	assert!(stop.detail.contains("the node restarted"), "{}", stop.detail);
+}
+
+/// The sampler sees the node's PID change during recovery: recovery ends there on node down, as
+/// the load does, instead of waiting out its time on a node that restarted.
+#[tokio::test(start_paused = true)]
+async fn a_node_restart_the_sampler_saw_ends_recovery_as_node_down() {
+	let restarts = Problems::default();
+	let (mut t, mut io, mut opts) = setup("restarted-in-recovery", boot_awake, restarts.clone());
+	opts.recovery_s = 120;
+	tokio::spawn(async move {
+		tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+		restarts.record("node: process 10 ended; sampling the node process now on its port, 20 (the node restarted)".into());
+	});
+	let started = tokio::time::Instant::now();
+	let r = recover(&mut t, &mut io, &opts, 12_000).await.unwrap();
+	assert!(started.elapsed() < std::time::Duration::from_secs(21), "{:?}", started.elapsed());
+	assert!(!r.recovered);
+	assert!(r.detail.starts_with("node down: node: process 10 ended"), "{}", r.detail);
 }

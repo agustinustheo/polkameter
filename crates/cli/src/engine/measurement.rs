@@ -30,6 +30,13 @@ pub struct Measured {
 	mode: Mode,
 }
 
+impl Measured {
+	/// What the run shows but does not count as a problem, for the event log.
+	pub fn warnings(&self) -> &[String] {
+		&self.summary.warnings
+	}
+}
+
 /// File of the plugin check results, kept so `polkameter report` can write the same summary.
 const PLUGIN_CHECKS: &str = "plugin-checks.json";
 
@@ -189,8 +196,10 @@ pub async fn run(
 	let unreadable = tracker.unreadable.clone();
 	let gaps: Vec<String> = tracker.observation_gaps.iter().map(ToString::to_string).collect();
 	let unobserved_ms = tracker.unobserved_ms(now_ms());
-	// A node that went down or restarted is a problem too: smoke mode exits 1 on it.
+	// A node that went down is a problem too: smoke mode exits 1 on it. A reconnect to another
+	// node is a warning only: behind a load balancer it is a healthy node.
 	let node_down = tracker.node_down.clone().map(|why| format!("node down: {why}"));
+	let warnings = tracker.warnings.clone();
 	tracker.finish()?.close();
 	monitors.stop_chain().await?;
 	let mut problems = monitors.problems.all();
@@ -234,6 +243,7 @@ pub async fn run(
 		loss,
 		baseline: base,
 		problems,
+		warnings,
 		unobserved_ms,
 		network: Network {
 			url,

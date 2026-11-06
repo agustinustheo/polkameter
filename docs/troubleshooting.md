@@ -143,11 +143,17 @@ Polkameter: cannot read run directory target/no-such-run: No such file or direct
 
 **Fix:** If it happens often, check the proxy or load balancer between PolkaMeter and the node. Raise its idle timeout above the run's length.
 
-### node down: the node restarted
+### node down: node: process <pid> ended; sampling the node process now on its port, <pid> (the node restarted)
 
-**Cause:** After a reconnect, the node had a new peer ID or sync starting block, or the node's process ID on its port changed. A restart empties the pool, so PolkaMeter stops the load on node down, even when the node was back within seconds.
+**Cause:** The local node's process ID on its port changed. A restart empties the pool, so PolkaMeter stops the load on node down, even when the node was back within seconds. During recovery, it ends recovery.
 
 **Fix:** Check the node's logs for why it restarted, such as an out-of-memory kill or a supervisor restart.
+
+### reconnected to a different node (load balancer, or the node restarted)
+
+**Cause:** The block follower reconnected, and the node had a new peer ID or sync starting block. Behind a load balancer, the reconnect reached another node. Without one, the node restarted. The run goes on, and the verdict and exit code do not change. If the chain stopped producing or finalizing blocks, the stall or finality stall rule stops the load.
+
+**Fix:** With a load balancer, nothing is needed. To measure one node, point the run at that node's URL. Without a load balancer, check the node's logs for why it restarted.
 
 ### generator limit: the machine was suspended for <seconds> s
 

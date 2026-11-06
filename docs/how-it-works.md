@@ -97,7 +97,11 @@ The node is `node down` in three cases:
 
 - It stays unreachable for the 15 s of attempts.
 - A connection drops more than 5 times in 60 s.
-- It comes back as another process: a new peer ID or a new sync starting block, or a new process ID on the sampled port. A restart drops the pool, so it counts as a failure even when it takes less than 15 s.
+- A local node that PolkaMeter samples gets a new process ID on its port. A restart drops the pool, so it counts as a failure even when it takes less than 15 s.
+
+If the block follower reconnects and the node has a new peer ID or a new sync starting block, the run goes on. Behind a load balancer, a reconnect can reach another node that is healthy, so this alone does not show that the node failed. PolkaMeter prints a warning: "reconnected to a different node (load balancer, or the node restarted)". It lists it under warnings in `summary.md` and `summary.json`, and as a `warning` event. A warning does not change the verdict or the exit code.
+
+A chain that is really down still stops the load. If no node behind the URL produces new blocks, the stall rule stops it, whichever node answers (after 30 s by default). If blocks come but none is finalized, the finality stall rule stops it (after 60 s by default).
 
 ## Which clock a run uses
 
@@ -111,7 +115,7 @@ PolkaMeter can only sample a node that runs on the same machine. It samples the 
 
 A port forwarder on that port is not the node, so PolkaMeter does not sample it. That covers an SSH tunnel, `kubectl port-forward`, `socat` and Docker's port proxy. For a remote URL, nothing is sampled. In both cases the run prints why and goes on, and `node.jsonl` stays empty.
 
-If the sampled process ends during the run, the node probably restarted. PolkaMeter looks for the node process now on the port, records the restart under problems and samples the new process. A restart during the load stops it on node down. The CPU of the first sample after a restart is not known. With `POLKAMETER_NODE_PID` and a URL that is not loopback, a restarted node cannot be found again.
+If the sampled process ends during the run, the node probably restarted. PolkaMeter looks for the node process now on the port, records the restart under problems and samples the new process. A restart during the load stops it on node down. A restart during recovery ends recovery, which then reports node down. The CPU of the first sample after a restart is not known. With `POLKAMETER_NODE_PID` and a URL that is not loopback, a restarted node cannot be found again.
 
 ## Why stress mode exits 0 by default
 

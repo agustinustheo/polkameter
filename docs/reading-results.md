@@ -60,7 +60,7 @@ The table lists every rule. The three breaking point rules do not stop the load.
 | Slow blocks | Hard. The mean block gap is more than twice the plan's `block-interval-seconds` |
 | Stall | Hard. No new best block for 30 s, not counting time PolkaMeter was reconnecting |
 | Finality stall | Hard. No new finalized block for 60 s, not counting time PolkaMeter was reconnecting |
-| Node down | Hard. The node stayed unreachable for 15 s, kept dropping the connection, or restarted |
+| Node down | Hard. The node stayed unreachable for 15 s, kept dropping the connection, or a local node's process restarted |
 | Rate cap | Every step ran. The ramp finished |
 | Budget used up | The prepared transactions ran out |
 | Generator limit | The load tool could not send at least 95% of the target rate, or the machine was suspended |
@@ -69,6 +69,8 @@ The table lists every rule. The three breaking point rules do not stop the load.
 [Results](results.md#stop-rules-and-thresholds) lists the default thresholds. The [plan](plans.md#thresholds) can change them.
 
 If an RPC connection drops and PolkaMeter reconnects, the run goes on. The lost time is listed under problems, and the "monitors recorded everything" check warns. The time is left out of the stall rules, but the time around it still counts. If blocks went unobserved for longer than 30 s in all, that check has no result and the verdict cannot be PASS.
+
+If the reconnect reached a node with a different peer ID or sync starting block, the result lists a warning: "reconnected to a different node (load balancer, or the node restarted)". It does not change the verdict. If you do not use a load balancer, check the node's logs for a restart.
 
 ## Which step does a number belong to?
 

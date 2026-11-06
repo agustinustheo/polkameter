@@ -133,9 +133,12 @@ pub struct Tracker<S> {
 	/// Times the block follower lost the node and followed it again: not observed, so not a
 	/// chain stall. Also sender connections that dropped and were opened again.
 	pub observation_gaps: Vec<ObservationGap>,
-	/// The node is down: the follower could not reach it within the reconnect backoff, the
-	/// connection kept dropping, or the node came back as another process (it restarted).
+	/// The node is down: the follower could not reach it within the reconnect backoff, or the
+	/// connection kept dropping.
 	pub node_down: Option<String>,
+	/// What the run should show but is not a problem: a reconnect that reached another node
+	/// (a load balancer, or the node restarted).
+	pub warnings: Vec<String>,
 	/// When the last new best block arrived while the follower was connected, for block gaps.
 	prev_head_at: Option<Millis>,
 	phases: Vec<(Millis, Phase)>,
@@ -208,6 +211,7 @@ impl<S: Submit> Tracker<S> {
 			unreadable: Vec::new(),
 			observation_gaps: Vec::new(),
 			node_down: None,
+			warnings: Vec::new(),
 			prev_head_at: None,
 			phases: vec![(now, Phase::Baseline)],
 			baseline_probes,
