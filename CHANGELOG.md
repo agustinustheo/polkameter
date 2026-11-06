@@ -4,7 +4,7 @@ User-visible changes in each release. The GitHub release notes list every merged
 
 ## Unreleased (0.3.0)
 
-These notes cover the release pipeline, the GitHub Action, the installer and the container. Other 0.3.0 changes still need entries here.
+Other 0.3.0 changes still need entries here.
 
 ### GitHub Action
 
@@ -36,3 +36,7 @@ Also new:
 
 - Releases are published only after every asset is uploaded and attested. Published assets are never replaced.
 - crates.io publication waits for the GitHub release and the container image.
+
+### CLI
+
+- The CLI spells its name `PolkaMeter` in every message. Standard-error lines now start with `PolkaMeter:` and `PolkaMeter warning:` instead of `Polkameter:`. Update scripts that match the old prefix.

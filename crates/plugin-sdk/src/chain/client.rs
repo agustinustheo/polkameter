@@ -107,7 +107,6 @@ pub fn decode_err<E: std::fmt::Display>(what: &'static str) -> impl FnOnce(E) ->
 }
 
 /// Our encoding no longer matches the runtime: an error of our tools, so the run stops.
-/// Part of the plugin API (used by out-of-tree plugins).
 #[derive(Debug, thiserror::Error)]
 #[error("the runtime's tx extensions changed; ours: {ours:?}, live: {live:?}")]
 pub struct LayoutChanged {
@@ -177,7 +176,6 @@ impl Client {
 	}
 
 	/// Checks the live extension list against our tx layout.
-	/// Part of the plugin API (used by out-of-tree plugins).
 	pub async fn check_extensions(
 		&self,
 		expected: &[&'static str],
@@ -288,7 +286,6 @@ impl Client {
 	}
 
 	/// Encodes a call by pallet and call name, with metadata.
-	/// Part of the plugin API (used by out-of-tree plugins).
 	pub async fn call_data(
 		&self,
 		pallet: &str,
@@ -302,7 +299,6 @@ impl Client {
 	}
 
 	/// `Sudo.sudo(inner)`.
-	/// Part of the plugin API (used by out-of-tree plugins).
 	pub async fn sudo(&self, inner: &[u8]) -> Result<Vec<u8>, ChainError> {
 		let at = self.finalized().await?;
 		let md = at.metadata_ref();
@@ -318,7 +314,6 @@ impl Client {
 	}
 
 	/// The next nonce of `account`.
-	/// Part of the plugin API (used by out-of-tree plugins).
 	pub async fn nonce(&self, account: [u8; 32]) -> Result<u32, ChainError> {
 		let ss58 = subxt::utils::AccountId32(account).to_string();
 		self.request("system_accountNextIndex", rpc_params![ss58]).await

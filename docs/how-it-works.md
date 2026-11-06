@@ -104,7 +104,7 @@ Inside `polkameter-plugin-sdk`:
 | `observers::monitors` | `observers` | `crates/plugin-sdk/src/observers/monitors` | The block walker and the series writer that chain recorders, built-in or in a plugin, run under. |
 | `observers::checks` | `observers` | `crates/plugin-sdk/src/observers/checks` | The evaluator. It reads a finished run's files, runs the outcome checks and writes `summary.json` and `summary.md`. |
 
-Dependencies point one way. `polkameter-plugin-sdk` depends on no other PolkaMeter crate, and `polkameter` depends on the SDK with every feature on. The engine and the load runner are public modules of `polkameter` only so the desktop app and the tests can share them; they are not a library API.
+Dependencies point one way. `polkameter-plugin-sdk` depends on no other PolkaMeter crate, and `polkameter` depends on the SDK with every feature on. The engine and the load runner are public modules of `polkameter` only so the tests can use them; they are not a library API.
 
 ### How a run flows through the crates
 

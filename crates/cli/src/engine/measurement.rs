@@ -198,9 +198,10 @@ pub async fn run(
 		scenario: plan.name.clone(),
 		artifact: Some(Artifact {
 			name: "prepared extrinsics".into(),
-			description:
-				"Each operation is prepared by an installed plugin and submitted by Polkameter"
-					.into(),
+			description: format!(
+				"Each operation is prepared by an installed plugin and submitted by {}",
+				crate::PRODUCT_NAME
+			),
 			context: "XML plugin workload".into(),
 		}),
 		run_id: dir.run_id.clone(),

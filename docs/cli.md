@@ -1,5 +1,8 @@
 # CLI reference
 
+<!-- v0.3.0: remove after release -->
+> **Unreleased:** This page describes v0.3.0. The published CLI is v0.2.0, which has no `--junit` and writes no `junit.xml`. To use them now, build from source with `cargo install --locked --git https://github.com/agustinustheo/polkameter --rev 58921b7d506f9987db68fc8084b2fb8f13649f94 polkameter`.
+
 `polkameter` validates, preflights and runs plans, reports on runs, manages plugins and serves a remote agent. Run `polkameter COMMAND --help` for one command's flags. Errors: see [Troubleshooting](troubleshooting.md).
 
 ## --version
@@ -22,10 +25,10 @@ Checks a plan's structure without starting plugins or connecting to a chain. [Pl
 polkameter validate [--format human|json] PLAN
 ```
 
-| Name | Default | Meaning |
-| --- | --- | --- |
-| `PLAN` | none | The plan file |
-| `--format` | `human` | `human` or `json`. See [output formats](#output-formats) |
+| Name | Type | Required | Default | Limits | Meaning |
+| --- | --- | --- | --- | --- | --- |
+| `PLAN` | path | yes | none | a readable file | The plan file |
+| `--format` | enum | no | `human` | `human` or `json` | See [output formats](#output-formats) |
 
 From the repository root:
 
@@ -45,11 +48,11 @@ Checks each operation against its plugin's manifest and the evidence the plugins
 polkameter preflight [--credential-env ENV_VAR] [--format human|json] PLAN
 ```
 
-| Name | Default | Meaning |
-| --- | --- | --- |
-| `PLAN` | none | The plan file |
-| `--credential-env` | none | Reads the only credential from this variable. The plan must declare exactly one |
-| `--format` | `human` | `human` or `json` |
+| Name | Type | Required | Default | Limits | Meaning |
+| --- | --- | --- | --- | --- | --- |
+| `PLAN` | path | yes | none | a readable file | The plan file |
+| `--credential-env` | variable name | no | none | the plan declares exactly one credential | Reads the only credential from this variable, instead of its configured profile |
+| `--format` | enum | no | `human` | `human` or `json` | See [output formats](#output-formats) |
 
 ```sh
 polkameter preflight examples/plugin-workflow.polkameter.xml
@@ -68,16 +71,16 @@ polkameter run [--output DIR] [--junit PATH] [--credential-env ENV_VAR] [--fail-
 polkameter run --remote URL --remote-token-env ENV_VAR [--junit PATH] [--fail-on-verdict] [--format human|json] PLAN
 ```
 
-| Name | Required | Meaning |
-| --- | --- | --- |
-| `PLAN` | yes | The plan file |
-| `--output DIR` | yes, unless `--remote` | The artifact root |
-| `--junit PATH` | no | Write a local copy of the run directory's `junit.xml`, including for a remote run. Default: no additional copy |
-| `--credential-env` | no | Reads the only credential from this variable. Not allowed with `--remote` |
-| `--fail-on-verdict` | no | Default off. Exit `1` on a `FAIL` load verdict after writing the report and running teardown. Other verdicts and plans without a load test keep their existing exit behavior |
-| `--remote URL` | no | The agent's endpoint. See [remote agent](#remote-agent) |
-| `--remote-token-env` | with `--remote` | The variable that holds the agent's bearer token |
-| `--format` | no | `human` (default) or `json`. See [output formats](#output-formats) |
+| Name | Type | Required | Default | Limits | Meaning |
+| --- | --- | --- | --- | --- | --- |
+| `PLAN` | path | yes | none | a readable file | The plan file |
+| `--output DIR` | path | yes, unless `--remote` | none | none | The artifact root. The run creates one `run-*` directory in it |
+| `--junit PATH` | path | no | none | <!-- v0.3.0: remove after release -->from v0.3.0 | A local copy of the run directory's `junit.xml`, including for a remote run. Parent directories are created |
+| `--credential-env` | variable name | no | none | not with `--remote`; the plan declares exactly one credential | Reads the only credential from this variable |
+| `--fail-on-verdict` | flag | no | off | none | Exit `1` on a `FAIL` load verdict, after writing the report and running teardown. Other verdicts and plans without a load test keep their exit code |
+| `--remote URL` | URL | no | none | `https://`, or `http://` to a loopback address with a port | The agent's endpoint. See [remote agent](#remote-agent) |
+| `--remote-token-env` | variable name | with `--remote` | none | needs `--remote` | The variable that holds the agent's bearer token |
+| `--format` | enum | no | `human` | `human` or `json` | See [output formats](#output-formats) |
 
 With `--remote`, the agent applies `--fail-on-verdict` and records the exit code in its run directory. If the agent does not support the flag, the client refuses to start the run; update the agent first.
 
@@ -102,12 +105,12 @@ Phase: preflight
 Phase: setup
 Phase: teardown
 Run failed. Artifacts: ~/polkameter/runs/run-1792994214466-72728-1
-Polkameter: run failed: plugin exited before responding (details in ~/polkameter/runs/run-1792994214466-72728-1/execution.json)
+PolkaMeter: run failed: plugin exited before responding (details in ~/polkameter/runs/run-1792994214466-72728-1/execution.json)
 ```
 
 The reason stays on one line. Colour and cursor codes are removed, and line breaks show as `⏎`. Other control characters, including the start of other terminal escape sequences such as a window title, are shown escaped, like `\u{1b}`. The printed reason is cut at 300 characters with `…`, and `execution.json` keeps the full text.
 
-A failed remote run prints `Polkameter: remote run failed: <reason> (details in <run directory>/execution.json on the agent)`. The run directory is on the agent host. See [Troubleshooting](troubleshooting.md#run-failed--details-in-executionjson) for the reasons.
+A failed remote run prints `PolkaMeter: remote run failed: <reason> (details in <run directory>/execution.json on the agent)`. The run directory is on the agent host. See [Troubleshooting](troubleshooting.md#run-failed--details-in-executionjson) for the reasons.
 
 ## report
 
@@ -117,11 +120,11 @@ Rebuilds a run's outputs from its files without running the plan.
 polkameter report [--junit PATH] [--format human|json] ARTIFACT_DIRECTORY
 ```
 
-| Name | Default | Meaning |
-| --- | --- | --- |
-| `ARTIFACT_DIRECTORY` | none | The run directory |
-| `--junit PATH` | none | Write an additional copy of `junit.xml` |
-| `--format` | `human` | `human` or `json`. See [output formats](#output-formats) |
+| Name | Type | Required | Default | Limits | Meaning |
+| --- | --- | --- | --- | --- | --- |
+| `ARTIFACT_DIRECTORY` | path | yes | none | holds `execution.json` and `summary.md` | The run directory |
+| `--junit PATH` | path | no | none | <!-- v0.3.0: remove after release -->from v0.3.0 | An additional copy of `junit.xml` |
+| `--format` | enum | no | `human` | `human` or `json` | See [output formats](#output-formats) |
 
 With a `<load>`, it rebuilds the built-in and plugin checks, `summary.json`, `summary.md`, `junit.xml`, `samples.jtl` and `plots/`. Without one, it rewrites `junit.xml`, `samples.jtl` and `plots/`. The directory must hold `execution.json` and `summary.md`. The human format prints the summary.
 
@@ -152,9 +155,9 @@ Records the plugin's ID, version and BLAKE2 hash. Install it again after each re
 polkameter plugin install EXECUTABLE
 ```
 
-| Argument | Meaning |
-| --- | --- |
-| `EXECUTABLE` | The plugin executable |
+| Name | Type | Required | Default | Limits | Meaning |
+| --- | --- | --- | --- | --- | --- |
+| `EXECUTABLE` | path | yes | none | a plugin that answers `$describe` | The plugin executable |
 
 ```sh
 polkameter plugin install target/debug/polkameter-example-plugin
@@ -187,9 +190,9 @@ Starts the plan's plugins and checks each operation against its manifest. It pri
 polkameter plugin inspect PLAN
 ```
 
-| Argument | Meaning |
-| --- | --- |
-| `PLAN` | The plan file. The help text calls it `SCENARIO` |
+| Name | Type | Required | Default | Limits | Meaning |
+| --- | --- | --- | --- | --- | --- |
+| `PLAN` | path | yes | none | a readable file | The plan file. The help text calls it `SCENARIO` |
 
 ```sh
 polkameter plugin inspect examples/plugin-workflow.polkameter.xml
@@ -206,13 +209,13 @@ polkameter plugin inspect examples/plugin-workflow.polkameter.xml
 Maps a plan's credential profile to an environment variable on this host. The registry stores the variable's name, not its value. PolkaMeter reads the variable at the start of a run. An unset or empty variable fails the run.
 
 ```sh
-polkameter plugin credential <PROFILE> <ENV>
+polkameter plugin credential PROFILE ENV_VAR
 ```
 
-| Argument | Meaning |
-| --- | --- |
-| `PROFILE` | The profile the plan's `<credential>` names |
-| `ENV_VAR` | The environment variable that holds the secret |
+| Name | Type | Required | Default | Limits | Meaning |
+| --- | --- | --- | --- | --- | --- |
+| `PROFILE` | string | yes | none | none | The profile the plan's `<credential>` names |
+| `ENV_VAR` | variable name | yes | none | set and not empty when a run starts | The environment variable that holds the secret |
 
 ```sh
 polkameter plugin credential sudo SUDO_SEED
@@ -232,10 +235,10 @@ Registers a Zombienet `zombie.json` under the alias that `<monitors topology="�
 polkameter plugin topology NAME PATH
 ```
 
-| Argument | Meaning |
-| --- | --- |
-| `NAME` | The alias that the plan's `<monitors>` uses |
-| `PATH` | The topology file |
+| Name | Type | Required | Default | Limits | Meaning |
+| --- | --- | --- | --- | --- | --- |
+| `NAME` | string | yes | none | none | The alias that the plan's `<monitors>` uses |
+| `PATH` | path | yes | none | must exist | The topology file, stored as an absolute path |
 
 ```sh
 polkameter plugin topology zombie ./zombie.json
@@ -255,9 +258,9 @@ Records a capability the network provisioner supplies. Preflight checks that a p
 polkameter plugin capability NAME
 ```
 
-| Argument | Meaning |
-| --- | --- |
-| `NAME` | The capability name, as the plugin requires it |
+| Name | Type | Required | Default | Limits | Meaning |
+| --- | --- | --- | --- | --- | --- |
+| `NAME` | string | yes | none | none | The capability name, as the plugin requires it |
 
 ```sh
 polkameter plugin capability zombienet
@@ -277,11 +280,11 @@ Starts the remote agent on this host. It runs plans that clients send with `polk
 polkameter agent serve [--bind ADDR] [--token-env ENV_VAR] [--output-root DIR]
 ```
 
-| Flag | Default | Meaning |
-| --- | --- | --- |
-| `--bind ADDR` | `127.0.0.1:9901` | The address to listen on, which must be loopback |
-| `--token-env` | `POLKAMETER_AGENT_TOKEN` | The variable that holds the bearer token, which must be set and not empty. There is no flag for the token itself |
-| `--output-root DIR` | `target/polkameter-agent-runs` | Where run directories go. Relative paths start from the agent's working directory |
+| Name | Type | Required | Default | Limits | Meaning |
+| --- | --- | --- | --- | --- | --- |
+| `--bind ADDR` | address | no | `127.0.0.1:9901` | a loopback address | The address to listen on |
+| `--token-env` | variable name | no | `POLKAMETER_AGENT_TOKEN` | set and not empty | The variable that holds the bearer token. There is no flag for the token itself |
+| `--output-root DIR` | path | no | `target/polkameter-agent-runs` | none | Where run directories go. Relative paths start from the agent's working directory |
 
 The agent does not serve TLS; remote clients need an SSH tunnel or TLS proxy.
 
@@ -356,7 +359,7 @@ polkameter validate examples/plugin-workflow.polkameter.xml --format json
 {"event":"validation","plan":"Plugin data flow","valid":true}
 ```
 
-- **Errors** go to standard error as `Polkameter: <message>`, even with `--format json`. A failed run adds `Polkameter: run failed: <reason> (details in …)` there.
+- **Errors** go to standard error as `PolkaMeter: <message>`, even with `--format json`. A failed run adds `PolkaMeter: run failed: <reason> (details in …)` there.
 - **Standard output** keeps only JSON lines. A failed run's full reason is the `error` field of the `completed` and `artifact-written` outcomes.
 - **Load runs** also print `stop:`, `loss check:` and `smoke:` lines, and the summary, to standard error.
 

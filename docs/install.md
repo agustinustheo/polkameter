@@ -1,5 +1,8 @@
 # Install
 
+<!-- v0.3.0: remove after release -->
+> **Unreleased:** The published CLI is v0.2.0. The install script, binstall, the container and release archives are available from v0.3.0. Until then, use Cargo.
+
 Install the currently published CLI with Rust 1.93 or newer:
 
 <!-- TODO(v0.3.0): lead with the prebuilt installer once v0.3.0 assets are published. -->
@@ -14,6 +17,7 @@ polkameter 0.2.0
 
 ## Use the install script
 
+<!-- v0.3.0: remove after release -->
 > **Warning:** Prebuilt CLI archives and this script are available from v0.3.0. The latest release, v0.2.0, has no prebuilt CLI archive; use Cargo above until v0.3.0 is published.
 
 Install the CLI binary without a Rust toolchain on Linux or macOS:
@@ -22,6 +26,13 @@ Install the CLI binary without a Rust toolchain on Linux or macOS:
 curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 polkameter --version
+```
+
+<!-- v0.3.0: remove after release (replace with the output of a successful install) -->
+Until v0.3.0 is published, the script stops before installing anything and exits with code `1`:
+
+```text
+polkameter: v0.2.0 has no prebuilt CLI archive; install with cargo install --locked polkameter, or pick a newer version
 ```
 
 ### Choose a version or directory
@@ -54,6 +65,7 @@ curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/insta
 
 ## Use cargo binstall
 
+<!-- v0.3.0: remove after release -->
 > **Warning:** Binstall metadata and matching archives are available from v0.3.0. v0.2.0 has neither; use `cargo install --locked polkameter` until v0.3.0 is published.
 
 If you have [cargo-binstall](https://github.com/cargo-bins/cargo-binstall), download the matching prebuilt binary:
@@ -66,6 +78,7 @@ To select a version with these assets, add `--version <version>`. The metadata p
 
 ## Use a container
 
+<!-- v0.3.0: remove after release -->
 > **Warning:** GHCR images are available from v0.3.0; the commands below require a published image.
 
 Run the CLI from `ghcr.io/agustinustheo/polkameter:<version>`. Stable releases also update `:latest`, `:<major>` and `:<major>.<minor>`; for example, a `0.3.0` release publishes `:0.3.0`, `:0.3`, `:0` and `:latest`. Prereleases use their full version tag only.
@@ -106,16 +119,31 @@ Use Rust 1.93 or newer to compile the CLI from a published crates.io version:
 cargo install --locked polkameter
 ```
 
-To build the current repository code instead:
+```text
+...
+  Installing ~/.cargo/bin/polkameter
+   Installed package `polkameter v0.2.0` (executable `polkameter`)
+```
+
+To build the current repository code instead<!-- v0.3.0: remove after release -->, such as v0.3.0 before its release:
 
 ```sh
 cargo install --locked --git https://github.com/agustinustheo/polkameter polkameter
 ```
 
+```text
+...
+  Installing ~/.cargo/bin/polkameter
+   Installed package `polkameter v0.3.0 (https://github.com/agustinustheo/polkameter#58921b7d)` (executable `polkameter`)
+```
+
+A source build can take 10 minutes or more.
+
 Cargo installs the executable in `~/.cargo/bin` by default. You still need to build and install the plugins required by your plan; see [Getting started](getting-started.md).
 
 ## Download release archives
 
+<!-- v0.3.0: remove after release -->
 > **Warning:** CLI archives are available from v0.3.0; v0.2.0 only has the older release assets.
 
 Choose a target and verify the archive using the [release asset reference](release-assets.md).

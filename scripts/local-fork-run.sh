@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs an XML plan through the Polkameter CLI on a fresh local Zombienet network.
+# Runs an XML plan through the PolkaMeter CLI on a fresh local Zombienet network.
 #
 # Usage: scripts/local-fork-run.sh NETWORK_TOML PLAN [OUTPUT_DIR]
 #
@@ -17,8 +17,12 @@
 # registers the plan's topology alias, runs the plan and always stops the network.
 set -euo pipefail
 
-toml=${1:?usage: $0 NETWORK_TOML PLAN [OUTPUT_DIR]}
-plan=${2:?usage: $0 NETWORK_TOML PLAN [OUTPUT_DIR]}
+if [ $# -lt 2 ]; then
+	echo "usage: $0 NETWORK_TOML PLAN [OUTPUT_DIR]" >&2
+	exit 2
+fi
+toml=$1
+plan=$2
 out=${3:-target/local-runs/run-$(date +%s)}
 cli=${POLKAMETER:-target/release/polkameter}
 bin=$(dirname "$(sed -n 's/^default_command = "\(.*\)"/\1/p' "$toml" | head -1)")

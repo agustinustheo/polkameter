@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Find the message you see below. Each heading is the message as the CLI prints it, without the `Polkameter:` prefix. The first entry is printed by Cargo, not by PolkaMeter.
+Find the message you see below. Each heading is the message as the CLI prints it, without the `PolkaMeter:` prefix. <!-- v0.3.0: remove after release -->The v0.2.0 CLI spells the prefix `Polkameter:`. The entries that start with `error:` are printed by Cargo or by the argument parser.
 
 ## Building and installing
 
@@ -10,13 +10,44 @@ Find the message you see below. Each heading is the message as the CLI prints it
 
 **Fix:** Run `rustup update`. Or install the pinned toolchain with `rustup toolchain install 1.93.0`, then build with `cargo +1.93.0 build`.
 
+<!-- v0.3.0: remove after release -->
+### error: failed to select a version for the requirement `polkameter-plugin-sdk = "^0.3"`
+
+```text
+error: failed to select a version for the requirement `polkameter-plugin-sdk = "^0.3"`
+candidate versions found which didn't match: 0.2.0
+location searched: crates.io index
+required by package `hello-plugin v0.1.0 (~/hello-plugin)`
+```
+
+**Cause:** The plugin SDK 0.3 is available from v0.3.0. crates.io has 0.2.0 only.
+
+**Fix:** Depend on a commit of this repository until the release, as [Writing a plugin](writing-a-plugin.md#create-the-crate) shows.
+
+<!-- v0.3.0: remove after release -->
+### error: unexpected argument '--junit' found
+
+```text
+error: unexpected argument '--junit' found
+
+  tip: to pass '--junit' as a value, use '-- --junit'
+
+Usage: polkameter run --output <OUTPUT> <PLAN>
+
+For more information, try '--help'.
+```
+
+**Cause:** `--junit` and `junit.xml` are available from v0.3.0. The published v0.2.0 CLI rejects the flag and exits with code `2`.
+
+**Fix:** Drop `--junit`, or build the CLI from source with `cargo install --locked --git https://github.com/agustinustheo/polkameter --rev 58921b7d506f9987db68fc8084b2fb8f13649f94 polkameter`. Check the version with `polkameter --version`.
+
 ## Runs
 
 ### run failed: … (details in …/execution.json)
 
 ```text
 Run failed. Artifacts: ~/polkameter/target/runs/run-…
-Polkameter: run failed: assertion verified failed: expected 85, got 84 (details in ~/polkameter/target/runs/run-…/execution.json)
+PolkaMeter: run failed: assertion verified failed: expected 85, got 84 (details in ~/polkameter/target/runs/run-…/execution.json)
 ```
 
 **Cause:** The run started, but a step, a plugin or a deadline failed it. The text after `run failed:` is the reason. Many reasons have their own entry on this page, such as [`assertion <id> failed`](#assertion--failed).
@@ -58,7 +89,7 @@ Polkameter: run failed: assertion verified failed: expected 85, got 84 (details 
 ### cannot read … No such file or directory (os error 2)
 
 ```text
-Polkameter: cannot read run directory target/no-such-run: No such file or directory (os error 2)
+PolkaMeter: cannot read run directory target/no-such-run: No such file or directory (os error 2)
 ```
 
 **Cause:** The path after `cannot read` does not exist. The message says which kind of file PolkaMeter wanted: `plan`, `plugin executable` or `run directory`.
@@ -124,6 +155,39 @@ Polkameter: cannot read run directory target/no-such-run: No such file or direct
 **Cause:** The `block-interval-seconds` attribute on `<load>` differs from the measured block time by more than 25%. Preflight stops before setup.
 
 **Fix:** Set `block-interval-seconds` on `<load>` to the measured value. The default is `6.0`.
+
+### run failed: insufficient probe reserve
+
+**Cause:** The output named by `probes-ref` holds fewer transactions than the run needs for baseline and recovery probes. With the defaults, the run needs 165.
+
+**Fix:** Pass `ref="run.probeBudget"` as the plugin's probe count, as [Run a load test](load-test.md#write-a-plan) shows. [Probe budget](plans.md#load) gives the formula.
+
+### run failed: duplicate transaction in flood/probe sources
+
+**Cause:** The same transaction appears in both the flood and the probes, or twice in one list. Each transaction can be sent only once.
+
+**Fix:** Prepare the probes as separate transactions, for example from a signer the flood does not use.
+
+### The node refuses transactions
+
+A node refuses a transaction when its pool will not accept it. The run does not stop on the first refusal. More than 1% refused marks a breaking point, and more than 10% in a step stops the load as `graceful`.
+
+To see why, open these files in the run directory:
+
+- `summary.md`: the `refusals are clean` check counts refusals by error code.
+- `steps.jsonl`: each step's `errors` field counts refusals by code and message, as the node sent them.
+
+These are the error codes of a Polkadot SDK transaction pool:
+
+| Code | Meaning | Usual cause |
+| --- | --- | --- |
+| `1010` | Invalid transaction. The message says why, such as `Transaction is outdated` or `Inability to pay some fees`. | A stale nonce, a signer without funds, or a transaction built for another runtime version. |
+| `1012` | Temporarily banned. | The same transaction was recently refused or dropped. |
+| `1013` | Already imported. | The transaction was sent twice. |
+| `1014` | Priority is too low. | Another transaction with the same signer and nonce is in the pool. |
+| `1016` | Immediately dropped. | The pool is full. |
+
+**Fix:** For `1010` and `1014`, rebuild the transactions against the current chain: fresh nonces, funded signers and the current runtime version. For `1016`, lower the rate or raise the node's pool limits. For any other code, read the node's log at the time of the refusals.
 
 ## Remote runs
 

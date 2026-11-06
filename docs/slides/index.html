@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Polkameter — load and stress testing for Polkadot SDK chains</title>
+<title>PolkaMeter — load and stress testing for Polkadot SDK chains</title>
 <link rel="icon" href="favicon.png" sizes="512x512" type="image/png">
 <link rel="apple-touch-icon" href="favicon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -14,7 +14,7 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/white.css">
 <style>
   /* Same system as the other decks: DM Serif Display headings, DM Sans body, JetBrains Mono labels,
-     stone neutrals. The accent is the Polkameter blue of the architecture diagrams. */
+     stone neutrals. The accent is the PolkaMeter blue of the architecture diagrams. */
   :root {
     --bg: #fafaf9;
     --surface: #ffffff;
@@ -215,16 +215,16 @@
 </style>
 </head>
 <body>
-<div class="deck-footer">Polkameter · October 2026</div>
+<div class="deck-footer">PolkaMeter · October 2026</div>
 <div class="reveal"><div class="slides">
 
 <section class="center dark" data-background-color="#0f0f0f" data-state="dark-slide">
-  <img class="logo" src="../logo-dark.png" alt="Polkameter">
+  <img class="logo" src="../logo-dark.png" alt="PolkaMeter">
   <h1>Load and stress testing<br><em>for Polkadot SDK chains</em></h1>
   <div class="rule"></div>
   <p class="muted">A JMeter-style workbench: an XML plan, runtime plugins and one Rust engine</p>
   <p class="tiny" style="margin-top:2.2em"><a href="../index.html">Documentation</a> · <a href="https://github.com/agustinustheo/polkameter">Source</a> · press <kbd>S</kbd> for speaker notes</p>
-  <aside class="notes">About 15 minutes. Why chains need their own load tool (2 min), what Polkameter is (2 min), one run end to end (4 min), how the result is judged (4 min), architecture and how to start (3 min).</aside>
+  <aside class="notes">About 15 minutes. Why chains need their own load tool (2 min), what PolkaMeter is (2 min), one run end to end (4 min), how the result is judged (4 min), architecture and how to start (3 min).</aside>
 </section>
 
 <section>
@@ -236,7 +236,7 @@
     <div class="card"><span class="tag">So we must</span><h3>Follow every transaction</h3><p>To the best block, to the finalized chain and back to the pool, and only then say how much the chain really carried.</p></div>
   </div>
   <p class="callout">The limits are also elsewhere: the transaction pool, block building time, finality and, for a parachain, the relay chain backing its blocks.</p>
-  <aside class="notes">The core idea of the tool. A generic load tester would report the submit rate. Polkameter reports what was included, how fast, and accounts for every transaction that was not.</aside>
+  <aside class="notes">The core idea of the tool. A generic load tester would report the submit rate. PolkaMeter reports what was included, how fast, and accounts for every transaction that was not.</aside>
 </section>
 
 <section>
@@ -393,7 +393,7 @@
 
 <section>
   <p class="kicker">A real report</p>
-  <h2>A smoke run, as Polkameter wrote it</h2>
+  <h2>A smoke run, as PolkaMeter wrote it</h2>
   <div class="split even">
     <table class="nice">
       <tr><th>Step</th><th class="num">tx/s</th><th class="num">Sent</th><th class="num">Incl. %</th><th class="num">p95 s</th></tr>
@@ -449,7 +449,7 @@
       <p class="tiny">The example plugin in <code>plugins/example</code> uses <code>polkameter-plugin-sdk</code> and runs without a chain.</p>
     </div>
   </div>
-  <aside class="notes">The People chain plugin lives in the polkadot-pop-e2e repository and is installed without rebuilding Polkameter. A modified executable no longer matches its pin and is refused.</aside>
+  <aside class="notes">The People chain plugin lives in the polkadot-pop-e2e repository and is installed without rebuilding PolkaMeter. A modified executable no longer matches its pin and is refused.</aside>
 </section>
 
 <section>
@@ -475,7 +475,7 @@ polkameter report runs/run-&lt;id&gt;</code></pre>
 
 <section class="center dark" data-background-color="#0f0f0f" data-state="dark-slide">
   <p class="kicker">In one sentence</p>
-  <p class="quote">Polkameter pushes a chain until it breaks,<br><em>and accounts for every transaction on the way.</em></p>
+  <p class="quote">PolkaMeter pushes a chain until it breaks,<br><em>and accounts for every transaction on the way.</em></p>
   <div class="three">
     <div><h3>Honest</h3><p>Inclusion, not submission. Reconciled on the finalized chain.</p></div>
     <div><h3>Repeatable</h3><p>One XML plan, one engine, offline re-judging from the files.</p></div>
