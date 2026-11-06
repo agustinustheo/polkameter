@@ -72,7 +72,9 @@ After a successful stable release, `v0` follows the latest `0.x` release commit.
 
 The documentation site has the getting-started tutorial, the plan, CLI and results references, and the plugin guide: <https://agustinustheodorus.com/polkameter/>
 
-Plugins are written in Rust against one crate, [`polkameter-plugin-sdk`](https://crates.io/crates/polkameter-plugin-sdk). From v0.3.0, its `chain` and `observers` features add chain access and run recording; see [the plugin SDK crate](https://agustinustheodorus.com/polkameter/plugins.html#the-plugin-sdk-crate). <!-- v0.3.0: remove after release --> Until v0.3.0 is on crates.io, that page shows a pinned Git dependency.
+From v0.3.0, the ready-made [substrate plugin](https://agustinustheodorus.com/polkameter/substrate-plugin.html) loads a chain with the standard `System` and `Balances` pallets without code: `polkameter init --rpc ws://127.0.0.1:9944` writes a plan for it, and [Stress-test a local dev chain](https://agustinustheodorus.com/polkameter/dev-chain.html) runs it end to end. To set PolkaMeter up with an AI coding assistant, see [Use PolkaMeter with an AI assistant](https://agustinustheodorus.com/polkameter/ai-assistants.html).
+
+Other plugins are written in Rust against one crate, [`polkameter-plugin-sdk`](https://crates.io/crates/polkameter-plugin-sdk). From v0.3.0, its `chain` and `observers` features add chain access and run recording; see [the plugin SDK crate](https://agustinustheodorus.com/polkameter/plugins.html#the-plugin-sdk-crate). <!-- v0.3.0: remove after release --> Until v0.3.0 is on crates.io, that page shows a pinned Git dependency.
 
 ## Development
 

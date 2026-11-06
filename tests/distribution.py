@@ -262,6 +262,20 @@ class InstallerTests(unittest.TestCase):
         self.assert_installed(self.run_installer("0.3.0-rc.1", POLKAMETER_VERIFY_ATTESTATION="auto"))
         self.assertIn("--source-ref refs/tags/v0.3.0-rc.1", (self.destination.parent / "gh.log").read_text())
 
+    def test_bundled_plugin_is_installed(self):
+        assets = self.root / "download/v0.3.0"
+        assets.mkdir(exist_ok=True)
+        plugin = self.root / "polkameter-substrate-plugin"
+        plugin.write_text("#!/bin/sh\nprintf 'fixture plugin\\n'\n")
+        packager.package("0.3.0", TARGETS[0], self.root / "binary", assets, [plugin])
+        result = self.run_installer("0.3.0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sorted(p.name for p in self.destination.iterdir()),
+                         ["polkameter", "polkameter-substrate-plugin"])
+        self.assertEqual(subprocess.check_output([self.destination / "polkameter-substrate-plugin"], text=True),
+                         "fixture plugin\n")
+        self.assertIn("Installed the substrate plugin", result.stdout)
+
     def test_checksum_mismatch_preserves_existing_install(self):
         checksum = self.assets / "polkameter-0.2.0-x86_64-unknown-linux-gnu.tar.gz.sha256"
         original = checksum.read_text()
@@ -304,6 +318,27 @@ class InstallerTests(unittest.TestCase):
                     self.assertEqual(bundle.getmember("polkameter").mode & 0o777, 0o755)
             self.assertEqual(sorted(members), ["LICENSE", "README.md", "polkameter.exe" if windows else "polkameter"])
             self.assertEqual(archive.with_name(name + ".sha256").read_text(), f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {name}\n")
+
+
+    def test_archive_contract_with_plugin(self):
+        plugin = self.root / "polkameter-substrate-plugin"
+        plugin.write_text("plugin")
+        for target in TARGETS:
+            windows = "windows" in target
+            output = self.root / "with-plugin" / target
+            archive = packager.package("0.3.0", target, self.root / "binary", output, [plugin])
+            if windows:
+                with zipfile.ZipFile(archive) as bundle:
+                    members = bundle.namelist()
+            else:
+                with tarfile.open(archive) as bundle:
+                    members = bundle.getnames()
+                    self.assertEqual(bundle.getmember("polkameter-substrate-plugin").mode & 0o777, 0o755)
+            suffix = ".exe" if windows else ""
+            self.assertEqual(sorted(members), sorted(["LICENSE", "README.md", f"polkameter{suffix}",
+                                                      f"polkameter-substrate-plugin{suffix}"]))
+        with self.assertRaises(ValueError):
+            packager.package("0.3.0", TARGETS[0], self.root / "binary", self.root / "clash", [self.root / "LICENSE"])
 
 
 class PublisherTests(unittest.TestCase):

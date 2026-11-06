@@ -1,9 +1,9 @@
 # Run a load test
 
-A load test sends transactions to a chain at rates you set, then measures how the chain copes. PolkaMeter does not build transactions for your runtime, and this repository ships no plugin that does. You need three things:
+A load test sends transactions to a chain at rates you set, then measures how the chain copes. A plugin builds the transactions for your runtime. You need three things:
 
 1. A node that answers on `ws://` or `wss://`.
-2. A plugin that prepares the flood and probe transactions for your runtime. [Writing a plugin](writing-a-plugin.md) shows how to write one. The People plugin in [paritytech/polkadot-pop-e2e](https://github.com/paritytech/polkadot-pop-e2e/tree/feat/th-polkameter-stress-flood/stress) is a real example.
+2. A plugin that prepares the flood and probe transactions for your runtime. For a chain with the standard `System` and `Balances` pallets, use the [substrate plugin](substrate-plugin.md); [Stress-test a local dev chain](dev-chain.md) runs it end to end. For other calls, [Writing a plugin](writing-a-plugin.md) shows how to write one. The People plugin in [paritytech/polkadot-pop-e2e](https://github.com/paritytech/polkadot-pop-e2e/tree/feat/th-polkameter-stress-flood/stress) is a real example.
 3. A plan with a `<targets>` element and a `<load>` element.
 
 ## Write a plan

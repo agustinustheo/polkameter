@@ -79,7 +79,61 @@ jobs:
           cargo +${{ env.RUST_VERSION }} build -p polkameter-example-plugin
           tests/cli-smoke.sh
       - name: Package the crates for crates.io
-        run: cargo +${{ env.RUST_VERSION }} publish --workspace --exclude polkameter-desktop --exclude polkameter-example-plugin --dry-run --locked
+        run: cargo +${{ env.RUST_VERSION }} publish --workspace --exclude polkameter-desktop --exclude polkameter-example-plugin --exclude polkameter-substrate-plugin --dry-run --locked
+
+  dev-chain:
+    name: Substrate plugin on a dev chain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      POLKAMETER_PLUGIN_REGISTRY: ${{ github.workspace }}/target/plugins.json
+      POLKAMETER_SUBSTRATE_SEED: //Alice
+      # Not the default .polkameter/dev-chain: upload-artifact skips hidden directories.
+      POLKAMETER_DEV_CHAIN_DIR: ${{ github.workspace }}/target/dev-chain
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: dev-chain
+      # dev-chain.sh pins the node and runtime with their SHA-256 sums; a new pin is a new key.
+      - name: Cache the dev chain binaries
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/dev-chain/bin
+          key: dev-chain-${{ runner.os }}-${{ hashFiles('scripts/dev-chain.sh') }}
+      - name: Build the CLI and the substrate plugin
+        run: cargo +${{ env.RUST_VERSION }} build --locked -p polkameter -p polkameter-substrate-plugin --bin polkameter --bin polkameter-substrate-plugin
+      - name: Start the dev chain
+        run: scripts/dev-chain.sh start
+      - name: Plugin tests against the dev chain
+        env:
+          POLKAMETER_DEV_CHAIN_WS: ws://127.0.0.1:9944
+        run: cargo +${{ env.RUST_VERSION }} test --locked -p polkameter-substrate-plugin --test dev_chain -- --ignored
+      - name: Run the CI example plans
+        run: |
+          target/debug/polkameter plugin install target/debug/polkameter-substrate-plugin
+          target/debug/polkameter plugin credential substrate-dev POLKAMETER_SUBSTRATE_SEED
+          target/debug/polkameter init --rpc ws://127.0.0.1:9944 --profile substrate-dev --output target/init.polkameter.xml
+          target/debug/polkameter validate target/init.polkameter.xml
+          for plan in substrate-remarks-ci substrate-transfers-ci; do
+            target/debug/polkameter run "examples/$plan.polkameter.xml" --output target/dev-chain-runs --fail-on-verdict
+          done
+          cat target/dev-chain-runs/run-*/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Stop the dev chain
+        if: always()
+        run: scripts/dev-chain.sh stop
+      - name: Upload the runs and the node log
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dev-chain-runs
+          path: |
+            target/dev-chain-runs/
+            target/dev-chain/node.log
+          if-no-files-found: ignore
 
   desktop-build:
     name: Desktop build (${{ matrix.name }})
@@ -182,6 +236,7 @@ jobs:
       - name: Run the image
         run: |
           docker run --rm polkameter:ci --version
+          docker run --rm --entrypoint sh polkameter:ci -c 'polkameter plugin install /usr/local/bin/polkameter-substrate-plugin'
           test "$(docker run --rm --entrypoint id polkameter:ci -u)" = 10001
           docker image ls polkameter:ci --format 'Image size: {{.Size}}'
       # The plugin runs inside the image, so build it for Linux; Ubuntu 22.04's

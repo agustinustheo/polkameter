@@ -1,0 +1,20 @@
+{
+  "name": "polkameter",
+  "displayName": "PolkaMeter",
+  "version": "0.3.0",
+  "description": "Set up and run PolkaMeter load tests for Polkadot SDK chains, with the substrate plugin or a custom plugin, locally and in CI",
+  "author": {
+    "name": "Agustinus Theodorus",
+    "url": "https://github.com/agustinustheo"
+  },
+  "homepage": "https://agustinustheodorus.com/polkameter/ai-assistants.html",
+  "repository": "https://github.com/agustinustheo/polkameter",
+  "license": "Apache-2.0",
+  "keywords": [
+    "polkadot",
+    "substrate",
+    "load-testing",
+    "stress-testing",
+    "polkameter"
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "name": "polkameter",
+  "description": "PolkaMeter load testing for Polkadot SDK chains: an Agent Skill that installs PolkaMeter, writes and runs a plan, and adds a CI job",
+  "owner": {
+    "name": "Agustinus Theodorus",
+    "url": "https://github.com/agustinustheo"
+  },
+  "plugins": [
+    {
+      "name": "polkameter",
+      "source": "./",
+      "description": "Set up and run PolkaMeter load tests for Polkadot SDK chains, with the substrate plugin or a custom plugin, locally and in CI",
+      "category": "testing",
+      "tags": ["polkadot", "substrate", "load-testing", "stress-testing"]
+    }
+  ]
+}

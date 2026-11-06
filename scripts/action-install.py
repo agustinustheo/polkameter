@@ -156,22 +156,29 @@ class Installer:
             print("::warning::verify-attestation=false: installing with SHA-256 only; "
                   "release build provenance is not verified")
 
-        binary = "polkameter.exe" if suffix == "zip" else "polkameter"
+        exe = ".exe" if suffix == "zip" else ""
+        binary = f"polkameter{exe}"
         bindir = directory / "bin"
         bindir.mkdir()
-        # Copy only the root binary; do not extract arbitrary paths or symlinks.
-        if suffix == "zip":
-            with zipfile.ZipFile(archive) as bundle, bundle.open(binary) as src:
-                with (bindir / binary).open("wb") as out:
-                    shutil.copyfileobj(src, out)
-        else:
-            with tarfile.open(archive) as bundle:
-                member = bundle.getmember(binary)
-                if not member.isfile():
-                    raise ValueError("The release binary is not a regular file")
-                with bundle.extractfile(member) as src, (bindir / binary).open("wb") as out:
-                    shutil.copyfileobj(src, out)
-        (bindir / binary).chmod(0o755)
+        # Copy only the root executables; do not extract arbitrary paths or symlinks. The
+        # substrate plugin is in archives from v0.3.0.
+        for name, required in ((binary, True), (f"polkameter-substrate-plugin{exe}", False)):
+            if suffix == "zip":
+                with zipfile.ZipFile(archive) as bundle:
+                    if name not in bundle.namelist() and not required:
+                        continue
+                    with bundle.open(name) as src, (bindir / name).open("wb") as out:
+                        shutil.copyfileobj(src, out)
+            else:
+                with tarfile.open(archive) as bundle:
+                    if name not in bundle.getnames() and not required:
+                        continue
+                    member = bundle.getmember(name)
+                    if not member.isfile():
+                        raise ValueError(f"The release {name} is not a regular file")
+                    with bundle.extractfile(member) as src, (bindir / name).open("wb") as out:
+                        shutil.copyfileobj(src, out)
+            (bindir / name).chmod(0o755)
         with open(os.environ["GITHUB_PATH"], "a") as output:
             output.write(f"{bindir}\n")
         return tag.removeprefix("v")

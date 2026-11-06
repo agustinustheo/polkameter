@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  System.remark stress test for any Polkadot SDK chain, with the substrate plugin.
+  Made for the dev chain of scripts/dev-chain.sh (6-second blocks, //Alice funded). For another
+  chain, change the endpoint, block-interval-seconds, the funding amount and the rates.
+  The seed credential is a secret URI, such as //Alice on a dev chain:
+    polkameter plugin credential substrate-dev POLKAMETER_SUBSTRATE_SEED
+    export POLKAMETER_SUBSTRATE_SEED=//Alice
+-->
+<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="Substrate remarks" mode="stress" timeout-ms="1800000">
+  <plugins><plugin id="substrate" version="0.3.0" protocol="1"/></plugins>
+  <targets><target id="chain" endpoint="ws://127.0.0.1:9944"/></targets>
+  <credentials><credential id="seed" profile="substrate-dev"/></credentials>
+  <preflight>
+    <step id="chain" use="substrate.preflight">
+      <input name="target" ref="targets.chain"/>
+      <input name="calls" value="[&quot;System.remark&quot;]"/>
+    </step>
+  </preflight>
+  <setup>
+    <!-- Tops up the 16 flood signers and one signer per probe to 1000 UNIT from the seed account. -->
+    <step id="fund" use="substrate.fund-accounts" timeout-ms="300000">
+      <input name="target" ref="targets.chain"/>
+      <input name="seed" ref="credentials.seed"/>
+      <input name="flood-signers" value="16"/>
+      <input name="probes" ref="run.probeBudget"/>
+      <input name="amount" value="1000000000000000"/>
+    </step>
+    <!-- The ramp sends at most 30 s x (100 + 200 + ... + 600) = 63,000 transactions. -->
+    <step id="prepare" use="substrate.prepare-remarks" timeout-ms="300000">
+      <input name="target" ref="targets.chain"/>
+      <input name="seed" ref="credentials.seed"/>
+      <input name="flood-signers" value="16"/>
+      <input name="count" value="65000"/>
+      <input name="probes" ref="run.probeBudget"/>
+      <input name="payload-bytes" value="64"/>
+      <!-- The run takes about 400 s after this step. 256 blocks of 6 s cover it twice over;
+           raise expected-seconds with the ramp, and the step checks the mortality. -->
+      <input name="mortality" value="256"/>
+      <input name="expected-seconds" value="400"/>
+    </step>
+  </setup>
+  <load target="chain" source-ref="steps.prepare.flood" probes-ref="steps.prepare.probes"
+        state-check="substrate.check-state" state-ref="steps.prepare.state"
+        baseline-probes="3" recovery-seconds="120" block-interval-seconds="6">
+    <ramp start="100" step="100" steps="6" seconds="30"/>
+  </load>
+</polkameter-plan>

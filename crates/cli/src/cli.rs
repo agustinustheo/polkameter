@@ -53,6 +53,24 @@ enum Command {
 		#[command(subcommand)]
 		command: PluginCommand,
 	},
+	/// Write a starter load-test plan for the substrate plugin from a live chain.
+	Init {
+		/// The chain's WebSocket endpoint, such as ws://127.0.0.1:9944.
+		#[arg(long)]
+		rpc: String,
+		/// The call to load the chain with.
+		#[arg(long, value_enum, default_value_t = crate::init::Kind::Remarks)]
+		kind: crate::init::Kind,
+		/// The credential profile the plan names for the signers' seed.
+		#[arg(long, default_value = "substrate-dev")]
+		profile: String,
+		/// Where to write the plan. Without it, the plan goes to standard output.
+		#[arg(long)]
+		output: Option<PathBuf>,
+		/// Replace the --output file if it exists.
+		#[arg(long)]
+		force: bool,
+	},
 	/// Check a plan's XML, structure and built-in operations, without plugins or a chain.
 	///
 	/// Exits 2 and names the file, line and column of the first problem when the plan is invalid.
@@ -369,6 +387,9 @@ pub fn main() -> i32 {
 async fn execute(cli: Cli) -> Result<i32, CliError> {
 	match cli.command {
 		Command::Plugin { command } => plugin_command(command).await,
+		Command::Init { rpc, kind, profile, output, force } => {
+			init(&rpc, kind, &profile, output, force).await
+		},
 		Command::Validate { plan: path, format } => {
 			let (_, plan) = load(&path)?;
 			// Built-in operations are checked here too; plugin operations need preflight.
@@ -462,6 +483,70 @@ fn teardown_budget(plan: &Plan) -> Duration {
 		.iter()
 		.map(|step| Duration::from_millis(step.timeout_ms) + Duration::from_secs(10))
 		.sum()
+}
+
+/// `polkameter init`: inspects the chain, renders the plan, checks that it parses and writes it.
+async fn init(
+	rpc: &str,
+	kind: crate::init::Kind,
+	profile: &str,
+	output: Option<PathBuf>,
+	force: bool,
+) -> Result<i32, CliError> {
+	if !(rpc.starts_with("ws://") || rpc.starts_with("wss://")) {
+		return Err(CliError::invalid(format!("--rpc must start with ws:// or wss://, got {rpc}")));
+	}
+	if profile.trim().is_empty() {
+		return Err(CliError::invalid("--profile must not be empty".into()));
+	}
+	if let Some(path) = &output {
+		init_output(path, force)?;
+	}
+	let facts = crate::init::inspect(rpc, kind)
+		.await
+		.map_err(|e| CliError::preflight(e.to_string()))?;
+	let xml = crate::init::render(rpc, kind, profile, &facts);
+	Plan::parse(&xml)
+		.map_err(|e| CliError::runtime(format!("the generated plan does not parse: {e}")))?;
+	match output {
+		Some(path) => {
+			std::fs::write(&path, &xml)
+				.map_err(|e| CliError::invalid(format!("cannot write {}: {e}", path.display())))?;
+			eprintln!(
+				"Wrote {} for {} ({}, {} s blocks). Next: polkameter validate {}",
+				path.display(),
+				facts.chain,
+				facts.runtime,
+				facts.block_seconds,
+				path.display()
+			);
+		},
+		None => print!("{xml}"),
+	}
+	Ok(0)
+}
+
+/// Checks `init --output` before `init` contacts the chain: the file must not exist unless
+/// `force`, and its directory is created.
+fn init_output(path: &std::path::Path, force: bool) -> Result<(), CliError> {
+	if path.is_dir() {
+		return Err(CliError::invalid(format!(
+			"{} is a directory; pass a file such as {}",
+			path.display(),
+			path.join("load.polkameter.xml").display()
+		)));
+	}
+	if path.exists() && !force {
+		return Err(CliError::invalid(format!(
+			"{} exists; pass --force to replace it",
+			path.display()
+		)));
+	}
+	if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+		std::fs::create_dir_all(parent)
+			.map_err(|e| CliError::invalid(format!("cannot create {}: {e}", parent.display())))?;
+	}
+	Ok(())
 }
 
 /// The plan's XML, which remote runs send as-is, and its parsed form.
@@ -1392,5 +1477,21 @@ mod tests {
 			"--credential-env",
 			"S"
 		]));
+	}
+
+	#[test]
+	fn init_output_creates_its_directory_and_keeps_files() {
+		let root =
+			std::env::temp_dir().join(format!("polkameter-init-output-{}", std::process::id()));
+		let path = root.join("plans/nested/load.polkameter.xml");
+		init_output(&path, false).unwrap();
+		assert!(path.parent().unwrap().is_dir());
+		std::fs::write(&path, "plan").unwrap();
+		let error = init_output(&path, false).unwrap_err().to_string();
+		assert!(error.ends_with("exists; pass --force to replace it"), "{error}");
+		init_output(&path, true).unwrap();
+		assert!(init_output(&root, true).unwrap_err().to_string().contains("is a directory"));
+		init_output(std::path::Path::new("load.polkameter.xml"), true).unwrap();
+		std::fs::remove_dir_all(root).unwrap();
 	}
 }

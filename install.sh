@@ -107,9 +107,15 @@ case "$verify" in
         ;;
     *) fail 'POLKAMETER_VERIFY_ATTESTATION must be auto, 1, or 0' ;;
 esac
-# Extract only the executable; no archive path can choose the installation location.
+# Extract only the executables; no archive path can choose the installation location.
 tar -xzf "$temporary/$asset" -C "$temporary" polkameter
 mkdir -p "$install_dir"
 install -m 755 "$temporary/polkameter" "$install_dir/polkameter"
 printf 'Installed PolkaMeter %s to %s/polkameter\n' "$version" "$install_dir"
+# From v0.3.0, the archive also holds the substrate plugin.
+if tar -tzf "$temporary/$asset" | grep -qx polkameter-substrate-plugin; then
+    tar -xzf "$temporary/$asset" -C "$temporary" polkameter-substrate-plugin
+    install -m 755 "$temporary/polkameter-substrate-plugin" "$install_dir/polkameter-substrate-plugin"
+    printf 'Installed the substrate plugin to %s/polkameter-substrate-plugin\n' "$install_dir"
+fi
 printf 'Add %s to PATH to run polkameter.\n' "$install_dir"

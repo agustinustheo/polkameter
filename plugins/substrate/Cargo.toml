@@ -1,0 +1,35 @@
+[package]
+name = "polkameter-substrate-plugin"
+description = "PolkaMeter plugin for any Polkadot SDK chain with the standard pallets: signed remark and transfer floods, account funding and state checks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+# Shipped as an executable in the release archives and the container, not on crates.io: plugins
+# depend on polkameter-plugin-sdk, and the CLI is polkameter.
+publish = false
+
+[[bin]]
+name = "polkameter-substrate-plugin"
+path = "src/main.rs"
+
+# The Agent Skill's custom plugin template, compiled here so it stays correct.
+[[example]]
+name = "custom-plugin"
+path = "../../skills/polkameter/templates/custom-plugin.rs"
+
+[dependencies]
+polkameter-plugin-sdk = { workspace = true, features = ["chain"] }
+anyhow.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sp-crypto-hashing.workspace = true
+subxt-rpcs.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+polkameter.workspace = true
+tokio-util.workspace = true

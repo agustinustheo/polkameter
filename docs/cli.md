@@ -1,7 +1,7 @@
 # CLI reference
 
 <!-- v0.3.0: remove after release -->
-> **Unreleased:** This page describes v0.3.0. The published CLI is v0.2.0, which has no `--junit` and writes no `junit.xml`. To use them now, build from source with `cargo install --locked --git https://github.com/agustinustheo/polkameter --rev 58921b7d506f9987db68fc8084b2fb8f13649f94 polkameter`.
+> **Unreleased:** This page describes v0.3.0. The published CLI is v0.2.0, which has no `--junit`, writes no `junit.xml` and has no `init`. To use them now, build from source with `cargo install --locked --git https://github.com/agustinustheo/polkameter --rev 58921b7d506f9987db68fc8084b2fb8f13649f94 polkameter`.
 
 `polkameter` validates, preflights and runs plans, reports on runs, manages plugins and serves a remote agent. Run `polkameter COMMAND --help` for one command's flags. Errors: see [Troubleshooting](troubleshooting.md).
 
@@ -16,6 +16,24 @@ polkameter --version
 ```text
 polkameter <version>
 ```
+
+## init
+
+Writes a load plan for the [substrate plugin](substrate-plugin.md) from a live chain. It checks that the runtime has the calls the plugin needs and measures the block time. [Generate a plan](substrate-plugin.md#generate-a-plan) shows the plan it writes.
+
+```sh
+polkameter init --rpc ENDPOINT [--kind remarks|transfers] [--profile PROFILE] [--output PATH] [--force]
+```
+
+| Name | Type | Required | Default | Limits | Meaning |
+| --- | --- | --- | --- | --- | --- |
+| `--rpc` | URI | yes | none | starts with `ws://` or `wss://` | The chain's endpoint |
+| `--kind` | enum | no | `remarks` | `remarks` or `transfers` | The call the plan loads the chain with |
+| `--profile` | string | no | `substrate-dev` | not empty | The credential profile the plan names for the seed |
+| `--output` | path | no | standard output | | The plan file. `init` creates its directory before it contacts the chain |
+| `--force` | flag | no | off | | Replace an existing `--output` file |
+
+An unreachable chain exits with code `3`. An existing `--output` file without `--force` exits with code `2`.
 
 ## validate
 
@@ -437,8 +455,8 @@ The client checks each run ID: at most 128 characters, from letters, digits, `-`
 | --- | --- | --- |
 | `0` | A command succeeded, or a run ended `completed` | Nothing to fix |
 | `1` | A run ended `failed` after its setup phase started, or `completed_with_failures`, or a `report` or remote request failed, or the output could not be written | A plugin crashed or errored in setup or later, a deadline or assertion failed, or the agent refused a request. A smoke-mode load run also exits 1 on a monitor problem or a missing required check. With `--fail-on-verdict`, a `FAIL` verdict also exits 1, and with `--fail-on-inconclusive`, an `INCONCLUSIVE` verdict. A command that would exit 0 exits 1 when standard output fails, for example on a full disk |
-| `2` | Invalid input or usage | A malformed or invalid plan, a plan file over 2 MiB or that is a directory, socket or device, a bad flag or argument, an `--output` path that is not UTF-8, an unreadable or corrupt registry, a failed `plugin` subcommand, a wrong remote endpoint or token variable, or a `summary.json` that `report` cannot rewrite (unknown `schemaVersion`) |
-| `3` | Preflight or setup checks failed | `preflight` failed, or a `run` failed before its setup phase, so it submitted nothing: a credential that is not mapped, unset or empty, a plugin not installed, a checksum, version or manifest mismatch, an operation or input that does not match its manifest, a preflight step that can change state or fails, a chain that lacks required evidence, no calibration answer from the chain, or an unregistered `<monitors>` alias |
+| `2` | Invalid input or usage | A malformed or invalid plan, a plan file over 2 MiB or that is a directory, socket or device, a bad flag or argument, an `--output` path that is not UTF-8, an unreadable or corrupt registry, an `init --output` file that exists without `--force`, a failed `plugin` subcommand, a wrong remote endpoint or token variable, or a `summary.json` that `report` cannot rewrite (unknown `schemaVersion`) |
+| `3` | Preflight or setup checks failed | `init` could not reach the chain or found that its runtime lacks a call the plan needs, `preflight` failed, or a `run` failed before its setup phase, so it submitted nothing: a credential that is not mapped, unset or empty, a plugin not installed, a checksum, version or manifest mismatch, an operation or input that does not match its manifest, a preflight step that can change state or fails, a chain that lacks required evidence, no calibration answer from the chain, or an unregistered `<monitors>` alias |
 | `130` | Stopped by SIGINT | Ctrl-C during a run, or a remote run that the agent stopped on request. `agent serve` also exits `130` after SIGINT |
 | `143` | Stopped by SIGTERM | A CI system cancelled the job or hit its timeout, or the agent of a remote run received SIGTERM. `agent serve` also exits `143` after SIGTERM |
 

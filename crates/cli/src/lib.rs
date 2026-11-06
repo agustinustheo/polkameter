@@ -26,6 +26,8 @@ pub mod cli;
 #[doc(hidden)]
 pub mod engine;
 #[doc(hidden)]
+pub mod init;
+#[doc(hidden)]
 pub mod load;
 pub mod plugin_application;
 pub mod remote;

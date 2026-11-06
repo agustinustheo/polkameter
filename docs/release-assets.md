@@ -18,7 +18,7 @@ The asset naming contract for downloaders, including the GitHub Action, is:
 - Unix archive: `polkameter-<version>-<target>.tar.gz`.
 - Windows archive: `polkameter-<version>-x86_64-pc-windows-msvc.zip`.
 - Checksum: the complete archive filename followed by `.sha256`, containing `<sha256>  <archive-filename>` and a newline.
-- Archive root: only `polkameter` (`polkameter.exe` on Windows), `LICENSE` and `README.md`.
+- Archive root: only `polkameter` (`polkameter.exe` on Windows), the [substrate plugin](substrate-plugin.md) `polkameter-substrate-plugin` (`polkameter-substrate-plugin.exe`), `LICENSE` and `README.md`.
 - Download URL: `https://github.com/agustinustheo/polkameter/releases/download/v<version>/<archive-filename>`.
 
 On Linux, verify the checksum with `sha256sum -c <archive-filename>.sha256`; on macOS use `shasum -a 256 -c <archive-filename>.sha256`. On Windows use PowerShell's `Get-FileHash <archive-filename> -Algorithm SHA256` and compare it with the checksum file before extracting. The archives have GitHub build provenance attestations; `gh attestation verify <archive-filename> --repo agustinustheo/polkameter --signer-workflow agustinustheo/polkameter/.github/workflows/release.yml --source-ref refs/tags/v<version>` verifies one. `gh` must be signed in to github.com (`gh auth login` or `GH_TOKEN`); it cannot verify attestations anonymously.

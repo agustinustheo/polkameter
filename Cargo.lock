@@ -4192,6 +4192,7 @@ dependencies = [
  "futures-util",
  "hex",
  "scale-decode",
+ "scale-info",
  "scale-value",
  "serde",
  "serde_json",
@@ -4200,6 +4201,22 @@ dependencies = [
  "subxt-rpcs",
  "subxt-signer",
  "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "polkameter-substrate-plugin"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "hex",
+ "polkameter",
+ "polkameter-plugin-sdk",
+ "serde",
+ "serde_json",
+ "sp-crypto-hashing",
+ "subxt-rpcs",
  "tokio",
  "tokio-util",
 ]
