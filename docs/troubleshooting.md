@@ -50,7 +50,7 @@ Run failed. Artifacts: ~/polkameter/target/runs/run-…
 PolkaMeter: run failed: assertion verified failed: expected 85, got 84 (details in ~/polkameter/target/runs/run-…/execution.json)
 ```
 
-**Cause:** The run started, but a step, a plugin or a deadline failed it. The text after `run failed:` is the reason. Many reasons have their own entry on this page, such as [`assertion <id> failed`](#assertion--failed).
+**Cause:** The run started, but a step, a plugin or a deadline failed it. The text after `run failed:` is the reason. Many reasons have their own entry on this page, such as [`assertion <id> failed`](#assertion-id-failed).
 
 **Fix:** Find the reason on this page. `execution.json` in the run directory holds the full error. If a step failed, `events.jsonl` names it in a `step-finished` event with `"success":false`. A failure outside a step, such as a missing plugin or the plan's deadline, has no such event, so read `execution.json`.
 
@@ -69,31 +69,73 @@ Run stopped. Artifacts: ~/polkameter/runs/run-…
 
 ## Plans
 
-### line 6, column 5: expected </setup>, found </polkameter-plan>
+Plan errors start with the plan file and, when the error is about one element, its line and column: `PolkaMeter: plan.polkameter.xml: line 6, column 5: …`. The headings below write the file as `<plan>`.
+
+### \<plan>: line 6, column 5: expected \</setup>, found \</polkameter-plan>
 
 **Cause:** The XML is not well formed. Here, `<setup>` is never closed.
 
 **Fix:** Go to the line and column, and fix the element it names.
 
-### missing `name` on <polkameter-plan>
+### \<plan>: line 1, column 1: missing `name` on \<polkameter-plan>
 
 **Cause:** A required attribute is missing from the root element. The root needs `version`, `xmlns` and `name`.
 
 **Fix:** Add the attribute. Use `version="1"` and `xmlns="https://polkameter.dev/schema/plan"`.
 
-### unknown element <stepz> in <polkameter-plan>
+### \<plan>: line 3, column 3: unknown element \<stepz> in \<polkameter-plan>
 
 **Cause:** An element name is not in the plan schema.
 
 **Fix:** Use the element names in `schemas/polkameter-plan.xsd` and in the [plan reference](plans.md).
 
-### unknown or forward reference steps.nope.value
+### \<plan>: line …: step `<id>` (\<operation>): input `<name>` refers to `steps.nope.value`, but nothing in the plan defines it; …
 
-**Cause:** A `ref` names a step that does not exist, or a step that runs later.
+```text
+PolkaMeter: ref.xml: line 3, column 34: step `a` (core.echo): input `value` refers to `steps.nope.value`, but nothing in the plan defines it; use targets.<id>, credentials.<id>, run.id, run.directory, run.probeBudget, steps.<earlier step>.<output>, or in a workflow user.index or iteration.index
+```
 
-**Fix:** Correct the step ID, or move the referenced step earlier.
+**Cause:** A `ref` names a step that does not exist, or a value the plan does not declare.
 
-### assertion <id> failed
+**Fix:** Correct the step ID or the value's name. The message lists the names a reference can use.
+
+### \<plan>: line …: step `<id>` (\<operation>): input `<name>` refers to `steps.<other>.<output>`, but step `<other>` does not run before this step; …
+
+**Cause:** The referenced step exists, but it runs later, or it is in a workflow and this step is outside it.
+
+**Fix:** Move the referenced step earlier. A workflow's outputs are visible only to later steps of the same workflow.
+
+### \<plan>: line …: `--` is not allowed inside a comment, and a comment cannot end with `--->`
+
+**Cause:** XML forbids `--` inside `<!-- … -->`. Other XML tools reject the file too.
+
+**Fix:** Remove the double hyphen from the comment, or put a space between the hyphens.
+
+### \<plan>: line …: character U+0000 is not allowed in XML; remove it from the plan
+
+**Cause:** The file holds a character that XML 1.0 does not allow, such as NUL or another control character. Editors and generated files sometimes add them invisibly.
+
+**Fix:** Go to the line and column and delete the character. Tab, line feed and carriage return are allowed.
+
+### \<plan>: line 1, column …: invalid encoding `…` in the XML declaration; …
+
+**Cause:** The XML declaration names an encoding other than UTF-8, or it is malformed. PolkaMeter reads plans only as UTF-8.
+
+**Fix:** Save the file as UTF-8 and write `<?xml version="1.0" encoding="UTF-8"?>`, or remove the declaration.
+
+### plan \<plan> is larger than the 2 MiB (2097152 bytes) limit; split the plan or remove unused content
+
+**Cause:** The plan file is over 2 MiB. PolkaMeter stops reading one byte past the limit.
+
+**Fix:** Move large data, such as prepared transactions, out of the plan and into a plugin's output.
+
+### cannot read plan \<plan>: it is not a regular file (a FIFO, socket or device); save the plan to a file first
+
+**Cause:** The path is a named pipe, socket or device, such as `<(generate-plan)` or `/dev/stdin`. PolkaMeter refuses it at once instead of waiting for input. A directory gets `it is a directory`.
+
+**Fix:** Write the plan to a file and pass that file.
+
+### assertion \<id> failed
 
 **Cause:** A `core.assert-equal` step found that `actual` and `expected` differ. The run fails with exit `1`, and so does a CI job.
 
@@ -111,23 +153,39 @@ PolkaMeter: cannot read run directory target/no-such-run: No such file or direct
 
 ## Plugins
 
-### plugin <id> is not installed on this host
+### plugin \<id> is not installed on this host; run `polkameter plugin install <path-to-executable>`
 
 **Cause:** This host's plugin registry has no plugin with that ID. `validate` does not check installs, so it passes.
 
 **Fix:** Run `polkameter plugin install <path-to-executable>` on this host. If you use a registry file, check that `POLKAMETER_PLUGIN_REGISTRY` points to it.
 
-### plugin <id> version/checksum mismatch
+### plugin \<id> checksum mismatch: … changed after it was installed (BLAKE2 expected …, found …). If you rebuilt it, run `polkameter plugin install …` again
 
-**Cause:** The executable changed after `plugin install`, or the plan's `version` does not match the manifest.
+```text
+PolkaMeter: plugin hello checksum mismatch: /work/hello changed after it was installed (BLAKE2 expected 67118f550d8d7677050bd6c904ec2d5a62f7684bb5c6698c13fc9c9d956ecccd, found 1c8d0e612d9a329e953be19f83a7faf49e39df990932099845f180f1c55d0285). If you rebuilt it, run `polkameter plugin install /work/hello` again
+```
 
-**Fix:** Run `polkameter plugin install <path-to-executable>` after every rebuild. Match the plan's `version` to the manifest. `preflight` exits `3`, and `run` exits `1`.
+**Cause:** The executable changed after `plugin install`, usually because it was rebuilt.
 
-### unknown operation example.nope
+**Fix:** Run the `polkameter plugin install` command the message shows, after every rebuild. `preflight` exits `3`, and `run` exits `1`.
 
-**Cause:** The operation is not in the installed plugin's manifest. `validate` does not check it.
+### plugin \<id> version mismatch: the plan expects version \<version>, but version \<installed> is installed from …
 
-**Fix:** Run `polkameter plugin inspect <plan>` to list the operations. Fix the name, or reinstall the plugin.
+**Cause:** The plan's `<plugin version="…">` differs from the version of the installed executable.
+
+**Fix:** Set the plan's `version` to the installed version, or install the build that has the plan's version with `polkameter plugin install <path-to-executable>`. `preflight` exits `3`, and `run` exits `1`.
+
+### \<plan>: line …: step `<id>` (example.nope): unknown operation example.nope: the installed plugin example offers …
+
+**Cause:** The operation is not in the installed plugin's manifest. `validate` does not check it. The message lists the operations the plugin offers.
+
+**Fix:** Fix the name, or reinstall the plugin. `polkameter plugin inspect <plan>` prints each operation's inputs and outputs.
+
+### plugin registry \<path> is not a valid registry: …
+
+**Cause:** The registry file is not valid JSON, or has fields PolkaMeter does not know, for example after a manual edit or a full disk.
+
+**Fix:** Fix the file at the path shown. Or move it aside and register this host's plugins, credentials, topologies and capabilities again with `polkameter plugin install`, `plugin credential`, `plugin topology` and `plugin capability`. Concurrent `polkameter plugin` commands are safe: each takes a lock on `<path>.lock` and replaces the registry in one step.
 
 ## Credentials and topologies
 
@@ -163,7 +221,7 @@ PolkaMeter: cannot read run directory target/no-such-run: No such file or direct
 
 **Fix:** Check the `<target endpoint="ws://…">` value, and that the node is running and reachable.
 
-### measured block interval <measured>s differs from configured <configured>s by more than 25%; correct the plan before setup
+### measured block interval \<measured>s differs from configured \<configured>s by more than 25%; correct the plan before setup
 
 **Cause:** The `block-interval-seconds` attribute on `<load>` differs from the measured block time by more than 25%. Preflight stops before setup.
 
@@ -175,19 +233,19 @@ PolkaMeter: cannot read run directory target/no-such-run: No such file or direct
 
 **Fix:** If the node runs on this machine behind another address, set `POLKAMETER_NODE_PID` to its process ID. Otherwise there is nothing to fix: PolkaMeter samples only local nodes.
 
-### node: port <port> is served by ssh (PID <pid>), a port forwarder, not the node
+### node: port \<port> is served by ssh (PID \<pid>), a port forwarder, not the node
 
 **Cause:** The target URL is a local port that an SSH tunnel or another forwarder serves. Sampling it would measure the forwarder, so PolkaMeter does not.
 
 **Fix:** Run PolkaMeter on the node's machine to record its CPU and memory. The load test itself works through the tunnel.
 
-### blocks: RPC connection lost (...); reconnected after <seconds> s, nothing observed meanwhile
+### blocks: RPC connection lost (...); reconnected after \<seconds> s, nothing observed meanwhile
 
 **Cause:** A WebSocket connection to the node dropped, for example through a proxy idle timeout, and PolkaMeter opened it again. The run went on. The "monitors recorded everything" check warns, and smoke mode exits `1`. If blocks went unobserved for longer than the stall limit in all, the check has no result.
 
 **Fix:** If it happens often, check the proxy or load balancer between PolkaMeter and the node. Raise its idle timeout above the run's length.
 
-### node down: node: process <pid> ended; sampling the node process now on its port, <pid> (the node restarted)
+### node down: node: process \<pid> ended; sampling the node process now on its port, \<pid> (the node restarted)
 
 **Cause:** The local node's process ID on its port changed. A restart empties the pool, so PolkaMeter stops the load on node down, even when the node was back within seconds. During recovery, it ends recovery.
 
@@ -199,7 +257,7 @@ PolkaMeter: cannot read run directory target/no-such-run: No such file or direct
 
 **Fix:** With a load balancer, nothing is needed. To measure one node, point the run at that node's URL. Without a load balancer, check the node's logs for why it restarted.
 
-### generator limit: the machine was suspended for <seconds> s
+### generator limit: the machine was suspended for \<seconds> s
 
 **Cause:** The machine running PolkaMeter slept or its VM was paused during the load. The chain went on without load, so the numbers after it are not the chain's. A wall-clock step from NTP does not cause this.
 
@@ -252,7 +310,7 @@ These are the error codes of a Polkadot SDK transaction pool:
 
 **Fix:** Set the same value on both sides. The client reads the variable named by `--remote-token-env`. The agent reads the variable named by `--token-env`.
 
-### remote runner returned 400 Bad Request: plugin <id> is not installed on this host
+### remote runner returned 400 Bad Request: plugin \<id> is not installed on this host; run `polkameter plugin install <path-to-executable>`
 
 **Cause:** The agent's host has no plugin with that ID. The client cannot upload plugins.
 

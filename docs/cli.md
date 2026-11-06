@@ -19,7 +19,7 @@ polkameter <version>
 
 ## validate
 
-Checks a plan's structure without starting plugins or connecting to a chain. [Plans](plans.md#validation-rules) lists the rules.
+Checks a plan's structure without starting plugins or connecting to a chain. [Plans](plans.md#validation-rules) lists the rules. An invalid plan exits `2` with the file, line and column of the first problem, as in `PolkaMeter: plan.polkameter.xml: line 3, column 34: …`.
 
 ```sh
 polkameter validate [--format human|json] PLAN
@@ -27,7 +27,7 @@ polkameter validate [--format human|json] PLAN
 
 | Name | Type | Required | Default | Limits | Meaning |
 | --- | --- | --- | --- | --- | --- |
-| `PLAN` | path | yes | none | a readable file | The plan file |
+| `PLAN` | path | yes | none | a regular file of at most 2 MiB | The plan file |
 | `--format` | enum | no | `human` | `human` or `json` | See [output formats](#output-formats) |
 
 From the repository root:
@@ -50,7 +50,7 @@ polkameter preflight [--credential-env ENV_VAR] [--format human|json] PLAN
 
 | Name | Type | Required | Default | Limits | Meaning |
 | --- | --- | --- | --- | --- | --- |
-| `PLAN` | path | yes | none | a readable file | The plan file |
+| `PLAN` | path | yes | none | a regular file of at most 2 MiB | The plan file |
 | `--credential-env` | variable name | no | none | the plan declares exactly one credential | Reads the only credential from this variable, instead of its configured profile |
 | `--format` | enum | no | `human` | `human` or `json` | See [output formats](#output-formats) |
 
@@ -73,7 +73,7 @@ polkameter run --remote URL --remote-token-env ENV_VAR [--junit PATH] [--fail-on
 
 | Name | Type | Required | Default | Limits | Meaning |
 | --- | --- | --- | --- | --- | --- |
-| `PLAN` | path | yes | none | a readable file | The plan file |
+| `PLAN` | path | yes | none | a regular file of at most 2 MiB | The plan file |
 | `--output DIR` | path | yes, unless `--remote` | none | none | The artifact root. The run creates one `run-*` directory in it |
 | `--junit PATH` | path | no | none | <!-- v0.3.0: remove after release -->from v0.3.0 | A local copy of the run directory's `junit.xml`, including for a remote run. Parent directories are created |
 | `--credential-env` | variable name | no | none | not with `--remote`; the plan declares exactly one credential | Reads the only credential from this variable |
@@ -217,6 +217,10 @@ Installs plugins and sets this host's credential profiles, topologies and capabi
 
 The registry is a JSON file; [Environment variables](#environment-variables) sets its path. See [Plugins](plugins.md) and [writing a plugin](writing-a-plugin.md).
 
+You can run several `plugin` commands at once, for example to install plugins in parallel CI steps. Each command that changes the registry locks `<registry>.lock` next to it, rereads the registry and replaces it in one step, so no change is lost. A registry that is not valid JSON fails every `plugin` command with exit code 2 and is left as it is; see [Troubleshooting](troubleshooting.md#plugin-registry-path-is-not-a-valid-registry-).
+
+Every `plugin` subcommand exits `2` when it fails, including an install whose executable cannot be started or does not answer `$describe`.
+
 ### plugin install
 
 Records the plugin's ID, version and BLAKE2 hash. Install it again after each rebuild: PolkaMeter refuses to run a plugin whose file has changed.
@@ -262,7 +266,7 @@ polkameter plugin inspect PLAN
 
 | Name | Type | Required | Default | Limits | Meaning |
 | --- | --- | --- | --- | --- | --- |
-| `PLAN` | path | yes | none | a readable file | The plan file. The help text calls it `SCENARIO` |
+| `PLAN` | path | yes | none | a regular file of at most 2 MiB | The plan file |
 
 ```sh
 polkameter plugin inspect examples/plugin-workflow.polkameter.xml
@@ -411,8 +415,8 @@ The client checks each run ID: at most 128 characters, from letters, digits, `-`
 | --- | --- | --- |
 | `0` | A command succeeded, or a run ended `completed` | Nothing to fix |
 | `1` | A run ended `failed` or `completed_with_failures`, or a `report` or remote request failed | A plugin crashed or errored, a deadline or assertion failed, a credential was unavailable, or the agent refused a request. A smoke-mode load run also exits 1 on a monitor problem or a missing required check. With `--fail-on-verdict`, a `FAIL` verdict also exits 1 |
-| `2` | Invalid input or usage | A malformed or invalid plan, a bad flag or argument, an unreadable registry, a wrong remote endpoint or token variable, or a `summary.json` that `report` cannot rewrite (unknown `schemaVersion`) |
-| `3` | Preflight failed | A plugin not installed, a checksum or version mismatch, an operation missing from its manifest, a preflight step that can change state, no calibration answer from the chain, or an unregistered `<monitors>` alias |
+| `2` | Invalid input or usage | A malformed or invalid plan, a plan file over 2 MiB or that is not a regular file, a bad flag or argument, an unreadable or corrupt registry, a failed `plugin` subcommand, a wrong remote endpoint or token variable, or a `summary.json` that `report` cannot rewrite (unknown `schemaVersion`) |
+| `3` | Preflight failed | A plugin not installed, a checksum or version mismatch, an operation or input that does not match its manifest, a preflight step that can change state, no calibration answer from the chain, or an unregistered `<monitors>` alias |
 | `130` | Stopped by SIGINT | Ctrl-C during a run, or a remote run that the agent stopped on request. `agent serve` also exits `130` after SIGINT |
 | `143` | Stopped by SIGTERM | A CI system cancelled the job or hit its timeout, or the agent of a remote run received SIGTERM. `agent serve` also exits `143` after SIGTERM |
 
@@ -435,18 +439,59 @@ Plugins start with a cleared environment. Only `PATH`, `TMPDIR`, `TEMP`, `SYSTEM
 
 ## Output formats
 
-With `--format json`, `validate`, `preflight`, `run` and `report` print one JSON object per line on standard output.
+With `--format json`, `validate`, `preflight`, `run` and `report` print one JSON object per line on standard output, including when they fail.
 
 ```sh
 polkameter validate examples/plugin-workflow.polkameter.xml --format json
 ```
 
 ```json
-{"event":"validation","plan":"Plugin data flow","valid":true}
+{"event":"validation","plan":"Plugin data flow","schemaVersion":1,"valid":true}
 ```
 
-- **Errors** go to standard error as `PolkaMeter: <message>`, even with `--format json`. A failed run adds `PolkaMeter: run failed: <reason> (details in …)` there.
-- **Standard output** keeps only JSON lines. A failed run's full reason is the `error` field of the `completed` and `artifact-written` outcomes.
-- **Load runs** also print `stop:`, `loss check:` and `smoke:` lines, and the summary, to standard error.
+A plan with an error prints the error on standard error, as in human mode, and an `error` line on standard output. The command exits with the same code:
 
-The CLI adds a final line: `artifact-written` for `run`, `validation` for `validate`, `report` for `report`, with the summary text. A remote run prints only `artifact-written`, because the agent does not stream events. Fields are in [events.jsonl](results.md#eventsjsonl).
+```sh
+polkameter validate ref.xml --format json
+```
+
+```text
+PolkaMeter: ref.xml: line 3, column 34: step `a` (core.echo): input `value` refers to `steps.nope.value`, but nothing in the plan defines it; use targets.<id>, credentials.<id>, run.id, run.directory, run.probeBudget, steps.<earlier step>.<output>, or in a workflow user.index or iteration.index
+```
+
+```json
+{"column":34,"command":"validate","event":"error","exitCode":2,"file":"ref.xml","kind":"invalid","line":3,"message":"ref.xml: line 3, column 34: step `a` (core.echo): input `value` refers to `steps.nope.value`, but nothing in the plan defines it; use targets.<id>, credentials.<id>, run.id, run.directory, run.probeBudget, steps.<earlier step>.<output>, or in a workflow user.index or iteration.index","schemaVersion":1,"valid":false}
+```
+
+### JSON output contract
+
+Every line is one JSON object with these fields:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `event` | string | What the line reports. See the table below |
+| `schemaVersion` | integer | The version of this output, `1`. It changes only when a field is removed or renamed, or its meaning changes. New fields and events can appear without a new version |
+
+| `event` | Printed by | Other fields |
+| --- | --- | --- |
+| `validation` | `validate`, last line | `valid` (`true`), `plan` (the plan's `name`) |
+| `preflight` | `preflight`, last line | `valid`, `plugins` (each plugin's manifest), `requirements`, `targets`, `monitorRequirements`, `metricCatalog`, and `calibration` for a plan with a load |
+| `phase`, `step-started`, `step-finished`, `step-progress`, `warning`, `completed`, … | a local `run` | The events of [events.jsonl](results.md#eventsjsonl), as the run writes them |
+| `artifact-written` | `run`, last line | `outcome`: the content of the run's `execution.json` |
+| `report` | `report`, last line | `outcome` (as above) and `summary` (the text of `summary.md`) |
+| `error` | any of the four commands, when it fails before it has a result | `command`, `kind` (`invalid`, `preflight` or `runtime`), `exitCode`, `message` (the text printed after `PolkaMeter:` on standard error). For a plan error, also `file`, and `line` and `column` when the error has a position. `validate` also sets `valid` to `false` |
+
+Keys that PolkaMeter adds to a line are camelCase, as in `summary.json`. Two kinds of nested objects keep the keys of the format they copy, and so may be snake_case:
+
+- `outcome` is `execution.json` (`artifact_dir`, `exit_code`, `stop_requested_at`), which [Results](results.md) documents.
+- The plugin manifests in `preflight` use the plugin protocol's keys, such as `read_only`.
+
+Other rules:
+
+- **Standard error** keeps the human messages in both formats: errors as `PolkaMeter: <message>`, and a failed run's `PolkaMeter: run failed: <reason> (details in …)`. A failed run's full reason is the `error` field of the `completed` and `artifact-written` outcomes.
+- **Load runs** also print `stop:`, `loss check:` and `smoke:` lines, and the summary, to standard error.
+- **Remote runs** print only `artifact-written`, because the agent does not stream events.
+- **Argument errors**, such as an unknown flag, are printed by the argument parser as text and exit `2` before any JSON is written.
+- **A closed standard output**, as with `| head -1`, stops the output without an error. The command carries on: a run still finishes, writes its run directory and exits with its own code.
+
+The `plugin` subcommands do not take `--format`. `plugin install` prints one line, and the others print pretty JSON.

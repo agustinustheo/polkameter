@@ -50,7 +50,7 @@ A schema can check each ramp attribute, but cannot calculate every generated rat
 
 Some limits depend on the parser or the host. The schema uses the 64-bit unsigned limit for native-size counters, while the CLI checks the host's limit.
 
-The CLI limits file size and nesting depth. It accepts comments and a leading XML declaration, and rejects other declarations and processing instructions.
+The CLI limits file size and nesting depth. It accepts comments without `--` and a leading XML declaration for XML 1.x in UTF-8, and rejects other declarations, processing instructions and characters that XML 1.0 does not allow.
 
 The CLI requires a default namespace with unprefixed element names. The schema checks namespace identity instead, so it can accept prefixed names that the CLI rejects.
 

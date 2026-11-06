@@ -1,11 +1,65 @@
 //! A small XML reader for plan files: names and attribute values borrow from the source, elements
 //! carry byte offsets, and only the predefined entities and character references are decoded.
-//! DOCTYPE, processing instructions and CDATA are rejected, and nesting is capped.
-use anyhow::{Result, anyhow};
+//! DOCTYPE, processing instructions and CDATA are rejected, and nesting is capped. Characters
+//! outside the XML 1.0 `Char` production, `--` inside comments and malformed XML declarations
+//! are rejected with their line and column.
+use anyhow::Result;
 use std::{borrow::Cow, collections::BTreeSet, fmt::Display};
 
 /// Deepest allowed element nesting; plans use about five levels.
 const MAX_DEPTH: usize = 16;
+
+/// A position in a plan: 1-based line and column. Columns count characters, not bytes.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Location {
+	pub line: usize,
+	pub column: usize,
+}
+
+impl Location {
+	/// The position of byte `offset` in `src`.
+	pub fn of(src: &str, offset: usize) -> Self {
+		let before = &src.as_bytes()[..offset.min(src.len())];
+		let line = before.iter().filter(|&&b| b == b'\n').count() + 1;
+		let start = before.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+		// Count characters, not continuation bytes, so multi-byte text does not skew the column.
+		let column = before[start..].iter().filter(|&&b| (b & 0xC0) != 0x80).count() + 1;
+		Self { line, column }
+	}
+}
+
+impl Display for Location {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "line {}, column {}", self.line, self.column)
+	}
+}
+
+/// An error in a plan, with the position it applies to when there is one. It displays as
+/// `line L, column C: message`, or as the message alone. A caller that knows the plan's file
+/// can downcast an [`anyhow::Error`] to this type to report the file, line and column.
+#[derive(Debug)]
+pub struct PlanError {
+	pub location: Option<Location>,
+	pub message: String,
+}
+
+impl PlanError {
+	/// An error at `location`.
+	pub fn at(location: Location, message: impl Display) -> anyhow::Error {
+		anyhow::Error::new(Self { location: Some(location), message: message.to_string() })
+	}
+}
+
+impl Display for PlanError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self.location {
+			Some(location) => write!(f, "{location}: {}", self.message),
+			None => f.write_str(&self.message),
+		}
+	}
+}
+
+impl std::error::Error for PlanError {}
 
 /// An element. Text content is not kept: plans only use element content for children.
 #[derive(Debug)]
@@ -19,23 +73,31 @@ pub struct Element<'a> {
 	pub children: Vec<Element<'a>>,
 }
 
+impl Element<'_> {
+	/// Where this element starts.
+	pub fn location(&self) -> Location {
+		Location::of(self.src, self.offset)
+	}
+}
+
+/// The message for a declaration that does not open with `version`.
+const DECLARATION_VERSION: &str = "the XML declaration must start with version";
+
 /// Parses an optional declaration, misc (whitespace and comments) and exactly one root element.
 pub fn parse(src: &str) -> Result<Element<'_>> {
 	// A byte-order mark is not content; offsets and columns count from the text after it.
 	let src = src.strip_prefix('\u{feff}').unwrap_or(src);
+	if let Some((at, c)) = src.char_indices().find(|&(_, c)| !xml_char(c)) {
+		let code = u32::from(c);
+		return Err(error_at(
+			src,
+			at,
+			format!("character U+{code:04X} is not allowed in XML; remove it from the plan"),
+		));
+	}
 	let mut p = Parser { src, pos: 0 };
-	if src.starts_with("<?xml")
-		&& src[5..].starts_with(|c: char| c.is_ascii_whitespace() || c == '?')
-	{
-		p.pos = 5;
-		p.skip_past("?>", "unterminated XML declaration")?;
-		let body = src[5..p.pos - 2].trim_start_matches([' ', '\t', '\r', '\n']);
-		let after = body
-			.strip_prefix("version")
-			.map(|r| r.trim_start_matches([' ', '\t', '\r', '\n']));
-		if !after.is_some_and(|r| r.starts_with('=')) {
-			return Err(p.error(0, "the XML declaration must start with version"));
-		}
+	if declaration_start(src) {
+		p.declaration()?;
 	}
 	p.skip_misc()?;
 	if !p.rest().starts_with('<') {
@@ -49,14 +111,21 @@ pub fn parse(src: &str) -> Result<Element<'_>> {
 	Ok(root)
 }
 
+/// Whether `text` starts with an XML declaration: `<?xml` followed by whitespace or `?`, unlike a
+/// processing instruction whose name only starts with `xml`.
+fn declaration_start(text: &str) -> bool {
+	text.strip_prefix("<?xml")
+		.is_some_and(|rest| rest.starts_with([' ', '\t', '\r', '\n', '?']))
+}
+
+/// The XML 1.0 `Char` production. A Rust string cannot hold a surrogate, so none is checked.
+fn xml_char(c: char) -> bool {
+	matches!(c, '\t' | '\n' | '\r' | '\u{20}'..='\u{D7FF}' | '\u{E000}'..='\u{FFFD}' | '\u{10000}'..)
+}
+
 /// An error at a byte offset, formatted as `line L, column C: message`.
 pub fn error_at(src: &str, offset: usize, msg: impl Display) -> anyhow::Error {
-	let before = &src.as_bytes()[..offset.min(src.len())];
-	let line = before.iter().filter(|&&b| b == b'\n').count() + 1;
-	let start = before.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
-	// Count characters, not continuation bytes, so multi-byte text does not skew the column.
-	let column = before[start..].iter().filter(|&&b| (b & 0xC0) != 0x80).count() + 1;
-	anyhow!("line {line}, column {column}: {msg}")
+	PlanError::at(Location::of(src, offset), msg)
 }
 
 struct Parser<'a> {
@@ -81,10 +150,85 @@ impl<'a> Parser<'a> {
 		n > 0
 	}
 
-	/// Moves past the next `end`.
-	fn skip_past(&mut self, end: &str, msg: &str) -> Result<()> {
-		let found = self.rest().find(end).ok_or_else(|| self.error(self.pos, msg))?;
-		self.pos += found + end.len();
+	/// Parses the XML declaration at the start of the document:
+	/// `<?xml version="1.x" encoding="UTF-8" standalone="yes|no"?>`, where encoding and standalone
+	/// are optional but keep this order.
+	fn declaration(&mut self) -> Result<()> {
+		let start = self.pos;
+		let end = start
+			+ self
+				.rest()
+				.find("?>")
+				.ok_or_else(|| self.error(start, "unterminated XML declaration"))?;
+		self.pos += "<?xml".len();
+		let mut allowed: &[&str] = &["version", "encoding", "standalone"];
+		loop {
+			let spaced = self.skip_ws();
+			if self.pos >= end {
+				break;
+			}
+			let at = self.pos;
+			let first = allowed.len() == 3;
+			let len =
+				self.src[at..end].find(|c: char| !c.is_ascii_alphabetic()).unwrap_or(end - at);
+			let name = &self.src[at..at + len];
+			let index = allowed.iter().position(|known| *known == name);
+			let Some(index) = index.filter(|&index| !first || index == 0) else {
+				if first {
+					return Err(self.error(start, DECLARATION_VERSION));
+				}
+				let msg = "the XML declaration allows only version, encoding and standalone, in \
+				           that order";
+				return Err(self.error(at, msg));
+			};
+			if !spaced {
+				let msg = format!("expected whitespace before `{name}` in the XML declaration");
+				return Err(self.error(at, msg));
+			}
+			allowed = &allowed[index + 1..];
+			self.pos = at + len;
+			self.skip_ws();
+			if !self.rest().starts_with('=') {
+				if first {
+					return Err(self.error(start, DECLARATION_VERSION));
+				}
+				let msg = format!("expected `=` after `{name}` in the XML declaration");
+				return Err(self.error(self.pos, msg));
+			}
+			self.pos += 1;
+			self.skip_ws();
+			let Some(quote) = self.rest().chars().next().filter(|q| matches!(q, '"' | '\'')) else {
+				let msg = format!("expected a quoted value for `{name}` in the XML declaration");
+				return Err(self.error(self.pos, msg));
+			};
+			let value_at = self.pos + 1;
+			let len = self.src[value_at..end].find(quote).ok_or_else(|| {
+				let msg = format!("unterminated `{name}` value in the XML declaration");
+				self.error(value_at, msg)
+			})?;
+			let value = &self.src[value_at..value_at + len];
+			let hint = match name {
+				"version" => value
+					.strip_prefix("1.")
+					.filter(|minor| !minor.is_empty() && minor.bytes().all(|b| b.is_ascii_digit()))
+					.map_or(Some("use version=\"1.0\""), |_| None),
+				"encoding" => (!value.eq_ignore_ascii_case("UTF-8")).then_some(
+					"PolkaMeter reads plans as UTF-8; save the file as UTF-8 and write \
+					 encoding=\"UTF-8\", or remove encoding",
+				),
+				_ => (!matches!(value, "yes" | "no"))
+					.then_some("use standalone=\"yes\" or standalone=\"no\""),
+			};
+			if let Some(hint) = hint {
+				let msg = format!("invalid {name} `{value}` in the XML declaration; {hint}");
+				return Err(self.error(value_at, msg));
+			}
+			self.pos = value_at + len + 1;
+		}
+		if allowed.len() == 3 {
+			return Err(self.error(start, DECLARATION_VERSION));
+		}
+		self.pos = end + 2;
 		Ok(())
 	}
 
@@ -93,12 +237,25 @@ impl<'a> Parser<'a> {
 	fn skip_misc(&mut self) -> Result<()> {
 		self.skip_ws();
 		while self.rest().starts_with("<!--") {
-			self.pos += 4;
-			self.skip_past("-->", "unterminated comment")?;
+			let start = self.pos;
+			self.pos += "<!--".len();
+			let dashes = self
+				.rest()
+				.find("--")
+				.ok_or_else(|| self.error(start, "unterminated comment"))?;
+			self.pos += dashes;
+			if !self.rest().starts_with("-->") {
+				let msg =
+					"`--` is not allowed inside a comment, and a comment cannot end with `--->`";
+				return Err(self.error(self.pos, msg));
+			}
+			self.pos += "-->".len();
 			self.skip_ws();
 		}
 		let rest = self.rest();
-		let msg = if rest.starts_with("<!DOCTYPE") {
+		let msg = if declaration_start(rest) {
+			"the XML declaration must come first in the file, before any whitespace or comment"
+		} else if rest.starts_with("<!DOCTYPE") {
 			"DOCTYPE is not supported"
 		} else if rest.starts_with("<?") {
 			"processing instructions are not supported"
@@ -247,9 +404,7 @@ fn entity(name: &str) -> Option<char> {
 			};
 			let valid = !digits.is_empty() && digits.chars().all(|c| c.is_digit(radix));
 			let code = u32::from_str_radix(digits, radix).ok().filter(|_| valid)?;
-			char::from_u32(code).filter(|&c| {
-				matches!(c, '\t' | '\n' | '\r' | '\u{20}'..='\u{D7FF}' | '\u{E000}'..='\u{FFFD}' | '\u{10000}'..='\u{10FFFF}')
-			})
+			char::from_u32(code).filter(|&c| xml_char(c))
 		},
 	}
 }
@@ -294,6 +449,96 @@ mod tests {
 			let error = parse(xml).unwrap_err().to_string();
 			assert!(error.contains(msg), "{xml}: {error}");
 		}
+	}
+
+	#[test]
+	fn rejects_malformed_xml_declarations() {
+		let cases = [
+			(r#"<?xml version="2.0"?><a/>"#, "line 1, column 16: invalid version `2.0`"),
+			(r#"<?xml version="1."?><a/>"#, "invalid version `1.`"),
+			(
+				r#"<?xml version="1.0"encoding="UTF-8"?><a/>"#,
+				"expected whitespace before `encoding`",
+			),
+			(r#"<?xml version="1.0" encoding="UTF-16"?><a/>"#, "invalid encoding `UTF-16`"),
+			(r#"<?xml version="1.0" standalone="maybe"?><a/>"#, "invalid standalone `maybe`"),
+			(
+				r#"<?xml version="1.0" standalone="yes" encoding="UTF-8"?><a/>"#,
+				"allows only version",
+			),
+			(
+				r#"<?xml version="1.0" junk="1"?><a/>"#,
+				"line 1, column 21: the XML declaration allows only",
+			),
+			(
+				r#"<?xml version="1.0" version="1.0"?><a/>"#,
+				"allows only version, encoding and standalone",
+			),
+			(r#"<?xml version=1.0?><a/>"#, "expected a quoted value for `version`"),
+			(r#"<?xml version="1.0?><a/>"#, "unterminated `version` value"),
+			(r#"<?xml version="1.0" encoding?><a/>"#, "expected `=` after `encoding`"),
+			(r#"<?xml version="1.0" ?"#, "unterminated XML declaration"),
+			(
+				"\n<?xml version=\"1.0\"?><a/>",
+				"line 2, column 1: the XML declaration must come first",
+			),
+			("<!-- c --><?xml version=\"1.0\"?><a/>", "the XML declaration must come first"),
+		];
+		for (xml, msg) in cases {
+			let error = parse(xml).unwrap_err().to_string();
+			assert!(error.contains(msg), "{xml}: {error}");
+		}
+		for xml in [
+			r#"<?xml version="1.0"?><a/>"#,
+			r#"<?xml version='1.1' encoding='utf-8' standalone='no' ?><a/>"#,
+			"<?xml\tversion = \"1.0\"\nencoding=\"UTF-8\"?>\n<a/>",
+		] {
+			parse(xml).unwrap_or_else(|e| panic!("{xml}: {e}"));
+		}
+	}
+
+	#[test]
+	fn rejects_double_hyphens_in_comments() {
+		for (xml, column) in [
+			("<!-- a -- b --><a/>", 8),
+			("<!-- a ---><a/>", 8),
+			("<a>\n  <!-- x--y --></a>", 9),
+			("<a/><!-- -- -->", 10),
+		] {
+			let error = parse(xml).unwrap_err().to_string();
+			assert!(
+				error.contains(&format!("column {column}: `--` is not allowed")),
+				"{xml}: {error}"
+			);
+		}
+		parse("<!----><a><!-- a - b --></a><!-- - -->").unwrap();
+		let error = parse("<a/><!-- open").unwrap_err().to_string();
+		assert!(error.contains("line 1, column 5: unterminated comment"), "{error}");
+	}
+
+	#[test]
+	fn rejects_characters_outside_xml() {
+		for (xml, shown) in [
+			("<a x=\"\0\"/>", "line 1, column 7: character U+0000"),
+			("<a>\n<b y=\"\u{1}\"/></a>", "line 2, column 7: character U+0001"),
+			("<a/><!-- \u{1b} -->", "character U+001B"),
+			("<a x=\"\u{FFFE}\"/>", "character U+FFFE"),
+			("<a x=\"\u{FFFF}\"/>", "character U+FFFF"),
+			("<a/>\u{0}", "character U+0000"),
+		] {
+			let error = parse(xml).unwrap_err().to_string();
+			assert!(error.contains(shown), "{xml:?}: {error}");
+			assert!(error.contains("is not allowed in XML"), "{error}");
+		}
+		parse("<a x=\"\t\u{7F}\u{85}\u{E000}\u{10FFFF}\"/>").unwrap();
+	}
+
+	#[test]
+	fn errors_carry_their_location() {
+		let error = parse("<a>\n  <b></c>\n</a>").unwrap_err();
+		let located = error.downcast_ref::<PlanError>().unwrap();
+		assert_eq!(located.location, Some(Location { line: 2, column: 8 }));
+		assert_eq!(located.message, "expected </b>, found </c>");
 	}
 
 	#[test]

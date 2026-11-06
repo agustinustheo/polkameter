@@ -40,6 +40,20 @@ Also new:
 ### CLI
 
 - The CLI spells its name `PolkaMeter` in every message. Standard-error lines now start with `PolkaMeter:` and `PolkaMeter warning:` instead of `Polkameter:`. Update scripts that match the old prefix.
+- **Plan errors name the file and position.** Every plan error starts with the plan file and, when it is about one element, the line and column: `PolkaMeter: plan.xml: line 4, column 46: …`. Errors about a step name the step's ID, its operation and the input. Most validation and preflight messages were reworded to say what is wrong and how to fix it; for example `unknown or forward reference steps.x.y` now reads ``step `a` (core.echo): input `value` refers to `steps.x.y`, but step `x` does not run before this step; move `x` earlier …``. Update scripts that match the old message text. Exit codes are unchanged.
+- **Plugin mismatches say which and how to fix.** `plugin <id> version/checksum mismatch` is now `plugin <id> version mismatch: the plan expects version …, but version … is installed …` or `plugin <id> checksum mismatch: … changed after it was installed (BLAKE2 expected …, found …)`, each with the `polkameter plugin install` command to run. An unknown operation lists the operations the plugin offers, and an unknown input lists the operation's inputs.
+- **Stricter XML.** Plans are rejected, with a line and column, when a comment contains `--`, when the XML declaration is malformed or names an encoding other than UTF-8, when the declaration is not at the very start of the file, or when the file contains a character XML 1.0 does not allow, such as NUL.
+- **Bounded plan reading.** PolkaMeter reads at most 2 MiB plus one byte of a plan and refuses a larger one, naming the limit. A directory, FIFO, socket or device is refused at once instead of hanging the command. A file that is not UTF-8 is refused with the position of the first invalid byte.
+- **Concurrent `plugin` commands are safe.** `plugin install`, `credential`, `topology` and `capability` lock `<registry>.lock`, reread the registry and replace it atomically, so parallel commands no longer lose each other's changes. A corrupt registry names its path and how to recover, and is never overwritten.
+- **A closed standard output no longer panics.** `polkameter … | head -1` used to end with a panic and exit code 101. Output now stops quietly and the command finishes with its own exit code.
+- **More help.** Every subcommand, argument and flag has a description, and `--help` shows examples and the exit codes.
+
+### CLI JSON output (breaking for scripts that parse `--format json`)
+
+- Every line now has `event` and `schemaVersion` (`1`). The `preflight` result gains `"event":"preflight"`.
+- A command that fails with `--format json` now prints an `error` line on standard output, with `command`, `kind`, `exitCode` and `message`, and for a plan error `file`, `line` and `column`. A failed `validate` also has `"valid":false`. Before, it printed nothing on standard output. Scripts that treated any standard output as success must check `event` instead.
+- Keys that the CLI adds are camelCase, like `summary.json`. The `outcome` object keeps the keys of `execution.json` (`artifact_dir`, `exit_code`), and plugin manifests keep the plugin protocol's keys (`read_only`). No existing key was renamed.
+- [Output formats](docs/cli.md#output-formats) documents the contract.
 
 ### Load tests
 

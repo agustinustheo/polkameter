@@ -39,6 +39,13 @@ pub struct Installation {
 	pub version: String,
 	pub blake2: String,
 }
+/// An exclusive lock on a registry file, held through a read-modify-write so that concurrent
+/// `polkameter plugin` commands do not lose each other's changes. Released on drop.
+#[derive(Debug)]
+pub struct RegistryLock {
+	_file: std::fs::File,
+}
+
 impl Registry {
 	pub fn path() -> Result<PathBuf> {
 		if let Some(path) = std::env::var_os("POLKAMETER_PLUGIN_REGISTRY") {
@@ -47,50 +54,147 @@ impl Registry {
 		Ok(PathBuf::from(
 			std::env::var_os("HOME")
 				.or_else(|| std::env::var_os("USERPROFILE"))
-				.ok_or_else(|| anyhow::anyhow!("set POLKAMETER_PLUGIN_REGISTRY"))?,
+				.ok_or_else(|| {
+					anyhow::anyhow!(
+						"cannot find the plugin registry: neither HOME nor USERPROFILE is set; \
+						 set POLKAMETER_PLUGIN_REGISTRY to the registry file's path"
+					)
+				})?,
 		)
 		.join(".config/polkameter/plugins.json"))
 	}
 	pub fn load() -> Result<Self> {
 		Self::read(&Self::path()?)
 	}
+	/// Reads the registry at `path`; a missing file is an empty registry. An unreadable or
+	/// corrupt file is an error that names the file and how to recover.
 	pub fn read(path: &Path) -> Result<Self> {
+		let shown = path.display();
 		match std::fs::read(path) {
-			Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
+			Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
+				anyhow::anyhow!(
+					"plugin registry {shown} is not a valid registry: {e}. Fix the file, or move \
+					 it aside and run `polkameter plugin install` (and `plugin credential`, \
+					 `plugin topology`, `plugin capability`) again"
+				)
+			}),
 			Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-			Err(e) => Err(e.into()),
+			Err(e) => Err(anyhow::anyhow!("cannot read plugin registry {shown}: {e}")),
 		}
 	}
-	pub fn write(&self, path: &Path) -> Result<()> {
+	/// Takes the exclusive lock for the registry at `path`, waiting for other holders. The lock
+	/// is a separate `<registry>.lock` file next to it, because the registry itself is replaced
+	/// on every write.
+	pub fn lock(path: &Path) -> Result<RegistryLock> {
+		let mut name = path.as_os_str().to_owned();
+		name.push(".lock");
+		let lock_path = PathBuf::from(name);
+		let context = || format!("cannot lock plugin registry {}", lock_path.display());
 		if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-			std::fs::create_dir_all(parent)?;
+			std::fs::create_dir_all(parent).with_context(context)?;
 		}
-		let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
-		std::fs::write(&temporary, serde_json::to_vec_pretty(self)?)?;
-		std::fs::rename(temporary, path)?;
-		Ok(())
+		let file = std::fs::OpenOptions::new()
+			.create(true)
+			.truncate(false)
+			.write(true)
+			.open(&lock_path)
+			.with_context(context)?;
+		file.lock().with_context(context)?;
+		Ok(RegistryLock { _file: file })
 	}
-	pub async fn install(&mut self, executable: &Path) -> Result<Manifest> {
+	/// Replaces the registry at `path` atomically: a temporary file in the same directory is
+	/// written, flushed and renamed over it. Call it while holding [`Registry::lock`].
+	pub fn write(&self, path: &Path) -> Result<()> {
+		use std::io::Write as _;
+		static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+		let context = || format!("cannot write plugin registry {}", path.display());
+		if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+			std::fs::create_dir_all(parent).with_context(context)?;
+		}
+		let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+		let mut name = path.file_name().unwrap_or_default().to_owned();
+		name.push(format!(".{}.{sequence}.tmp", std::process::id()));
+		let temporary = path.with_file_name(name);
+		let result = (|| -> std::io::Result<()> {
+			let mut file = std::fs::File::create(&temporary)?;
+			file.write_all(&serde_json::to_vec_pretty(self)?)?;
+			file.sync_all()?;
+			std::fs::rename(&temporary, path)
+		})();
+		if result.is_err() {
+			let _ = std::fs::remove_file(&temporary);
+		}
+		result.with_context(context)
+	}
+	/// Asks the executable for its manifest and pins its checksum, without changing a registry.
+	pub async fn describe(executable: &Path) -> Result<(Manifest, Installation)> {
 		let executable = executable
 			.canonicalize()
 			.with_context(|| format!("cannot read plugin executable {}", executable.display()))?;
 		let context = Context::host("inspect", std::env::temp_dir());
-		let mut process = Process::spawn(&executable, &context, None)?;
-		let manifest = process.describe(&context).await?;
+		let mut process = Process::spawn(&executable, &context, None)
+			.with_context(|| format!("cannot start plugin executable {}", executable.display()))?;
+		let manifest = process.describe(&context).await.with_context(|| {
+			format!("plugin executable {} did not answer $describe", executable.display())
+		})?;
 		process.shutdown(&context, &CancellationToken::new()).await;
 		ensure!(
-			manifest.protocol == PROTOCOL && !manifest.id.is_empty() && manifest.id != "core",
-			"invalid plugin identity"
+			manifest.protocol == PROTOCOL,
+			"plugin {} speaks protocol {}, but this PolkaMeter speaks protocol {PROTOCOL}; \
+			 rebuild the plugin against a matching polkameter-plugin-sdk",
+			executable.display(),
+			manifest.protocol
 		);
-		self.plugins.insert(
-			manifest.id.clone(),
-			Installation {
-				blake2: checksum(&executable)?,
-				executable,
-				version: manifest.version.clone(),
-			},
+		ensure!(
+			!manifest.id.is_empty() && manifest.id != "core",
+			"plugin {} reports the ID `{}`; a plugin ID must not be empty or `core`",
+			executable.display(),
+			manifest.id
 		);
+		let installation = Installation {
+			blake2: checksum(&executable)?,
+			executable,
+			version: manifest.version.clone(),
+		};
+		Ok((manifest, installation))
+	}
+	pub async fn install(&mut self, executable: &Path) -> Result<Manifest> {
+		let (manifest, installation) = Self::describe(executable).await?;
+		self.plugins.insert(manifest.id.clone(), installation);
 		Ok(manifest)
+	}
+	/// Checks that plugin `id` is installed as `version` and that its executable has not changed
+	/// since `polkameter plugin install`.
+	pub fn verify(&self, id: &str, version: &str) -> Result<&Installation> {
+		let installed = self.plugins.get(id).with_context(|| {
+			format!(
+				"plugin {id} is not installed on this host; run `polkameter plugin install \
+				 <path-to-executable>`"
+			)
+		})?;
+		let path = installed.executable.display();
+		ensure!(
+			installed.version == version,
+			"plugin {id} version mismatch: the plan expects version {version}, but version {} is \
+			 installed from {path}. Set version=\"{}\" in the plan's <plugin>, or install the \
+			 matching build with `polkameter plugin install <path-to-executable>`",
+			installed.version,
+			installed.version
+		);
+		let actual = checksum(&installed.executable).with_context(|| {
+			format!(
+				"cannot read plugin {id} executable {path}; reinstall it with `polkameter plugin \
+				 install <path-to-executable>`"
+			)
+		})?;
+		ensure!(
+			actual == installed.blake2,
+			"plugin {id} checksum mismatch: {path} changed after it was installed (BLAKE2 \
+			 expected {}, found {actual}). If you rebuilt it, run `polkameter plugin install \
+			 {path}` again",
+			installed.blake2
+		);
+		Ok(installed)
 	}
 	pub fn resolve_credentials(
 		&self,
@@ -359,19 +463,7 @@ impl Plugins {
 		// Validate every installation before launching any plugin.
 		let installed = specs
 			.iter()
-			.map(|spec| -> Result<_> {
-				let installed = registry
-					.plugins
-					.get(&spec.id)
-					.with_context(|| format!("plugin {} is not installed on this host", spec.id))?;
-				ensure!(
-					installed.version == spec.version
-						&& checksum(&installed.executable)? == installed.blake2,
-					"plugin {} version/checksum mismatch",
-					spec.id
-				);
-				Ok((spec, installed))
-			})
+			.map(|spec| -> Result<_> { Ok((spec, registry.verify(&spec.id, &spec.version)?)) })
 			.collect::<Result<Vec<_>>>()?;
 		let mut set = PluginSet::default();
 		for (spec, installed) in installed {
@@ -384,8 +476,16 @@ impl Plugins {
 				manifest.id == spec.id
 					&& manifest.version == spec.version
 					&& manifest.protocol == spec.protocol,
-				"manifest identity mismatch for {}",
-				spec.id
+				"plugin {} answered $describe as {} {} (protocol {}), but the plan expects {} {} \
+				 (protocol {}); run `polkameter plugin install {}` again",
+				spec.id,
+				manifest.id,
+				manifest.version,
+				manifest.protocol,
+				spec.id,
+				spec.version,
+				spec.protocol,
+				installed.executable.display()
 			);
 			set.manifests.insert(spec.id.clone(), manifest);
 			set.processes.insert(spec.id.clone(), Mutex::new(process));
@@ -412,15 +512,7 @@ impl Plugins {
 			return Ok(false);
 		}
 		process.reap().await;
-		let installed = registry
-			.plugins
-			.get(plugin)
-			.with_context(|| format!("plugin {plugin} is not installed on this host"))?;
-		ensure!(
-			installed.version == manifest.version
-				&& checksum(&installed.executable)? == installed.blake2,
-			"plugin {plugin} version/checksum mismatch"
-		);
+		let installed = registry.verify(plugin, &manifest.version)?;
 		let mut fresh = Process::spawn(&installed.executable, context, Some(&launch.stderr))?;
 		let described = match fresh.describe(context).await {
 			Ok(described) => described,
@@ -440,7 +532,20 @@ impl Plugins {
 		self.manifests
 			.get(plugin)
 			.and_then(|p| p.operations.get(operation))
-			.ok_or_else(|| anyhow::anyhow!("unknown operation {plugin}.{operation}"))
+			.ok_or_else(|| {
+				let offered = self.manifests.get(plugin).map_or_else(
+					|| "none".to_owned(),
+					|manifest| {
+						let names: Vec<_> =
+							manifest.operations.keys().map(String::as_str).collect();
+						names.join(", ")
+					},
+				);
+				anyhow::anyhow!(
+					"unknown operation {plugin}.{operation}: the installed plugin {plugin} offers \
+					 {offered}; `polkameter plugin inspect <plan>` lists them"
+				)
+			})
 	}
 	pub async fn invoke(
 		&self,

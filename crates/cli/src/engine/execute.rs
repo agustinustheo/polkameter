@@ -189,12 +189,26 @@ pub fn transactions(value: &Value, directory: &Path) -> Result<Vec<PreparedTx>> 
 }
 fn contract<'a>(plugins: &'a Plugins, name: &str) -> Result<Cow<'a, Operation>> {
 	if name.starts_with("core.") {
-		return core_contract(name)
-			.map(Cow::Owned)
-			.with_context(|| format!("unknown built-in operation {name}"));
+		return core_contract(name).map(Cow::Owned).with_context(|| {
+			format!(
+				"unknown built-in operation {name}; see the core operations in the plan reference"
+			)
+		});
 	}
 	let (plugin, operation) = name.split_once('.').context("invalid operation")?;
 	Ok(Cow::Borrowed(plugins.operation(plugin, operation)?))
+}
+/// Names a step in an error: `step `id` (plugin.op)`, located at the step's element.
+fn step_error(step: &Step, message: impl std::fmt::Display) -> anyhow::Error {
+	crate::engine::plan::PlanError::at(
+		step.location,
+		format!("step `{}` ({}): {message}", step.id, step.operation),
+	)
+}
+/// The names in `names`, for an error message, or `none`.
+fn listed<'a>(names: impl Iterator<Item = &'a String>) -> String {
+	let names: Vec<_> = names.map(|name| format!("`{name}`")).collect();
+	if names.is_empty() { "none".to_owned() } else { names.join(", ") }
 }
 /// Validate operation names, literals, references and output types before any mutation.
 fn validate_contracts(plan: &Plan, plugins: &Plugins) -> Result<()> {
@@ -214,32 +228,70 @@ fn validate_contracts(plan: &Plan, plugins: &Plugins) -> Result<()> {
 		("iteration.index".into(), Schema::Integer),
 	]);
 	for step in plan.all_steps() {
-		let operation = contract(plugins, &step.operation)?;
+		let operation = contract(plugins, &step.operation).map_err(|e| step_error(step, e))?;
+		// An unknown name first: it is often a misspelt required input.
+		if let Some(input) =
+			step.inputs.iter().find(|input| !operation.inputs.contains_key(&input.name))
+		{
+			return Err(crate::engine::plan::PlanError::at(
+				input.location,
+				format!(
+					"step `{}` ({}): input `{}` is not an input of {}; its inputs are {}",
+					step.id,
+					step.operation,
+					input.name,
+					step.operation,
+					listed(operation.inputs.keys())
+				),
+			));
+		}
 		let input_names =
 			step.inputs.iter().map(|input| input.name.as_str()).collect::<BTreeSet<_>>();
 		for (name, field) in &operation.inputs {
-			ensure!(
-				field.optional || input_names.contains(name.as_str()),
-				"step {} misses input {name}",
-				step.id
-			);
+			if !field.optional && !input_names.contains(name.as_str()) {
+				return Err(step_error(
+					step,
+					format!("missing required input `{name}`; add <input name=\"{name}\" …/>"),
+				));
+			}
 		}
 		for input in &step.inputs {
-			let expected = operation
-				.inputs
-				.get(&input.name)
-				.with_context(|| format!("unknown input {} for {}", input.name, step.operation))?;
+			let name = &input.name;
+			let at = |message: String| {
+				crate::engine::plan::PlanError::at(
+					input.location,
+					format!("step `{}` ({}): input `{name}` {message}", step.id, step.operation),
+				)
+			};
+			// Every name is known: unknown names failed above.
+			let expected = &operation.inputs[name];
 			if let InputSource::Ref(reference) = &input.source {
-				let actual =
-					types.get(reference).with_context(|| format!("unknown output {reference}"))?;
-				ensure!(
-					actual == &expected.schema
-						|| matches!(actual, Schema::Json)
-						|| matches!(expected.schema, Schema::Json),
-					"reference {reference} has incompatible type"
-				);
+				let Some(actual) = types.get(reference) else {
+					return Err(at(format!(
+						"refers to `{reference}`, which is not an output of an earlier step; \
+						 check the output names with `polkameter plugin inspect <plan>`"
+					)));
+				};
+				if !(actual == &expected.schema
+					|| matches!(actual, Schema::Json)
+					|| matches!(expected.schema, Schema::Json))
+				{
+					return Err(at(format!(
+						"refers to `{reference}`, which is {}, but {} expects {}",
+						schema_name(actual),
+						step.operation,
+						schema_name(&expected.schema)
+					)));
+				}
 			} else {
-				expected.schema.validate(&input.literal()?)?;
+				let literal = input.literal().map_err(|e| at(e.to_string()))?;
+				expected.schema.validate(&literal).map_err(|e| {
+					at(format!(
+						"has a value that {} does not accept: {e}; it expects {}",
+						step.operation,
+						schema_name(&expected.schema)
+					))
+				})?;
 			}
 		}
 		for (name, field) in &operation.outputs {
@@ -247,22 +299,43 @@ fn validate_contracts(plan: &Plan, plugins: &Plugins) -> Result<()> {
 		}
 	}
 	for step in &plan.preflight.entries {
-		ensure!(
-			contract(plugins, &step.operation)?.read_only,
-			"preflight operation {} can mutate state",
-			step.operation
-		);
+		if !contract(plugins, &step.operation)?.read_only {
+			return Err(step_error(
+				step,
+				"this operation can change chain state, so it cannot run in <preflight>; move \
+				 the step to <setup>",
+			));
+		}
 	}
 	if let Some(load) = &plan.load {
-		ensure!(
-			types.contains_key(&load.source) && types.contains_key(&load.probes_ref),
-			"unknown load source output"
-		);
+		let at = |message: String| crate::engine::plan::PlanError::at(load.location, message);
+		for (attribute, reference) in
+			[("source-ref", &load.source), ("probes-ref", &load.probes_ref)]
+		{
+			if !types.contains_key(reference) {
+				return Err(at(format!(
+					"<load> {attribute} `{reference}` is not an output of a step before <load>; \
+					 check the output names with `polkameter plugin inspect <plan>`"
+				)));
+			}
+		}
 		if let Some(state) = &load.state {
-			contract(plugins, &state.check)?;
+			contract(plugins, &state.check).map_err(|e| at(format!("<load> state-check: {e}")))?;
 		}
 	}
 	Ok(())
+}
+/// A schema in words, for error messages.
+fn schema_name(schema: &Schema) -> String {
+	match schema {
+		Schema::Json => "any JSON value".into(),
+		Schema::String => "a string".into(),
+		Schema::Number => "a number".into(),
+		Schema::Integer => "an integer".into(),
+		Schema::Boolean => "a boolean".into(),
+		Schema::Array { items } => format!("an array of {}", schema_name(items)),
+		Schema::Object { fields } => format!("an object with fields {}", listed(fields.keys())),
+	}
 }
 fn next_directory_sequence() -> u64 {
 	static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -990,15 +1063,29 @@ async fn invoke(
 			.iter()
 			.map(|input| {
 				let value = match &input.source {
-					InputSource::Ref(reference) => resolve(values, reference)?,
-					_ => input.literal()?,
-				};
+					InputSource::Ref(reference) => resolve(values, reference),
+					_ => input.literal(),
+				}
+				.map_err(|e| {
+					anyhow::anyhow!(
+						"step `{}` ({}): input `{}`: {e:#}",
+						step.id,
+						step.operation,
+						input.name
+					)
+				})?;
 				Ok((input.name.clone(), value))
 			})
 			.collect::<Result<serde_json::Map<_, _>>>()?,
 	);
 	let operation = contract(plugins, &step.operation)?;
-	operation.validate_inputs(&inputs)?;
+	operation.validate_inputs(&inputs).map_err(|e| {
+		anyhow::anyhow!(
+			"step `{}` ({}): the inputs do not match the operation: {e:#}",
+			step.id,
+			step.operation
+		)
+	})?;
 	if !step.operation.starts_with("core.") {
 		return plugins.invoke(&step.operation, inputs, context, step.timeout_ms, cancel).await;
 	}
@@ -1515,6 +1602,90 @@ mod calibration_tests {
 		assert!(
 			error.to_string().contains("topology alias not-installed is not installed"),
 			"{error:#}"
+		);
+	}
+}
+
+#[cfg(test)]
+mod contract_tests {
+	use super::*;
+	use crate::engine::plan::{Location, PlanError};
+
+	/// The contract error for a plan whose setup is `setup`, and its position.
+	fn failure(setup: &str) -> (String, Option<Location>) {
+		let xml = format!(
+			"<polkameter-plan xmlns=\"https://polkameter.dev/schema/plan\" version=\"1\" \
+			 name=\"x\">\n<targets><target id=\"chain\" endpoint=\"ws://127.0.0.1:9944\"/></targets>\n\
+			 <setup>\n{setup}\n</setup>\n</polkameter-plan>"
+		);
+		let plan = Plan::parse(&xml).unwrap();
+		let error = validate_contracts(&plan, &Plugins::default()).unwrap_err();
+		(error.to_string(), error.downcast_ref::<PlanError>().and_then(|e| e.location))
+	}
+
+	#[test]
+	fn contract_errors_name_the_step_operation_and_input() {
+		let cases = [
+			(
+				"<step id=\"check\" use=\"core.assert-equal\"><input name=\"actual\" value=\"1\"/></step>",
+				(4, 1),
+				"step `check` (core.assert-equal): missing required input `expected`; add <input \
+				 name=\"expected\" …/>",
+			),
+			(
+				"<step id=\"check\" use=\"core.echo\">\n  <input name=\"bogus\" value=\"1\"/></step>",
+				(5, 3),
+				"step `check` (core.echo): input `bogus` is not an input of core.echo; its inputs \
+				 are `value`",
+			),
+			(
+				"<step id=\"send\" use=\"core.submit-prepared\"><input name=\"target\" \
+				 ref=\"run.probeBudget\"/><input name=\"transactions\" value=\"[]\"/></step>",
+				(4, 44),
+				"step `send` (core.submit-prepared): input `target` refers to `run.probeBudget`, \
+				 which is an integer, but core.submit-prepared expects a string",
+			),
+			(
+				"<step id=\"send\" use=\"core.submit-prepared\"><input name=\"target\" value=\"7\"/>\
+				 <input name=\"transactions\" value=\"[]\"/></step>",
+				(4, 44),
+				"step `send` (core.submit-prepared): input `target` has a value that \
+				 core.submit-prepared does not accept",
+			),
+			(
+				"<step id=\"a\" use=\"core.echo\"><input name=\"value\" value=\"1\"/></step>\n\
+				 <step id=\"b\" use=\"core.echo\"><input name=\"value\" ref=\"steps.a.missing\"/></step>",
+				(5, 30),
+				"step `b` (core.echo): input `value` refers to `steps.a.missing`, which is not an \
+				 output of an earlier step",
+			),
+			(
+				"<step id=\"x\" use=\"core.nope\"/>",
+				(4, 1),
+				"step `x` (core.nope): unknown built-in operation core.nope",
+			),
+		];
+		for (setup, (line, column), expected) in cases {
+			let (error, location) = failure(setup);
+			assert!(error.contains(expected), "{setup}: {error}");
+			assert_eq!(location, Some(Location { line, column }), "{setup}: {error}");
+		}
+	}
+
+	#[test]
+	fn a_preflight_step_that_changes_state_is_named() {
+		let xml = "<polkameter-plan xmlns=\"https://polkameter.dev/schema/plan\" version=\"1\" \
+		           name=\"x\"><preflight><step id=\"send\" use=\"core.submit-prepared\"><input \
+		           name=\"target\" value=\"ws://x\"/><input name=\"transactions\" \
+		           value=\"[]\"/></step></preflight></polkameter-plan>";
+		let plan = Plan::parse(xml).unwrap();
+		let error = validate_contracts(&plan, &Plugins::default()).unwrap_err().to_string();
+		assert!(
+			error.contains(
+				"step `send` (core.submit-prepared): this operation can change chain state, so it \
+				 cannot run in <preflight>; move the step to <setup>"
+			),
+			"{error}"
 		);
 	}
 }
