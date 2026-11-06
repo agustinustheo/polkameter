@@ -6,6 +6,14 @@ User-visible changes in each release. The GitHub release notes list every merged
 
 Other 0.3.0 changes still need entries here.
 
+### Substrate plugin and dev chain
+
+- New: the substrate plugin, `polkameter-substrate-plugin`, loads any chain with the standard `System` and `Balances` pallets without plugin code. It funds signers derived from one seed, signs remark or transfer floods and probes, and checks the state after a run. The release archives, the install script, the container and the action include it; it is not published on crates.io.
+- New: `polkameter init --rpc <endpoint>` writes a load plan for the substrate plugin from a live chain.
+- New: `scripts/dev-chain.sh start|stop` runs a pinned, checksummed `polkadot-omni-node` dev chain with the parachain template runtime, or your own runtime, for local and CI load tests.
+- New: an Agent Skill in `skills/polkameter`, `AGENTS.md` and `docs/llms.txt` help AI coding assistants set PolkaMeter up.
+- The GitHub Action's `plugins` input accepts a bare executable name, such as `polkameter-substrate-plugin`, and finds it on `PATH`.
+
 ### GitHub Action
 
 Moving `@v0` to 0.3.0 changes these defaults for existing workflows:
@@ -55,6 +63,7 @@ Also new:
 
 ### Plugin SDK (`polkameter-plugin-sdk`)
 
+- New in the `chain` feature: `TxBuilder` signs calls for any runtime from its metadata, with an explicit nonce, mortality and tip, and `sign_batch` signs many with consecutive nonces. `keypair`, `derive_range` and `parse_account` make test signers from secret URIs. `Client::account`, `Client::existential_deposit`, `Client::finalized_head` and `Client::tx_builder` read what signing needs.
 - `observers::files::now_ms()` no longer reads the wall clock on every call. It reads it once per process and then advances with tokio's monotonic clock, so it never goes back and ignores wall-clock steps. Timestamps keep their epoch meaning. `wall_ms()` returns the raw wall clock, and `EpochClock` is the clock itself.
 - `NodeSample`, `Loss` and `OnChain` are `#[non_exhaustive]`, so new fields can be added without breaking plugins. Build a `NodeSample` with `NodeSample::new`. Start a `Loss` or `OnChain` from `Default` and set its fields. Reading them and deserializing them is unchanged.
 - New fields:
