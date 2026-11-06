@@ -90,7 +90,7 @@ You can combine `plugin-crates` with `plugins` for prebuilt executables. A relea
 | `topologies` | no | `""` | Zombienet topologies to register, one `ALIAS=path` per line. |
 | `capabilities` | no | `""` | Capabilities the network provisioner supplies, one name per line. |
 | `output` | no | `polkameter-runs` | Artifact root, relative to the workspace. The run creates one `run-*` directory inside it. |
-| `fail-on` | no | `error` | `error` preserves the CLI defaults; `verdict` also fails on a `FAIL` load verdict. Other values are invalid. |
+| `fail-on` | no | `verdict-or-inconclusive` | `verdict-or-inconclusive` also fails on a `FAIL` or `INCONCLUSIVE` load verdict; `verdict` also fails on `FAIL`; `error` fails only when the run fails. Other values are invalid. <!-- v0.3.0: remove after release -->v0.2.0 accepts only `error` (its default) and `verdict`. See [What fails the job](#what-fails-the-job). |
 | `upload` | no | `"true"` | Upload the run's reports as a workflow artifact. See [What the job keeps](#what-the-job-keeps). |
 | `upload-raw-plugin-files` | no | `"false"` | Also upload files that plugins wrote into the run directory. PolkaMeter does not redact them. |
 | `artifact-name` | no | derived | Name of the uploaded artifact. Empty uses `polkameter-run-<job>-<attempt>-<hash>`, unique for each matrix job and each use of the action in a job. |
@@ -125,27 +125,36 @@ The action fails the job with the exit code of `polkameter run`:
 | Exit code | Meaning | Job |
 | --- | --- | --- |
 | `0` | The run completed. | Passes |
-| `1` | The run failed: a plugin error, a failed `core.assert-equal` step or a deadline. In smoke mode, also a monitor problem or a required check with no result. With `fail-on: verdict`, also a `FAIL` verdict. | Fails |
+| `1` | The run failed: a plugin error, a failed `core.assert-equal` step or a deadline. In smoke mode, also a monitor problem or a required check with no result. With `fail-on: verdict`, also a `FAIL` verdict. With `fail-on: verdict-or-inconclusive`, the default, also a `FAIL` or `INCONCLUSIVE` verdict. | Fails |
 | `2` | The plan or the arguments are invalid. An invalid plan fails earlier, in the `validate` step. | Fails |
 | `130` | The run was stopped with SIGINT, for example when the job was cancelled. | Fails |
 | `143` | The run was stopped with SIGTERM. | Fails |
 
 A stopped run's `execution.json` says whether teardown finished (`teardown`). See [stop a run](cli.md#stop-a-run) for how long PolkaMeter needs between SIGTERM and SIGKILL.
 
-Set `fail-on: verdict` on the action step to fail the job when the load verdict is `FAIL`:
+The `fail-on` input decides which [load verdicts](reading-results.md#did-it-pass) also fail the job:
 
-<!-- v0.3.0: remove after release (change @v0.2.0 to @v0) -->
+| `fail-on` | `PASS` | `WARN` | `FAIL` | `INCONCLUSIVE` | CLI flags |
+| --- | --- | --- | --- | --- | --- |
+| `verdict-or-inconclusive` (default from v0.3.0) | passes | passes | fails | fails | `--fail-on-verdict --fail-on-inconclusive` |
+| `verdict` | passes | passes | fails | passes | `--fail-on-verdict` |
+| `error` (default in v0.2.0) | passes | passes | passes | passes | none |
+
+A failed run fails the job under every policy, and a plan without a load test has no verdict to fail on. The action uploads artifacts whatever the verdict.
+
+An `INCONCLUSIVE` verdict means the run did not show whether the chain holds the load: the load ended before its rate cap, or a required check has no result. The job summary then ends with a "Why this job failed" section that names the stop or the checks, and the job log has a matching error annotation. [Read the results](reading-results.md#what-to-do-about-inconclusive) says how to fix it. To let an `INCONCLUSIVE` run pass while you fix it, set `fail-on: verdict`:
+
 ```yaml
       - id: load
-        uses: agustinustheo/polkameter@v0.2.0
+        uses: agustinustheo/polkameter@v0
         with:
           plan: <plan>
           fail-on: verdict
 ```
 
-The action passes `--fail-on-verdict` to the CLI. It still uploads artifacts when the verdict fails. `WARN` and `INCONCLUSIVE` do not trigger this policy, and a plan without a load test has no verdict to fail on.
+With `version` set to a CLI older than v0.3.0, such as `version: 0.2.0`, the CLI has no `--fail-on-inconclusive`. The default policy then fails only on `FAIL`, and the action warns. The action checks `polkameter run --help` for the flag, so a source build of any ref works the same way.
 
-With the default `fail-on: error`, a stress-mode load run exits `0` even when its verdict is `FAIL`. A later step can inspect the `verdict` output even when the action failed:
+With `fail-on: error`, a stress-mode load run exits `0` even when its verdict is `FAIL`. A later step can inspect the `verdict` output even when the action failed:
 
 ```yaml
       - name: Show the load verdict
@@ -233,7 +242,7 @@ Configure subsequent shell steps to run from the repository root. Replace `<plug
     polkameter run <plan> --output polkameter-runs --fail-on-verdict
 ```
 
-The `plugin credential` line maps the profile to a variable name. Set that variable in the job's environment before `run`. Use a fresh output directory for each job. The exit codes are the same as in the table above; `--fail-on-verdict` exits `1` on `FAIL`.
+The `plugin credential` line maps the profile to a variable name. Set that variable in the job's environment before `run`. Use a fresh output directory for each job. The exit codes are the same as in the table above; `--fail-on-verdict` exits `1` on `FAIL`. To also fail on `INCONCLUSIVE`, as the action does by default, add `--fail-on-inconclusive` (from v0.3.0).
 
 Keep the whole run directory. `polkameter report <run-dir>` regenerates the checks from its files, and [Run directory](results.md) lists them.
 

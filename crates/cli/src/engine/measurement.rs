@@ -2,7 +2,7 @@
 //! with the node monitors. It returns the summary; the caller writes the report once plugin checks
 //! have run.
 use crate::engine::{
-	execute::{Values, resolve, target_endpoint, transactions},
+	execute::{RunOptions as ExitPolicy, Values, resolve, target_endpoint, transactions},
 	machine,
 	plan::Plan,
 	plugins::{Plugins, Registry},
@@ -15,8 +15,10 @@ use crate::load::tracker::{Phase, Tracker};
 use crate::load::{Lane, QueueSource, StateCheck, Tx, TxHash, follower, now_ms, rules};
 use anyhow::{Context as _, Result, bail};
 use polkameter_plugin_sdk::chain::{ChainError, Client};
+use polkameter_plugin_sdk::observers::checks::{CheckResult, Status, report::overall_status};
 use polkameter_plugin_sdk::observers::files::summary::{
-	Artifact, Loss, LostTx, MaxSustained, Network, NodePool, SCHEMA_VERSION, Summary,
+	Artifact, Loss, LostTx, MaxSustained, Network, NodePool, OverallStatus, Rule, SCHEMA_VERSION,
+	Summary,
 };
 use polkameter_plugin_sdk::observers::files::{FinalStep, NodeMax, NodeSample, RunDir};
 use polkameter_plugin_sdk::{Context, StateCheckInput};
@@ -297,7 +299,7 @@ pub fn report(
 	dir: &RunDir,
 	measured: Measured,
 	plugin_checks: &[polkameter_plugin_sdk::observers::checks::CheckResult],
-	fail_on_verdict: bool,
+	policy: ExitPolicy,
 ) -> Result<i32> {
 	dir.write_json(PLUGIN_CHECKS, &plugin_checks)?;
 	let Measured { summary, finals, mode } = measured;
@@ -307,7 +309,7 @@ pub fn report(
 		&finals,
 		plugin_checks,
 	)?;
-	Ok(exit_code(mode, &summary, &checks, fail_on_verdict))
+	Ok(exit_code(mode, &summary, &checks, policy))
 }
 
 /// The loss check, with the node's pool counts read from the collator we submit to after the
@@ -386,28 +388,89 @@ fn write_steps<S: crate::load::submit::Submit>(
 	Ok(finals)
 }
 
-/// 1 for an opted-in FAIL verdict, or smoke-mode monitor problems and missing required results.
-fn exit_code(
-	mode: Mode,
-	summary: &Summary,
-	checks: &[polkameter_plugin_sdk::observers::checks::CheckResult],
-	fail_on_verdict: bool,
-) -> i32 {
-	if fail_on_verdict
-		&& polkameter_plugin_sdk::observers::checks::report::overall_status(summary, checks)
-			== polkameter_plugin_sdk::observers::files::summary::OverallStatus::Fail
-	{
-		return 1;
+/// 1 for an opted-in FAIL or INCONCLUSIVE verdict, or smoke-mode monitor problems and missing
+/// required results.
+fn exit_code(mode: Mode, summary: &Summary, checks: &[CheckResult], policy: ExitPolicy) -> i32 {
+	let reason = verdict_failure(summary, checks, policy);
+	if let Some(reason) = &reason {
+		eprintln!("{}: {reason}", crate::PRODUCT_NAME);
 	}
 	if mode != Mode::Smoke {
-		return 0;
+		return i32::from(reason.is_some());
 	}
+	// Smoke problems are printed even when the verdict already failed the run.
 	let mut errors = summary.problems.clone();
 	errors.extend(polkameter_plugin_sdk::observers::checks::smoke_gaps(checks));
 	for e in &errors {
 		eprintln!("smoke: {e}");
 	}
-	i32::from(!errors.is_empty())
+	i32::from(reason.is_some() || !errors.is_empty())
+}
+
+/// Why the exit policy fails the run on its verdict, or `None` when it does not. Names the stop
+/// rule and the checks, not the checks' details.
+fn verdict_failure(
+	summary: &Summary,
+	checks: &[CheckResult],
+	policy: ExitPolicy,
+) -> Option<String> {
+	let (verdict, flag) = match overall_status(summary, checks) {
+		OverallStatus::Fail if policy.fail_on_verdict => ("FAIL", "--fail-on-verdict"),
+		OverallStatus::Inconclusive if policy.fail_on_inconclusive => {
+			("INCONCLUSIVE", "--fail-on-inconclusive")
+		},
+		_ => return None,
+	};
+	Some(format!(
+		"verdict {verdict}: {}; exit 1 because of {flag} (the checks are in summary.md)",
+		verdict_reason(summary, checks)
+	))
+}
+
+/// Most check names a verdict reason lists before counting the rest.
+const REASON_CHECKS: usize = 5;
+
+/// What made the verdict FAIL or INCONCLUSIVE, by the rules of [`overall_status`].
+pub fn verdict_reason(summary: &Summary, checks: &[CheckResult]) -> String {
+	let names = |what: &str, wanted: &dyn Fn(&CheckResult) -> bool| {
+		let matching: Vec<&str> =
+			checks.iter().filter(|c| wanted(c)).map(|c| c.check.as_str()).collect();
+		let (shown, rest) = matching.split_at(matching.len().min(REASON_CHECKS));
+		let mut list = shown.join(", ");
+		if !rest.is_empty() {
+			list += &format!(" and {} more", rest.len());
+		}
+		(!matching.is_empty()).then(|| format!("{what}: {list}"))
+	};
+	let stop = &summary.stop;
+	let mut reasons = Vec::new();
+	if overall_status(summary, checks) == OverallStatus::Fail {
+		if stop.class.is_some() {
+			reasons.push(format!("the load stopped on \"{}\" ({})", stop.rule.name(), stop.detail));
+		}
+		reasons.extend(
+			summary.failure_modes.iter().map(|mode| format!("failure mode: {}", mode.what)),
+		);
+		if let Some(point) = &summary.breaking_point {
+			reasons.push(format!(
+				"step {} broke its {} measure ({})",
+				point.step, point.measure, point.detail
+			));
+		}
+		reasons.extend(names("failed checks", &|c| c.verdict.status == Status::Fail));
+	} else {
+		if stop.rule != Rule::RateCap {
+			reasons.push(format!(
+				"the load ended on \"{}\" before reaching its rate cap ({})",
+				stop.rule.name(),
+				stop.detail
+			));
+		}
+		reasons.extend(names("required checks with no result", &|c| {
+			c.verdict.status == Status::NoResult && !c.optional
+		}));
+	}
+	if reasons.is_empty() { "no reason recorded".into() } else { reasons.join("; ") }
 }
 
 /// `polkameter report <dir>`: the checks again, from the files alone.
@@ -494,36 +557,160 @@ mod tests {
 		}
 	}
 
-	#[test]
-	fn fail_on_verdict_only_fails_the_existing_fail_status() {
-		for mode in [Mode::Stress, Mode::Smoke] {
-			for status in [Status::Pass, Status::Warn, Status::Fail, Status::NoResult] {
-				let mut summary: Summary = serde_json::from_str(include_str!(
-					"../../tests/fixtures/smoke-run/summary.json"
-				))
+	/// Every exit policy: neither flag, `--fail-on-verdict`, `--fail-on-inconclusive`, both.
+	const POLICIES: [ExitPolicy; 4] = [
+		ExitPolicy { fail_on_verdict: false, fail_on_inconclusive: false },
+		ExitPolicy { fail_on_verdict: true, fail_on_inconclusive: false },
+		ExitPolicy { fail_on_verdict: false, fail_on_inconclusive: true },
+		ExitPolicy { fail_on_verdict: true, fail_on_inconclusive: true },
+	];
+
+	/// The recorded summary with a clean stop: the verdict follows the checks alone.
+	fn clean_summary() -> Summary {
+		let mut summary: Summary =
+			serde_json::from_str(include_str!("../../tests/fixtures/smoke-run/summary.json"))
 				.unwrap();
-				summary.breaking_point = None;
-				summary.problems.clear();
-				let checks = [CheckResult {
-					source: None,
-					outcome: "run".into(),
-					check: "plugin check".into(),
-					verdict: Verdict::new(status, "test"),
-					optional: false,
-				}];
-				let expected = i32::from(
-					status == Status::Fail || (mode == Mode::Smoke && status == Status::NoResult),
-				);
-				assert_eq!(exit_code(mode, &summary, &checks, true), expected);
+		summary.breaking_point = None;
+		summary.problems.clear();
+		summary
+	}
+
+	fn plugin_check(name: &str, status: Status, optional: bool) -> CheckResult {
+		CheckResult {
+			source: None,
+			outcome: "run".into(),
+			check: name.into(),
+			verdict: Verdict::new(status, "test"),
+			optional,
+		}
+	}
+
+	#[test]
+	fn each_policy_fails_only_its_own_verdict() {
+		for mode in [Mode::Stress, Mode::Smoke] {
+			for (status, verdict) in [
+				(Status::Pass, OverallStatus::Pass),
+				(Status::Warn, OverallStatus::Warn),
+				(Status::Fail, OverallStatus::Fail),
+				(Status::NoResult, OverallStatus::Inconclusive),
+			] {
+				for policy in POLICIES {
+					let summary = clean_summary();
+					let checks = [plugin_check("plugin check", status, false)];
+					assert_eq!(overall_status(&summary, &checks), verdict);
+					let by_policy = (verdict == OverallStatus::Fail && policy.fail_on_verdict)
+						|| (verdict == OverallStatus::Inconclusive && policy.fail_on_inconclusive);
+					// Smoke mode already fails a required check with no result.
+					let by_smoke = mode == Mode::Smoke && status == Status::NoResult;
+					assert_eq!(
+						exit_code(mode, &summary, &checks, policy),
+						i32::from(by_policy || by_smoke),
+						"{mode:?} {verdict:?} {policy:?}"
+					);
+					assert_eq!(
+						verdict_failure(&summary, &checks, policy).is_some(),
+						by_policy,
+						"{mode:?} {verdict:?} {policy:?}"
+					);
+				}
 			}
 		}
+	}
+
+	#[test]
+	fn inconclusive_reason_names_the_stop_and_the_required_checks_without_results() {
+		let policy = ExitPolicy { fail_on_verdict: false, fail_on_inconclusive: true };
+		let mut summary = clean_summary();
+		let checks: Vec<CheckResult> = (1..=7)
+			.map(|i| plugin_check(&format!("required {i}"), Status::NoResult, false))
+			.chain([
+				plugin_check("optional", Status::NoResult, true),
+				plugin_check("passed", Status::Pass, false),
+			])
+			.collect();
+		assert_eq!(
+			verdict_failure(&summary, &checks, policy).unwrap(),
+			"verdict INCONCLUSIVE: required checks with no result: required 1, required 2, \
+			 required 3, required 4, required 5 and 2 more; exit 1 because of \
+			 --fail-on-inconclusive (the checks are in summary.md)"
+		);
+		summary.stop = polkameter_plugin_sdk::observers::files::summary::Stop::new(
+			Rule::BudgetUsedUp,
+			Some(1),
+			"the time budget ran out",
+		);
+		let checks = [plugin_check("passed", Status::Pass, false)];
+		assert_eq!(overall_status(&summary, &checks), OverallStatus::Inconclusive);
+		assert_eq!(
+			verdict_reason(&summary, &checks),
+			"the load ended on \"budget used up\" before reaching its rate cap (the time budget \
+			 ran out)"
+		);
+		assert_eq!(exit_code(Mode::Stress, &summary, &checks, policy), 1);
+		assert_eq!(exit_code(Mode::Stress, &summary, &checks, ExitPolicy::default()), 0);
+	}
+
+	#[test]
+	fn a_monitorless_run_passes_every_exit_policy() {
+		// The recorded run without what only monitors write (scrapes.jsonl, chain.jsonl) and
+		// with no parachain: the checks of unmonitored nodes are optional, so neither
+		// --fail-on-inconclusive nor smoke mode fails it.
+		let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/smoke-run");
+		let root = std::env::temp_dir().join(format!(
+			"polkameter-monitorless-policy-{}-{}",
+			std::process::id(),
+			std::time::SystemTime::now()
+				.duration_since(std::time::UNIX_EPOCH)
+				.unwrap()
+				.as_nanos()
+		));
+		std::fs::create_dir_all(&root).unwrap();
+		for name in ["load.jsonl", "steps.jsonl", "transactions.jsonl"] {
+			std::fs::copy(fixture.join(name), root.join(name)).unwrap();
+		}
+		let dir = RunDir::open(&root);
+		for mode in [Mode::Stress, Mode::Smoke] {
+			for policy in POLICIES {
+				let mut summary = clean_summary();
+				summary.network.para_id = None;
+				summary.checks = None;
+				summary.verdict = None;
+				let finals = dir.read_jsonl("steps.jsonl").unwrap();
+				let measured = Measured { summary, finals, mode };
+				assert_eq!(report(&dir, measured, &[], policy).unwrap(), 0, "{mode:?} {policy:?}");
+				let json: serde_json::Value =
+					serde_json::from_slice(&std::fs::read(root.join("summary.json")).unwrap())
+						.unwrap();
+				assert_ne!(json["verdict"]["result"], "INCONCLUSIVE", "{mode:?} {policy:?}");
+			}
+		}
+		std::fs::remove_dir_all(root).unwrap();
+	}
+
+	#[test]
+	fn fail_reason_names_the_failed_checks() {
+		let checks = [
+			plugin_check("too slow", Status::Fail, false),
+			plugin_check("fine", Status::Pass, false),
+		];
+		assert_eq!(verdict_reason(&clean_summary(), &checks), "failed checks: too slow");
+		let mut summary = clean_summary();
+		summary.stop = polkameter_plugin_sdk::observers::files::summary::Stop::new(
+			Rule::Stall,
+			Some(2),
+			"no block for 30 s",
+		);
+		assert_eq!(
+			verdict_reason(&summary, &[]),
+			"the load stopped on \"stall\" (no block for 30 s)"
+		);
 	}
 
 	#[test]
 	fn recorded_fail_report_changes_exit_code_only_when_opted_in() {
 		// Replay the exit policy with the real report's summary and checks, without replacing
 		// verdicts or inventing failures. The CLI replay test separately regenerates these checks
-		// from the raw recorded files; `report` itself has no --fail-on-verdict option.
+		// from the raw recorded files; `report` itself has no exit policy options.
 		let summary: Summary =
 			serde_json::from_str(include_str!("../../tests/fixtures/smoke-run/summary.json"))
 				.unwrap();
@@ -537,8 +724,13 @@ mod tests {
 			polkameter_plugin_sdk::observers::files::summary::OverallStatus::Fail
 		);
 		for mode in [Mode::Smoke, Mode::Stress] {
-			assert_eq!(exit_code(mode, &summary, &checks, false), 0);
-			assert_eq!(exit_code(mode, &summary, &checks, true), 1);
+			for policy in POLICIES {
+				assert_eq!(
+					exit_code(mode, &summary, &checks, policy),
+					i32::from(policy.fail_on_verdict),
+					"{mode:?} {policy:?}"
+				);
+			}
 		}
 	}
 
@@ -548,14 +740,14 @@ mod tests {
 			std::env::temp_dir().join(format!("polkameter-verdict-report-{}", std::process::id()));
 		std::fs::create_dir_all(&root).unwrap();
 		let dir = RunDir::open(&root);
-		for fail_on_verdict in [false, true] {
+		for policy in POLICIES {
 			let summary: Summary =
 				serde_json::from_str(include_str!("../../tests/fixtures/smoke-run/summary.json"))
 					.unwrap();
 			let measured = Measured { summary, finals: vec![], mode: Mode::Stress };
 			assert_eq!(
-				report(&dir, measured, &[], fail_on_verdict).unwrap(),
-				i32::from(fail_on_verdict)
+				report(&dir, measured, &[], policy).unwrap(),
+				i32::from(policy.fail_on_verdict)
 			);
 			let json: serde_json::Value =
 				serde_json::from_slice(&std::fs::read(root.join("summary.json")).unwrap()).unwrap();
@@ -591,7 +783,11 @@ mod tests {
 			summary.problems = if problem { vec!["monitor scrape failed".into()] } else { vec![] };
 			let checks =
 				[result("required", required, false), result("from a plugin", optional, true)];
-			assert_eq!(exit_code(mode, &summary, &checks, false), expected, "{name}");
+			assert_eq!(
+				exit_code(mode, &summary, &checks, ExitPolicy::default()),
+				expected,
+				"{name}"
+			);
 		}
 	}
 }

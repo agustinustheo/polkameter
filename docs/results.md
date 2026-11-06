@@ -75,7 +75,7 @@ Written after teardown. When a run is stopped, a provisional `execution.json` wi
 | `state` | `exit_code` | When |
 | --- | --- | --- |
 | `completed` | `0` | No error. |
-| `completed_with_failures` | `1` | A `FAIL` verdict with `--fail-on-verdict`, or a smoke-mode monitor problem or required check with no result. |
+| `completed_with_failures` | `1` | A `FAIL` verdict with `--fail-on-verdict`, an `INCONCLUSIVE` verdict with `--fail-on-inconclusive`, or a smoke-mode monitor problem or required check with no result. |
 | `stopped` | `130` or `143` | `130` after SIGINT (Ctrl-C) or a remote stop request, `143` after SIGTERM, including a stop during teardown. |
 | `stopping` | `130` or `143` | Provisional. If it is still there after the process ended, the run was killed before it could write its outcome. |
 | `failed` | `1` | Any error, including a failed `core.assert-equal` step and a report that could not be written. |
@@ -105,18 +105,18 @@ This excerpt comes from the recorded smoke fixture after `report`, with its dire
 
 | Recorded result | Suite and testcase | JUnit result |
 | --- | --- | --- |
-| Plan execution | `plan`, `execution` | Completed: passed. Failed or completed with failures: `<failure>`. Stopped: `<skipped>`. Captures errors outside steps, including plugin startup. |
+| Plan execution | `plan`, `execution` | Completed: passed. Failed or completed with failures: `<failure>`. Stopped: `<skipped>`. Captures errors outside steps, including plugin startup. A run that completed with failures and no error, such as one that `--fail-on-inconclusive` failed, gives its exit code and load verdict. |
 | Plan steps and assertions | One suite per nonempty `preflight`, `setup`, `evaluate`, `teardown` section; step ID as testcase name | Success: passed. Assertion failure, step error or interrupted step: `<failure>`. Step never started: `<skipped>`. |
 | Workflow steps | One `workflow:<id>` suite per workflow; step ID plus user and iteration for individual failures | Passing invocations aggregate into one case per step with a count. First 100 failures per step remain individual cases; further failures aggregate with a count and a pointer to `events.jsonl`. Missing invocations aggregate into one skipped case per step. |
 | Load outcome `pass` or `info` | `load test`, `<outcome>: <check>` | Passed, with status and detail in `<system-out>`. |
 | Load outcome `fail` | Same | `<failure>` with status and detail. |
 | Load outcome `warn` | Same | Passed, with `warn:` and detail in `<system-out>`. |
 | Load outcome `no result` | Same, including optional checks | `<skipped>` with the missing-data reason. |
-| Overall load verdict | `load test`, `overall verdict` | `PASS`: passed; `WARN`: passed with output; `FAIL`: `<failure>`; `INCONCLUSIVE` or absent verdict: `<skipped>`. |
+| Overall load verdict | `load test`, `overall verdict` | `PASS`: passed; `WARN`: passed with output; `FAIL`: `<failure>`; `INCONCLUSIVE` or absent verdict: `<skipped>`. An `INCONCLUSIVE` case names the stop rule or the required checks with no result. |
 
 Section suites keep CI results grouped like the plan. Individual workflow failure names distinguish concurrent users and repeated iterations. Plugin check names include their source evaluate step, and repeated labels get a counter. Truncated names retain their identity suffix and a stable hash of the full name; XML sanitization collisions get a counter. Older recordings without `plan.json` use event phases for suites and can only list steps that were recorded.
 
-Warnings remain successful because JUnit has no warning state; testcase output keeps the warning visible in CI views that expose captured output. A missing result is skipped because no assertion could be made. The overall load verdict is a separate case so a breaking point or stop-rule failure still fails the test report even when every outcome check passes.
+Warnings remain successful because JUnit has no warning state; testcase output keeps the warning visible in CI views that expose captured output. A missing result is skipped because no assertion could be made. When `--fail-on-inconclusive` fails a run on an `INCONCLUSIVE` verdict, the `execution` case is a `<failure>`, so the report is not all green. The overall load verdict is a separate case so a breaking point or stop-rule failure still fails the test report even when every outcome check passes.
 
 | Field | Meaning |
 | --- | --- |
@@ -130,7 +130,7 @@ Reports are bounded to 4 MiB, below the 5 MB target and GitLab's 30 MB per-repor
 
 JUnit generation, fetch and copy errors warn on stderr and emit a `warning` event; local warnings are appended to `events.jsonl`, while remote client fetch/copy warnings appear in the client's JSON event stream. They preserve the execution outcome, exit code (including cancellation 130) and artifact notification. If the event file is also unwritable, warning persistence is best effort. `report` uses available credential values from the local registry to redact its JUnit inputs. Without those credentials it relies on the already-redacted recordings; it cannot redact secrets it does not know, including secrets in imported or older unredacted recordings.
 
-JUnit failures do not change the CLI's exit policy. `report` still exits zero after a successful rebuild, and `run` still follows [exit codes](cli.md#exit-codes), including `--fail-on-verdict`.
+JUnit failures do not change the CLI's exit policy. `report` still exits zero after a successful rebuild, and `run` still follows [exit codes](cli.md#exit-codes), including `--fail-on-verdict` and `--fail-on-inconclusive`.
 
 ## summary.md
 
@@ -182,7 +182,7 @@ The `verdict` object in `summary.json` after running `polkameter report /tmp/pol
 
 The verdict uses the existing stop, failure modes, breaking point and checks. `breakingPoint` gives the failure onset; `maxSustained` gives the preceding step. Reasons remain in `stop.detail`, `breakingPoint.detail`, `failureModes` and `checks`, without copies inside `verdict`.
 
-[Read the results](reading-results.md#did-it-pass) lists the verdict rules. `--fail-on-verdict` changes the run's exit policy only; it does not change these rules.
+[Read the results](reading-results.md#did-it-pass) lists the verdict rules. `--fail-on-verdict` and `--fail-on-inconclusive` change the run's exit policy only; they do not change these rules.
 
 ## Loss accounting
 

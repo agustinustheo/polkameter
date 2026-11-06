@@ -54,6 +54,16 @@ PolkaMeter: run failed: assertion verified failed: expected 85, got 84 (details 
 
 **Fix:** Find the reason on this page. `execution.json` in the run directory holds the full error. If a step failed, `events.jsonl` names it in a `step-finished` event with `"success":false`. A failure outside a step, such as a missing plugin or the plan's deadline, has no such event, so read `execution.json`.
 
+### verdict INCONCLUSIVE: …; exit 1 because of --fail-on-inconclusive
+
+```text
+PolkaMeter: verdict INCONCLUSIVE: required checks with no result: no silent loss; exit 1 because of --fail-on-inconclusive (the checks are in summary.md)
+```
+
+**Cause:** The run finished, but its load verdict is `INCONCLUSIVE`, and `--fail-on-inconclusive` makes that exit `1`. The GitHub Action passes the flag by default. The text after `INCONCLUSIVE:` names the stop rule that ended the load early or the required checks with no result.
+
+**Fix:** See [what to do about INCONCLUSIVE](reading-results.md#what-to-do-about-inconclusive). To let the run pass meanwhile, drop the flag, or set `fail-on: verdict` on the action step. A `verdict FAIL: …; exit 1 because of --fail-on-verdict` line works the same way for a `FAIL` verdict.
+
 ### teardown failed: teardown was interrupted by a forced stop
 
 ```text
@@ -242,7 +252,7 @@ These are the error codes of a Polkadot SDK transaction pool:
 
 ### remote agent does not support --fail-on-verdict; update the agent
 
-**Cause:** The client requested `--fail-on-verdict`, but the agent does not advertise support. The client stops before starting the run.
+**Cause:** The client requested `--fail-on-verdict` or `--fail-on-inconclusive`, and the message names the one that the agent does not advertise. `--fail-on-inconclusive` needs an agent from v0.3.0 or newer. The client stops before starting the run.
 
 **Fix:** Update the agent to the same PolkaMeter ref as the client. Or omit the flag to use the agent's default exit policy.
 

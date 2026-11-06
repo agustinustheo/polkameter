@@ -10,6 +10,7 @@ Other 0.3.0 changes still need entries here.
 
 Moving `@v0` to 0.3.0 changes these defaults for existing workflows:
 
+- **The job fails on a FAIL or INCONCLUSIVE verdict.** The new default `fail-on: verdict-or-inconclusive` fails the job when a load test's verdict is `FAIL` or `INCONCLUSIVE`; before, the default `fail-on: error` failed it only when the run itself failed. The job summary says why an INCONCLUSIVE run failed. Set `fail-on: verdict` to fail only on `FAIL`, or `fail-on: error` for the old behaviour. With a CLI older than 0.3.0 (`version: 0.2.0`), INCONCLUSIVE does not fail the job, and the action warns.
 - **Smaller artifact by default.** The run artifact holds only the files PolkaMeter writes: reports, records and each plugin's redacted `stderr.log`. Files that plugins write into the run directory are no longer uploaded. Set `upload-raw-plugin-files: "true"` to upload them.
 - **New default artifact name.** The name was `polkameter-run`. It is now `polkameter-run-<job>-<attempt>-<hash>`, unique for each matrix job and each use of the action. Read it from the new `artifact-name` output, or set `artifact-name` to keep a fixed name.
 - **Unfinished runs.** If the CLI is killed before the run finishes, plugin logs and summaries are not redacted. The action leaves them out of the artifact and the job summary.
@@ -39,6 +40,7 @@ Also new:
 
 ### CLI
 
+- `polkameter run --fail-on-inconclusive` exits `1` when a load test's verdict is `INCONCLUSIVE`. Use it with `--fail-on-verdict` to also fail on `FAIL`. Without either flag the verdict still does not change the exit code. When a verdict fails the run, a `PolkaMeter: verdict ...` line on standard error says why, for example which required checks have no result. A remote agent must advertise the option; older agents are refused before the run starts.
 - The CLI spells its name `PolkaMeter` in every message. Standard-error lines now start with `PolkaMeter:` and `PolkaMeter warning:` instead of `Polkameter:`. Update scripts that match the old prefix.
 
 ### Load tests

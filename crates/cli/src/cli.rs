@@ -61,6 +61,10 @@ enum Command {
 		/// code; runtime and smoke-mode failures still exit 1. Plans without a load test are unaffected.
 		#[arg(long)]
 		fail_on_verdict: bool,
+		/// Exit 1 when a load test's verdict is INCONCLUSIVE: the load ended before its rate cap,
+		/// or a required check has no result. Combine with --fail-on-verdict to fail on both.
+		#[arg(long)]
+		fail_on_inconclusive: bool,
 		/// Write an additional copy of junit.xml to this local path.
 		#[arg(long)]
 		junit: Option<PathBuf>,
@@ -216,6 +220,7 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 			remote,
 			remote_token_env,
 			fail_on_verdict,
+			fail_on_inconclusive,
 			junit,
 			shutdown_grace,
 			format,
@@ -224,7 +229,7 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 			let mut signals = install_signals()?;
 			let grace = Duration::from_secs(shutdown_grace);
 			let (xml, plan) = load(&path)?;
-			let options = RunOptions { fail_on_verdict };
+			let options = RunOptions { fail_on_verdict, fail_on_inconclusive };
 			match remote {
 				Some(endpoint) => {
 					let limits = remote::Follow::for_plan(
@@ -866,7 +871,31 @@ mod tests {
 		assert!(matches!(cli.command, Command::Run { fail_on_verdict: true, .. }));
 		let cli =
 			Cli::try_parse_from(["polkameter", "run", "plan.xml", "--output", "runs"]).unwrap();
-		assert!(matches!(cli.command, Command::Run { fail_on_verdict: false, .. }));
+		assert!(matches!(
+			cli.command,
+			Command::Run { fail_on_verdict: false, fail_on_inconclusive: false, .. }
+		));
+		let cli = Cli::try_parse_from([
+			"polkameter",
+			"run",
+			"plan.xml",
+			"--output",
+			"runs",
+			"--fail-on-inconclusive",
+		])
+		.unwrap();
+		assert!(matches!(
+			cli.command,
+			Command::Run { fail_on_verdict: false, fail_on_inconclusive: true, .. }
+		));
+		assert!(parses(&[
+			"run",
+			"plan.xml",
+			"--output",
+			"runs",
+			"--fail-on-verdict",
+			"--fail-on-inconclusive"
+		]));
 		assert!(parses(&["agent", "serve"]));
 		assert!(parses(&["agent", "serve", "--keep-runs", "5", "--shutdown-grace", "0"]));
 		assert!(!parses(&["agent", "serve", "--keep-runs", "0"]));

@@ -28,13 +28,24 @@ Three separate things tell you how a run ended:
 | Why did the load stop? | `Load stop:` in `summary.md`, or `stop` in `summary.json` | `rate cap: all 3 steps ran` |
 | Did the run finish without an error? | Exit code, and `state` in `execution.json` | `0`, `completed` |
 
-> **Warning:** Exit code `0` does not mean the test passed. By default, a stress-mode run with verdict `FAIL` still completes with exit code `0`. Use [`--fail-on-verdict`](cli.md#run), or [`fail-on: verdict`](ci.md#what-fails-the-job) in the action, to make `FAIL` exit `1`. A smoke-mode plan (`mode="smoke"`) also exits `1` on a monitor problem or a required check with no result.
+> **Warning:** Exit code `0` does not mean the test passed. By default, a stress-mode `polkameter run` with verdict `FAIL` or `INCONCLUSIVE` still completes with exit code `0`. Use [`--fail-on-verdict`](cli.md#run) to make `FAIL` exit `1`, and `--fail-on-inconclusive` to make `INCONCLUSIVE` exit `1`. The [GitHub Action](ci.md#what-fails-the-job) fails the job on both by default. A smoke-mode plan (`mode="smoke"`) also exits `1` on a monitor problem or a required check with no result.
 
 The outcome checks table at the end of `summary.md` gives each check a status: `pass`, `warn`, `fail`, `info` or `no result`. In the example, the relay slots check failed. A failed check makes the verdict FAIL, as a breaking point does.
 
 A check never passes on data it does not have. If a node's metrics were not scraped near the start or end of a step, if a node restarted, or if a step recorded nothing the check needs, that step has no data. A failure measured in another step still makes the check `fail`; otherwise the check is `no result` and its detail says why. A required check with no result makes the verdict INCONCLUSIVE. [Checks](results.md#checks) lists each check's rules.
 
-A check whose nodes the plan does not monitor at all is `no result` with a detail starting `not applicable:`. It is optional and does not change the verdict.
+A check whose nodes the plan does not monitor at all is `no result` with a detail starting `not applicable:`. It is optional and does not change the verdict. A plan without `<monitors>` is therefore not INCONCLUSIVE because of the checks it cannot run.
+
+### What to do about INCONCLUSIVE
+
+An INCONCLUSIVE run has no answer yet, so run it again after you fix the cause. The `Load stop:` line and the outcome checks table in `summary.md` show which cause applies. With `--fail-on-inconclusive`, the CLI also prints it on standard error.
+
+- **The load ended on budget used up.** The time budget ran out before the last step. Raise the budget, or lower the number or length of the steps.
+- **The load ended on generator limit.** PolkaMeter or your plugin could not send at the target rate. Prepare more transactions, or run the load from a faster machine.
+- **The load ended on smoke error.** A smoke-mode run stopped at the first monitor problem. The `smoke:` lines on standard error name it.
+- **A required check has no result.** Its detail says why. Usually a monitored node did not answer its metrics scrape, a node restarted, or the plan's state check failed. Fix the monitor or the node, then run again.
+
+In CI, if you cannot fix the cause yet, set [`fail-on: verdict`](ci.md#what-fails-the-job) so that only `FAIL` fails the job.
 
 ## How much load did the chain take?
 

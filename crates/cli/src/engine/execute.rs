@@ -399,6 +399,9 @@ pub struct RunOptions {
 	/// Return exit code 1 when the load report's overall verdict is FAIL.
 	#[serde(default)]
 	pub fail_on_verdict: bool,
+	/// Return exit code 1 when the load report's overall verdict is INCONCLUSIVE.
+	#[serde(default)]
+	pub fail_on_inconclusive: bool,
 }
 
 /// Exit code of a run stopped by `Stop::request` without an explicit code (SIGINT, `/stop`).
@@ -668,7 +671,7 @@ impl Run<'_> {
 					checks_error = Some(e);
 					Vec::new()
 				});
-				measurement::report(&dir, measured, &checks, self.options.fail_on_verdict)?
+				measurement::report(&dir, measured, &checks, self.options)?
 			},
 			None => 0,
 		};

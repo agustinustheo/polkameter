@@ -313,7 +313,7 @@ pub struct PluginRequest {
 async fn plugin_capabilities() -> AgentResult<Json<serde_json::Value>> {
 	let registry = crate::engine::plugins::Registry::load().map_err(bad_request)?;
 	Ok(Json(
-		serde_json::json!({"protocol":1,"runOptions":{"failOnVerdict":true},"plugins":registry.plugins.iter().map(|(id,p)|serde_json::json!({"id":id,"version":p.version,"blake2":p.blake2})).collect::<Vec<_>>()}),
+		serde_json::json!({"protocol":1,"runOptions":{"failOnVerdict":true,"failOnInconclusive":true},"plugins":registry.plugins.iter().map(|(id,p)|serde_json::json!({"id":id,"version":p.version,"blake2":p.blake2})).collect::<Vec<_>>()}),
 	))
 }
 async fn plugin_preflight_handler(
@@ -429,11 +429,11 @@ pub async fn plugin_start_with_options(
 	xml: String,
 	options: crate::engine::execute::RunOptions,
 ) -> Result<crate::plugin_application::Status, String> {
-	if options.fail_on_verdict {
+	if options.fail_on_verdict || options.fail_on_inconclusive {
 		let capabilities: serde_json::Value =
 			plugin_request(target, reqwest::Method::GET, "/plugins", None).await?;
-		if capabilities["runOptions"]["failOnVerdict"] != true {
-			return Err("remote agent does not support --fail-on-verdict; update the agent".into());
+		if let Some(error) = unsupported_options(options, &capabilities) {
+			return Err(error);
 		}
 	}
 	plugin_request(
@@ -444,6 +444,21 @@ pub async fn plugin_start_with_options(
 	)
 	.await
 }
+/// The refusal for the first requested run option that the agent's `GET /plugins` does not
+/// advertise. An agent ignores options it does not know, so the client checks before starting.
+fn unsupported_options(
+	options: crate::engine::execute::RunOptions,
+	capabilities: &serde_json::Value,
+) -> Option<String> {
+	[
+		(options.fail_on_verdict, "failOnVerdict", "--fail-on-verdict"),
+		(options.fail_on_inconclusive, "failOnInconclusive", "--fail-on-inconclusive"),
+	]
+	.into_iter()
+	.find(|(requested, key, _)| *requested && capabilities["runOptions"][key] != true)
+	.map(|(_, _, flag)| format!("remote agent does not support {flag}; update the agent"))
+}
+
 pub async fn plugin_status(
 	id: &str,
 	target: &RemoteRunnerTarget,
@@ -1007,13 +1022,11 @@ async fn start_within(
 	timeout: Duration,
 ) -> Result<crate::plugin_application::Status, RequestError> {
 	let started = Instant::now();
-	if request.options.fail_on_verdict {
+	if request.options.fail_on_verdict || request.options.fail_on_inconclusive {
 		let capabilities: serde_json::Value =
 			request_within(target, reqwest::Method::GET, "/plugins", None, timeout).await?;
-		if capabilities["runOptions"]["failOnVerdict"] != true {
-			return Err("remote agent does not support --fail-on-verdict; update the agent"
-				.to_owned()
-				.into());
+		if let Some(error) = unsupported_options(request.options, &capabilities) {
+			return Err(error.into());
 		}
 	}
 	let left = timeout.saturating_sub(started.elapsed()).max(Duration::from_millis(1));
@@ -1045,15 +1058,42 @@ mod tests {
 		let request: PluginRequest =
 			serde_json::from_value(serde_json::json!({"xml":"plan"})).unwrap();
 		assert!(!request.options.fail_on_verdict);
+		assert!(!request.options.fail_on_inconclusive);
 		let request = PluginRequest {
 			xml: "plan".into(),
-			options: crate::engine::execute::RunOptions { fail_on_verdict: true },
+			options: crate::engine::execute::RunOptions {
+				fail_on_verdict: true,
+				fail_on_inconclusive: true,
+			},
 			run_id: Some("c-1".into()),
 		};
 		let json = serde_json::to_value(request).unwrap();
 		assert_eq!(json["options"]["failOnVerdict"], true);
+		assert_eq!(json["options"]["failOnInconclusive"], true);
 		assert_eq!(json["runId"], "c-1");
-		assert!(serde_json::from_value::<PluginRequest>(json).unwrap().options.fail_on_verdict);
+		let options = serde_json::from_value::<PluginRequest>(json).unwrap().options;
+		assert!(options.fail_on_verdict && options.fail_on_inconclusive);
+	}
+
+	#[test]
+	fn each_run_option_needs_its_own_capability() {
+		use crate::engine::execute::RunOptions;
+		let verdict = RunOptions { fail_on_verdict: true, ..RunOptions::default() };
+		let inconclusive = RunOptions { fail_on_inconclusive: true, ..RunOptions::default() };
+		let both = RunOptions { fail_on_verdict: true, fail_on_inconclusive: true };
+		let older = serde_json::json!({"runOptions": {"failOnVerdict": true}});
+		let current =
+			serde_json::json!({"runOptions": {"failOnVerdict": true, "failOnInconclusive": true}});
+		let refusal =
+			|flag: &str| Some(format!("remote agent does not support {flag}; update the agent"));
+		assert_eq!(unsupported_options(RunOptions::default(), &serde_json::json!({})), None);
+		assert_eq!(unsupported_options(verdict, &older), None);
+		assert_eq!(unsupported_options(inconclusive, &older), refusal("--fail-on-inconclusive"));
+		assert_eq!(unsupported_options(both, &older), refusal("--fail-on-inconclusive"));
+		assert_eq!(unsupported_options(both, &serde_json::json!({})), refusal("--fail-on-verdict"));
+		for options in [verdict, inconclusive, both] {
+			assert_eq!(unsupported_options(options, &current), None);
+		}
 	}
 
 	#[tokio::test]
@@ -1070,7 +1110,7 @@ mod tests {
 		let Err(error) = plugin_start_with_options(
 			&RemoteRunnerTarget { endpoint, bearer_token: "test".into() },
 			"plan".into(),
-			crate::engine::execute::RunOptions { fail_on_verdict: true },
+			crate::engine::execute::RunOptions { fail_on_verdict: true, ..Default::default() },
 		)
 		.await
 		else {
