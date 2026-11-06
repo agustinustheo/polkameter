@@ -9,7 +9,7 @@ use polkameter_plugin_sdk::observers::files::{
 	summary::{Outcome, Probe, ProbePhase},
 };
 
-use super::{Kind, Phase, Tracker};
+use super::{Kind, ObservationGap, Phase, Tracker};
 use crate::load::{follower::BlockEvent, source::TxHash, submit::Submit};
 
 impl<S: Submit> Tracker<S> {
@@ -19,8 +19,50 @@ impl<S: Submit> Tracker<S> {
 		match event {
 			BlockEvent::Head { number, seen_at } => {
 				self.last_head = (seen_at, number.max(self.last_head.1));
+				self.on_head(seen_at);
 				if matches!(self.phase(), Phase::Baseline | Phase::Recovery) {
 					self.send_probe(now);
+				}
+			},
+			BlockEvent::Disconnected { at, reason } => {
+				// What passed since the last block, while connected, was a gap; after it, nothing
+				// was observed.
+				if let Some(prev) = self.prev_head_at.take() {
+					self.gap_until(prev, at);
+				}
+				self.observation_gaps.push(ObservationGap {
+					what: "blocks".into(),
+					from: at,
+					to: None,
+					reason,
+				});
+			},
+			BlockEvent::Reconnected { at } => {
+				let Some(from) = self.unobserved_since() else { return Ok(()) };
+				// A step that ended meanwhile counted its part when it ended.
+				for st in self.steps.iter_mut().flatten().filter(|st| !st.closed) {
+					st.unobserved_ms += at.saturating_sub(from.max(st.started_at));
+				}
+				if let Some(gap) = self
+					.observation_gaps
+					.iter_mut()
+					.rev()
+					.find(|g| g.what == "blocks" && g.to.is_none())
+				{
+					gap.to = Some(at);
+				}
+				// The stall rules keep the time since the last new block, less the time not
+				// observed (`unobserved_between`): a reconnect does not restart them.
+				self.prev_head_at = Some(at);
+			},
+			BlockEvent::Unreachable(why) => {
+				self.node_down.get_or_insert(why);
+			},
+			// Not node down: behind a load balancer the new node may be healthy. A chain that is
+			// really down still trips the stall and finality stall rules.
+			BlockEvent::OtherNode(why) => {
+				if !self.warnings.contains(&why) {
+					self.warnings.push(why);
 				}
 			},
 			BlockEvent::Finalized { number, seen_at } if number > self.last_finalized.1 => {
@@ -65,6 +107,34 @@ impl<S: Submit> Tracker<S> {
 			_ => {},
 		}
 		Ok(())
+	}
+
+	/// A new best block at `at`: the gap since the one before goes to the steps it spans, each
+	/// the part inside its own time, and the block counts in the step it arrived in.
+	fn on_head(&mut self, at: Millis) {
+		if let Some(prev) = self.prev_head_at {
+			self.gap_until(prev, at);
+		}
+		self.prev_head_at = Some(at);
+		for lane in &mut self.steps {
+			if let Some(st) = lane.iter_mut().rev().find(|s| s.started_at <= at)
+				&& (!st.closed || at < st.ended_at)
+			{
+				st.heads += 1;
+			}
+		}
+	}
+
+	/// No new best block from `from` to `to`: each step gets the part of it inside its time.
+	fn gap_until(&mut self, from: Millis, to: Millis) {
+		for lane in &mut self.steps {
+			for st in lane.iter_mut().rev() {
+				if st.closed && st.ended_at <= from {
+					break;
+				}
+				st.gap_portion(from, to);
+			}
+		}
 	}
 
 	fn on_tx(&mut self, hash: &TxHash, block: u32, seen_at: Millis, failed: bool) -> Option<usize> {
@@ -120,7 +190,10 @@ impl<S: Submit> Tracker<S> {
 		});
 		let index = self.probes.len() - 1;
 		if !self.submit(0, tx.hash, &tx.bytes, Kind::Probe { index }, now) {
-			self.probes[index].outcome = Outcome::Refused;
+			// Every connection is backed up: our side, not the node's answer. The probe was not
+			// sent; its tx is kept for the next block.
+			self.probes.pop();
+			self.lanes[0].source.put_back_probe(tx);
 		}
 	}
 }

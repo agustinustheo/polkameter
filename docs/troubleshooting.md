@@ -156,6 +156,42 @@ PolkaMeter: cannot read run directory target/no-such-run: No such file or direct
 
 **Fix:** Set `block-interval-seconds` on `<load>` to the measured value. The default is `6.0`.
 
+### node: ... is not on this machine, so its process cannot be sampled
+
+**Cause:** The load test's target is not a loopback URL, so PolkaMeter cannot tell which local process is the node. The run goes on without CPU or memory.
+
+**Fix:** If the node runs on this machine behind another address, set `POLKAMETER_NODE_PID` to its process ID. Otherwise there is nothing to fix: PolkaMeter samples only local nodes.
+
+### node: port <port> is served by ssh (PID <pid>), a port forwarder, not the node
+
+**Cause:** The target URL is a local port that an SSH tunnel or another forwarder serves. Sampling it would measure the forwarder, so PolkaMeter does not.
+
+**Fix:** Run PolkaMeter on the node's machine to record its CPU and memory. The load test itself works through the tunnel.
+
+### blocks: RPC connection lost (...); reconnected after <seconds> s, nothing observed meanwhile
+
+**Cause:** A WebSocket connection to the node dropped, for example through a proxy idle timeout, and PolkaMeter opened it again. The run went on. The "monitors recorded everything" check warns, and smoke mode exits `1`. If blocks went unobserved for longer than the stall limit in all, the check has no result.
+
+**Fix:** If it happens often, check the proxy or load balancer between PolkaMeter and the node. Raise its idle timeout above the run's length.
+
+### node down: node: process <pid> ended; sampling the node process now on its port, <pid> (the node restarted)
+
+**Cause:** The local node's process ID on its port changed. A restart empties the pool, so PolkaMeter stops the load on node down, even when the node was back within seconds. During recovery, it ends recovery.
+
+**Fix:** Check the node's logs for why it restarted, such as an out-of-memory kill or a supervisor restart.
+
+### reconnected to a different node (load balancer, or the node restarted)
+
+**Cause:** The block follower reconnected, and the node had a new peer ID or sync starting block. Behind a load balancer, the reconnect reached another node. Without one, the node restarted. The run goes on, and the verdict and exit code do not change. If the chain stopped producing or finalizing blocks, the stall or finality stall rule stops the load.
+
+**Fix:** With a load balancer, nothing is needed. To measure one node, point the run at that node's URL. Without a load balancer, check the node's logs for why it restarted.
+
+### generator limit: the machine was suspended for <seconds> s
+
+**Cause:** The machine running PolkaMeter slept or its VM was paused during the load. The chain went on without load, so the numbers after it are not the chain's. A wall-clock step from NTP does not cause this.
+
+**Fix:** Keep the machine awake during the run. On a CI runner, check for host maintenance or an overloaded host.
+
 ### run failed: insufficient probe reserve
 
 **Cause:** The output named by `probes-ref` holds fewer transactions than the run needs for baseline and recovery probes. With the defaults, the run needs 165.

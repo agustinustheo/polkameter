@@ -40,6 +40,26 @@ pub struct StepStats {
 	pub max_oldest_pending_ms: Millis,
 	/// Blocks seen while the step ran, with `ours` counted for this lane.
 	pub blocks: Vec<BlockRecord>,
+	/// The step ended.
+	pub closed: bool,
+	/// New best blocks that arrived while the step ran.
+	pub heads: u64,
+	/// The longest time without a new best block inside the step's own time: a gap that spans
+	/// a step edge counts in each step for the part inside it.
+	pub max_gap_ms: Option<Millis>,
+	/// Time the block follower was disconnected while the step ran.
+	pub unobserved_ms: Millis,
+}
+
+impl StepStats {
+	/// No new best block from `from` to `to`: keeps the part inside the step's time.
+	pub fn gap_portion(&mut self, from: Millis, to: Millis) {
+		let end = if self.closed { to.min(self.ended_at) } else { to };
+		let part = end.saturating_sub(from.max(self.started_at));
+		if end > self.started_at && part > 0 {
+			self.max_gap_ms = Some(self.max_gap_ms.map_or(part, |m| m.max(part)));
+		}
+	}
 }
 
 /// The p-th percentile (nearest rank, as TS); 0 for no values.
@@ -85,7 +105,8 @@ pub fn final_step(st: &StepStats, lane: Option<&str>) -> FinalStep {
 		},
 		included: st.included,
 		included_ratio: ratio(st.included, st.sent, 1.0),
-		included_per_s: st.blocks.iter().map(|b| u64::from(b.ours)).sum::<u64>() as f64 / seconds,
+		// The step's own txs, wherever they were included: not the step before's backlog.
+		included_per_s: st.included as f64 / seconds,
 		failed_in_block: st.failed_in_block,
 		rejected: st.rejected,
 		rejected_ratio: ratio(st.rejected, st.sent, 0.0),
@@ -96,8 +117,20 @@ pub fn final_step(st: &StepStats, lane: Option<&str>) -> FinalStep {
 		errors: st.errors.clone(),
 		starved_ticks: st.starved_ticks,
 		backpressure_ticks: st.backpressure_ticks,
-		blocks: block_stats(&st.blocks),
+		blocks: step_blocks(st),
 		node: NodeMax::default(),
+	}
+}
+
+/// A step's blocks; the gaps by the step's own time: the mean is the time observed over the new
+/// best blocks that arrived in it (all of it when none did, so a step without a block is as slow
+/// as it is long), the max the longest stretch inside it without one.
+fn step_blocks(st: &StepStats) -> BlockStats {
+	let observed = st.ended_at.saturating_sub(st.started_at).saturating_sub(st.unobserved_ms);
+	BlockStats {
+		mean_block_gap_ms: (observed > 0).then(|| observed as f64 / st.heads.max(1) as f64),
+		max_block_gap_ms: st.max_gap_ms,
+		..block_stats(&st.blocks)
 	}
 }
 

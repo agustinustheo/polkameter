@@ -9,9 +9,12 @@
 //!   pool refuses    > 10% of a step's submits refused                         graceful
 //!   pool intake     p95 submit reply > 5 s, or the node stops reading submits graceful
 //!   slow blocks     blocks arrive 2x slower than at the start (wall clock)    hard
-//!   stall           no new best block for 30 s                                hard
-//!   finality stall  no new finalized block for 60 s                           hard
-//!   node down       the node closed an RPC connection                         hard
+//!   stall           no new best block for 30 s, while the follower is connected hard
+//!   finality stall  no new finalized block for 60 s, same                      hard
+//!   node down       the node stayed unreachable after every reconnect attempt  hard
+//!
+//! A dropped RPC connection that opens again is an observation gap (a problem), not a failure:
+//! the stall rules count from the reconnect.
 //!
 //! The ramp also ends without a failure on: rate cap, budget used up, generator limit, smoke error.
 
@@ -115,6 +118,14 @@ pub struct LiveState {
 	pub finalized: u32,
 	/// Monitor problems, in smoke mode only.
 	pub smoke_problems: Vec<String>,
+	/// Time since the last new best block that the block follower was disconnected: left out
+	/// of the stall rule, which no block could be seen in.
+	pub unobserved_since_block: Millis,
+	/// The same, since the last new finalized block.
+	pub unobserved_since_finalized: Millis,
+	/// The node is down: unreachable for the reconnect backoff, dropping the connection again
+	/// and again, or restarted.
+	pub node_down: Option<String>,
 }
 
 /// A failure that shows during a step.
@@ -125,20 +136,38 @@ pub fn live_failure(s: &LiveState, rules: &Rules) -> Option<Stop> {
 		return Some(Stop::new(
 			Rule::NodeDown,
 			step,
-			format!("the node closed {} of {} RPC connections", s.closed_by_node, s.connections),
+			format!(
+				"{} of {} RPC connections dropped and could not be opened again",
+				s.closed_by_node, s.connections
+			),
 		));
 	}
-	if s.now.saturating_sub(s.last_block_at) > rules.stall_ms {
+	if let Some(why) = &s.node_down {
+		return Some(Stop::new(Rule::NodeDown, step, why.clone()));
+	}
+	// Observed time only: a reconnect neither hides a stall nor makes one.
+	let since_block =
+		s.now.saturating_sub(s.last_block_at).saturating_sub(s.unobserved_since_block);
+	let since_finalized = s
+		.now
+		.saturating_sub(s.last_finalized_at)
+		.saturating_sub(s.unobserved_since_finalized);
+	if since_block > rules.stall_ms {
 		return Some(Stop::new(
 			Rule::Stall,
 			step,
-			format!("no new best block for {} s", ago(s.last_block_at)),
+			format!(
+				"no new best block for {} s{}",
+				ago(s.last_block_at),
+				not_observed(s.unobserved_since_block)
+			),
 		));
 	}
-	if s.now.saturating_sub(s.last_finalized_at) > rules.finality_stall_ms {
+	if since_finalized > rules.finality_stall_ms {
 		let detail = format!(
-			"no new finalized block for {} s (best {}, finalized {})",
+			"no new finalized block for {} s{} (best {}, finalized {})",
 			ago(s.last_finalized_at),
+			not_observed(s.unobserved_since_finalized),
 			s.best,
 			s.finalized
 		);
@@ -146,6 +175,15 @@ pub fn live_failure(s: &LiveState, rules: &Rules) -> Option<Stop> {
 	}
 	(!s.smoke_problems.is_empty())
 		.then(|| Stop::new(Rule::SmokeError, step, s.smoke_problems.join("; ")))
+}
+
+/// ", N s of it while reconnecting" for a stall detail.
+fn not_observed(ms: Millis) -> String {
+	if ms == 0 {
+		String::new()
+	} else {
+		format!(", {} s of it while reconnecting", secs(ms as f64))
+	}
 }
 
 /// The rules checked at the end of each step for one lane, on it and on the step before (settled by now).
@@ -344,15 +382,74 @@ mod tests {
 
 	#[test]
 	fn fails_on_slow_blocks_as_hard() {
-		let blocks = [13_000, 14_000]
-			.map(|gap| polkameter_plugin_sdk::observers::files::BlockRecord {
-				gap_ms: Some(gap),
-				..Default::default()
-			})
-			.to_vec();
-		let stop =
-			check_step(&[step(0, |s| s.blocks = blocks)], &source(), 0, 6_000.0, &RULES).unwrap();
+		// 10 s with one new best block: a block every 10 s, against 4 s at the start.
+		let stop = check_step(
+			&[step(0, |s| {
+				s.heads = 1;
+				s.closed = true;
+			})],
+			&source(),
+			0,
+			4_000.0,
+			&RULES,
+		)
+		.unwrap();
 		assert_eq!((stop.rule, stop.class), (Rule::SlowBlocks, Some(Class::Hard)));
+		assert!(stop.detail.contains("a block every 10.0 s"), "{}", stop.detail);
+	}
+
+	#[test]
+	fn a_step_without_a_new_block_is_slow() {
+		// 20 s, observed, and no new best block: a block every 20 s at best.
+		let stop = check_step(
+			&[step(0, |s| {
+				s.ended_at = 20_000;
+				s.closed = true;
+			})],
+			&source(),
+			0,
+			6_000.0,
+			&RULES,
+		)
+		.unwrap();
+		assert_eq!(stop.rule, Rule::SlowBlocks, "{}", stop.detail);
+		// Not observed at all: nothing to judge.
+		let unobserved = step(0, |s| {
+			s.ended_at = 20_000;
+			s.closed = true;
+			s.unobserved_ms = 20_000;
+		});
+		assert_eq!(final_step(&unobserved, None).blocks.mean_block_gap_ms, None);
+	}
+
+	fn live() -> LiveState {
+		LiveState {
+			now: 100_000,
+			connections: 4,
+			last_block_at: 60_000,
+			last_finalized_at: 90_000,
+			..Default::default()
+		}
+	}
+
+	#[test]
+	fn only_observed_time_counts_towards_a_stall() {
+		// 40 s since the last block.
+		assert_eq!(live_failure(&live(), &RULES).unwrap().rule, Rule::Stall);
+		// 15 s of it while reconnecting: 25 s observed, not a stall yet.
+		let reconnecting = LiveState { unobserved_since_block: 15_000, ..live() };
+		assert_eq!(live_failure(&reconnecting, &RULES), None);
+		// 5 s of it while reconnecting: 35 s observed is still a stall.
+		let stop = live_failure(&LiveState { unobserved_since_block: 5_000, ..live() }, &RULES);
+		let stop = stop.unwrap();
+		assert_eq!(stop.rule, Rule::Stall);
+		assert!(stop.detail.contains("5.0 s of it while reconnecting"), "{}", stop.detail);
+		let down = LiveState {
+			node_down: Some("blocks: the node did not answer for 15 s".into()),
+			..live()
+		};
+		let stop = live_failure(&down, &RULES).unwrap();
+		assert_eq!((stop.rule, stop.class), (Rule::NodeDown, Some(Class::Hard)));
 	}
 
 	#[test]

@@ -7,9 +7,11 @@
 
 #![warn(missing_docs, clippy::needless_pass_by_value, clippy::too_many_lines)]
 
+pub mod clock;
 pub mod follower;
 pub mod loss;
 pub mod plan;
+pub mod reconnect;
 pub mod recovery;
 pub mod rules;
 pub mod runner;
