@@ -41,7 +41,10 @@ pub async fn load<S: Submit>(
 				.and_then(|i| measure_violation(&final_step(&t.steps[0][i], None), &opts.rules))
 		{
 			breaking = true;
-			eprintln!("breaking point: step {}: {detail}; the load goes on until a failure", k - 1);
+			crate::redact::diag!(
+				"breaking point: step {}: {detail}; the load goes on until a failure",
+				k - 1
+			);
 		}
 		if let Some(stop) = ended {
 			return Ok(stop);
@@ -140,7 +143,7 @@ fn paused(elapsed: Millis, boot: Option<Millis>, max_gap: Millis) -> Option<Stri
 fn log_step<S: Submit>(t: &Tracker<S>) {
 	for (lane, steps) in t.steps.iter().enumerate() {
 		let f = final_step(steps.last().expect("started"), None);
-		eprintln!(
+		crate::redact::diag!(
 			"step {} {}: target {} tx/s, sent {:.0} tx/s, {} blocks, {:.1} tx/s included, reply p95 {} s, {} replies pending, backlog {}",
 			f.step,
 			t.lanes()[lane].call,

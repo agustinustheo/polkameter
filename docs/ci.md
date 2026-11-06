@@ -114,7 +114,7 @@ You can combine `plugin-crates` with `plugins` for prebuilt executables. A relea
 
 The `credentials` input maps a plan's credential profile to the name of an environment variable. The `env:` block on the action step sets that variable from a repository secret. Plugins receive the value only in steps that use the credential. The files PolkaMeter writes and the job summary show `[redacted]` in place of the value. Files that a plugin writes into the run directory itself are not redacted, so the action does not upload them unless you set `upload-raw-plugin-files: "true"`.
 
-Redaction replaces the credential value, its JSON-escaped forms and the keys in endpoint URLs. A plugin that prints an encoded or transformed form of a secret, such as base64, is not redacted. [Redaction](results.md#redaction) lists what is covered. Do not run plans with secrets on `pull_request_target` or for pull requests from forks.
+Redaction replaces the credential value and its JSON-escaped forms, and the user information, query values and fragments of endpoint URLs. A plugin that prints an encoded or transformed form of a secret, such as base64, is not redacted. [Redaction](results.md#redaction) lists what is and is not covered. Do not run plans with secrets on `pull_request_target` or for pull requests from forks.
 
 Never put a secret in `with:`. Inputs are not secret.
 
@@ -165,7 +165,6 @@ With the default `fail-on: error`, a stress-mode load run exits `0` even when it
 From v0.3.0, the artifact holds only the files PolkaMeter writes; v0.2.0 uploads the whole run directory. The files are `execution.json`, `summary.md`, `summary.json`, `junit.xml`, `events.jsonl`, `samples.jtl`, the plots, the load-test records listed in [Run directory](results.md) and each plugin's redacted `stderr.log`. Other files in the run directory, such as a plugin's own diagnostics or its `series.jsonl`, stay on the runner. Set `upload-raw-plugin-files: "true"` to upload them too, after checking that your plugins never write secrets.
 
 PolkaMeter redacts plugin logs and summaries as it writes them. When the run finishes, including a failed or stopped run, it redacts them again; that pass also covers text a plugin wrote into its `stderr.log` by path. If the CLI was killed before then, for example by the out-of-memory killer, the action leaves `plugins/*/stderr.log`, `summary.md`, `summary.json` and `plugin-checks.json` out of the artifact and the job summary, with a notice. They stay in the run directory on the runner.
-
 
 The action copies the files after `polkameter run` exits. A plugin process that is still running cannot change the uploaded copy, and the action never follows a symbolic link in the run directory.
 

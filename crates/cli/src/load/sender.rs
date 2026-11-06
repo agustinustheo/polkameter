@@ -213,7 +213,7 @@ impl Link {
 				reason: reason.clone(),
 			});
 			if !drops.record() {
-				eprintln!("sender: connection {}: {}", self.connection, Drops::reason());
+				crate::redact::diag!("sender: connection {}: {}", self.connection, Drops::reason());
 				return self.closed(true);
 			}
 			let down_at = now_ms();
@@ -229,7 +229,7 @@ impl Link {
 				},
 				Reconnect::Stopped => return self.closed(false),
 				Reconnect::GaveUp(why) => {
-					eprintln!(
+					crate::redact::diag!(
 						"sender: connection {} dropped ({reason}) and the node was {why}",
 						self.connection
 					);

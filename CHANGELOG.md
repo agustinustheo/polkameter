@@ -40,10 +40,12 @@ Also new:
 ### CLI
 
 - The CLI spells its name `PolkaMeter` in every message. Standard-error lines now start with `PolkaMeter:` and `PolkaMeter warning:` instead of `Polkameter:`. Update scripts that match the old prefix.
-- Redaction no longer leaves part of a secret visible when one credential contains or overlaps another: all of the text they cover becomes `[redacted]`. It also finds a credential in the escaped forms that JSON writers and Rust's `{:?}` give it.
-- A plugin's standard error is redacted as it streams into `stderr.log`, so a killed run no longer leaves credentials in it. The passes on the first stop request and at the end of the run remain.
-- Plugin check results are redacted before `summary.md` is written or printed, so a check detail no longer shows a credential on standard error or in the job summary.
-- The user information, query values and fragment of target endpoints and monitor URLs are redacted from the run directory, events, error messages and `plugin inspect` and `preflight` output. `summary.json`'s `network.url` and `resolved-targets.json`'s `url` keep only the scheme, host, port, path and parameter names.
+- Redaction no longer leaves part of a secret visible when one credential contains or overlaps another: all of the text they cover becomes `[redacted]`. It also finds a credential, and a whole endpoint URL, in the escaped forms that JSON writers (including Go's and .NET's HTML-safe ones, and uppercase `\uXXXX`) and Rust's `{:?}` give it. Text that is already `[redacted]` is never matched again, and a credential read with a trailing newline is also redacted without it.
+- A plugin's standard error is redacted as it streams into `stderr.log`, so a complete credential never reaches the file, even if the run is killed. If the plugin's output ends in the middle of what may be a credential, that text is written as `[redacted]`. The passes on the first stop request and at the end of the run remain, and read each log in bounded chunks.
+- Plugin check results are redacted before `summary.md` is written or printed, so a check detail no longer shows a credential on standard error or in the job summary. `polkameter report` redacts the summary it rewrites with the credentials the host has, and the short `summary.md` written when there is no report, which shows the plan name and the failure reason, is redacted too.
+- The load-test records (`steps.jsonl`, `blocks.jsonl`, `scrapes.jsonl`, `lost.jsonl` and the others) are redacted as they are written, so an RPC error, node metric or chain error that echoes a secret no longer shows it. An RPC error is redacted whole before it is cut to its 160-character error key.
+- The user information, query values, path parameter values and fragment of target endpoints and monitor URLs are redacted from the run directory, events, standard error and `plugin inspect` and `preflight` output. A monitor URL without a scheme is redacted too. `summary.json`'s `network.url` and `resolved-targets.json`'s `url` keep only the scheme, host, port, path and parameter names.
+- JSON object keys are kept unless they are a secret or contain one of 8 or more characters. A credential shorter than 8 characters, such as `//Alice`, gets a warning, because it is redacted wherever it appears.
 - Preflight errors now include their cause, as run errors do.
 
 ### Load tests
@@ -71,3 +73,5 @@ Also new:
 
   Each is left out of the file when empty, and older files read as before.
 - `observers::checks::report::write_redacted` writes the report like `write`, passing every check field, every string in `summary.json` and the whole of `summary.md` through a redaction function before anything is written or printed.
+- `observers::files::JsonlWriter::with_filter` passes each record, as JSON, through a function before it is written, for example to redact it.
+- `Network::url` holds the redacted URL: PolkaMeter writes it with its user information, query values and fragment as `[redacted]`.

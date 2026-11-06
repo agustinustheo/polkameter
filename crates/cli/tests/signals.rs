@@ -19,9 +19,14 @@ use std::{
 use serde_json::Value;
 
 /// How long any one wait in these tests may take before the test fails.
-const PATIENCE: Duration = Duration::from_secs(60);
+/// Generous: the whole workspace's tests run in parallel, and a loaded machine starts each
+/// process slowly. Only a failing test waits this long.
+const PATIENCE: Duration = Duration::from_secs(180);
 
 const TOKEN: &str = "signals-test-token-0123456789abcdef";
+
+/// How many times an agent is started on a fresh port when it could not listen on the first.
+const AGENT_ATTEMPTS: usize = 5;
 
 fn plugin_executable() -> PathBuf {
 	if let Some(path) = std::env::var_os("POLKAMETER_EXAMPLE_PLUGIN") {
@@ -95,8 +100,14 @@ impl Work {
 		let mut command = Command::new(env!("CARGO_BIN_EXE_polkameter"));
 		command
 			.env("POLKAMETER_PLUGIN_REGISTRY", self.0.join("plugins.json"))
-			.env("POLKAMETER_AGENT_TOKEN", TOKEN);
+			.env("POLKAMETER_AGENT_TOKEN", self.token());
 		command
+	}
+
+	/// The agent token of this test only: a client that reached another test's agent, on a
+	/// port that agent took first, is refused instead of starting a run there.
+	fn token(&self) -> String {
+		format!("{TOKEN}-{}", self.0.file_name().unwrap().to_string_lossy())
 	}
 
 	/// Starts `polkameter run` on the plan, with JSON output.
@@ -113,6 +124,21 @@ impl Work {
 	/// The only run directory under `root`, once it exists.
 	fn run_directory(&self, root: &str) -> PathBuf {
 		wait_for("a run directory", || {
+			let runs = std::fs::read_dir(self.0.join(root)).ok()?;
+			runs.map(|entry| entry.unwrap().path()).find(|path| path.is_dir())
+		})
+	}
+
+	/// The run directory the remote `client` started under `root`. A client that exits before
+	/// the run exists fails the test with its own error instead of a timeout.
+	fn remote_run_directory(&self, root: &str, client: &mut Process) -> PathBuf {
+		wait_for("a run directory", || {
+			if let Some(status) = client.0.try_wait().unwrap() {
+				let mut stderr = String::new();
+				std::io::Read::read_to_string(client.0.stderr.as_mut().unwrap(), &mut stderr)
+					.unwrap();
+				panic!("the client exited ({status}) before its run started: {stderr}");
+			}
 			let runs = std::fs::read_dir(self.0.join(root)).ok()?;
 			runs.map(|entry| entry.unwrap().path()).find(|path| path.is_dir())
 		})
@@ -318,16 +344,31 @@ struct Agent {
 }
 
 impl Agent {
+	/// Starts the agent on a port that was free a moment ago. Tests run in parallel, so another
+	/// process may take the port first: the agent then exits, and starts again on another.
 	fn start(work: &Work) -> Self {
-		let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-		let bind = format!("127.0.0.1:{port}");
-		let process = Process::spawn(
-			work.polkameter()
-				.args(["agent", "serve", "--bind", &bind, "--output-root"])
-				.arg(work.0.join("remote")),
-		);
-		wait_for("the agent to listen", || TcpStream::connect(&bind).ok());
-		Self { process, endpoint: format!("http://{bind}") }
+		for _ in 0..AGENT_ATTEMPTS {
+			let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+			let bind = format!("127.0.0.1:{port}");
+			let mut process = Process::spawn(
+				work.polkameter()
+					.args(["agent", "serve", "--bind", &bind, "--output-root"])
+					.arg(work.0.join("remote")),
+			);
+			let listening = wait_for("the agent to listen or exit", || {
+				if process.0.try_wait().unwrap().is_some() {
+					return Some(false);
+				}
+				TcpStream::connect(&bind).ok().map(|_| true)
+			});
+			// Listening, and still running: the connection reached this agent, not another
+			// process on the same port.
+			std::thread::sleep(Duration::from_millis(100));
+			if listening && process.0.try_wait().unwrap().is_none() {
+				return Self { process, endpoint: format!("http://{bind}") };
+			}
+		}
+		panic!("the agent could not listen on a free port in {AGENT_ATTEMPTS} attempts");
 	}
 
 	fn client(&self, work: &Work) -> Process {
@@ -340,7 +381,7 @@ fn sigterm_stops_the_remote_client_which_stops_the_agent_run() {
 	let work = Work::new("client", &plan(DOUBLE));
 	let mut agent = Agent::start(&work);
 	let mut client = agent.client(&work);
-	let run = work.run_directory("remote");
+	let run = work.remote_run_directory("remote", &mut client);
 	let pid = waiting_plugin(&run, None);
 	client.signal("TERM");
 	let (status, stderr) = client.wait();
@@ -372,7 +413,7 @@ fn sigterm_stops_the_agent_after_its_run_tears_down() {
 	let work = Work::new("agent", &plan(DOUBLE));
 	let mut agent = Agent::start(&work);
 	let mut client = agent.client(&work);
-	let run = work.run_directory("remote");
+	let run = work.remote_run_directory("remote", &mut client);
 	let pid = waiting_plugin(&run, None);
 	agent.process.signal("TERM");
 	let (status, stderr) = agent.process.wait();

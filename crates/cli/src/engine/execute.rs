@@ -115,6 +115,20 @@ impl Log {
 fn secret_values(credentials: &Values) -> Vec<String> {
 	credentials.values().filter_map(|v| v.as_str().map(str::to_owned)).collect()
 }
+/// A warning for each credential so short that redacting it may also hide text that is not it.
+/// The credential is still used and redacted.
+fn short_credentials(credentials: &Values) -> Vec<String> {
+	credentials
+		.iter()
+		.filter(|(_, value)| value.as_str().is_some_and(crate::redact::is_short))
+		.map(|(name, _)| {
+			format!(
+				"{name} is shorter than {} bytes: wherever its value appears in the run's files and logs it is redacted, also inside unrelated text",
+				crate::redact::MIN_ENDPOINT_SECRET
+			)
+		})
+		.collect()
+}
 /// The endpoints whose user information, query values and fragments are redacted: the plan's
 /// targets and, when the topology can be read, its monitor URLs.
 fn endpoints(plan: &Plan, registry: &Registry) -> Vec<String> {
@@ -344,6 +358,7 @@ pub async fn preflight(plan: &Plan, registry: &Registry) -> Result<Value> {
 			check_requirements(plan, registry, plugins).await?;
 			let mut values = plan.values("preflight");
 			let mut redactor = redactor(plan, registry, &[]);
+			let mut _diagnostics = crate::redact::activate(&redactor);
 			// Resolve credentials only if an explicit preflight step references one.
 			if plan
 				.preflight
@@ -354,6 +369,10 @@ pub async fn preflight(plan: &Plan, registry: &Registry) -> Result<Value> {
 			{
 				let credentials = registry.resolve_credentials(plan)?;
 				redactor = self::redactor(plan, registry, &secret_values(&credentials));
+				_diagnostics = crate::redact::activate(&redactor);
+				for warning in short_credentials(&credentials) {
+					crate::redact::diag!("{} warning: {warning}", crate::PRODUCT_NAME);
+				}
 				values.extend(credentials);
 			}
 			let redacted = |e: anyhow::Error| anyhow::anyhow!(redactor.text(&format!("{e:#}")));
@@ -381,7 +400,7 @@ async fn check_environment(plan: &Plan, registry: &Registry) -> Result<()> {
 		return Ok(());
 	};
 	for warning in crate::engine::monitors::preflight::preflight(&targets).await? {
-		eprintln!("preflight: {warning}");
+		crate::redact::diag!("preflight: {warning}");
 	}
 	let metrics = monitor
 		.metrics
@@ -522,7 +541,15 @@ pub async fn run_stoppable(
 	let credentials = registry.resolve_credentials(&plan);
 	let secrets = credentials.as_ref().map(secret_values).unwrap_or_default();
 	let redactor = redactor(&plan, &registry, &secrets);
+	// What the run prints on standard error is redacted too, until it ends.
+	let _diagnostics = crate::redact::activate(&redactor);
 	let log = Log::open(&directory, sink, secrets, redactor)?;
+	if let Ok(credentials) = &credentials {
+		for warning in short_credentials(credentials) {
+			crate::redact::diag!("{} warning: {warning}", crate::PRODUCT_NAME);
+			log.emit(json!({"event": "warning", "message": warning}))?;
+		}
+	}
 	let recorded_plan = log.redactor.json(&plan)?;
 	write_json(&directory.join("plan.json"), &recorded_plan)?;
 	let context = Context::host(run_id, directory.canonicalize()?);
@@ -670,8 +697,11 @@ impl Run<'_> {
 					self.registry,
 					values,
 					&self.context,
-					setup_seconds,
-					&progress,
+					measurement::Reporting {
+						setup_seconds,
+						progress: &progress,
+						redactor: &self.log.redactor,
+					},
 				)
 				.await?;
 				measured
@@ -722,7 +752,10 @@ impl Run<'_> {
 				"blake2": checksum(&std::env::current_exe()?)?,
 			},
 		});
-		write_json(&self.directory.join("resolved-plan.json"), &resolved)?;
+		write_json(
+			&self.directory.join("resolved-plan.json"),
+			&self.log.redactor.json(&resolved)?,
+		)?;
 		if let (Some(monitors), Some(targets)) =
 			(&self.plan.monitors, wiring::monitor_targets(self.plan, self.registry)?)
 		{
@@ -745,7 +778,10 @@ impl Run<'_> {
 				"topologyHash": checksum(topology)?,
 				"targets": target_records,
 			});
-			write_json(&self.directory.join("resolved-targets.json"), &resolved)?;
+			write_json(
+				&self.directory.join("resolved-targets.json"),
+				&self.log.redactor.json(&resolved)?,
+			)?;
 		}
 		Ok(())
 	}
@@ -906,15 +942,14 @@ impl Run<'_> {
 			let text = std::fs::read(&summary)?;
 			std::fs::write(&summary, self.log.redactor.bytes(&text))?;
 		} else {
-			std::fs::write(
-				summary,
-				format!(
-					"# {}\n\nStatus: {}\n\n{}\n",
-					self.plan.name,
-					outcome.state,
-					outcome.error.as_deref().unwrap_or("All configured steps completed.")
-				),
-			)?;
+			// The plan's name may hold a secret too; the whole text is redacted.
+			let text = format!(
+				"# {}\n\nStatus: {}\n\n{}\n",
+				self.plan.name,
+				outcome.state,
+				outcome.error.as_deref().unwrap_or("All configured steps completed.")
+			);
+			std::fs::write(summary, self.log.redactor.text(&text))?;
 		}
 		// These files are also inputs to offline JUnit regeneration. They were redacted as they
 		// were written; this second pass keeps a later report free of credentials whatever
@@ -927,7 +962,7 @@ impl Run<'_> {
 				write_json(&path, &value)?;
 			}
 		}
-		if let Err(error) = crate::engine::junit::write(&self.directory, &self.log.secrets) {
+		if let Err(error) = crate::engine::junit::write(&self.directory, &self.log.redactor) {
 			let event = crate::engine::junit::warning(None, &error.to_string(), &self.log.secrets);
 			let _ = self.log.emit(event);
 		}
@@ -938,18 +973,19 @@ impl Run<'_> {
 
 /// Redacts each plugin's `stderr.log` again. PolkaMeter redacts plugin standard error as it
 /// streams into the log; this pass, on the first stop request and when the run ends, also covers
-/// anything that reached the file another way, such as a plugin writing to it by path. It holds
-/// the log write lock, so no streamed line is lost.
+/// anything that reached the file another way, such as a plugin writing to it by path. Each log
+/// is read in bounded chunks; the log write lock is held only for what was appended meanwhile
+/// and the replacement, so no streamed line is lost and streamed writes wait briefly.
 fn redact_plugin_logs(directory: &Path, redactor: &Redactor) -> Result<()> {
 	if redactor.is_empty() {
 		return Ok(());
 	}
 	let Ok(plugins) = std::fs::read_dir(directory.join("plugins")) else { return Ok(()) };
-	let _writes = crate::engine::plugins::lock_logs();
 	for plugin in plugins {
 		let log = plugin?.path().join("stderr.log");
-		if let Ok(bytes) = std::fs::read(&log) {
-			std::fs::write(&log, redactor.bytes(&bytes))?;
+		match crate::redact::rewrite_file(&log, redactor, crate::engine::plugins::lock_logs) {
+			Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+			result => result?,
 		}
 	}
 	Ok(())

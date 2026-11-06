@@ -258,6 +258,21 @@ fn already_imported_is_a_refusal_for_a_first_submit() {
 	assert_eq!(t.steps[0][0].rejected, 1, "unchanged for a tx sent once");
 }
 
+#[test]
+fn a_refusal_is_redacted_whole_before_it_is_cut_to_its_error_key() {
+	let mut t = tracker("redacted-refusal", vec![tx(1)], vec![]);
+	t.redact_with(polkameter::redact::Redactor::new(["SeedPhraseSensitive"], None::<&str>));
+	t.set_phase(Phase::Ramp, 0).unwrap();
+	t.start_step(0, &[1.0], 0).unwrap();
+	assert!(t.send_next(0, 0));
+	// Cut first, the key would end in `SeedPhraseSen`, which no later pass recognizes.
+	let error = format!("{} SeedPhraseSensitive", "z".repeat(145));
+	t.on_reply(Reply::Refused { id: 1, at: 10, code: 1010, error });
+	let keys: Vec<&String> = t.steps[0][0].errors.keys().collect();
+	// The cut falls inside `[redacted]`, which is dropped rather than shown in part.
+	assert_eq!(keys, [&format!("1010 {}", "z".repeat(145))]);
+}
+
 fn live(t: &Tracker<FakeSender>, now: u64) -> polkameter::load::rules::LiveState {
 	polkameter::load::rules::LiveState {
 		now,

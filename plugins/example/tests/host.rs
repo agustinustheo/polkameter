@@ -375,6 +375,43 @@ async fn credentials_and_endpoint_keys_reach_no_file_and_no_event() {
 	}
 }
 #[tokio::test]
+async fn the_plan_name_is_redacted_from_the_fallback_summary_and_short_credentials_warn() {
+	let mut registry = registry().await;
+	let long = format!("POLKAMETER_TEST_NAMED_SECRET_{}", std::process::id());
+	let short = format!("POLKAMETER_TEST_SHORT_SECRET_{}", std::process::id());
+	let secret = "PlanNameSecret-0123";
+	// Unique test-only environment keys; no other test reads or writes them.
+	unsafe {
+		std::env::set_var(&long, secret);
+		std::env::set_var(&short, "//Alic");
+	}
+	registry.credentials.insert("named".into(), long.clone());
+	registry.credentials.insert("short".into(), short.clone());
+	let root = scratch("named-summary");
+	// No load test, so the run writes the short summary with the plan name in its title.
+	let xml = plugin_plan(
+		&format!("Plan {secret}"),
+		r#"<credentials><credential id="named" profile="named"/><credential id="dev" profile="short"/></credentials>
+    <setup><step id="echo" use="core.echo"><input name="value" ref="credentials.dev"/></step></setup>"#,
+	);
+	let outcome = run(&xml, registry, &root).await;
+	assert_eq!(outcome.exit_code, 0, "{:?}", outcome.error);
+	let summary = std::fs::read_to_string(outcome.artifact_dir.join("summary.md")).unwrap();
+	assert!(summary.starts_with("# Plan [redacted]\n"), "{summary}");
+	assert!(!summary.contains("PlanNameSecret"), "{summary}");
+	let warnings: Vec<_> = read_events(&outcome.artifact_dir)
+		.into_iter()
+		.filter(|e| e["event"] == "warning")
+		.map(|e| e["message"].as_str().unwrap().to_owned())
+		.collect();
+	assert_eq!(warnings.len(), 1, "{warnings:?}");
+	assert!(warnings[0].starts_with("credentials.dev is shorter than 8 bytes"), "{warnings:?}");
+	unsafe {
+		std::env::remove_var(long);
+		std::env::remove_var(short);
+	}
+}
+#[tokio::test]
 async fn missing_credential_persists_failed_outcome_before_setup() {
 	let root = scratch("missing-credential");
 	let xml = fixture().replace(

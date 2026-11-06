@@ -221,11 +221,12 @@ runs:
         fi
         echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
         if [ -f "$run_dir/summary.md" ]; then
-          # PolkaMeter redacts summary.md only when the run finishes normally.
+          # PolkaMeter redacts summary.md as it writes it and again when the run finishes; a
+          # run that did not finish may have written it without the final pass.
           if python3 "$GITHUB_ACTION_PATH/scripts/action-stage-artifact.py" --finished "$run_dir"; then
             cat "$run_dir/summary.md" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "::notice::The run did not finish normally, so its summary.md was not redacted; it is left out of the job summary."
+            echo "::notice::The run did not finish normally, so its summary.md missed PolkaMeter's final redaction pass; it is left out of the job summary."
           fi
         fi
     - name: Stage the run artifact

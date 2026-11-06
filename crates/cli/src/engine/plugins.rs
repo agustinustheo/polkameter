@@ -168,25 +168,38 @@ impl Group {
 }
 
 /// Serializes writes to plugin logs with the passes that rewrite them, so a rewrite never drops
-/// a line that was streamed meanwhile. The guard is held only for one write or one rewrite.
+/// a line that was streamed meanwhile. The guard is held for one write, or for the end of one
+/// rewrite: never across an `.await`.
 pub(crate) fn lock_logs() -> std::sync::MutexGuard<'static, ()> {
 	static WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
 	WRITES.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Copies a plugin's standard error into its log, redacting it as it streams: a secret never
-/// reaches the file, even if the run is killed. Ends when every process holding the pipe has
-/// exited. What is held back for a secret that may still complete is lost if PolkaMeter dies.
-fn stream_log(
-	mut stderr: ChildStderr,
-	mut file: std::fs::File,
-	redactor: Redactor,
-) -> JoinHandle<()> {
+/// Opens a plugin log to append to it, readable only by its owner.
+fn open_log(path: &Path) -> std::io::Result<std::fs::File> {
+	let mut options = std::fs::OpenOptions::new();
+	options.create(true).append(true);
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::OpenOptionsExt;
+		options.mode(0o600);
+	}
+	options.open(path)
+}
+
+/// Copies a plugin's standard error into its log at `path`, redacting it as it streams, so a
+/// complete secret never reaches the file, even if the run is killed. Ends when every process
+/// holding the pipe has exited. The log is opened for each write, so a rewrite pass can replace
+/// it. Bytes held back because they may start a secret are written as `[redacted]` if the
+/// stream ends there; if PolkaMeter itself dies they are lost, never written.
+fn stream_log(mut stderr: ChildStderr, path: PathBuf, redactor: Redactor) -> JoinHandle<()> {
 	use std::io::Write as _;
-	let mut write = move |bytes: &[u8]| {
+	let write = move |bytes: &[u8]| {
 		if !bytes.is_empty() {
 			let _writes = lock_logs();
-			let _ = file.write_all(bytes);
+			if let Ok(mut file) = open_log(&path) {
+				let _ = file.write_all(bytes);
+			}
 		}
 	};
 	tokio::spawn(async move {
@@ -244,14 +257,9 @@ impl Process {
 			}
 		}
 		let log = if let Some((path, redactor)) = stderr {
-			let mut options = std::fs::OpenOptions::new();
-			options.create(true).append(true);
-			#[cfg(unix)]
-			{
-				use std::os::unix::fs::OpenOptionsExt;
-				options.mode(0o600);
-			}
-			Some((options.open(path)?, redactor.clone()))
+			// Created now, so the log exists even if the plugin never writes to it.
+			open_log(path)?;
+			Some((path.to_owned(), redactor.clone()))
 		} else {
 			None
 		};
@@ -270,7 +278,7 @@ impl Process {
 			.kill_on_drop(true)
 			.spawn()?;
 		let log = match (log, child.stderr.take()) {
-			(Some((file, redactor)), Some(stderr)) => Some(stream_log(stderr, file, redactor)),
+			(Some((path, redactor)), Some(stderr)) => Some(stream_log(stderr, path, redactor)),
 			_ => None,
 		};
 		let input =

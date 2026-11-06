@@ -59,17 +59,16 @@ struct Suite {
 
 type Key = (String, Option<u64>, Option<u64>);
 
-/// Writes `junit.xml`. Run-time callers pass the same secrets used to redact events; offline
-/// callers use available credentials and the already-redacted recorded files. Only recorded
+/// Writes `junit.xml`. Run-time callers pass the run's redactor, which redacted its events;
+/// offline callers one of the credentials available now, over the already-redacted files. Only recorded
 /// error summaries (including bounded assertion values), not raw inputs/outputs, are exported.
 ///
 /// `events.jsonl` is read one line at a time and only what the report needs from each step
 /// event is kept, so a long run's event log is never held in memory.
-pub fn write(directory: &Path, secrets: &[String]) -> Result<()> {
+pub fn write(directory: &Path, redactor: &Redactor) -> Result<()> {
 	let mut plan = read_optional(&directory.join("plan.json"))?;
 	let mut summary = read_optional(&directory.join("summary.json"))?;
 	let mut outcome: Value = serde_json::from_slice(&fs::read(directory.join("execution.json"))?)?;
-	let redactor = Redactor::new(secrets, None::<&str>);
 	for value in [&mut plan, &mut summary, &mut outcome] {
 		redactor.value(value);
 	}
@@ -573,7 +572,7 @@ mod tests {
 			"{\"event\":\"phase\",\"phase\":\"setup\"}\nnot json\n",
 		)
 		.unwrap();
-		assert!(write(&dir, &[]).is_err());
+		assert!(write(&dir, &Redactor::default()).is_err());
 		assert!(!dir.join("junit.xml").exists());
 		fs::remove_dir_all(&dir).unwrap();
 	}

@@ -148,7 +148,6 @@ Run stopped. Artifacts: ~/polkameter/runs/run-1793933833336-39351-1
 
 As soon as the first signal arrives, PolkaMeter writes a provisional `execution.json` with the state `stopping`. It also redacts the plugins' `stderr.log` files a second time; they were already redacted as they were written. If the process is killed before it finishes, that `execution.json` is what remains:
 
-
 ```json
 {
   "artifact_dir": "~/polkameter/runs/run-1793933833336-39351-1",

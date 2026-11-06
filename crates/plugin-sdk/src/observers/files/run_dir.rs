@@ -88,23 +88,54 @@ impl RunDir {
 	}
 }
 
+/// What a [`JsonlWriter`] does to each record before it writes it.
+type Filter = std::sync::Arc<dyn Fn(&mut serde_json::Value) + Send + Sync>;
+
 /// Appends one JSON record per line. Buffered; `flush` or drop writes it out.
-#[derive(Debug)]
 pub struct JsonlWriter {
 	path: PathBuf,
 	out: BufWriter<File>,
+	filter: Option<Filter>,
+}
+
+impl std::fmt::Debug for JsonlWriter {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("JsonlWriter")
+			.field("path", &self.path)
+			.field("filtered", &self.filter.is_some())
+			.finish_non_exhaustive()
+	}
 }
 
 impl JsonlWriter {
 	fn append(path: &Path) -> Result<Self, FileError> {
 		let file = OpenOptions::new().create(true).append(true).open(path).map_err(io(path))?;
-		Ok(Self { path: path.to_owned(), out: BufWriter::new(file) })
+		Ok(Self { path: path.to_owned(), out: BufWriter::new(file), filter: None })
+	}
+
+	/// This writer, passing each record as JSON through `filter` before writing it, for
+	/// example to redact secrets from it.
+	#[must_use]
+	pub fn with_filter(
+		mut self,
+		filter: impl Fn(&mut serde_json::Value) + Send + Sync + 'static,
+	) -> Self {
+		self.filter = Some(std::sync::Arc::new(filter));
+		self
 	}
 
 	/// Writes one record. A failed write (a full disk, a closed pipe) or a record that cannot
 	/// be serialized is an error, never a panic.
 	pub fn write(&mut self, record: &impl Serialize) -> Result<(), FileError> {
-		serde_json::to_writer(&mut self.out, record).map_err(|e| io(&self.path)(e.into()))?;
+		let error = |e: serde_json::Error| io(&self.path)(e.into());
+		match &self.filter {
+			Some(filter) => {
+				let mut value = serde_json::to_value(record).map_err(error)?;
+				filter(&mut value);
+				serde_json::to_writer(&mut self.out, &value).map_err(error)?;
+			},
+			None => serde_json::to_writer(&mut self.out, record).map_err(error)?,
+		}
 		self.out.write_all(b"\n").map_err(io(&self.path))
 	}
 
@@ -137,16 +168,22 @@ mod tests {
 		let path = dir.join("read-only.jsonl");
 		fs::write(&path, "").unwrap();
 		// A file opened only for reading refuses every write, as a full disk or closed pipe does.
-		let mut out =
-			JsonlWriter { path: path.clone(), out: BufWriter::new(File::open(&path).unwrap()) };
+		let mut out = JsonlWriter {
+			path: path.clone(),
+			out: BufWriter::new(File::open(&path).unwrap()),
+			filter: None,
+		};
 		// Larger than the buffer, so serde_json writes through to the file.
 		let record = "x".repeat(64 * 1024);
 		match out.write(&record) {
 			Err(FileError::Io { path: p, .. }) => assert_eq!(p, path.display().to_string()),
 			other => panic!("expected an I/O error, got {other:?}"),
 		}
-		let mut small =
-			JsonlWriter { path: path.clone(), out: BufWriter::new(File::open(&path).unwrap()) };
+		let mut small = JsonlWriter {
+			path: path.clone(),
+			out: BufWriter::new(File::open(&path).unwrap()),
+			filter: None,
+		};
 		small.write(&1).unwrap();
 		assert!(matches!(small.finish(), Err(FileError::Io { .. })));
 		fs::remove_dir_all(&dir).unwrap();
@@ -161,6 +198,22 @@ mod tests {
 		assert!(matches!(run.write_json("bad.json", &bad), Err(FileError::Io { .. })));
 		let mut out = run.jsonl("bad.jsonl").unwrap();
 		assert!(matches!(out.write(&bad), Err(FileError::Io { .. })));
+		fs::remove_dir_all(&dir).unwrap();
+	}
+
+	#[test]
+	fn a_filter_sees_every_record_before_it_is_written() {
+		let dir = scratch("filter");
+		let run = RunDir::open(&dir);
+		let mut out = run.jsonl("filtered.jsonl").unwrap().with_filter(|value| {
+			if let Some(text) = value.get_mut("text") {
+				*text = serde_json::json!("hidden");
+			}
+		});
+		out.write(&serde_json::json!({"text": "secret", "n": 1})).unwrap();
+		out.finish().unwrap();
+		let records: Vec<serde_json::Value> = run.read_jsonl("filtered.jsonl").unwrap();
+		assert_eq!(records, vec![serde_json::json!({"text": "hidden", "n": 1})]);
 		fs::remove_dir_all(&dir).unwrap();
 	}
 }

@@ -207,7 +207,7 @@ pub async fn baseline<S: Submit>(
 		p50_ms: percentile(&ms, 50.0),
 		max_ms: ms.iter().copied().max().unwrap_or(0),
 	};
-	eprintln!(
+	crate::redact::diag!(
 		"baseline: {} probes landed, p50 {} s, max {} s",
 		b.probes,
 		secs(b.p50_ms as f64),
@@ -242,7 +242,7 @@ pub async fn recover<S: Submit>(
 	let _ = io.events.send(RunEvent::PhaseEdge);
 	let stopped_at = now_ms();
 	let backlog_at_stop = t.outstanding().len() as u64;
-	eprintln!(
+	crate::redact::diag!(
 		"recovery: load stopped with {backlog_at_stop} txs outstanding; one probe per block for up to {} s",
 		opts.recovery_s
 	);
@@ -273,7 +273,7 @@ pub async fn recover<S: Submit>(
 		}
 		if last_log.elapsed() > Duration::from_secs(30) {
 			last_log = Instant::now();
-			eprintln!(
+			crate::redact::diag!(
 				"recovery: {} s, backlog {}",
 				started.elapsed().as_secs(),
 				t.outstanding().len()
@@ -309,7 +309,7 @@ pub async fn recover<S: Submit>(
 		blocks: block_stats(&t.recovery_blocks),
 		node: NodeMax::default(),
 	};
-	eprintln!(
+	crate::redact::diag!(
 		"recovery: {} ({}); backlog {} left",
 		if r.recovered { "back" } else { "not back" },
 		r.detail,
