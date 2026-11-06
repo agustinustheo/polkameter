@@ -202,13 +202,15 @@ impl Link {
 				End::Dropped(_) if self.closing.is_cancelled() => return self.closed(false),
 				End::Dropped(reason) => reason,
 			};
+			// Down before the tracker hears of it: a submit it makes after `Interrupted` must not
+			// land on this connection and wait on the node through the outage.
+			self.up.store(false, Ordering::Relaxed);
 			let ids: Vec<u64> = unanswered.lock().expect("unanswered").keys().copied().collect();
 			let _ = self.replies.send(Reply::Interrupted {
 				connection: self.connection,
 				ids,
 				reason: reason.clone(),
 			});
-			self.up.store(false, Ordering::Relaxed);
 			if !drops.record() {
 				eprintln!("sender: connection {}: {}", self.connection, Drops::reason());
 				return self.closed(true);
