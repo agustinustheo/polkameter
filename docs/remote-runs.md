@@ -48,9 +48,9 @@ The client never receives the run's files. They stay in the run directory under 
 If the connection to the agent drops, the client keeps polling with backoff for 60 seconds before it gives up:
 
 ```text
-Polkameter: status poll failed (remote runner request failed: error sending request for url (http://127.0.0.1:9901/runs/79007-00000000000000000001): client error (Connect): tcp connect error: Connection refused (os error 61)); retrying in 600 ms
+Polkameter: status poll failed (remote runner request failed: error sending request for url (http://127.0.0.1:9901/runs/c-5f0c2a9e41d7b38e6a0f1d2c3b4a5968): client error (Connect): tcp connect error: Connection refused (os error 61)); retrying in 600 ms
 ...
-Polkameter: status polls kept failing for 60 s: ...; asked the agent to stop run 79007-00000000000000000001
+Polkameter: status polls kept failing for 60 s: ...; asked the agent to stop run c-5f0c2a9e41d7b38e6a0f1d2c3b4a5968
 ```
 
 The client chooses the run's ID and sends it with the start request. If the start request gets no answer, for example because a proxy dropped the connection, the client sends it again with the same ID, and the agent does not start a second run.

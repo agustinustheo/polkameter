@@ -195,10 +195,9 @@ pub async fn start_plan(
 		.lock()
 		.map_err(|_| StartError::refused("progress lock poisoned"))? = None;
 	let initial = status.clone();
-	drop(status);
-	drop(admission);
-	let task_state = state.clone();
+	let run_state = state.clone();
 	let task = tokio::spawn(async move {
+		let state = run_state;
 		let progress_state = state.clone();
 		let progress = Arc::new(move |event: serde_json::Value| {
 			if event["event"] == "phase"
@@ -238,7 +237,11 @@ pub async fn start_plan(
 			history.pop_first();
 		}
 	});
-	*task_state.task.lock().await = Some(task);
+	// Recorded before the status lock is released: a shutdown that sees this run as running
+	// must also find its task to wait for.
+	*state.task.lock().await = Some(task);
+	drop(status);
+	drop(admission);
 	Ok(initial)
 }
 

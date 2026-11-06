@@ -288,9 +288,11 @@ fn bad_request(error: impl ToString) -> (StatusCode, String) {
 	(StatusCode::BAD_REQUEST, error.to_string())
 }
 
+/// A run ID that is safe in a URL path: no separators, and not a `.` or `..` segment.
 fn is_safe_run_id(value: &str) -> bool {
 	!value.is_empty()
 		&& value.len() <= 128
+		&& !matches!(value, "." | "..")
 		&& value.chars().all(|character| {
 			character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
 		})
@@ -1673,5 +1675,15 @@ mod tests {
 		assert_eq!(error.message, "remote runner returned 400 Bad Request: invalid run ID");
 		server.abort();
 		std::fs::remove_dir_all(root).unwrap();
+	}
+
+	#[test]
+	fn run_ids_cannot_be_path_segments_or_separators() {
+		for id in ["c-0a1b", "79007-00000000000000000001", "a.b_c"] {
+			assert!(is_safe_run_id(id), "{id}");
+		}
+		for id in ["", ".", "..", "../x", "a/b", "a\\b", "a?b", "a%2Fb", &"x".repeat(129)] {
+			assert!(!is_safe_run_id(id), "{id}");
+		}
 	}
 }
