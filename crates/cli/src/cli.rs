@@ -61,6 +61,10 @@ enum Command {
 		/// code; runtime and smoke-mode failures still exit 1. Plans without a load test are unaffected.
 		#[arg(long)]
 		fail_on_verdict: bool,
+		/// Exit 1 when a load test's verdict is INCONCLUSIVE: the load ended before its rate cap,
+		/// or a required check has no result. Combine with --fail-on-verdict to fail on both.
+		#[arg(long)]
+		fail_on_inconclusive: bool,
 		/// Write an additional copy of junit.xml to this local path.
 		#[arg(long)]
 		junit: Option<PathBuf>,
@@ -216,6 +220,7 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 			remote,
 			remote_token_env,
 			fail_on_verdict,
+			fail_on_inconclusive,
 			junit,
 			shutdown_grace,
 			format,
@@ -224,7 +229,7 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 			let mut signals = install_signals()?;
 			let grace = Duration::from_secs(shutdown_grace);
 			let (xml, plan) = load(&path)?;
-			let options = RunOptions { fail_on_verdict };
+			let options = RunOptions { fail_on_verdict, fail_on_inconclusive };
 			match remote {
 				Some(endpoint) => {
 					let limits = remote::Follow::for_plan(
@@ -359,8 +364,8 @@ enum RunLocation {
 	Remote,
 }
 
-/// Reports a finished run's artifacts. A failed run also prints its reason to standard error in
-/// both formats.
+/// Reports a finished run's artifacts. A failed run, or one that completed with failures, also
+/// prints its reason to standard error in both formats.
 fn write_artifact_written(format: OutputFormat, location: RunLocation, outcome: &Outcome) {
 	let label = match location {
 		RunLocation::Local => "Run",
@@ -379,8 +384,20 @@ fn write_artifact_written(format: OutputFormat, location: RunLocation, outcome: 
 /// Longest reason, in characters, that the failure line prints. `execution.json` keeps it all.
 const MAX_REASON_CHARS: usize = 300;
 
-/// The one-line reason for a failed run, naming the file that holds the details.
+/// Longest exit reason, in characters, that the line prints: it names checks and the flag at the
+/// end, so it gets more room than an error.
+const MAX_EXIT_REASON_CHARS: usize = 1_000;
+
+/// The one-line reason for a failed run, naming the file that holds the details; for a run that
+/// completed with failures, its recorded exit reason (smoke problems, or the verdict and flag).
 fn failure_reason(location: RunLocation, outcome: &Outcome) -> Option<String> {
+	if outcome.state == RunState::CompletedWithFailures {
+		let reason = one_line_within(outcome.exit_reason.as_deref()?, MAX_EXIT_REASON_CHARS);
+		return Some(match location {
+			RunLocation::Local => reason,
+			RunLocation::Remote => format!("remote run: {reason}"),
+		});
+	}
 	if outcome.state != RunState::Failed {
 		return None;
 	}
@@ -401,6 +418,11 @@ fn failure_reason(location: RunLocation, outcome: &Outcome) -> Option<String> {
 /// escape sequence, and bidirectional-override characters are escaped as `\u{…}`. The rendered
 /// line is cut to at most [`MAX_REASON_CHARS`] characters, never inside an escape, followed by `…`.
 fn one_line(text: &str) -> String {
+	one_line_within(text, MAX_REASON_CHARS)
+}
+
+/// [`one_line`], cut to at most `max` characters.
+fn one_line_within(text: &str, max: usize) -> String {
 	let mut line = String::new();
 	let mut length = 0;
 	let mut chars = text.trim().chars().peekable();
@@ -430,7 +452,7 @@ fn one_line(text: &str) -> String {
 			c => c.to_string(),
 		};
 		let piece_length = piece.chars().count();
-		if length + piece_length > MAX_REASON_CHARS {
+		if length + piece_length > max {
 			line.push('…');
 			break;
 		}
@@ -783,6 +805,7 @@ mod tests {
 			state,
 			error: error.map(Into::into),
 			teardown: None,
+			exit_reason: None,
 		};
 		let execution = std::path::Path::new("runs/run-1").join("execution.json");
 		let local = |state, error| failure_reason(RunLocation::Local, &outcome(state, error));
@@ -807,6 +830,24 @@ mod tests {
 		assert_eq!(local(RunState::Completed, None), None);
 		assert_eq!(local(RunState::CompletedWithFailures, None), None);
 		assert_eq!(local(RunState::Stopped, Some("run cancelled")), None);
+		// A run that completed with failures prints its recorded exit reason, on one line.
+		let reason = "verdict INCONCLUSIVE: required checks with no result: a\nb; exit 1 because \
+		              of --fail-on-inconclusive (the checks are in summary.md)";
+		let failed = |state| Outcome { exit_reason: Some(reason.into()), ..outcome(state, None) };
+		assert_eq!(
+			failure_reason(RunLocation::Local, &failed(RunState::CompletedWithFailures)),
+			Some(reason.replace('\n', " ⏎ "))
+		);
+		assert_eq!(
+			failure_reason(RunLocation::Remote, &failed(RunState::CompletedWithFailures)),
+			Some(format!("remote run: {}", reason.replace('\n', " ⏎ ")))
+		);
+		let long = Outcome {
+			exit_reason: Some("x".repeat(5_000)),
+			..outcome(RunState::CompletedWithFailures, None)
+		};
+		let line = failure_reason(RunLocation::Local, &long).unwrap();
+		assert_eq!(line, format!("{}…", "x".repeat(MAX_EXIT_REASON_CHARS)));
 	}
 
 	#[test]
@@ -841,6 +882,7 @@ mod tests {
 				state: RunState::Failed,
 				error: Some(format!("a\nb\u{1b}[1m{long}")),
 				teardown: None,
+				exit_reason: None,
 			},
 		)
 		.unwrap();
@@ -866,7 +908,31 @@ mod tests {
 		assert!(matches!(cli.command, Command::Run { fail_on_verdict: true, .. }));
 		let cli =
 			Cli::try_parse_from(["polkameter", "run", "plan.xml", "--output", "runs"]).unwrap();
-		assert!(matches!(cli.command, Command::Run { fail_on_verdict: false, .. }));
+		assert!(matches!(
+			cli.command,
+			Command::Run { fail_on_verdict: false, fail_on_inconclusive: false, .. }
+		));
+		let cli = Cli::try_parse_from([
+			"polkameter",
+			"run",
+			"plan.xml",
+			"--output",
+			"runs",
+			"--fail-on-inconclusive",
+		])
+		.unwrap();
+		assert!(matches!(
+			cli.command,
+			Command::Run { fail_on_verdict: false, fail_on_inconclusive: true, .. }
+		));
+		assert!(parses(&[
+			"run",
+			"plan.xml",
+			"--output",
+			"runs",
+			"--fail-on-verdict",
+			"--fail-on-inconclusive"
+		]));
 		assert!(parses(&["agent", "serve"]));
 		assert!(parses(&["agent", "serve", "--keep-runs", "5", "--shutdown-grace", "0"]));
 		assert!(!parses(&["agent", "serve", "--keep-runs", "0"]));

@@ -338,8 +338,11 @@ fn suites(
 		}
 		suites[index].cases.extend(cases);
 	}
-	let mut execution =
-		mapped_case("execution".into(), text(outcome, "state"), text(outcome, "error"));
+	let mut execution = mapped_case(
+		"execution".into(),
+		text(outcome, "state"),
+		&execution_detail(summary, outcome),
+	);
 	// Step timings and load measurement timings are counted in their own suites.
 	execution.ms = 0;
 	suites[0].cases.push(execution);
@@ -364,14 +367,47 @@ fn load_suite(timing: &LoadTiming, summary: &Value) -> Suite {
 		}
 		load.cases.push(mapped_case(name, text(check, "status"), text(check, "detail")));
 	}
-	let mut verdict = mapped_case(
-		"overall verdict".into(),
-		text(&summary["verdict"], "result"),
-		&format!("Load stop: {}", text(&summary["stop"], "detail")),
-	);
+	let result = text(&summary["verdict"], "result");
+	let mut detail = format!("Load stop: {}", text(&summary["stop"], "detail"));
+	if result == "INCONCLUSIVE" {
+		// Say what is missing: a run that fails on INCONCLUSIVE must explain itself here.
+		if let Some(reason) = inconclusive_reason(summary) {
+			write!(detail, "; {reason}").unwrap();
+		}
+	}
+	let mut verdict = mapped_case("overall verdict".into(), result, &detail);
 	verdict.ms = timing.ms();
 	load.cases.push(verdict);
 	load
+}
+
+/// Why an INCONCLUSIVE verdict is inconclusive, by the rules that set it; `None` when the summary
+/// cannot be read as one.
+fn inconclusive_reason(summary: &Value) -> Option<String> {
+	use polkameter_plugin_sdk::observers::{checks::CheckResult, files::summary::Summary};
+	let checks: Vec<CheckResult> = serde_json::from_value(summary["checks"].clone()).ok()?;
+	let summary: Summary = serde_json::from_value(summary.clone()).ok()?;
+	Some(crate::engine::measurement::verdict_reason(&summary, &checks))
+}
+
+/// The execution case's detail: the run's error, or for a run that completed with failures and
+/// no error, why it exits 1: its recorded `exit_reason` (smoke problems, or the verdict and the
+/// flag), else, for a recording from before 0.3.0, its exit code and load verdict.
+fn execution_detail(summary: &Value, outcome: &Value) -> String {
+	let error = text(outcome, "error");
+	if !error.is_empty() || text(outcome, "state") != "completed_with_failures" {
+		return error.into();
+	}
+	let reason = text(outcome, "exit_reason");
+	if !reason.is_empty() {
+		return reason.into();
+	}
+	let verdict = text(&summary["verdict"], "result");
+	if verdict.is_empty() {
+		return String::new();
+	}
+	let code = outcome["exit_code"].as_i64().unwrap_or(1);
+	format!("exit code {code} with load verdict {verdict}")
 }
 
 fn add_section(
@@ -803,6 +839,50 @@ mod tests {
 		assert!(a.contains("[id="));
 		let mut used = BTreeMap::new();
 		assert_ne!(distinct_name("a\nb", 0, &mut used), distinct_name("a b", 1, &mut used));
+	}
+
+	#[test]
+	fn inconclusive_verdict_says_why_and_its_failed_execution_is_not_green() {
+		let summary: Value =
+			serde_json::from_str(include_str!("../../tests/fixtures/smoke-run/summary.json"))
+				.unwrap();
+		let mut summary = summary;
+		summary["breakingPoint"] = Value::Null;
+		summary["verdict"] = json!({"result": "INCONCLUSIVE"});
+		summary["checks"] = json!([{"outcome":"run","check":"plugin check",
+			"status":"no result","detail":"no data","optional":false}]);
+		let outcome = json!({"state":"completed_with_failures","exit_code":1,"error":null});
+		let suites = suites(&Value::Null, ok(vec![]), &summary, &outcome).unwrap();
+		let execution = &suites[0].cases[0];
+		assert_eq!(execution.status, Status::Failed);
+		assert_eq!(
+			execution.message,
+			"completed_with_failures: exit code 1 with load verdict INCONCLUSIVE"
+		);
+		let verdict = suites[1].cases.last().unwrap();
+		assert_eq!(verdict.status, Status::Skipped);
+		assert_eq!(
+			verdict.message,
+			"INCONCLUSIVE: Load stop: all 3 steps ran; required checks with no result: plugin check"
+		);
+		let xml = render(&suites, Path::new("/run"));
+		assert!(xml.contains("failures=\"1\""), "{xml}");
+	}
+
+	#[test]
+	fn execution_case_names_the_recorded_exit_reason() {
+		let summary: Value =
+			serde_json::from_str(include_str!("../../tests/fixtures/smoke-run/summary.json"))
+				.unwrap();
+		let reason = "smoke mode fails the run on monitor problems and required checks with no \
+		              result, whatever the --fail-on flags; fix this one: no silent loss: no data \
+		              (the checks are in summary.md)";
+		let outcome = json!({"state":"completed_with_failures","exit_code":1,"error":null,
+			"exit_reason":reason});
+		let suites = suites(&Value::Null, ok(vec![]), &summary, &outcome).unwrap();
+		let execution = &suites[0].cases[0];
+		assert_eq!(execution.status, Status::Failed);
+		assert_eq!(execution.message, format!("completed_with_failures: {reason}"));
 	}
 
 	#[test]
