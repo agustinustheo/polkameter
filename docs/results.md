@@ -257,7 +257,7 @@ Checks run on the recorded series, in this order. A check whose metric the node 
 | pvf: PVF time on validators (level 2, all parachains) | Validation time. | `warn`: a validation over 2 s, or an invalid result. `no result`: no PVF execution in a window of 12 s or more. |
 | pvf: collation funnel | Collations expired after advertisement, fetch or backing; mean backing-to-inclusion time. | `warn`: any expired, or mean over 1.5 relay blocks. `no result`: no collation generated. |
 | pool: no silent loss | Accepted transactions in no block, without error. | `fail` if any. `no result` if the pool cannot be listed. |
-| pool: the burst drains | Probes in time, backlog drained, no empty block while over 10 transactions waited. | `fail` unless all three hold. |
+| pool: the burst drains | Probes in time, backlog drained, no empty block while over 10 transactions waited. | `fail` unless all three hold. `no result` if all three hold but the collator's metrics are stale at the start or end of recovery. |
 | pool: refusals are clean | Refusals by error code. | `fail`: a refusal without an error code. `warn`: run stopped at pool intake. |
 | pool: pool work leaves time for blocks | Pool maintenance p95; validation backlog. | `fail`: p95 over half the block interval. `warn`: over 1000 waiting for validation. `no result`: no pool maintenance recorded. |
 | run: monitors recorded everything | Monitor problems. | `warn` if any. |

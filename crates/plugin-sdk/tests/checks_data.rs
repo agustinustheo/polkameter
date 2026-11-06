@@ -2,7 +2,8 @@
 
 use polkameter_plugin_sdk::observers::checks::{self, RunData, Status, Verdict};
 use polkameter_plugin_sdk::observers::files::{
-	Point, Series, Store, parse_sample_line, summary::Summary,
+	Point, Series, Store, parse_sample_line,
+	summary::{OverallStatus, Rule, Summary},
 };
 
 const SAMPLES: &str = r#"# TYPE polkameter_step gauge
@@ -454,6 +455,19 @@ fn checks_of_unmonitored_nodes_are_not_applicable_and_optional() {
 	}
 	assert!(checks::smoke_gaps(&all).iter().all(|g| !g.contains("not applicable")));
 	assert!(!get("refusals are clean").optional);
+	// Not-applicable checks alone never make a clean run INCONCLUSIVE.
+	let mut s = summary();
+	s.network.para_id = None;
+	s.stop.rule = Rule::RateCap;
+	s.stop.class = None;
+	s.breaking_point = None;
+	s.failure_modes.clear();
+	let na: Vec<_> = all
+		.into_iter()
+		.filter(|r| r.verdict.detail.starts_with("not applicable:"))
+		.collect();
+	assert_eq!(na.len(), 7);
+	assert_eq!(checks::report::overall_status(&s, &na), OverallStatus::Pass);
 }
 
 #[test]
