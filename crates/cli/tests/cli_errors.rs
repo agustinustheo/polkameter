@@ -10,6 +10,9 @@ use std::{
 
 use serde_json::Value;
 
+#[path = "support/executable.rs"]
+mod executable;
+
 /// A plan that needs no plugin and no chain.
 const CORE_PLAN: &str = r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="Core">
   <setup>
@@ -437,17 +440,14 @@ fn concurrent_registry_writers_keep_every_change() {
 /// A plugin executable that answers `$describe` with plugin `id`.
 #[cfg(unix)]
 fn script_plugin(directory: &Path, id: &str) -> PathBuf {
-	use std::os::unix::fs::PermissionsExt;
 	let manifest = format!(r#"{{"id":"{id}","version":"0.1.0","protocol":1,"operations":{{}}}}"#);
 	let path = directory.join(id);
-	std::fs::write(
+	executable::write_executable(
 		&path,
 		format!(
 			"#!/bin/sh\nread request\nprintf '%s\\n' '{{\"protocol\":1,\"id\":1,\"result\":{manifest}}}'\n"
 		),
-	)
-	.unwrap();
-	std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+	);
 	path
 }
 

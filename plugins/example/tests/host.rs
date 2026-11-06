@@ -10,6 +10,9 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
+#[path = "../../../crates/cli/tests/support/executable.rs"]
+mod executable;
+
 fn fixture() -> String {
 	include_str!("../../../examples/plugin-workflow.polkameter.xml").into()
 }
@@ -490,7 +493,7 @@ async fn teardown_does_not_restart_a_plugin_whose_file_changed() {
 	let plan = Plan::parse(&xml).unwrap();
 	let installed = registry.plugins.get_mut("example").unwrap();
 	let copy = root.join("copied-plugin");
-	std::fs::copy(&installed.executable, &copy).unwrap();
+	executable::copy_executable(&installed.executable, &copy);
 	installed.executable = copy.clone();
 	let tamper = copy.clone();
 	let sink = Arc::new(move |event: Value| {
@@ -537,14 +540,11 @@ async fn teardown_steps_run_under_their_own_timeout() {
 /// A wrapper around the example plugin, for tests that need it to misbehave.
 #[cfg(unix)]
 fn wrapper(directory: &Path, body: &str) -> PathBuf {
-	use std::os::unix::fs::PermissionsExt;
 	let script = directory.join("wrapped-plugin");
-	std::fs::write(
+	executable::write_executable(
 		&script,
 		format!("#!/bin/sh\n{body}\nexec '{}'\n", env!("CARGO_BIN_EXE_polkameter-example-plugin")),
-	)
-	.unwrap();
-	std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+	);
 	script
 }
 

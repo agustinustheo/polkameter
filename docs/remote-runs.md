@@ -13,7 +13,7 @@ export POLKAMETER_AGENT_TOKEN=$(openssl rand -hex 32)
 polkameter agent serve --bind 127.0.0.1:9901 --output-root /data/runs --keep-runs 50
 ```
 
-- `--bind` (default `127.0.0.1:9901`) must be a loopback address. The agent does not serve TLS.
+- `--bind` (default `127.0.0.1:9901`) must be a loopback address. The agent does not serve TLS. Once it listens, the agent prints `PolkaMeter: agent listening on <address>` on standard error; with port `0` (`--bind 127.0.0.1:0`) the system picks a free port, and that line names it.
 - `--token-env` (default `POLKAMETER_AGENT_TOKEN`) names the variable that holds the token. It must be set, at least 32 characters long and use at least 8 different characters. There is no flag for the token itself.
 - `--output-root` (default `target/polkameter-agent-runs`) is where each run's `run-…` directory is created.
 - `--keep-runs` (default: keep all) keeps the newest finished run directories. When a run starts, older finished `run-…` directories under `--output-root` are deleted. The previous run always survives the next start, so its client can still fetch its report. Runs in progress are never deleted. Give each agent its own `--output-root`.

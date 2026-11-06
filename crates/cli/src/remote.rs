@@ -162,6 +162,11 @@ pub async fn serve(
 	let listener = tokio::net::TcpListener::bind(address)
 		.await
 		.map_err(|error| format!("could not bind remote agent: {error}"))?;
+	// With port 0 the system picks the port: name it, so whoever started the agent can reach it.
+	let local = listener
+		.local_addr()
+		.map_err(|error| format!("could not bind remote agent: {error}"))?;
+	eprintln!("{PRODUCT_NAME}: agent listening on {local}");
 	let (close, closed) = tokio::sync::oneshot::channel::<()>();
 	let mut server = tokio::spawn(async move {
 		axum::serve(listener, app)
