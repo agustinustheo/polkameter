@@ -66,7 +66,10 @@ pub use scale_decode::DecodeAsType;
 #[doc(hidden)]
 /// Part of the plugin API (used by out-of-tree plugins).
 pub use scale_value as scale_value_reexport;
-pub use sign::{AccountInfo, Call, Mortality, SignError, TxBuilder, TxParams, account_at};
+pub use sign::{
+	AccountInfo, Call, Mortality, SignError, TxBuilder, TxParams, account_at, check_signing_types,
+	era_birth, era_period,
+};
 /// A dynamic SCALE value: the fields of a call for [`Client::call_data`], or a storage key.
 /// Re-exported from subxt, so a plugin does not need its own subxt dependency.
 pub use subxt::dynamic::Value;

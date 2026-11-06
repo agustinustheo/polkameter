@@ -9,7 +9,9 @@ use serde_json::Value;
 pub const DEFAULT_DERIVATION: &str = "//polkameter//";
 /// Flood signers when a plan sets none.
 pub const DEFAULT_FLOOD_SIGNERS: u32 = 16;
-/// Probe signers when a plan sets none.
+/// Probe signers when a plan sets neither `probe-signers` nor `probes`. With `probes`, each
+/// probe gets a signer of its own (up to [`MAX_PROBE_SIGNERS`]), so a probe the chain drops
+/// never holds back the nonces of later probes.
 pub const DEFAULT_PROBE_SIGNERS: u32 = 1;
 /// Remark payload bytes when a plan sets none.
 pub const DEFAULT_PAYLOAD_BYTES: u32 = 32;
@@ -23,9 +25,11 @@ pub const MAX_FLOOD_SIGNERS: u32 = 10_000;
 pub const MAX_PROBE_SIGNERS: u32 = 1_000;
 /// The largest remark payload.
 pub const MAX_PAYLOAD_BYTES: u32 = 16_384;
-/// Prepared transactions are written as hex JSON artifacts, which PolkaMeter reads up to 256 MiB.
-/// Stay well below it.
+/// Prepared transactions are written as hex JSON artifacts, which PolkaMeter reads up to 256 MiB
+/// each. The flood, probe and state artifacts of one prepare step stay below this in total.
 pub const MAX_ARTIFACT_BYTES: u64 = 200 * 1024 * 1024;
+/// The longest `expected-seconds`: a week.
+pub const MAX_EXPECTED_SECONDS: u64 = 7 * 24 * 3600;
 
 /// A string input.
 pub fn text<'a>(inputs: &'a Value, name: &str) -> Result<&'a str> {
@@ -128,6 +132,15 @@ pub fn mortality(inputs: &Value) -> Result<Option<u64>> {
 	Ok(Some(period))
 }
 
+/// The mortality `init` and the plugin's error messages suggest for a plan that runs about
+/// `seconds` after its prepare step on a chain with `block_seconds` blocks: the next power of
+/// two of at least twice the blocks the run spans, from 4; `None` when that is above 65536, the
+/// longest mortality (sign immortal transactions then).
+pub fn mortality_for(seconds: f64, block_seconds: f64) -> Option<u64> {
+	let blocks = (2.0 * seconds / block_seconds.max(0.1)).ceil().max(4.0);
+	(blocks <= 65_536.0).then(|| (blocks as u64).next_power_of_two())
+}
+
 /// Who signs the load: the seed, the derivation prefix and how many flood and probe signers.
 /// Flood signers take indices `0..flood`, probe signers `flood..flood + probe`, so the two sets
 /// never share an account.
@@ -142,8 +155,15 @@ pub struct Signers {
 }
 
 impl Signers {
-	/// The signer layout from `derivation`, `flood-signers` and `probe-signers`.
+	/// The signer layout from `derivation`, `flood-signers` and `probe-signers`. Without
+	/// `probe-signers`, each of `probes` probes gets its own signer, up to
+	/// [`MAX_PROBE_SIGNERS`]; without either, one signer signs every probe.
 	pub fn parse(inputs: &Value) -> Result<Self> {
+		let probes = match &inputs["probes"] {
+			Value::Null => None,
+			_ => Some(small(inputs, "probes", 1..=MAX_PROBES, None)?),
+		};
+		let default_probe = probes.map_or(DEFAULT_PROBE_SIGNERS, |p| p.min(MAX_PROBE_SIGNERS));
 		let derivation = match &inputs["derivation"] {
 			Value::Null => DEFAULT_DERIVATION.to_owned(),
 			Value::String(s) => s.clone(),
@@ -163,12 +183,7 @@ impl Signers {
 				1..=MAX_FLOOD_SIGNERS,
 				Some(DEFAULT_FLOOD_SIGNERS),
 			)?,
-			probe: small(
-				inputs,
-				"probe-signers",
-				1..=MAX_PROBE_SIGNERS,
-				Some(DEFAULT_PROBE_SIGNERS),
-			)?,
+			probe: small(inputs, "probe-signers", 1..=MAX_PROBE_SIGNERS, Some(default_probe))?,
 		})
 	}
 
@@ -216,6 +231,8 @@ pub struct Prepare {
 	pub signers: Signers,
 	/// Mortality period, `None` for immortal.
 	pub mortality: Option<u64>,
+	/// How long the plan runs after this step, for checking the mortality.
+	pub expected_seconds: Option<u64>,
 	/// Tip per transaction.
 	pub tip: u128,
 	/// The call.
@@ -273,21 +290,26 @@ impl Prepare {
 			probes,
 			signers,
 			mortality: mortality(inputs)?,
+			expected_seconds: match &inputs["expected-seconds"] {
+				Value::Null => None,
+				_ => Some(integer(inputs, "expected-seconds", 1..=MAX_EXPECTED_SECONDS, None)?),
+			},
 			tip: amount(inputs, "tip", Some(0))?,
 			kind,
 		};
 		let estimate = prepared.artifact_estimate();
 		ensure!(
 			estimate <= MAX_ARTIFACT_BYTES,
-			"count {count} with these payloads needs about {} MiB of prepared transactions; keep it under {} MiB by lowering count or payload-bytes",
-			estimate / (1024 * 1024),
+			"count {count} and probes {probes} with these payloads need about {} MiB of prepared transactions and state; keep it under {} MiB by lowering count, probes or payload-bytes",
+			estimate.div_ceil(1024 * 1024),
 			MAX_ARTIFACT_BYTES / (1024 * 1024)
 		);
 		Ok(prepared)
 	}
 
-	/// A generous estimate of the flood artifact's size: each transaction as hex, with its hash
-	/// and metadata.
+	/// A generous estimate of the bytes of the step's three artifacts: the flood and the probes,
+	/// each transaction as hex with its hash and metadata, and the state, one entry per
+	/// transaction.
 	pub fn artifact_estimate(&self) -> u64 {
 		let call = match self.kind {
 			Kind::Remarks { payload_bytes, .. } => u64::from(payload_bytes) + 8,
@@ -295,7 +317,9 @@ impl Prepare {
 		};
 		// Signature, address and extensions take about 110 bytes; hex doubles the bytes.
 		let per_tx = (call + 120) * 2 + 64 + 200;
-		per_tx * u64::from(self.count)
+		// "<hash>": {"signer": "0x<64 hex>", "nonce": <up to 20 digits>}
+		let per_state = 66 + 2 + 2 + 10 + 68 + 10 + 20 + 4;
+		(per_tx + per_state) * (u64::from(self.count) + u64::from(self.probes))
 	}
 }
 
@@ -371,7 +395,8 @@ mod tests {
 			Signers {
 				derivation: DEFAULT_DERIVATION.into(),
 				flood: DEFAULT_FLOOD_SIGNERS,
-				probe: DEFAULT_PROBE_SIGNERS
+				// One signer per probe.
+				probe: 20
 			}
 		);
 		assert_eq!(prepared.mortality, None);
@@ -499,6 +524,49 @@ mod tests {
 		));
 		assert!(message.contains("MiB of prepared transactions"), "{message}");
 		assert!(Prepare::remarks(&json!({"count": 100_000, "probes": 200})).is_ok());
+	}
+
+	#[test]
+	fn probes_count_toward_the_artifact_limit() {
+		// The flood alone fits, but its probes and state push it over.
+		let flood = Prepare::remarks(&json!({"count": 250_000, "probes": 1})).unwrap();
+		assert!(flood.artifact_estimate() <= MAX_ARTIFACT_BYTES);
+		let message = error(Prepare::remarks(&json!({"count": 250_000, "probes": 100_000})));
+		assert!(message.contains("probes 100000"), "{message}");
+		let small = Prepare::remarks(&json!({"count": 10, "probes": 5, "flood-signers": 1}))
+			.unwrap()
+			.artifact_estimate();
+		let more = Prepare::remarks(&json!({"count": 10, "probes": 50, "flood-signers": 1}))
+			.unwrap()
+			.artifact_estimate();
+		assert!(more > small);
+	}
+
+	#[test]
+	fn each_probe_gets_a_signer_by_default() {
+		assert_eq!(Signers::parse(&json!({})).unwrap().probe, 1);
+		assert_eq!(Signers::parse(&json!({"probes": 33})).unwrap().probe, 33);
+		assert_eq!(Signers::parse(&json!({"probes": 5000})).unwrap().probe, MAX_PROBE_SIGNERS);
+		assert_eq!(Signers::parse(&json!({"probes": 33, "probe-signers": 2})).unwrap().probe, 2);
+		let prepared = Prepare::remarks(&json!({"count": 100, "probes": 40})).unwrap();
+		assert_eq!(prepared.signers.probe, 40);
+		assert!(error(Signers::parse(&json!({"probes": 0}))).contains("probes must be between"));
+	}
+
+	#[test]
+	fn mortality_covers_twice_the_run() {
+		// 306 s of run at 6 s blocks span 51 blocks: twice that, rounded up, is 128.
+		assert_eq!(mortality_for(306.0, 6.0), Some(128));
+		assert_eq!(mortality_for(1.0, 6.0), Some(4));
+		assert_eq!(mortality_for(3600.0, 0.5), Some(16_384));
+		assert_eq!(mortality_for(86_400.0, 1.0), None);
+		let prepared =
+			Prepare::remarks(&json!({"count": 16, "probes": 1, "expected-seconds": 600})).unwrap();
+		assert_eq!(prepared.expected_seconds, Some(600));
+		assert!(
+			error(Prepare::remarks(&json!({"count": 16, "probes": 1, "expected-seconds": 0})))
+				.contains("expected-seconds must be between 1")
+		);
 	}
 
 	#[test]

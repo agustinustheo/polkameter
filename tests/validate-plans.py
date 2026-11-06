@@ -23,6 +23,7 @@ NAMESPACE = "https://polkameter.dev/schema/plan"
 ET.register_namespace("", NAMESPACE)
 SCHEMA = ROOT / "schemas/polkameter-plan.xsd"
 CLI = Path(os.environ.get("POLKAMETER", ROOT / "target/debug/polkameter")).resolve()
+SKILL = ROOT / "skills/polkameter"
 
 
 def plan(children="", attrs='version="1" name="test"'):
@@ -83,6 +84,8 @@ class CodeBlocks(HTMLParser):
 def published_plans():
     for path in sorted((ROOT / "examples").rglob("*.polkameter.xml")):
         yield str(path.relative_to(ROOT)), path.read_text()
+    for path in sorted((SKILL / "templates").glob("*.polkameter.xml")):
+        yield str(path.relative_to(ROOT)), path.read_text()
     for path in sorted((ROOT / "docs").rglob("*")):
         if path.suffix == ".md":
             # Accept both Markdown fence styles, including indented list fences.
@@ -135,6 +138,45 @@ class PlanValidation(unittest.TestCase):
         if not schema_valid:
             for fragment in schema_error:
                 self.assertIn(fragment, schema.stderr)
+
+
+class SkillTemplates(unittest.TestCase):
+    """The skill's plan templates are copies of the example plans, so the plans CI runs are the
+    ones an assistant copies."""
+
+    def test_plan_templates_equal_their_examples(self):
+        templates = sorted((SKILL / "templates").glob("*.polkameter.xml"))
+        self.assertTrue(templates, "no plan templates in the skill")
+        for template in templates:
+            with self.subTest(template.name):
+                example = ROOT / "examples" / template.name
+                self.assertTrue(example.is_file(), f"examples/{template.name} is missing")
+                self.assertEqual(template.read_text(), example.read_text(),
+                                 f"copy examples/{template.name} over {template.relative_to(ROOT)}")
+
+    def test_dev_chain_page_shows_the_ci_templates(self):
+        page = (ROOT / "docs/dev-chain.md").read_text()
+        for name in ["github-workflow.yml", "gitlab-ci.yml"]:
+            lines = (SKILL / "templates" / name).read_text().splitlines()
+            body = "\n".join(lines[next(i for i, l in enumerate(lines) if not l.startswith("#")):])
+            with self.subTest(name):
+                self.assertIn(body, page, f"docs/dev-chain.md must show templates/{name} without its header")
+
+    def test_claude_code_plugin_follows_the_workspace_version(self):
+        manifest = json.loads((ROOT / ".claude-plugin/plugin.json").read_text())
+        marketplace = json.loads((ROOT / ".claude-plugin/marketplace.json").read_text())
+        version = re.search(r'^version = "([^"]+)"', (ROOT / "Cargo.toml").read_text(), re.MULTILINE)[1]
+        self.assertEqual(manifest["version"], version, "bump .claude-plugin/plugin.json with the workspace")
+        entry = next(p for p in marketplace["plugins"] if p["name"] == manifest["name"])
+        self.assertEqual(entry["source"], "./")
+        self.assertTrue((ROOT / "skills" / manifest["name"] / "SKILL.md").is_file())
+
+    def test_skill_links_resolve(self):
+        for document in [SKILL / "SKILL.md", SKILL / "checklist.md"]:
+            for target in re.findall(r"\]\(((?:templates/)?[\w.-]+\.(?:md|xml|yml|rs))\)",
+                                     document.read_text()):
+                with self.subTest(f"{document.name} -> {target}"):
+                    self.assertTrue((SKILL / target).is_file(), target)
 
 
 COUNTS = {"published": 0, "agreement": 0, "cli_only": 0}

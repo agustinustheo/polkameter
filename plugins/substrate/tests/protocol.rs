@@ -155,18 +155,24 @@ async fn polkameter_installs_it_and_accepts_the_example_plans() {
 		assert_eq!(plugin.id, "substrate", "{name}");
 		assert_eq!(plugin.version, env!("CARGO_PKG_VERSION"), "{name}: plugin version");
 	}
-	// The Agent Skill bundles copies of the example plans; they must not drift.
+	// The Agent Skill bundles copies of the example plans, under the same names; they must not
+	// drift. tests/validate-plans.py checks the same.
 	let templates = concat!(env!("CARGO_MANIFEST_DIR"), "/../../skills/polkameter/templates");
-	for (template, example) in [
-		("remarks", "substrate-remarks"),
-		("remarks-ci", "substrate-remarks-ci"),
-		("transfers-ci", "substrate-transfers-ci"),
-	] {
-		let read = |path: String| std::fs::read_to_string(path).unwrap();
+	let mut copies = 0;
+	for entry in std::fs::read_dir(templates).unwrap() {
+		let path = entry.unwrap().path();
+		let name = path.file_name().unwrap().to_string_lossy().into_owned();
+		if !name.ends_with(".polkameter.xml") {
+			continue;
+		}
+		copies += 1;
+		let example = std::fs::read_to_string(format!("{examples}/{name}"))
+			.unwrap_or_else(|e| panic!("examples/{name}: {e}"));
 		assert_eq!(
-			read(format!("{templates}/{template}.polkameter.xml")),
-			read(format!("{examples}/{example}.polkameter.xml")),
-			"skills/polkameter/templates/{template}.polkameter.xml differs from examples/{example}.polkameter.xml"
+			std::fs::read_to_string(&path).unwrap(),
+			example,
+			"skills/polkameter/templates/{name} differs from examples/{name}"
 		);
 	}
+	assert_eq!(copies, 3, "the skill holds three plan templates");
 }

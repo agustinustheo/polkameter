@@ -9,9 +9,11 @@ Other 0.3.0 changes still need entries here.
 ### Substrate plugin and dev chain
 
 - New: the substrate plugin, `polkameter-substrate-plugin`, loads any chain with the standard `System` and `Balances` pallets without plugin code. It funds signers derived from one seed, signs remark or transfer floods and probes, and checks the state after a run. The release archives, the install script, the container and the action include it; it is not published on crates.io.
-- New: `polkameter init --rpc <endpoint>` writes a load plan for the substrate plugin from a live chain.
-- New: `scripts/dev-chain.sh start|stop` runs a pinned, checksummed `polkadot-omni-node` dev chain with the parachain template runtime, or your own runtime, for local and CI load tests.
-- New: an Agent Skill in `skills/polkameter`, `AGENTS.md` and `docs/llms.txt` help AI coding assistants set PolkaMeter up.
+- The substrate plugin's `fund-accounts` checks before it sends anything that the funder can spend the top-ups, the fees and its existential deposit, and after the transfers are final that every signer can spend `amount`; it fails, naming the signers and the dispatch error, instead of reporting success. It first waits for the funder's and the signers' transactions still in the pool, so a retry never tops up twice. Balances are spendable (free minus frozen) everywhere.
+- The substrate plugin gives each probe its own signer by default (pass `probes` to `fund-accounts` too), refuses a second prepare step that signs with the same accounts, checks `mortality` against the new `expected-seconds` input, signs periods above 4096 blocks against the era's first block, and checks in `preflight` that the runtime's address and signature types take sr25519 keys and that the chain accepts its transaction format.
+- New: `polkameter init --rpc <endpoint>` writes a load plan for the substrate plugin from a live chain. It sets the mortality from the measured block time and the plan's length, names the credential profile `substrate-dev`, and creates the `--output` directory.
+- New: `scripts/dev-chain.sh start|stop` runs a pinned, checksummed `polkadot-omni-node` dev chain with the parachain template runtime, or your own runtime, for local and CI load tests. It keeps its files in `.polkameter/dev-chain` and signals only the node it started.
+- New: an Agent Skill in `skills/polkameter`, `AGENTS.md` and `docs/llms.txt` help AI coding assistants set PolkaMeter up. The repository is a Claude Code plugin marketplace: `/plugin marketplace add agustinustheo/polkameter`, then `/plugin install polkameter@polkameter`.
 - The GitHub Action's `plugins` input accepts a bare executable name, such as `polkameter-substrate-plugin`, and finds it on `PATH`.
 
 ### GitHub Action
@@ -63,7 +65,7 @@ Also new:
 
 ### Plugin SDK (`polkameter-plugin-sdk`)
 
-- New in the `chain` feature: `TxBuilder` signs calls for any runtime from its metadata, with an explicit nonce, mortality and tip, and `sign_batch` signs many with consecutive nonces. `keypair`, `derive_range` and `parse_account` make test signers from secret URIs. `Client::account`, `Client::existential_deposit`, `Client::finalized_head` and `Client::tx_builder` read what signing needs.
+- New in the `chain` feature: `TxBuilder` signs calls for any runtime from its metadata, with an explicit nonce, mortality and tip, and `sign_batch` signs many with consecutive nonces. `keypair`, `derive_range` and `parse_account` make test signers from secret URIs. `Client::account`, `Client::existential_deposit`, `Client::finalized_head` and `Client::tx_builder` read what signing needs. `TxBuilder::mortal` reads the hash of the era's first block, which for periods above 4096 is before the builder's block (`era_birth`), and `sign` refuses a mortality that starts elsewhere. `TxBuilder::check_signing_types` tells whether sr25519 keys can sign for the runtime. `Client::query_fee`, `Client::spendable`, `AccountInfo::spendable` and `Client::recent_block_seconds` are new.
 - `observers::files::now_ms()` no longer reads the wall clock on every call. It reads it once per process and then advances with tokio's monotonic clock, so it never goes back and ignores wall-clock steps. Timestamps keep their epoch meaning. `wall_ms()` returns the raw wall clock, and `EpochClock` is the clock itself.
 - `NodeSample`, `Loss` and `OnChain` are `#[non_exhaustive]`, so new fields can be added without breaking plugins. Build a `NodeSample` with `NodeSample::new`. Start a `Loss` or `OnChain` from `Default` and set its fields. Reading them and deserializing them is unchanged.
 - New fields:

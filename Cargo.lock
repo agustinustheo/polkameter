@@ -4192,6 +4192,7 @@ dependencies = [
  "futures-util",
  "hex",
  "scale-decode",
+ "scale-info",
  "scale-value",
  "serde",
  "serde_json",

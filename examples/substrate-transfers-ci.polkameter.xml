@@ -23,6 +23,7 @@
       <input name="target" ref="targets.chain"/>
       <input name="seed" ref="credentials.seed"/>
       <input name="flood-signers" value="4"/>
+      <input name="probes" ref="run.probeBudget"/>
       <input name="amount" value="100000000000000"/>
     </step>
     <step id="prepare" use="substrate.prepare-transfers" timeout-ms="120000">

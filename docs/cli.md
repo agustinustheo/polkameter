@@ -1,7 +1,7 @@
 # CLI reference
 
 <!-- v0.3.0: remove after release -->
-> **Unreleased:** This page describes v0.3.0. The published CLI is v0.2.0, which has no `--junit` and writes no `junit.xml`. To use them now, build from source with `cargo install --locked --git https://github.com/agustinustheo/polkameter --rev 58921b7d506f9987db68fc8084b2fb8f13649f94 polkameter`.
+> **Unreleased:** This page describes v0.3.0. The published CLI is v0.2.0, which has no `--junit`, writes no `junit.xml` and has no `init`. To use them now, build from source with `cargo install --locked --git https://github.com/agustinustheo/polkameter --rev 58921b7d506f9987db68fc8084b2fb8f13649f94 polkameter`.
 
 `polkameter` validates, preflights and runs plans, reports on runs, manages plugins and serves a remote agent. Run `polkameter COMMAND --help` for one command's flags. Errors: see [Troubleshooting](troubleshooting.md).
 
@@ -29,8 +29,8 @@ polkameter init --rpc ENDPOINT [--kind remarks|transfers] [--profile PROFILE] [-
 | --- | --- | --- | --- | --- | --- |
 | `--rpc` | URI | yes | none | starts with `ws://` or `wss://` | The chain's endpoint |
 | `--kind` | enum | no | `remarks` | `remarks` or `transfers` | The call the plan loads the chain with |
-| `--profile` | string | no | `substrate` | not empty | The credential profile the plan names for the seed |
-| `--output` | path | no | standard output | | The plan file |
+| `--profile` | string | no | `substrate-dev` | not empty | The credential profile the plan names for the seed |
+| `--output` | path | no | standard output | | The plan file. `init` creates its directory before it contacts the chain |
 | `--force` | flag | no | off | | Replace an existing `--output` file |
 
 An unreachable chain exits with code `3`. An existing `--output` file without `--force` exits with code `2`.

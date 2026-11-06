@@ -4,7 +4,7 @@ Every crate shares `[workspace.package].version` in the root `Cargo.toml`. Inter
 
 ## Cut a release
 
-1. Update the workspace version and every internal dependency version. Run `cargo +1.93.0 check --workspace` so `Cargo.lock` follows. Retitle the `Unreleased` section of `CHANGELOG.md` with the version, and copy its notes into the GitHub release after publication.
+1. Update the workspace version, every internal dependency version and the `version` in `.claude-plugin/plugin.json`. Run `cargo +1.93.0 check --workspace` so `Cargo.lock` follows. Retitle the `Unreleased` section of `CHANGELOG.md` with the version, and copy its notes into the GitHub release after publication. After the release is published, remove each `vX.Y.Z: remove after release` marker for that version (`grep -rn 'vX.Y.Z: remove after release' docs skills`) together with the clause it marks, and where a marker says so, replace `main` with the release tag.
 2. Run the checks in the README, `python3 tests/distribution.py`, `shellcheck install.sh`, `actionlint`, and `cargo +1.93.0 publish --workspace --exclude polkameter-desktop --exclude polkameter-example-plugin --exclude polkameter-substrate-plugin --dry-run --locked`.
 3. Commit, merge to `main`, then tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`.
 

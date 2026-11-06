@@ -1,12 +1,19 @@
 # Stress-test a local dev chain
 
+<!-- v0.3.0: remove after release -->
+> **Unreleased:** The substrate plugin, `polkameter init` and the CI jobs below need v0.3.0, which is not released yet. Until then, build the CLI and the plugin from a checkout, as below, and run the CI jobs only after the release.
+
 You will start a Polkadot SDK dev chain with one script, load it with the [substrate plugin](substrate-plugin.md), and find the rate at which it stops keeping up. The same steps run in CI.
 
 The script runs `polkadot-omni-node` in dev mode with the parachain template runtime. That runtime has the standard `System`, `Balances` and `Sudo` pallets, and `//Alice` holds funds. One process produces a block every 6 seconds, and every block is final at once. The script pins the node to the `polkadot-stable2609-1` release and the runtime to the template's `v0.0.5` release, and checks both downloads against SHA-256 sums.
 
-You need Linux on x86-64 or macOS on Apple silicon, `bash`, `curl`, PolkaMeter and the substrate plugin. [Install](install.md) covers PolkaMeter. From v0.3.0, the install script and the container also install `polkameter-substrate-plugin`. From a checkout, build it with `cargo build -p polkameter-substrate-plugin`.
+You need Linux on x86-64 or macOS on Apple silicon, `bash`, `curl`, PolkaMeter and the substrate plugin. [Install](install.md) covers PolkaMeter. From v0.3.0, the install script and the container also install `polkameter-substrate-plugin`; `cargo install --locked polkameter` does not. From a checkout, build both:
 
-Run every command below from the root of a PolkaMeter checkout.
+```sh
+cargo build -p polkameter -p polkameter-substrate-plugin
+```
+
+Run every command below from the root of a PolkaMeter checkout, with `target/debug` on your `PATH` or `polkameter` installed.
 
 ## Start the chain
 
@@ -17,11 +24,11 @@ scripts/dev-chain.sh start
 ```text
 dev-chain: downloading https://github.com/paritytech/polkadot-sdk/releases/download/polkadot-stable2609-1/polkadot-omni-node-aarch64-apple-darwin
 dev-chain: downloading https://github.com/paritytech/polkadot-sdk-parachain-template/releases/download/v0.0.5/parachain_template_runtime.compact.compressed.wasm
-dev-chain: started pid 3216, log target/dev-chain/node.log
+dev-chain: started pid 38403, log .polkameter/dev-chain/node.log
 dev-chain: ready at ws://127.0.0.1:9944, block 21, 6000 ms blocks
 ```
 
-The first start downloads about 155 MB into `target/dev-chain/bin`. Later starts reuse the files when their checksums match. `start` returns once the chain has 21 blocks, about two minutes, because preflight measures the block time over 20 blocks.
+The first start downloads about 155 MB into `.polkameter/dev-chain/bin`, under the directory you run it from. Add `.polkameter/` to your `.gitignore`. Later starts reuse the files when their checksums match. `start` returns once the chain has 21 blocks, about two minutes, because preflight measures the block time over 20 blocks.
 
 > **Warning:** `start` wipes the chain's data from the previous start. Each start is a new chain.
 
@@ -44,7 +51,7 @@ The example plans name the credential profile `substrate-dev`. The plugin derive
 
 ## Run the remarks plan
 
-[`examples/substrate-remarks.polkameter.xml`](https://github.com/agustinustheo/polkameter/blob/main/examples/substrate-remarks.polkameter.xml) funds 16 flood signers and a probe signer, signs 65,000 remarks, and ramps from 100 to 600 transactions per second in steps of 30 seconds:
+[`examples/substrate-remarks.polkameter.xml`](https://github.com/agustinustheo/polkameter/blob/main/examples/substrate-remarks.polkameter.xml) funds 16 flood signers and one signer per probe, signs 65,000 remarks, and ramps from 100 to 600 transactions per second in steps of 30 seconds:
 
 ```sh
 polkameter run examples/substrate-remarks.polkameter.xml --output target/runs --fail-on-verdict
@@ -124,7 +131,7 @@ A transfer weighs more than a remark, so a block holds fewer: 2,309 transfers fi
 
 ## Generate a plan for your chain
 
-`polkameter init` writes a plan for the chain at an endpoint. It checks the runtime's calls and measures the block time:
+`polkameter init` writes a plan for the chain at an endpoint. It checks the runtime's calls, measures the block time, and sets the transactions' mortality to cover the run:
 
 ```sh
 polkameter init --rpc ws://127.0.0.1:9944 --profile substrate-dev --output target/init.polkameter.xml
@@ -163,7 +170,7 @@ Set `POLKAMETER_DEV_RUNTIME` to your runtime's compressed Wasm to run it instead
 POLKAMETER_DEV_RUNTIME=<path-to-your-runtime>.compact.compressed.wasm scripts/dev-chain.sh start
 ```
 
-The runtime must run on `polkadot-omni-node`: a parachain runtime with Aura, as the parachain template builds. It must have a genesis preset named `development`, or the one you name in `POLKAMETER_DEV_PRESET`, that funds `//Alice`. Its block time is the runtime's slot duration, so set the plan's `block-interval-seconds` to match.
+The runtime must run on `polkadot-omni-node`: a parachain runtime with Aura, as the parachain template builds. It must have a genesis preset named `development`, or the one you name in `POLKAMETER_DEV_PRESET`, that funds `//Alice`. Its block time is the runtime's slot duration, so `start` prints no block time for it. Set the plan's `block-interval-seconds` to the slot duration; `polkameter init` measures it for you.
 
 ## Stop the chain
 
@@ -172,17 +179,17 @@ scripts/dev-chain.sh stop
 ```
 
 ```text
-dev-chain: stopped pid 36098
+dev-chain: stopped pid 38403
 ```
 
-`stop` stops only the node that `start` started.
+`stop` stops only the node that `start` started. It checks that the process in its pid file is still that `polkadot-omni-node`, started at the same time, so it never signals a process that reused the pid.
 
 ## Script settings
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `POLKAMETER_DEV_CHAIN_DIR` | `target/dev-chain` | Where the binaries, chain spec, chain data and `node.log` go |
-| `POLKAMETER_DEV_CHAIN_PORT` | `9944` | The JSON-RPC port, for `ws://` and `http://` |
+| `POLKAMETER_DEV_CHAIN_DIR` | `.polkameter/dev-chain` | Where the binaries, chain spec, chain data and `node.log` go |
+| `POLKAMETER_DEV_CHAIN_PORT` | `9944` | The JSON-RPC port, for `ws://` and `http://`. If another program uses the port, `start` fails and names this variable |
 | `POLKAMETER_DEV_BLOCK_MS` | `6000` | Block time in milliseconds. The template runtime's timestamps assume 6000 |
 | `POLKAMETER_DEV_WAIT_BLOCKS` | `21` | Blocks `start` waits for |
 | `POLKAMETER_DEV_POOL_TYPE` | `single-state` | The transaction pool. See below |
@@ -194,7 +201,22 @@ The script uses the single-state transaction pool. This node release's default, 
 
 ## Run it in GitHub Actions
 
-This job starts the dev chain, runs the short CI plans with `--fail-on-verdict`, and uploads the run directories. It caches the downloads on the script's hash. It needs v0.3.0 or newer, whose release archives hold the plugin. Save it as `.github/workflows/load-test.yml` in your repository, with `dev-chain.sh` copied from `scripts/` and the plan copied from `examples/`:
+This job starts the dev chain, runs the short CI plan with `fail-on: verdict`, and uploads the run directory. It caches the downloads on the script's hash. It needs v0.3.0 or newer, whose release archives hold the plugin. In your repository, commit:
+
+- the job as `.github/workflows/load-test.yml`;
+- `dev-chain.sh` at the repository root, from the same PolkaMeter version;
+- the CI plan as `plans/substrate-remarks-ci.polkameter.xml`, from [`examples/`](https://github.com/agustinustheo/polkameter/blob/main/examples/substrate-remarks-ci.polkameter.xml).
+
+<!-- v0.3.0: remove after release (and replace main with v0.3.0) -->
+Until v0.3.0 is tagged, fetch the script from `main`:
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/agustinustheo/polkameter/main/scripts/dev-chain.sh
+mkdir -p plans
+curl -fsSL -o plans/substrate-remarks-ci.polkameter.xml https://raw.githubusercontent.com/agustinustheo/polkameter/main/examples/substrate-remarks-ci.polkameter.xml
+```
+
+The plan's `<plugin id="substrate" version="0.3.0">` must equal the action's `version` input. The plugin ships with the CLI, and PolkaMeter refuses a plugin of another version, so change both together when you upgrade.
 
 ```yaml
 name: load-test
@@ -209,47 +231,52 @@ jobs:
   load-test:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    env:
-      POLKAMETER_DEV_CHAIN_DIR: ${{ github.workspace }}/.dev-chain
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The node and runtime are pinned in dev-chain.sh; cache them on its hash.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: .dev-chain/bin
+          path: .polkameter/dev-chain/bin
           key: dev-chain-${{ runner.os }}-${{ hashFiles('dev-chain.sh') }}
       - name: Start the dev chain
         run: bash dev-chain.sh start
-      - uses: agustinustheo/polkameter@v0
+      # To test your own runtime instead of the template, build its wasm first and set
+      # POLKAMETER_DEV_RUNTIME to its path on the step above.
+      - id: load
+        # @v0 is the action; version pins the CLI and the substrate plugin it installs.
+        uses: agustinustheo/polkameter@v0
         with:
+          version: 0.3.0
           plan: plans/substrate-remarks-ci.polkameter.xml
           plugins: polkameter-substrate-plugin
           credentials: substrate-dev=POLKAMETER_SUBSTRATE_SEED
           fail-on: verdict
         env:
+          # //Alice is funded on the dev chain. On a shared network, use a secret instead.
           POLKAMETER_SUBSTRATE_SEED: //Alice
       - name: Stop the dev chain
         if: always()
         run: bash dev-chain.sh stop
 ```
 
-`plugins: polkameter-substrate-plugin` names the plugin installed with the CLI. [Run PolkaMeter in CI](ci.md) lists the action's inputs. The PolkaMeter repository runs the same steps from source in its `dev-chain` CI job.
+`plugins: polkameter-substrate-plugin` names the plugin installed with the CLI. [Run PolkaMeter in CI](ci.md) lists the action's inputs. The PolkaMeter repository runs the same steps from source in its `dev-chain` CI job. The PolkaMeter skill holds this job as `templates/github-workflow.yml`.
 
 ## Run it in GitLab CI
 
-GitLab needs a Linux x86-64 runner. Add this job to `.gitlab-ci.yml`, with `dev-chain.sh` and the plan in your repository:
+GitLab needs a Linux x86-64 runner. Add this job to `.gitlab-ci.yml`, with `dev-chain.sh` and the plan committed as for GitHub. `POLKAMETER_VERSION` must equal the plan's `<plugin version>`:
 
 ```yaml
 load-test:
   image: debian:bookworm-slim
   variables:
     POLKAMETER_VERSION: "0.3.0"
-    POLKAMETER_DEV_CHAIN_DIR: "$CI_PROJECT_DIR/.dev-chain"
     POLKAMETER_PLUGIN_REGISTRY: /tmp/polkameter-plugins.json
+    # //Alice is funded on the dev chain. On a shared network, use a masked CI/CD variable.
     POLKAMETER_SUBSTRATE_SEED: //Alice
   cache:
     key:
       files: [dev-chain.sh]
-    paths: [.dev-chain/bin]
+    paths: [.polkameter/dev-chain/bin]
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends ca-certificates curl
     - curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh | sh -s -- "$POLKAMETER_VERSION"
@@ -258,6 +285,7 @@ load-test:
     - bash dev-chain.sh start
     - polkameter plugin install "$HOME/.local/bin/polkameter-substrate-plugin"
     - polkameter plugin credential substrate-dev POLKAMETER_SUBSTRATE_SEED
+    - polkameter validate plans/substrate-remarks-ci.polkameter.xml
     - polkameter run plans/substrate-remarks-ci.polkameter.xml --output polkameter-runs --junit test-results/polkameter.xml --fail-on-verdict
   after_script:
     - bash dev-chain.sh stop

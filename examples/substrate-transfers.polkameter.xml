@@ -20,11 +20,12 @@
     </step>
   </preflight>
   <setup>
-    <!-- Tops up the 16 flood signers and the probe signer to 1000 UNIT from the seed account. -->
+    <!-- Tops up the 16 flood signers and one signer per probe to 1000 UNIT from the seed account. -->
     <step id="fund" use="substrate.fund-accounts" timeout-ms="300000">
       <input name="target" ref="targets.chain"/>
       <input name="seed" ref="credentials.seed"/>
       <input name="flood-signers" value="16"/>
+      <input name="probes" ref="run.probeBudget"/>
       <input name="amount" value="1000000000000000"/>
     </step>
     <!-- The ramp sends at most 30 s x (80 + 160 + ... + 480) = 50,400 transactions. -->
@@ -34,7 +35,10 @@
       <input name="flood-signers" value="16"/>
       <input name="count" value="52000"/>
       <input name="probes" ref="run.probeBudget"/>
-      <input name="mortality" value="1024"/>
+      <!-- The run takes about 400 s after this step. 256 blocks of 6 s cover it twice over;
+           raise expected-seconds with the ramp, and the step checks the mortality. -->
+      <input name="mortality" value="256"/>
+      <input name="expected-seconds" value="400"/>
     </step>
   </setup>
   <load target="chain" source-ref="steps.prepare.flood" probes-ref="steps.prepare.probes"

@@ -21,6 +21,7 @@ chain = [
 	"dep:scale-value",
 	"dep:scale-decode",
 	"dep:frame-decode",
+	"dep:scale-info",
 	"dep:thiserror",
 ]
 # Recording and judging a run: run files, metric registry, block walker and checks
@@ -42,6 +43,7 @@ subxt-signer = { version = "=0.51.1", default-features = false, features = ["sr2
 scale-value = { version = "0.18.1", optional = true }
 scale-decode = { version = "0.16.2", features = ["derive"], optional = true }
 frame-decode = { version = "0.18", optional = true }
+scale-info = { version = "2.11.6", default-features = false, features = ["std"], optional = true }
 tokio-util = { workspace = true, optional = true }
 futures-util = { version = "0.3", default-features = false, features = ["std"], optional = true }
 

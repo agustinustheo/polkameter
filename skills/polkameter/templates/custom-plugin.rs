@@ -1,5 +1,5 @@
-//! A starting point for a plugin for a runtime the substrate plugin cannot load: a custom call, or
-//! a transaction extension that carries data. Use it as `src/main.rs` with this `Cargo.toml`:
+//! A starting point for a plugin that loads a runtime with calls of its own: a call the
+//! substrate plugin does not send. Use it as `src/main.rs` with this `Cargo.toml`:
 //!
 //! ```toml
 //! [dependencies]
@@ -9,9 +9,25 @@
 //! tokio = { version = "1", features = ["full"] }
 //! ```
 //!
+//! <!-- v0.3.0: remove after release -->
+//! Until polkameter-plugin-sdk 0.3 is on crates.io, depend on the repository instead:
+//! `polkameter-plugin-sdk = { git = "https://github.com/agustinustheo/polkameter", branch = "main", features = ["chain"] }`.
+//!
 //! Replace `System.remark` with your call and its fields. Keep secrets in credential profiles:
-//! the plan passes the seed as `<input name="seed" ref="credentials.seed"/>`. Fund the two
-//! derived signers before a load, for example with the substrate plugin's `fund-accounts`.
+//! the plan passes the seed as `<input name="seed" ref="credentials.seed"/>`. Fund the flood
+//! signer and one signer per probe before a load, for example with the substrate plugin's
+//! `fund-accounts` and `derivation` set to `//my-runtime//`.
+//!
+//! `TxBuilder` signs with sr25519 keys for `MultiAddress` or `AccountId32` accounts, and fills in
+//! subxt's default transaction extensions (the FRAME `Check*` extensions, the payment
+//! extensions and `CheckMetadataHash`). It cannot sign for a runtime with a transaction
+//! extension that carries data subxt does not know, or with `AccountId20` and ECDSA
+//! signatures. For such a runtime, build the transactions with subxt itself, version 0.51:
+//! define a `subxt::Config` whose `ExtrinsicParams` include your extension (implement
+//! `subxt::config::TransactionExtension` for it), and whose
+//! `AccountId`, `Address` and `Signature` match the runtime. Then sign each call with
+//! `create_signable_offline(&call, params)` on your config's client at a block, and pass the
+//! signed bytes to `PreparedTx::new` as below.
 
 use anyhow::{Context as _, Result, bail};
 use polkameter_plugin_sdk::{
@@ -69,10 +85,11 @@ async fn lane(
 	builder: &TxBuilder,
 	signer: &Keypair,
 	name: &str,
+	first: u32,
 	count: u32,
 ) -> Result<Vec<PreparedTx>> {
 	let nonce = u64::from(client.nonce(account_id(signer)).await?);
-	let calls: Vec<Call> = (0..count).map(|i| call(name, i)).collect();
+	let calls: Vec<Call> = (first..first + count).map(|i| call(name, i)).collect();
 	let signed = builder.sign_batch(signer, nonce, &calls, Mortality::Immortal, 0)?;
 	Ok(signed
 		.iter()
@@ -85,12 +102,17 @@ async fn prepare(inputs: &Json, context: &Context) -> Result<Json> {
 	let count = u32::try_from(inputs["count"].as_u64().context("input count is missing")?)?;
 	let probes = u32::try_from(inputs["probes"].as_u64().context("input probes is missing")?)?;
 	let seed = keypair(inputs["seed"].as_str().context("input seed is missing")?)?;
-	// Disjoint signers for the flood and the probes.
-	let signers = derive_range(&seed, "//my-runtime//", 0..2)?;
+	// One signer for the flood, and one per probe: probes go out one at a time, so a probe the
+	// chain drops must not hold back the nonces of the next.
+	let signers = derive_range(&seed, "//my-runtime//", 0..1 + probes)?;
 	let client = Client::connect(target).await?;
 	let builder = client.tx_builder().await?;
-	let flood = lane(&client, &builder, &signers[0], "flood", count).await?;
-	let probe_txs = lane(&client, &builder, &signers[1], "probe", probes).await?;
+	builder.check_signing_types()?;
+	let flood = lane(&client, &builder, &signers[0], "flood", 0, count).await?;
+	let mut probe_txs = Vec::new();
+	for (i, signer) in signers[1..].iter().enumerate() {
+		probe_txs.extend(lane(&client, &builder, signer, "probe", i as u32, 1).await?);
+	}
 	Ok(json!({
 		"flood": Artifact::write(&context.artifact_dir, "my-runtime-flood.json", &flood)?,
 		"probes": Artifact::write(&context.artifact_dir, "my-runtime-probes.json", &probe_txs)?,

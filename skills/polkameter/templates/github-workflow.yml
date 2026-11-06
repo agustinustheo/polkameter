@@ -1,7 +1,13 @@
 # Load-test a dev chain with PolkaMeter's substrate plugin on every pull request.
 # Save as .github/workflows/load-test.yml. It needs PolkaMeter v0.3.0 or newer, whose release
-# archives include the substrate plugin. Commit dev-chain.sh from the PolkaMeter repository
-# (scripts/dev-chain.sh) and a short plan, such as remarks-ci.polkameter.xml, to plans/.
+# archives include the substrate plugin. Commit these to the root of your repository:
+#   dev-chain.sh, from the same PolkaMeter version:
+#     curl -fsSLO https://raw.githubusercontent.com/agustinustheo/polkameter/v0.3.0/scripts/dev-chain.sh
+#     (v0.3.0: remove after release. Until v0.3.0 is tagged, fetch it from main instead.)
+#   plans/substrate-remarks-ci.polkameter.xml, a short plan from the skill's templates.
+# The plan's <plugin id="substrate" version="..."> must equal the version input below: the
+# plugin ships with the CLI, and PolkaMeter refuses a plugin of another version. Change both
+# together.
 name: load-test
 on:
   pull_request:
@@ -14,24 +20,23 @@ jobs:
   load-test:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    env:
-      POLKAMETER_DEV_CHAIN_DIR: ${{ github.workspace }}/.dev-chain
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The node and runtime are pinned in dev-chain.sh; cache them on its hash.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: .dev-chain/bin
+          path: .polkameter/dev-chain/bin
           key: dev-chain-${{ runner.os }}-${{ hashFiles('dev-chain.sh') }}
       - name: Start the dev chain
         run: bash dev-chain.sh start
       # To test your own runtime instead of the template, build its wasm first and set
       # POLKAMETER_DEV_RUNTIME to its path on the step above.
       - id: load
-        # @v0 follows the latest 0.x release; pin a release commit SHA for a fixed version.
+        # @v0 is the action; version pins the CLI and the substrate plugin it installs.
         uses: agustinustheo/polkameter@v0
         with:
-          plan: plans/remarks-ci.polkameter.xml
+          version: 0.3.0
+          plan: plans/substrate-remarks-ci.polkameter.xml
           plugins: polkameter-substrate-plugin
           credentials: substrate-dev=POLKAMETER_SUBSTRATE_SEED
           fail-on: verdict

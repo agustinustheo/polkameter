@@ -19,7 +19,8 @@ PolkaMeter is a load-testing tool for Polkadot SDK chains. The `polkameter` CLI 
 | `schemas/` | The plan XSD | |
 | `docs/` | mdBook user docs. Read `docs/STYLE.md` before editing | |
 | `scripts/` | Release, packaging, action and dev-chain scripts | |
-| `skills/polkameter` | Agent Skill for users setting up PolkaMeter | |
+| `skills/polkameter` | Agent Skill for users setting up PolkaMeter. Its plan templates are copies of `examples/` | |
+| `.claude-plugin` | Claude Code marketplace and plugin manifest; the plugin is the repository root, whose `skills/` holds the skill | |
 
 ## Build and test
 
@@ -58,7 +59,7 @@ scripts/dev-chain.sh stop
 - `polkameter-plugin-sdk` changes are additive: new items, no renamed or removed public items. Gate chain code behind the `chain` feature, and check each feature set alone with the clippy lines above.
 - Plugins never log secrets. Errors about a secret URI name the input, never its value.
 - Plans never hold secrets; they name credential profiles.
-- New example plans go in `examples/` and must pass `polkameter validate` and the XSD.
+- New example plans go in `examples/` and must pass `polkameter validate` and the XSD. A plan template in `skills/polkameter/templates` must equal its `examples/` file, and the CI templates must equal the jobs in `docs/dev-chain.md`; `tests/validate-plans.py` checks both.
 - Docs follow `docs/STYLE.md`: show real output from a real run, never invented output. Add new pages to `docs/SUMMARY.md` and `docs/llms.txt`.
 - Pin GitHub Actions in new workflow steps to a full commit SHA, with the version in a comment.
 - Commit messages are plain and describe the change. Do not add AI attribution: no `Co-Authored-By` lines for assistants and no "Generated with" footers, in commits or pull requests.

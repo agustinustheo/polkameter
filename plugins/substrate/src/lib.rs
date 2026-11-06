@@ -8,7 +8,7 @@
 pub mod inputs;
 
 use std::{
-	collections::{BTreeMap, HashMap},
+	collections::{BTreeMap, HashMap, HashSet},
 	path::PathBuf,
 	time::Duration,
 };
@@ -19,8 +19,8 @@ use polkameter_plugin_sdk::{
 	Artifact, Context, Field, Manifest, Operation, PROTOCOL, Plugin, PreparedTx, Schema,
 	StateCheckInput,
 	chain::{
-		Call, ChainError, Client, Keypair, Mortality, TxBuilder, TxParams, Value as ScaleValue,
-		account_at, account_id, hex0x, ss58,
+		AccountInfo, Call, ChainError, Client, Keypair, Mortality, TxBuilder, TxParams,
+		Value as ScaleValue, account_at, account_id, era_period, events, hex0x, ss58, tx_hash,
 	},
 	strip_0x,
 };
@@ -58,9 +58,20 @@ fn signer_inputs() -> Vec<(&'static str, Schema)> {
 	]
 }
 
+/// [`signer_inputs`] plus `probes`, which sets the default number of probe signers.
+fn signer_inputs_with_probes() -> Vec<(&'static str, Schema)> {
+	let mut inputs = signer_inputs();
+	inputs.push(("probes", Schema::Integer));
+	inputs
+}
+
 fn prepare_operation(description: &str, extra: &[(&'static str, Schema)]) -> Operation {
 	let mut optional = signer_inputs();
-	optional.extend([("mortality", Schema::Integer), ("tip", Schema::Json)]);
+	optional.extend([
+		("mortality", Schema::Integer),
+		("expected-seconds", Schema::Integer),
+		("tip", Schema::Json),
+	]);
 	optional.extend(extra.iter().cloned());
 	operation(
 		description,
@@ -83,13 +94,13 @@ fn prepare_operation(description: &str, extra: &[(&'static str, Schema)]) -> Ope
 
 /// The plugin's manifest: its ID, version and operations.
 pub fn manifest() -> Manifest {
-	let mut preflight_optional = signer_inputs();
+	let mut preflight_optional = signer_inputs_with_probes();
 	preflight_optional.extend([
 		("seed", Schema::String),
 		("calls", Schema::Array { items: Box::new(Schema::String) }),
 		("min-balance", Schema::Json),
 	]);
-	let mut fund_optional = signer_inputs();
+	let mut fund_optional = signer_inputs_with_probes();
 	fund_optional.extend([
 		("funder", Schema::String),
 		("batch-size", Schema::Integer),
@@ -118,7 +129,7 @@ pub fn manifest() -> Manifest {
 			(
 				"fund-accounts".into(),
 				operation(
-					"Top up every load signer to amount from the funder; skips signers that hold enough",
+					"Top up every load signer to a spendable amount from the funder, and check that it landed; skips signers that hold enough",
 					&[
 						("target", Schema::String),
 						("seed", Schema::String),
@@ -183,6 +194,9 @@ pub struct Signed {
 pub struct Substrate {
 	/// Artifacts written so far, so names stay unique when a plan prepares twice.
 	prepared: u32,
+	/// The accounts earlier prepare steps of this run signed with. A second step that signs
+	/// with one of them would reuse its nonces, so it is refused.
+	signed_with: HashSet<[u8; 32]>,
 	check_client: Option<(String, Client)>,
 	check_state: Option<(PathBuf, String, HashMap<String, Signed>)>,
 }
@@ -198,13 +212,11 @@ impl Plugin for Substrate {
 			"fund-accounts" => fund_accounts(&inputs).await,
 			"prepare-remarks" => {
 				let spec = Prepare::remarks(&inputs)?;
-				self.prepared += 1;
-				prepare(&inputs, &spec, context, self.prepared).await
+				self.prepare(operation, &inputs, &spec, context).await
 			},
 			"prepare-transfers" => {
 				let spec = Prepare::transfers(&inputs)?;
-				self.prepared += 1;
-				prepare(&inputs, &spec, context, self.prepared).await
+				self.prepare(operation, &inputs, &spec, context).await
 			},
 			"check-state" => self.check_state(&inputs, context).await,
 			other => bail!("unknown operation {other}"),
@@ -254,31 +266,74 @@ fn require_calls(builder: &TxBuilder, calls: &[(&str, &str)]) -> Result<()> {
 	Ok(())
 }
 
-/// Fails unless the plugin can sign for this runtime: its transaction extensions are ones subxt
-/// can fill in.
-fn require_signable(builder: &TxBuilder) -> Result<()> {
-	let probe = polkameter_plugin_sdk::chain::keypair("//polkameter-preflight")?;
+/// The start of every "cannot sign" error.
+const CANNOT_SIGN: &str = "the substrate plugin cannot sign transactions for this runtime";
+/// Where a "cannot sign" error sends the user.
+const WRITE_A_PLUGIN: &str = "write a plugin for it (see Writing a plugin, or start from the PolkaMeter skill's templates/custom-plugin.rs)";
+
+/// Fails unless the plugin can sign for this runtime offline: its address and signature types
+/// take sr25519 keys, and its transaction extensions are ones subxt can fill in. Returns a
+/// signed remark from a key of its own, for [`require_accepted`].
+fn require_signable(builder: &TxBuilder) -> Result<Vec<u8>> {
+	builder
+		.check_signing_types()
+		.map_err(|e| anyhow::anyhow!("{CANNOT_SIGN}: {e}; {WRITE_A_PLUGIN}"))?;
+	// A key no one funds, unique to this call, so its nonce is 0 and it holds nothing.
+	let nanos = std::time::SystemTime::now()
+		.duration_since(std::time::UNIX_EPOCH)
+		.map_or(0, |d| d.as_nanos());
+	let throwaway =
+		polkameter_plugin_sdk::chain::keypair(&format!("//polkameter-preflight//{nanos}"))?;
 	builder
 		.sign(
 			&Call::new("System", "remark", vec![ScaleValue::from_bytes([0u8])]),
-			&probe,
+			&throwaway,
 			&TxParams::nonce(0),
 		)
-		.map_err(|e| {
-			anyhow::anyhow!("the substrate plugin cannot sign transactions for this runtime: {e}")
-		})?;
-	Ok(())
+		.map_err(|e| anyhow::anyhow!("{CANNOT_SIGN}: {e}; {WRITE_A_PLUGIN}"))
 }
 
-fn describe(error: &ChainError) -> String {
+/// Fails unless the chain accepts the format of `remark` from [`require_signable`]: its
+/// signer holds nothing, so the expected answer is that it cannot pay. Any other refusal, or
+/// an answer the chain cannot decode, means the plugin's transactions do not fit this runtime.
+async fn require_accepted(client: &Client, remark: &[u8]) -> Result<()> {
+	match client.validate(remark, "a remark from an unfunded key").await {
+		Ok(()) => Ok(()),
+		Err(ChainError::Invalid { raw, .. }) if raw == PAYMENT => Ok(()),
+		Err(error) => bail!("{CANNOT_SIGN}: {error}; {WRITE_A_PLUGIN}"),
+	}
+}
+
+/// `Err(Invalid(Payment))`: the signer cannot pay the fees.
+const PAYMENT: &str = "010001";
+/// `Err(Invalid(Stale))`: the nonce is already used.
+const STALE: &str = "010003";
+/// `Err(Invalid(BadProof))`: the signature does not match what the chain expects.
+const BAD_PROOF: &str = "010004";
+/// `Err(Invalid(AncientBirthBlock))`: the era's first block is unknown or too old.
+const ANCIENT_BIRTH_BLOCK: &str = "010005";
+
+/// A refusal of a prepared transaction, with the fix. `mortal` says whether the transaction was
+/// signed with a mortality.
+fn describe(error: &ChainError, mortal: bool) -> String {
 	// `raw` starts with the SCALE `Err(Invalid(..))` of `TransactionValidityError`.
 	match error {
-		ChainError::Invalid { raw, .. } if raw == "010001" => {
-			format!("{error}: the signer cannot pay the fees; fund it with substrate.fund-accounts")
-		},
-		ChainError::Invalid { raw, .. } if raw == "010003" => {
+		ChainError::Invalid { raw, .. } if raw == PAYMENT => format!(
+			"{error}: the signer cannot pay the fees; fund it with substrate.fund-accounts, with the same seed, derivation, flood-signers, probe-signers and probes inputs as this step"
+		),
+		ChainError::Invalid { raw, .. } if raw == STALE => {
 			format!("{error}: the nonce is already used; another process signs with these accounts")
 		},
+		ChainError::Invalid { raw, .. }
+			if mortal && (raw == BAD_PROOF || raw == ANCIENT_BIRTH_BLOCK) =>
+		{
+			format!(
+				"{error}: the mortal transaction may have expired; raise mortality (or set 0 for immortal), or the runtime was upgraded since it was signed: prepare again"
+			)
+		},
+		ChainError::Invalid { raw, .. } if raw == BAD_PROOF => format!(
+			"{error}: the chain rejects the signature; the runtime was upgraded since the transaction was signed (prepare again), or it does not take sr25519 MultiSignature transactions"
+		),
 		other => other.to_string(),
 	}
 }
@@ -300,7 +355,8 @@ async fn preflight(inputs: &Value) -> Result<Value> {
 	let builder = client.tx_builder().await?;
 	let wanted: Vec<(&str, &str)> = calls.iter().map(|(p, c)| (p.as_str(), c.as_str())).collect();
 	require_calls(&builder, &wanted)?;
-	require_signable(&builder)?;
+	let remark = require_signable(&builder)?;
+	require_accepted(&client, &remark).await?;
 	let mut listed = Vec::new();
 	let mut short = Vec::new();
 	if let Some(seed) = seed {
@@ -309,12 +365,12 @@ async fn preflight(inputs: &Value) -> Result<Value> {
 		for (index, (role, key)) in roles.enumerate() {
 			let account = account_id(key);
 			let info = client.account(account).await?;
-			if min_balance.is_some_and(|min| info.free < min) {
+			if min_balance.is_some_and(|min| info.spendable() < min) {
 				short.push(format!(
-					"{} ({}, {} free)",
+					"{} ({}, {} spendable)",
 					ss58(account),
 					signers.path(index as u32),
-					info.free
+					info.spendable()
 				));
 			}
 			if listed.len() < LISTED_ACCOUNTS {
@@ -323,6 +379,7 @@ async fn preflight(inputs: &Value) -> Result<Value> {
 					"path": signers.path(index as u32),
 					"account": ss58(account),
 					"free": info.free.to_string(),
+					"spendable": info.spendable().to_string(),
 					"nonce": info.nonce,
 				}));
 			}
@@ -331,7 +388,7 @@ async fn preflight(inputs: &Value) -> Result<Value> {
 	if let Some(min) = min_balance {
 		ensure!(
 			short.is_empty(),
-			"{} of {} signers hold less than min-balance {min}; run substrate.fund-accounts first. First: {}",
+			"{} of {} signers can spend less than min-balance {min}; run substrate.fund-accounts first. First: {}",
 			short.len(),
 			signers.flood + signers.probe,
 			short.iter().take(3).cloned().collect::<Vec<_>>().join(", ")
@@ -360,6 +417,110 @@ fn transfer_call(multi_address: bool, dest: [u8; 32], amount: u128) -> Call {
 	Call::new("Balances", "transfer_keep_alive", vec![dest, ScaleValue::u128(amount)])
 }
 
+/// What a funder must be able to spend to top up signers by `total` in `transactions`
+/// transactions that each cost about `fee`: the transfers, the fees, and the existential
+/// deposit it must keep, because `transfer_keep_alive` never empties it.
+pub fn funder_needs(
+	total: u128,
+	existential_deposit: u128,
+	fee: u128,
+	transactions: usize,
+) -> u128 {
+	total
+		.saturating_add(existential_deposit)
+		.saturating_add(fee.saturating_mul(transactions as u128))
+}
+
+/// The top-up each account needs to spend `amount`: `amount` minus what it can spend now, for
+/// the accounts that hold less.
+pub fn deficits(amount: u128, accounts: &[([u8; 32], AccountInfo)]) -> Vec<([u8; 32], u128)> {
+	accounts
+		.iter()
+		.filter(|(_, info)| info.spendable() < amount)
+		.map(|(account, info)| (*account, amount - info.spendable()))
+		.collect()
+}
+
+/// Waits until none of `accounts` has a transaction in the pool that is not final, such as one
+/// an earlier, failed or timed-out attempt sent, or a probe of an earlier run. Reading balances
+/// before it lands would send the same top-up twice, or top up a signer that then pays for it
+/// and ends short.
+async fn settle(
+	client: &Client,
+	accounts: &[[u8; 32]],
+	who: &str,
+	timeout: Duration,
+) -> Result<()> {
+	let deadline = tokio::time::Instant::now() + timeout;
+	let mut waiting: Vec<[u8; 32]> = accounts.to_vec();
+	loop {
+		let mut pending = Vec::new();
+		for account in waiting {
+			let pooled = u64::from(client.nonce(account).await?);
+			let finalized = client.account(account).await?.nonce;
+			if pooled > finalized {
+				pending.push((account, pooled - finalized));
+			}
+		}
+		if pending.is_empty() {
+			return Ok(());
+		}
+		ensure!(
+			tokio::time::Instant::now() < deadline,
+			"{who} transactions in the pool that are not final after {} s ({} accounts, such as {} with {}); wait until they are, then run fund-accounts again",
+			timeout.as_secs(),
+			pending.len(),
+			ss58(pending[0].0),
+			pending[0].1
+		);
+		tokio::time::sleep(Duration::from_secs(1)).await;
+		waiting = pending.into_iter().map(|(account, _)| account).collect();
+	}
+}
+
+/// The funding transactions that failed: those in finalized blocks `from..=head` with a
+/// `System.ExtrinsicFailed` event, with the dispatch error.
+async fn failed_funding(
+	client: &Client,
+	builder: &TxBuilder,
+	from: u64,
+	head: &polkameter_plugin_sdk::chain::AtBlock,
+	ours: &HashSet<[u8; 32]>,
+) -> Result<Vec<String>> {
+	let mut failed = Vec::new();
+	let mut found = 0;
+	for number in from..=head.block_number() {
+		if found == ours.len() {
+			break;
+		}
+		let hash = client.block_hash(u32::try_from(number)?).await?;
+		let body = client.body(hash).await?;
+		let mine: Vec<(u32, [u8; 32])> = body
+			.iter()
+			.enumerate()
+			.map(|(i, bytes)| (i as u32, tx_hash(bytes)))
+			.filter(|(_, h)| ours.contains(h))
+			.collect();
+		if mine.is_empty() {
+			continue;
+		}
+		found += mine.len();
+		let block_events = events(&client.at(hash).await?).await?;
+		for (index, tx) in mine {
+			if let Some(event) = block_events
+				.iter()
+				.find(|e| e.extrinsic == Some(index) && e.is("System", "ExtrinsicFailed"))
+			{
+				let reason =
+					polkameter_plugin_sdk::chain::value::field(&event.fields, "dispatch_error")
+						.map_or_else(|| event.fields.to_string(), |e| builder.dispatch_error(e));
+				failed.push(format!("{} in block {number}: {reason}", hex0x(tx)));
+			}
+		}
+	}
+	Ok(failed)
+}
+
 async fn fund_accounts(inputs: &Value) -> Result<Value> {
 	let fund = Fund::parse(inputs)?;
 	let target = inputs::target(inputs)?;
@@ -369,37 +530,38 @@ async fn fund_accounts(inputs: &Value) -> Result<Value> {
 		_ => inputs::secret(inputs, "funder")?,
 	};
 	let (flood, probe) = fund.signers.derive(&seed)?;
-	let accounts: Vec<[u8; 32]> = flood.iter().chain(&probe).map(account_id).collect();
+	let keys: Vec<&Keypair> = flood.iter().chain(&probe).collect();
+	let accounts: Vec<[u8; 32]> = keys.iter().map(|k| account_id(k)).collect();
 	let funder_account = account_id(&funder);
 	ensure!(
 		!accounts.contains(&funder_account),
 		"the funder is one of the load signers; use another funder or derivation"
 	);
+	let timeout = Duration::from_secs(fund.timeout_seconds);
 	let client = connect(&target).await?;
 	let builder = client.tx_builder().await?;
 	require_calls(&builder, &[("Balances", "transfer_keep_alive")])?;
-	let mut deficits = Vec::new();
+	let existential = client.existential_deposit().await?;
+	ensure!(
+		fund.amount >= existential,
+		"input amount {} is below the existential deposit {existential}; a new account needs at least that",
+		fund.amount
+	);
+	settle(&client, &[funder_account], "the funder has", timeout).await?;
+	settle(&client, &accounts, "load signers have", timeout).await?;
+	let mut infos = Vec::with_capacity(accounts.len());
 	for account in &accounts {
-		let free = client.account(*account).await?.free;
-		if free < fund.amount {
-			deficits.push((*account, fund.amount - free));
-		}
+		infos.push((*account, client.account(*account).await?));
 	}
+	let deficits = deficits(fund.amount, &infos);
 	let skipped = accounts.len() - deficits.len();
 	if deficits.is_empty() {
-		eprintln!("all {} signers already hold {} or more", accounts.len(), fund.amount);
+		eprintln!("all {} signers can already spend {} or more", accounts.len(), fund.amount);
 		return Ok(
 			json!({"funded": 0, "skipped": skipped, "accounts": accounts.len(), "transactions": []}),
 		);
 	}
 	let total: u128 = deficits.iter().map(|(_, d)| d).sum();
-	let funder_free = client.account(funder_account).await?.free;
-	ensure!(
-		funder_free > total,
-		"the funder {} holds {funder_free}, but topping up {} signers needs {total} plus fees",
-		ss58(funder_account),
-		deficits.len()
-	);
 	let multi = multi_address(&builder);
 	let transfers: Vec<Call> = deficits
 		.iter()
@@ -421,12 +583,35 @@ async fn fund_accounts(inputs: &Value) -> Result<Value> {
 	} else {
 		transfers
 	};
-	let nonce = u64::from(client.nonce(funder_account).await?);
+	let funder_info = client.account(funder_account).await?;
+	let nonce = funder_info.nonce;
 	let txs = builder.sign_batch(&funder, nonce, &calls, Mortality::Immortal, 0)?;
+	// The first transaction carries the most transfers, so its fee bounds the others'.
+	let fee = match client.query_fee(&txs[0]).await {
+		Ok(fee) => fee,
+		Err(error) => {
+			eprintln!(
+				"cannot estimate the funding fees ({error}); checking the funder without them"
+			);
+			0
+		},
+	};
+	let needs = funder_needs(total, existential, fee, txs.len());
+	ensure!(
+		funder_info.spendable() >= needs,
+		"the funder {} can spend {} (free {}, frozen {}), but topping up {} signers needs {needs}: {total} for the signers, the existential deposit {existential} it must keep, and about {fee} in fees for each of {} transactions. Nothing was sent; fund the funder, or lower amount or the number of signers",
+		ss58(funder_account),
+		funder_info.spendable(),
+		funder_info.free,
+		funder_info.frozen,
+		deficits.len(),
+		txs.len()
+	);
 	client
 		.validate(&txs[0], "funding transaction")
 		.await
-		.map_err(|e| anyhow::anyhow!(describe(&e)))?;
+		.map_err(|e| anyhow::anyhow!(describe(&e, false)))?;
+	let from = client.finalized_now().await?.block_number() + 1;
 	let mut hashes = Vec::new();
 	for tx in &txs {
 		hashes.push(client.submit(tx).await.context("submit funding transaction")?);
@@ -436,12 +621,12 @@ async fn fund_accounts(inputs: &Value) -> Result<Value> {
 	// Balances alone cannot tell: a signer may still pay for a transaction of an earlier run that
 	// lands after its top-up was computed.
 	let done = nonce + txs.len() as u64;
-	let deadline = tokio::time::Instant::now() + Duration::from_secs(fund.timeout_seconds);
-	loop {
+	let deadline = tokio::time::Instant::now() + timeout;
+	let head = loop {
 		let at = client.finalized_now().await?;
 		let funder_nonce = account_at(&at, funder_account).await?.nonce;
 		if funder_nonce >= done {
-			break;
+			break at;
 		}
 		ensure!(
 			tokio::time::Instant::now() < deadline,
@@ -452,7 +637,41 @@ async fn fund_accounts(inputs: &Value) -> Result<Value> {
 			hashes.join(", ")
 		);
 		tokio::time::sleep(Duration::from_secs(1)).await;
+	};
+	// A final transaction may still have failed: a batch reverts as a whole. Check what each
+	// signer can spend at that block.
+	let ours: HashSet<[u8; 32]> = txs.iter().map(|tx| tx_hash(tx)).collect();
+	let failed = failed_funding(&client, &builder, from, &head, &ours).await?;
+	let mut short = Vec::new();
+	for (account, _) in &deficits {
+		let spendable = account_at(&head, *account).await?.spendable();
+		if spendable < fund.amount {
+			let index = accounts.iter().position(|a| a == account).unwrap_or(0) as u32;
+			short.push(format!(
+				"{} ({}, {spendable} spendable)",
+				ss58(*account),
+				fund.signers.path(index)
+			));
+		}
 	}
+	ensure!(
+		short.is_empty() && failed.is_empty(),
+		"funding failed: {} of {} signers can still spend less than {} at block {}{}{}",
+		short.len(),
+		accounts.len(),
+		fund.amount,
+		hex0x(head.block_hash().0),
+		if short.is_empty() {
+			String::new()
+		} else {
+			format!(" (first: {})", short.iter().take(3).cloned().collect::<Vec<_>>().join(", "))
+		},
+		if failed.is_empty() {
+			String::new()
+		} else {
+			format!("; failed funding transactions: {}", failed.join("; "))
+		}
+	);
 	Ok(json!({
 		"funded": deficits.len(),
 		"skipped": skipped,
@@ -561,15 +780,64 @@ impl Maker<'_> {
 	}
 }
 
+/// Fails if a signer of this step also signed for an earlier prepare step of the run: both
+/// steps would sign with the same nonces, and only one set could ever land.
+fn require_fresh_signers(
+	operation: &str,
+	spec: &Prepare,
+	keys: &[&Keypair],
+	signed_with: &HashSet<[u8; 32]>,
+) -> Result<()> {
+	if let Some(index) = keys.iter().position(|k| signed_with.contains(&account_id(k))) {
+		bail!(
+			"{operation} signs with {}, which an earlier prepare step of this run also signs with; their nonces would collide. Give this step another derivation, such as //polkameter-2//, and fund those signers with a fund-accounts step that uses it",
+			spec.signers.path(index as u32)
+		);
+	}
+	Ok(())
+}
+
+/// Checks a mortal step's period against how long the plan runs after it, `expected-seconds`;
+/// without that input, prints how long the transactions stay valid.
+async fn check_mortality(client: &Client, spec: &Prepare) -> Result<()> {
+	let Some(period) = spec.mortality else { return Ok(()) };
+	let measured = client.recent_block_seconds().await?;
+	let block_seconds = measured.unwrap_or(6.0);
+	let lasts = era_period(period) as f64 * block_seconds;
+	let basis = if measured.is_some() { "measured" } else { "assumed" };
+	match spec.expected_seconds {
+		Some(expected) if lasts < expected as f64 => {
+			let fix = match inputs::mortality_for(expected as f64, block_seconds) {
+				Some(suggested) => format!("set mortality to {suggested} or more, or to 0"),
+				None => "set mortality to 0 (immortal)".into(),
+			};
+			bail!(
+				"input mortality {period}: the transactions stay valid for about {lasts:.0} s at {block_seconds:.1} s blocks ({basis}), less than expected-seconds {expected}, so later ones would expire before they are sent; {fix}"
+			);
+		},
+		Some(_) => Ok(()),
+		None => {
+			eprintln!(
+				"mortal transactions stay valid for about {lasts:.0} s ({period} blocks at {block_seconds:.1} s, {basis}); pass expected-seconds to check that this covers the run"
+			);
+			Ok(())
+		},
+	}
+}
+
 async fn prepare(
+	operation: &str,
 	inputs: &Value,
 	spec: &Prepare,
 	context: &Context,
 	sequence: u32,
+	signed_with: &mut HashSet<[u8; 32]>,
 ) -> Result<Value> {
 	let target = inputs::target(inputs)?;
 	let seed = inputs::secret(inputs, "seed")?;
 	let (flood_keys, probe_keys) = spec.signers.derive(&seed)?;
+	let all: Vec<&Keypair> = flood_keys.iter().chain(&probe_keys).collect();
+	require_fresh_signers(operation, spec, &all, signed_with)?;
 	let client = connect(&target).await?;
 	let builder = client.tx_builder().await?;
 	let (pallet, call) = match spec.kind {
@@ -579,12 +847,16 @@ async fn prepare(
 	};
 	require_calls(&builder, &[(pallet, call)])?;
 	require_signable(&builder)?;
+	check_mortality(&client, spec).await?;
 	let amount = match spec.kind {
 		Kind::Transfers { amount: Some(amount), .. } => amount,
 		Kind::Transfers { amount: None, .. } => client.existential_deposit().await?,
 		Kind::Remarks { .. } => 0,
 	};
-	let mortality = spec.mortality.map_or(Mortality::Immortal, |period| builder.mortal(period));
+	let mortality = match spec.mortality {
+		Some(period) => builder.mortal(period).await?,
+		None => Mortality::Immortal,
+	};
 	let nonces = |keys: &[Keypair]| {
 		let client = client.clone();
 		let accounts: Vec<[u8; 32]> = keys.iter().map(account_id).collect();
@@ -615,12 +887,22 @@ async fn prepare(
 		probe_bytes.len(),
 		started.elapsed().as_secs_f64()
 	);
-	for (what, bytes) in [
-		("first flood transaction", &flood_bytes[0]),
-		("last flood transaction", &flood_bytes[flood_bytes.len() - 1]),
-		("first probe transaction", &probe_bytes[0]),
-	] {
-		client.validate(bytes, what).await.map_err(|e| anyhow::anyhow!(describe(&e)))?;
+	// Probes go out one at a time, so check every probe signer's first one: a signer that
+	// cannot pay would fail the baseline long after setup.
+	let mut checks = vec![
+		("first flood transaction".to_owned(), &flood_bytes[0]),
+		("last flood transaction".to_owned(), &flood_bytes[flood_bytes.len() - 1]),
+	];
+	checks.extend(probe_bytes.iter().take(probe_keys.len()).enumerate().map(|(i, bytes)| {
+		let path = spec.signers.path(spec.signers.flood + i as u32);
+		(format!("the first probe transaction of {path}"), bytes)
+	}));
+	let mortal = spec.mortality.is_some();
+	for (what, bytes) in checks {
+		client
+			.validate(bytes, &what)
+			.await
+			.map_err(|e| anyhow::anyhow!(describe(&e, mortal)))?;
 	}
 	let mut state = BTreeMap::new();
 	let mut lane = |keys: &[Keypair], jobs: Vec<Job>, bytes: Vec<Vec<u8>>| -> Vec<PreparedTx> {
@@ -639,6 +921,7 @@ async fn prepare(
 	let flood = lane(&flood_keys, flood_jobs, flood_bytes);
 	let probes = lane(&probe_keys, probe_jobs, probe_bytes);
 	ensure!(state.len() == flood.len() + probes.len(), "two prepared transactions share a hash");
+	signed_with.extend(all.iter().map(|k| account_id(k)));
 	let name = |part: &str| format!("substrate-{sequence}-{part}.json");
 	let dir = &context.artifact_dir;
 	Ok(json!({
@@ -654,12 +937,27 @@ async fn prepare(
 			"probeSigners": probe_keys.len(),
 			"preparedAt": builder.block_number(),
 			"mortality": spec.mortality.unwrap_or(0),
+			"validUntil": match mortality {
+				Mortality::Mortal { period, from_number, .. } => Some(from_number + era_period(period)),
+				Mortality::Immortal => None,
+			},
 			"amount": (amount > 0).then(|| amount.to_string()),
 		},
 	}))
 }
 
 impl Substrate {
+	async fn prepare(
+		&mut self,
+		operation: &str,
+		inputs: &Value,
+		spec: &Prepare,
+		context: &Context,
+	) -> Result<Value> {
+		self.prepared += 1;
+		prepare(operation, inputs, spec, context, self.prepared, &mut self.signed_with).await
+	}
+
 	async fn client_for(&mut self, target: &str) -> Result<Client> {
 		if self.check_client.as_ref().is_none_or(|(url, _)| url != target) {
 			self.check_client = Some((target.to_owned(), connect(target).await?));
@@ -769,11 +1067,59 @@ mod tests {
 			code: 0,
 			raw: raw.into(),
 		};
-		assert!(describe(&invalid("010001")).ends_with("fund it with substrate.fund-accounts"));
-		assert!(describe(&invalid("010003")).contains("the nonce is already used"));
-		let other = describe(&invalid("01000704"));
+		assert!(
+			describe(&invalid("010001"), false).contains("fund it with substrate.fund-accounts")
+		);
+		assert!(describe(&invalid("010003"), false).contains("the nonce is already used"));
+		let other = describe(&invalid("01000704"), false);
 		assert!(other.starts_with("first flood transaction is not valid"), "{other}");
 		assert!(!other.contains("fund it"));
+		// 1010 bad signature: on a mortal transaction, most likely its era ended.
+		let expired = describe(&invalid("010004"), true);
+		assert!(expired.contains("may have expired; raise mortality"), "{expired}");
+		assert!(expired.contains("runtime was upgraded"), "{expired}");
+		assert!(describe(&invalid("010005"), true).contains("may have expired"));
+		let immortal = describe(&invalid("010004"), false);
+		assert!(!immortal.contains("expired") && immortal.contains("runtime was upgraded"));
+	}
+
+	#[test]
+	fn funding_counts_spendable_balance_fees_and_the_deposit() {
+		let info = |free, frozen| AccountInfo { nonce: 0, free, reserved: 0, frozen };
+		let accounts = [([1; 32], info(100, 0)), ([2; 32], info(100, 60)), ([3; 32], info(0, 0))];
+		// The second account holds 100 but can spend only 40.
+		assert_eq!(deficits(100, &accounts), vec![([2; 32], 60), ([3; 32], 100)]);
+		assert!(deficits(40, &accounts[..2]).is_empty());
+		// A funder holding total + 1 cannot pay: it keeps the deposit and pays the fees.
+		let needs = funder_needs(160, 10, 3, 2);
+		assert_eq!(needs, 160 + 10 + 6);
+		assert!(info(161, 0).spendable() < needs);
+		assert!(info(200, 30).spendable() < needs);
+		assert!(info(176, 0).spendable() >= needs);
+		assert_eq!(funder_needs(u128::MAX, 1, 1, 1), u128::MAX);
+	}
+
+	#[test]
+	fn a_second_prepare_step_with_the_same_signers_is_refused() {
+		let spec = Prepare::remarks(&json!({"count": 4, "probes": 1, "flood-signers": 2})).unwrap();
+		let seed = polkameter_plugin_sdk::chain::keypair("//Alice").unwrap();
+		let (flood, probe) = spec.signers.derive(&seed).unwrap();
+		let keys: Vec<&Keypair> = flood.iter().chain(&probe).collect();
+		let mut used = HashSet::new();
+		require_fresh_signers("prepare-remarks", &spec, &keys, &used).unwrap();
+		used.insert(account_id(keys[2]));
+		let message = require_fresh_signers("prepare-transfers", &spec, &keys, &used)
+			.unwrap_err()
+			.to_string();
+		assert!(message.starts_with("prepare-transfers signs with //polkameter//2"), "{message}");
+		assert!(message.contains("another derivation"));
+		let other = Prepare::remarks(
+			&json!({"count": 4, "probes": 1, "flood-signers": 2, "derivation": "//other//"}),
+		)
+		.unwrap();
+		let (flood, probe) = other.signers.derive(&seed).unwrap();
+		let keys: Vec<&Keypair> = flood.iter().chain(&probe).collect();
+		require_fresh_signers("prepare-transfers", &other, &keys, &used).unwrap();
 	}
 
 	#[test]

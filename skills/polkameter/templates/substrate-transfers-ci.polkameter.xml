@@ -1,21 +1,21 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  A short System.remark check for CI, with the substrate plugin: one low rate that any healthy
-  chain sustains. Run it with polkameter run fail-on-verdict, so that the job fails when fewer
-  than 99% of the transactions are included or they take too long.
+  A short Balances.transfer_keep_alive check for CI, with the substrate plugin: one low rate that
+  any healthy chain sustains. Run it with polkameter run fail-on-verdict, so that the job fails
+  when fewer than 99% of the transactions are included or they take too long.
   Made for the dev chain of scripts/dev-chain.sh (6-second blocks, //Alice funded).
   The seed credential is a secret URI, such as //Alice on a dev chain:
     polkameter plugin credential substrate-dev POLKAMETER_SUBSTRATE_SEED
     export POLKAMETER_SUBSTRATE_SEED=//Alice
 -->
-<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="Substrate remarks CI" mode="stress" timeout-ms="900000">
+<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="Substrate transfers CI" mode="stress" timeout-ms="900000">
   <plugins><plugin id="substrate" version="0.3.0" protocol="1"/></plugins>
   <targets><target id="chain" endpoint="ws://127.0.0.1:9944"/></targets>
   <credentials><credential id="seed" profile="substrate-dev"/></credentials>
   <preflight>
     <step id="chain" use="substrate.preflight">
       <input name="target" ref="targets.chain"/>
-      <input name="calls" value="[&quot;System.remark&quot;]"/>
+      <input name="calls" value="[&quot;Balances.transfer_keep_alive&quot;]"/>
     </step>
   </preflight>
   <setup>
@@ -23,9 +23,10 @@
       <input name="target" ref="targets.chain"/>
       <input name="seed" ref="credentials.seed"/>
       <input name="flood-signers" value="4"/>
+      <input name="probes" ref="run.probeBudget"/>
       <input name="amount" value="100000000000000"/>
     </step>
-    <step id="prepare" use="substrate.prepare-remarks" timeout-ms="120000">
+    <step id="prepare" use="substrate.prepare-transfers" timeout-ms="120000">
       <input name="target" ref="targets.chain"/>
       <input name="seed" ref="credentials.seed"/>
       <input name="flood-signers" value="4"/>

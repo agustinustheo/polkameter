@@ -247,6 +247,24 @@ impl Client {
 			.map_err(decode_err("header number"))
 	}
 
+	/// The mean seconds between the last (up to) 10 blocks, from their `Timestamp.Now`; `None`
+	/// when the chain has fewer than 3 blocks or its timestamps do not move. Unlike
+	/// [`Client::block_interval_s`], it never waits.
+	pub async fn recent_block_seconds(&self) -> Result<Option<f64>, ChainError> {
+		let best = self.best_number().await?;
+		let span = best.min(10);
+		if span < 2 {
+			return Ok(None);
+		}
+		let mut stamps = [0u64; 2];
+		for (slot, number) in stamps.iter_mut().zip([best, best - span]) {
+			let at = self.at(self.block_hash(number).await?).await?;
+			*slot = fetch::<(), u64>(&at, "Timestamp", "Now", ()).await?.unwrap_or(0);
+		}
+		let seconds = stamps[0].saturating_sub(stamps[1]) as f64 / f64::from(span) / 1000.0;
+		Ok((seconds > 0.0).then_some(seconds))
+	}
+
 	/// The chain's block interval: the `Timestamp.Now` span of the last 60 blocks since the fork
 	/// started, over their count. Not a median or trimmed mean of gaps: on a fork the timestamps
 	/// come in bunches (0 s / 12 s pairs on 1 core, 12 s then five 0 s on 3 cores), and only the

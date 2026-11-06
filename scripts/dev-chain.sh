@@ -13,9 +13,11 @@
 #
 # Variables:
 #   POLKAMETER_DEV_CHAIN_DIR   where binaries, the chain spec, data and the log go
-#                              (default: target/dev-chain under the current directory)
+#                              (default: .polkameter/dev-chain under the current directory;
+#                              add .polkameter/ to your .gitignore)
 #   POLKAMETER_DEV_CHAIN_PORT  JSON-RPC port, ws:// and http:// (default: 9944)
-#   POLKAMETER_DEV_BLOCK_MS    block time in milliseconds (default: 6000, the runtime's slot)
+#   POLKAMETER_DEV_BLOCK_MS    block time in milliseconds (default: 6000, the template
+#                              runtime's slot)
 #   POLKAMETER_DEV_WAIT_BLOCKS blocks to wait for before start returns (default: 21; PolkaMeter's
 #                              preflight measures the block time over 20 blocks)
 #   POLKAMETER_DEV_POOL_TYPE   transaction pool: single-state (default) or fork-aware. In dev
@@ -35,7 +37,7 @@ RUNTIME_SHA256=fe7031fc468153199f2eea940bd87737988d013b05e4bbdabeac690281f76fd7
 OMNI_NODE_SHA256_LINUX_X86_64=a30cc63c7794eec8c22d92bbb103c6757b8dcab6c6f550eb480bec0edd5716cb
 OMNI_NODE_SHA256_MACOS_ARM64=2cd1ddb414bc6bba46be19052ff8f4b95172761ff8b465d8c5a506e9c9b4f0ce
 
-dir=${POLKAMETER_DEV_CHAIN_DIR:-target/dev-chain}
+dir=${POLKAMETER_DEV_CHAIN_DIR:-.polkameter/dev-chain}
 port=${POLKAMETER_DEV_CHAIN_PORT:-9944}
 block_ms=${POLKAMETER_DEV_BLOCK_MS:-6000}
 wait_blocks=${POLKAMETER_DEV_WAIT_BLOCKS:-21}
@@ -93,8 +95,32 @@ install() {
 		|| { cat "$dir/chain-spec.log" >&2; die "could not build a chain spec from $runtime with preset $preset"; }
 }
 
+# The pidfile holds the node's pid and its start time, as ps prints them.
+started_at() {
+	ps -o lstart= -p "$1" 2> /dev/null | sed 's/^ *//; s/ *$//'
+}
+
+# running: the pidfile's process is alive, is polkadot-omni-node, and started when the pidfile
+# says. A pid the system reused for another process after the node exited does not count.
 running() {
-	[ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2> /dev/null
+	[ -f "$pidfile" ] || return 1
+	local pid start args
+	pid=$(sed -n 1p "$pidfile")
+	start=$(sed -n 2p "$pidfile")
+	case "$pid" in '' | *[!0-9]*) return 1 ;; esac
+	kill -0 "$pid" 2> /dev/null || return 1
+	args=$(ps -o args= -p "$pid" 2> /dev/null) || return 1
+	case "$args" in *polkadot-omni-node*) ;; *) return 1 ;; esac
+	[ -z "$start" ] || [ "$(started_at "$pid")" = "$start" ]
+}
+
+pid() {
+	sed -n 1p "$pidfile"
+}
+
+# port_in_use: something accepts TCP connections on the RPC port.
+port_in_use() {
+	(exec 3<> "/dev/tcp/127.0.0.1/$port") 2> /dev/null
 }
 
 rpc() {
@@ -109,14 +135,21 @@ best_block() {
 }
 
 start() {
-	running && die "already running (pid $(cat "$pidfile")); run: $0 stop"
-	if rpc system_health > /dev/null 2>&1; then die "port $port is in use"; fi
+	running && die "already running (pid $(pid)); run: $0 stop"
+	if port_in_use; then
+		if rpc system_health > /dev/null 2>&1; then
+			die "a node already answers on port $port; stop it, or set POLKAMETER_DEV_CHAIN_PORT to another port"
+		fi
+		die "port $port is in use by another program; set POLKAMETER_DEV_CHAIN_PORT to another port"
+	fi
+	rm -f "$pidfile"
 	install
 	rm -rf "$dir/data"
 	nohup "$node" --chain "$spec" --dev --dev-block-time "$block_ms" --base-path "$dir/data" \
 		--rpc-port "$port" --no-prometheus --no-telemetry --pool-type "$pool_type" ${extra_args[@]+"${extra_args[@]}"} > "$log" 2>&1 &
-	echo $! > "$pidfile"
-	echo "dev-chain: started pid $(cat "$pidfile"), log $log" >&2
+	local child=$!
+	printf '%s\n%s\n' "$child" "$(started_at "$child")" > "$pidfile"
+	echo "dev-chain: started pid $child, log $log" >&2
 	local waited=0 limit=$(((wait_blocks + 10) * block_ms / 1000 + 120)) best=""
 	while :; do
 		running || { tail -20 "$log" >&2; rm -f "$pidfile"; die "the node exited"; }
@@ -126,17 +159,22 @@ start() {
 		sleep 2
 		waited=$((waited + 2))
 	done
-	echo "dev-chain: ready at ws://127.0.0.1:$port, block $best, ${block_ms} ms blocks"
+	if [ -n "$custom_runtime" ]; then
+		echo "dev-chain: ready at ws://127.0.0.1:$port, block $best; set block-interval-seconds to your runtime's slot duration"
+	else
+		echo "dev-chain: ready at ws://127.0.0.1:$port, block $best, ${block_ms} ms blocks"
+	fi
 }
 
 stop() {
 	if ! running; then
+		[ -f "$pidfile" ] && echo "dev-chain: pid $(pid) is no longer the node this script started; not signalling it" >&2
 		rm -f "$pidfile"
 		echo "dev-chain: not running"
 		return
 	fi
 	local pid
-	pid=$(cat "$pidfile")
+	pid=$(pid)
 	kill "$pid"
 	for _ in $(seq 1 30); do kill -0 "$pid" 2> /dev/null || break; sleep 1; done
 	kill -0 "$pid" 2> /dev/null && kill -9 "$pid"
@@ -146,7 +184,7 @@ stop() {
 
 status() {
 	if running; then
-		echo "dev-chain: running (pid $(cat "$pidfile")) at ws://127.0.0.1:$port, best block $(best_block || echo unknown)"
+		echo "dev-chain: running (pid $(pid)) at ws://127.0.0.1:$port, best block $(best_block || echo unknown)"
 	else
 		echo "dev-chain: not running"
 		return 1
