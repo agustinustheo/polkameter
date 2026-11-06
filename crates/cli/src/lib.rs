@@ -7,6 +7,10 @@
 //! app and the tests in this repository can share them, and they may change in any release.
 //! Plugins use `polkameter-plugin-sdk` instead.
 
+/// The product name every user-facing message uses. Standard-error lines start with it, as in
+/// `PolkaMeter: <message>` and `PolkaMeter warning: <message>`.
+pub const PRODUCT_NAME: &str = "PolkaMeter";
+
 pub mod cli;
 #[doc(hidden)]
 pub mod engine;

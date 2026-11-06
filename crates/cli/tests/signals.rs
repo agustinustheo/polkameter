@@ -217,7 +217,7 @@ fn stopped_with_teardown(signal_name: &str, code: i32) {
 	let (status, stderr) = process.wait();
 	assert_eq!(status.code(), Some(code), "{stderr}");
 	assert!(
-		stderr.contains(&format!("Polkameter: received SIG{signal_name}; stopping the run")),
+		stderr.contains(&format!("PolkaMeter: received SIG{signal_name}; stopping the run")),
 		"{stderr}"
 	);
 	let execution = read_json(&run.join("execution.json"));
@@ -279,7 +279,7 @@ fn a_second_signal_interrupts_teardown() {
 	let (status, stderr) = process.wait();
 	assert!(started.elapsed() < Duration::from_secs(30), "the second signal did not stop the run");
 	assert_eq!(status.code(), Some(143), "{stderr}");
-	assert!(stderr.contains("Polkameter: stopping now; teardown is interrupted"), "{stderr}");
+	assert!(stderr.contains("PolkaMeter: stopping now; teardown is interrupted"), "{stderr}");
 	let execution = read_json(&run.join("execution.json"));
 	assert_eq!(execution["state"], "stopped");
 	assert_eq!(execution["exit_code"], 143);
@@ -302,7 +302,7 @@ fn the_grace_period_bounds_teardown_after_one_signal() {
 	let (mut process, run, first, second) = stopped_in_teardown(&work, &["--shutdown-grace", "1"]);
 	let (status, stderr) = process.wait();
 	assert_eq!(status.code(), Some(143), "{stderr}");
-	assert!(stderr.contains("Polkameter: stopping now; teardown is interrupted"), "{stderr}");
+	assert!(stderr.contains("PolkaMeter: stopping now; teardown is interrupted"), "{stderr}");
 	let execution = read_json(&run.join("execution.json"));
 	assert_eq!(
 		(execution["state"].as_str(), execution["exit_code"].as_i64()),

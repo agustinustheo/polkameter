@@ -1,5 +1,5 @@
 name: Setup
-description: pnpm, Node 22, a Rust toolchain, Linux desktop libraries and a Rust cache. Run after actions/checkout.
+description: pnpm, Node 22, a Rust toolchain, Linux desktop libraries and optional Rust and pnpm caches. Run after actions/checkout.
 inputs:
   toolchain:
     description: Rust toolchain to install and cache for. Empty for a job without Rust.
@@ -9,6 +9,10 @@ inputs:
     description: Rust components to install, comma separated.
     required: false
     default: ""
+  cache:
+    description: Restore and save the Rust and pnpm caches. Release builds set false.
+    required: false
+    default: "true"
   apt-packages:
     description: Linux packages to install with apt-get. Skipped on other systems.
     required: false
@@ -16,18 +20,18 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: pnpm/action-setup@v6
-    - uses: actions/setup-node@v7
+    - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       with:
         node-version: 22
-        cache: pnpm
-    - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        cache: ${{ inputs.cache == 'true' && 'pnpm' || '' }}
+    - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
       if: inputs.toolchain != ''
       with:
         toolchain: ${{ inputs.toolchain }}
         components: ${{ inputs.components }}
-    - uses: Swatinem/rust-cache@v2
-      if: inputs.toolchain != ''
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      if: inputs.toolchain != '' && inputs.cache == 'true'
     - name: Install Linux system packages
       if: runner.os == 'Linux' && inputs.apt-packages != ''
       shell: bash

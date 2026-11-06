@@ -482,6 +482,6 @@ Run `polkameter validate` alongside the [XSD 1.0 schema](https://github.com/agus
 
 ### Errors
 
-The CLI prints each error as `Polkameter: <message>` on standard error and exits with code 2. XML syntax errors and errors about an element or attribute give a line and column, such as `line 3, column 6: expected </c>, found </d>`. Other errors, such as references, limits and IDs, name the problem without a position. See [exit codes](cli.md#exit-codes).
+The CLI prints each error as `PolkaMeter: <message>` on standard error and exits with code 2. XML syntax errors and errors about an element or attribute give a line and column, such as `line 3, column 6: expected </c>, found </d>`. Other errors, such as references, limits and IDs, name the problem without a position. See [exit codes](cli.md#exit-codes).
 
 For what each phase does, see [How a run works](how-it-works.md).

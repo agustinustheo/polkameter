@@ -107,7 +107,7 @@ fn human_run_failure_prints_the_reason_on_standard_error() {
 		stderr,
 		format!(
 			"Phase: preflight\nPhase: setup\nPhase: teardown\n\
-			 Polkameter: run failed: assertion check failed: expected 2, got 1 (details in {})\n",
+			 PolkaMeter: run failed: assertion check failed: expected 2, got 1 (details in {})\n",
 			run.join("execution.json").display()
 		)
 	);
@@ -165,7 +165,7 @@ fn json_run_failure_keeps_json_on_standard_output_and_the_reason_on_standard_err
 	assert_eq!(
 		stderr,
 		format!(
-			"Polkameter: run failed: assertion check failed: expected 2, got 1 (details in {})\n",
+			"PolkaMeter: run failed: assertion check failed: expected 2, got 1 (details in {})\n",
 			run.join("execution.json").display()
 		)
 	);
@@ -203,7 +203,7 @@ fn remote_run_failure_names_the_run_directory_on_the_agent() {
 	assert_eq!(
 		stderr,
 		format!(
-			"Polkameter: remote run failed: assertion check failed: expected 2, got 1 (details in {} on the agent)\n",
+			"PolkaMeter: remote run failed: assertion check failed: expected 2, got 1 (details in {} on the agent)\n",
 			run.join("execution.json").display()
 		)
 	);

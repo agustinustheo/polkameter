@@ -63,7 +63,6 @@ pub fn failed_extrinsics(events: &[Event]) -> HashSet<u32> {
 
 /// A storage value at a block, `None` when absent; `V` can name only the fields it needs, and
 /// `keys` is `()` for a plain value.
-/// Part of the plugin API (used by out-of-tree plugins).
 pub async fn fetch<K, V>(
 	at: &AtBlock,
 	pallet: &'static str,
@@ -83,7 +82,6 @@ where
 }
 
 /// True when the map `pallet.entry` has any key that starts with `prefix` at the block.
-/// Part of the plugin API (used by out-of-tree plugins).
 pub async fn has_prefix<K, P>(
 	at: &AtBlock,
 	pallet: &'static str,
@@ -104,7 +102,6 @@ where
 
 /// The pallet and call name of every extrinsic of a block, in order; `None` for one subxt
 /// cannot decode (an unknown extension version, another chain's format).
-/// Part of the plugin API (used by out-of-tree plugins).
 pub async fn calls(at: &AtBlock) -> Result<Vec<Option<(String, String)>>, ChainError> {
 	let exts = at.extrinsics().fetch().await.map_err(read_any("extrinsics"))?;
 	Ok(exts
@@ -114,7 +111,6 @@ pub async fn calls(at: &AtBlock) -> Result<Vec<Option<(String, String)>>, ChainE
 }
 
 /// Every entry of the map `pallet.entry` at the block, keys and values decoded as our types.
-/// Part of the plugin API (used by out-of-tree plugins).
 pub async fn entries<K, V>(
 	at: &AtBlock,
 	pallet: &'static str,

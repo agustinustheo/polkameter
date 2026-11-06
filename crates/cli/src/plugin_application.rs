@@ -1,5 +1,8 @@
 //! Frontend adapters for the shared XML plugin engine.
-use crate::engine::{execute, plan::Plan, plugins::Registry};
+use crate::{
+	PRODUCT_NAME,
+	engine::{execute, plan::Plan, plugins::Registry},
+};
 use serde::Serialize;
 use std::{
 	path::{Path, PathBuf},
@@ -173,10 +176,12 @@ pub async fn start_plan(
 	if let Some(keep) = state.keep_runs {
 		match prune_runs(Path::new(&root), keep) {
 			Ok(removed) if !removed.is_empty() => {
-				eprintln!("Polkameter: removed {} old run directories", removed.len());
+				eprintln!("{PRODUCT_NAME}: removed {} old run directories", removed.len());
 			},
 			Ok(_) => {},
-			Err(error) => eprintln!("Polkameter: could not remove old run directories: {error}"),
+			Err(error) => {
+				eprintln!("{PRODUCT_NAME}: could not remove old run directories: {error}")
+			},
 		}
 	}
 	let token = execute::Stop::default();

@@ -93,7 +93,7 @@ Only `lost` counts as lost. The loss check line in `summary.md` gives the totals
 - **Loss check:** 360 sent: 360 finalized (0 failed after inclusion), 0 refused, 0 still ready in the pool, 0 seen in a block but not verified final, **0 lost**, 0 unknown ...
 ```
 
-Every load run creates `lost.jsonl`, which lists the first 1000 lost transactions, one per line. An empty file means nothing was lost. Any lost transaction makes the verdict FAIL. [Loss accounting](results.md#loss-accounting) defines each status.
+Every load run creates `lost.jsonl`, which lists the first 1000 lost transactions, one per line. An empty file means no confirmed losses, not that nothing was lost. A transaction is `lost` only when PolkaMeter could read the finalized chain and the pool. Without that evidence it stays `unverified` or `unknown`, so check those two counts in the loss check line before you call a run loss-free. Any lost transaction makes the verdict FAIL. [Loss accounting](results.md#loss-accounting) defines each status.
 
 ## Did the chain recover?
 

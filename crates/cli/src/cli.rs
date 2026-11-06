@@ -13,7 +13,10 @@ use anyhow::Context as _;
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::{Value, json};
 
-use crate::remote::{self, RemoteRunnerTarget};
+use crate::{
+	PRODUCT_NAME,
+	remote::{self, RemoteRunnerTarget},
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "polkameter", version, about = "Headless Polkadot SDK load testing")]
@@ -108,7 +111,7 @@ enum PluginCommand {
 
 #[derive(Debug, Subcommand)]
 enum AgentCommand {
-	/// Serve remote run requests through the versioned Polkameter agent protocol.
+	/// Serve remote run requests through the versioned PolkaMeter agent protocol.
 	Serve {
 		#[arg(long, default_value = "127.0.0.1:9901")]
 		bind: String,
@@ -172,14 +175,14 @@ pub fn main() -> i32 {
 	let runtime = match tokio::runtime::Runtime::new() {
 		Ok(runtime) => runtime,
 		Err(error) => {
-			eprintln!("Polkameter could not start its async runtime: {error}");
+			eprintln!("{PRODUCT_NAME} could not start its async runtime: {error}");
 			return 1;
 		},
 	};
 	match runtime.block_on(execute(cli)) {
 		Ok(code) => code,
 		Err(error) => {
-			eprintln!("Polkameter: {error}");
+			eprintln!("{PRODUCT_NAME}: {error}");
 			error.exit_code()
 		},
 	}
@@ -321,14 +324,14 @@ async fn run_local(
 		None,
 		|signal| {
 			eprintln!(
-				"Polkameter: received {}; stopping the run (teardown has up to {} s; send the signal again to stop now)",
+				"{PRODUCT_NAME}: received {}; stopping the run (teardown has up to {} s; send the signal again to stop now)",
 				signal.name(),
 				grace.as_secs()
 			);
 			stop.request(signal.exit_code());
 		},
 		|signal| {
-			eprintln!("Polkameter: stopping now; teardown is interrupted");
+			eprintln!("{PRODUCT_NAME}: stopping now; teardown is interrupted");
 			stop.force(signal.exit_code());
 		},
 	)
@@ -336,7 +339,7 @@ async fn run_local(
 	let Some(result) = supervised.result else {
 		let signal = supervised.signal.unwrap_or(Signal::Interrupt);
 		eprintln!(
-			"Polkameter: the run did not write its outcome within {} s of a forced stop",
+			"{PRODUCT_NAME}: the run did not write its outcome within {} s of a forced stop",
 			shutdown::FORCE_LIMIT.as_secs()
 		);
 		return Ok(signal.exit_code());
@@ -369,7 +372,7 @@ fn write_artifact_written(format: OutputFormat, location: RunLocation, outcome: 
 		format!("{label} {}. Artifacts: {}", outcome.state, outcome.artifact_dir.display()),
 	);
 	if let Some(reason) = failure_reason(location, outcome) {
-		eprintln!("Polkameter: {reason}");
+		eprintln!("{PRODUCT_NAME}: {reason}");
 	}
 }
 
@@ -647,7 +650,7 @@ async fn run_plugin_remote(
 		remote::Followed::Ended { status, signal } => (status, signal),
 		remote::Followed::Abandoned { id, signal } => {
 			eprintln!(
-				"Polkameter: stopped waiting for remote run {id}; the agent keeps its run directory"
+				"{PRODUCT_NAME}: stopped waiting for remote run {id}; the agent keeps its run directory"
 			);
 			return Ok(signal.exit_code());
 		},

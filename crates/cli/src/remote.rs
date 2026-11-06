@@ -19,7 +19,10 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 
-use crate::shutdown::{FORCE_LIMIT, Signal, Signals};
+use crate::{
+	PRODUCT_NAME,
+	shutdown::{FORCE_LIMIT, Signal, Signals},
+};
 
 /// Checks that an agent token is long and varied enough to resist guessing.
 pub fn check_token(token: &str) -> Result<(), String> {
@@ -182,12 +185,12 @@ pub async fn serve(
 	let active = plugins.status.lock().await.state == "running";
 	if active {
 		eprintln!(
-			"Polkameter: received {}; stopping the active run (teardown has up to {} s; send the signal again to stop now)",
+			"{PRODUCT_NAME}: received {}; stopping the active run (teardown has up to {} s; send the signal again to stop now)",
 			first.name(),
 			settings.grace.as_secs()
 		);
 	} else {
-		eprintln!("Polkameter: received {}; shutting down", first.name());
+		eprintln!("{PRODUCT_NAME}: received {}; shutting down", first.name());
 	}
 	// Keep serving while the run stops, so its client can still read the outcome.
 	let stop = plugins.cancel.lock().await.clone();
@@ -202,7 +205,7 @@ pub async fn serve(
 			}
 		},
 		|signal| {
-			eprintln!("Polkameter: stopping now; teardown is interrupted");
+			eprintln!("{PRODUCT_NAME}: stopping now; teardown is interrupted");
 			if let Some(stop) = &stop {
 				stop.force(signal.exit_code());
 			}
@@ -211,7 +214,7 @@ pub async fn serve(
 	.await;
 	if supervised.result.is_none() {
 		eprintln!(
-			"Polkameter: the run did not record its outcome within {} s of a forced stop",
+			"{PRODUCT_NAME}: the run did not record its outcome within {} s of a forced stop",
 			FORCE_LIMIT.as_secs()
 		);
 	} else if active {
@@ -762,7 +765,7 @@ impl Follower<'_> {
 					}
 					delay = (delay * 2).min(MAX_RETRY_DELAY);
 					eprintln!(
-						"Polkameter: status poll failed ({}); retrying in {} ms",
+						"{PRODUCT_NAME}: status poll failed ({}); retrying in {} ms",
 						error.message,
 						delay.as_millis()
 					);
@@ -818,7 +821,7 @@ impl Follower<'_> {
 			if let Some(signal) = self.first {
 				// Stopping anyway: do not start again, but stop the run in case it started.
 				let _ = self.stop_quietly(true).await;
-				eprintln!("Polkameter: the run was not started: {}", error.message);
+				eprintln!("{PRODUCT_NAME}: the run was not started: {}", error.message);
 				return Ok(Some(Followed::Abandoned { id: self.id.clone(), signal }));
 			}
 			if !error.retryable {
@@ -835,7 +838,7 @@ impl Follower<'_> {
 			}
 			delay = (delay * 2).min(MAX_RETRY_DELAY);
 			eprintln!(
-				"Polkameter: start request failed ({}); retrying run {} in {} ms",
+				"{PRODUCT_NAME}: start request failed ({}); retrying run {} in {} ms",
 				error.message,
 				self.id,
 				delay.as_millis()
@@ -880,7 +883,7 @@ impl Follower<'_> {
 		self.first = Some(signal);
 		self.grace_end = Some(Instant::now() + self.limits.grace);
 		eprintln!(
-			"Polkameter: received {}; asking the agent to stop the run (teardown has up to {} s; send the signal again to stop now)",
+			"{PRODUCT_NAME}: received {}; asking the agent to stop the run (teardown has up to {} s; send the signal again to stop now)",
 			signal.name(),
 			self.limits.grace.as_secs()
 		);
@@ -899,7 +902,7 @@ impl Follower<'_> {
 					return Action::Nothing;
 				}
 				self.forced_at = Some(Instant::now());
-				eprintln!("Polkameter: asking the agent to stop now; teardown is interrupted");
+				eprintln!("{PRODUCT_NAME}: asking the agent to stop now; teardown is interrupted");
 				Action::Stop { force: true }
 			},
 			Wake::ForceLimit => Action::Abandon(self.first.unwrap_or(Signal::Interrupt)),
@@ -944,7 +947,7 @@ impl Follower<'_> {
 				Wake::Done(result) => {
 					if let Err(error) = result {
 						eprintln!(
-							"Polkameter: could not ask the agent to stop run {}: {}",
+							"{PRODUCT_NAME}: could not ask the agent to stop run {}: {}",
 							self.id, error.message
 						);
 					}

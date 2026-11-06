@@ -48,9 +48,9 @@ The client never receives the run's files. They stay in the run directory under 
 If the connection to the agent drops, the client keeps polling with backoff for 60 seconds before it gives up:
 
 ```text
-Polkameter: status poll failed (remote runner request failed: error sending request for url (http://127.0.0.1:9901/runs/c-5f0c2a9e41d7b38e6a0f1d2c3b4a5968): client error (Connect): tcp connect error: Connection refused (os error 61)); retrying in 600 ms
+PolkaMeter: status poll failed (remote runner request failed: error sending request for url (http://127.0.0.1:9901/runs/c-5f0c2a9e41d7b38e6a0f1d2c3b4a5968): client error (Connect): tcp connect error: Connection refused (os error 61)); retrying in 600 ms
 ...
-Polkameter: status polls kept failing for 60 s: ...; asked the agent to stop run c-5f0c2a9e41d7b38e6a0f1d2c3b4a5968
+PolkaMeter: status polls kept failing for 60 s: ...; asked the agent to stop run c-5f0c2a9e41d7b38e6a0f1d2c3b4a5968
 ```
 
 The client chooses the run's ID and sends it with the start request. If the start request gets no answer, for example because a proxy dropped the connection, the client sends it again with the same ID, and the agent does not start a second run.
@@ -62,7 +62,7 @@ Whenever the client gives up, it first asks the agent to stop the run, so the ag
 Press Ctrl-C (SIGINT) in the client, or send it SIGTERM. The client asks the agent to stop the run and waits for the outcome. The agent runs the plan's teardown, writes the run directory and records the state `stopped`. The client exits with `130` for SIGINT or `143` for SIGTERM:
 
 ```text
-Polkameter: received SIGINT; asking the agent to stop the run (teardown has up to 20 s; send the signal again to stop now)
+PolkaMeter: received SIGINT; asking the agent to stop the run (teardown has up to 20 s; send the signal again to stop now)
 Remote run stopped. Artifacts: /data/runs/run-1793933833445-39378-2
 ```
 
@@ -75,7 +75,7 @@ The agent runs one plan at a time. A second start fails with `a plugin plan is a
 Send the agent SIGINT or SIGTERM, as `systemctl stop` or `docker stop` do. The agent refuses new runs and stops the active run, which still runs its teardown within the agent's `--shutdown-grace`. The run's client receives the stopped outcome. The agent then exits with `130` for SIGINT or `143` for SIGTERM:
 
 ```text
-Polkameter: received SIGTERM; stopping the active run (teardown has up to 20 s; send the signal again to stop now)
+PolkaMeter: received SIGTERM; stopping the active run (teardown has up to 20 s; send the signal again to stop now)
 ```
 
 A second signal interrupts teardown. Give the service manager `--shutdown-grace` plus 10 seconds before it sends SIGKILL; see [stop a run](cli.md#stop-a-run) for common settings.

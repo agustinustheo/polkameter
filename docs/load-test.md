@@ -16,7 +16,7 @@ This skeleton validates, but it cannot run yet. `my-runtime` and its operation n
   <targets><target id="chain" endpoint="ws://127.0.0.1:9944"/></targets>
   <setup>
     <step id="flood" use="my-runtime.prepare-flood"><input name="count" value="1000"/></step>
-    <step id="probes" use="my-runtime.prepare-probes"><input name="count" value="50"/></step>
+    <step id="probes" use="my-runtime.prepare-probes"><input name="count" ref="run.probeBudget"/></step>
   </setup>
   <load target="chain" source-ref="steps.flood.transactions" probes-ref="steps.probes.transactions" block-interval-seconds="6">
     <rate tx-per-second="2" seconds="30"/>
@@ -25,8 +25,9 @@ This skeleton validates, but it cannot run yet. `my-runtime` and its operation n
 ```
 
 - `<targets>` names the node. The `<load target>` must refer to a target with a `ws://` or `wss://` endpoint.
-
 - `source-ref` is the flood, and `probes-ref` is the list reserved for baseline and recovery probes. The two lists must not overlap.
+- `ref="run.probeBudget"` asks the plugin for exactly as many probes as the run needs. With this plan's defaults that is 165. If the plugin prepares fewer, the run fails with `insufficient probe reserve`. [Probe budget](plans.md#load) gives the formula.
+- A probe is a single transaction sent alone, before the load and after it, to time how long one transaction takes to land. Each signed transaction can be submitted only once, so a probe taken from the flood could already be sent or included. Prepare probes as their own transactions, for example from a separate signer.
 - `block-interval-seconds` is the block time you expect. Preflight compares it with the chain.
 
 > **Warning:** A load test sends many transactions to its endpoint. Point a plan only at a node you run, or one you have permission to load. Do not point a plan at a public network without permission from its operators.
@@ -75,11 +76,15 @@ Open `summary.md` in the run directory first. [Read the results](reading-results
 
 `scripts/local-fork-run.sh` runs a plan on a fresh local Zombienet network. It starts the network from a TOML file, waits for blocks, installs your plugins and credentials, registers the plan's topology, runs the plan and stops the network. Run it from the repository root.
 
-```text
-scripts/local-fork-run.sh: line 20: 1: usage: scripts/local-fork-run.sh NETWORK_TOML PLAN [OUTPUT_DIR]
+Without arguments, the script prints its usage and exits with code `2`:
+
+```sh
+scripts/local-fork-run.sh
 ```
 
-That is the usage line, printed when you run the script with no arguments.
+```text
+usage: scripts/local-fork-run.sh NETWORK_TOML PLAN [OUTPUT_DIR]
+```
 
 You need:
 

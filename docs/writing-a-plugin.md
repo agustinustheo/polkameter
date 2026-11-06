@@ -1,5 +1,8 @@
 # Writing a plugin
 
+<!-- v0.3.0: remove after release -->
+> **Unreleased:** This page uses the v0.3.0 plugin SDK, which is not on crates.io yet. The steps below show the dependency line that works today.
+
 You will write a plugin with one operation, `greet`, install it and run a plan that calls it. The plan needs no chain.
 
 PolkaMeter does not know your runtime. It submits transactions at a controlled rate, follows blocks and writes the report. A plugin supplies what depends on your chain, such as how to build a transaction or what state a load should leave behind. A plugin is a separate process, so you can keep it in your own repository and install it without rebuilding PolkaMeter.
@@ -35,6 +38,15 @@ polkameter-plugin-sdk = "0.3"
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 ```
+
+<!-- v0.3.0: remove after release -->
+> **Warning:** `polkameter-plugin-sdk = "0.3"` resolves from v0.3.0. Until then, Cargo stops with `failed to select a version for the requirement`. Replace that line with a dependency pinned to a commit of this repository:
+>
+> ```toml
+> polkameter-plugin-sdk = { git = "https://github.com/agustinustheo/polkameter", rev = "58921b7d506f9987db68fc8084b2fb8f13649f94" }
+> ```
+>
+> If you have a checkout of the repository, `polkameter-plugin-sdk = { path = "<checkout>/crates/plugin-sdk" }` works too.
 
 ## Write the plugin
 
@@ -104,13 +116,16 @@ From the `hello-plugin` directory:
 cargo build
 ```
 
+<!-- v0.3.0: remove after release (replace with the crates.io build output) -->
 ```text
 ...
-   Compiling tokio v1.54.1
-   Compiling polkameter-plugin-sdk v0.3.0
+   Compiling polkameter-plugin-sdk v0.3.0 (https://github.com/agustinustheo/polkameter?rev=58921b7d506f9987db68fc8084b2fb8f13649f94#58921b7d)
    Compiling hello-plugin v0.1.0 (~/hello-plugin)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 11.23s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.70s
 ```
+
+<!-- v0.3.0: remove after release -->
+This output is from the pinned Git dependency. With the crates.io dependency, the SDK line ends at `v0.3.0`.
 
 The executable is `target/debug/hello-plugin`.
 
@@ -194,11 +209,14 @@ Phase: setup
 Phase: workflow
 Phase: teardown
 Run failed. Artifacts: ~/hello-plugin/runs-wrong/run-1793897634036-94684-1
-Polkameter: run failed: assertion verified failed: expected "Hello, Ferris!", got "Hello, Polkadot!" (details in ~/hello-plugin/runs-wrong/run-1793897634036-94684-1/execution.json)
+PolkaMeter: run failed: assertion verified failed: expected "Hello, Ferris!", got "Hello, Polkadot!" (details in ~/hello-plugin/runs-wrong/run-1793897634036-94684-1/execution.json)
 1
 ```
 
 String values are quoted; numbers and booleans are bare. The run stops at the failed assertion and exits with code `1`.
+
+<!-- v0.3.0: remove after release -->
+The v0.2.0 CLI runs the same plugin. Its failure line has no values: `Polkameter: run failed: assertion verified failed (details in …)`.
 
 ## Plugins that drive load
 
@@ -216,6 +234,9 @@ These jobs need two optional features of the SDK. `chain` connects to a node, re
 [dependencies]
 polkameter-plugin-sdk = { version = "0.3", features = ["observers"] }
 ```
+
+<!-- v0.3.0: remove after release -->
+Until v0.3.0 is on crates.io, add `features = ["observers"]` to the Git dependency from [Create the crate](#create-the-crate).
 
 ```rust
 use polkameter_plugin_sdk::chain::{Client, Keypair, fetch};

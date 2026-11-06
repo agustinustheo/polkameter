@@ -67,7 +67,6 @@ pub fn as_u64(v: &Value) -> Option<u64> {
 }
 
 /// 32 bytes, through any single-field wrappers.
-/// Part of the plugin API (used by out-of-tree plugins).
 pub fn as_bytes32(v: &Value) -> Option<[u8; 32]> {
 	let bytes: Vec<u8> = children(v)
 		.map(|b| as_u64(b).and_then(|n| u8::try_from(n).ok()))

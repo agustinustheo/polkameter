@@ -22,7 +22,7 @@ jobs:
     name: Checks
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -90,12 +90,12 @@ jobs:
           - name: Linux
             os: ubuntu-22.04
           - name: macOS
-            os: macos-14
+            os: macos-15
           - name: Windows
             os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -103,38 +103,73 @@ jobs:
       - run: corepack pnpm tauri build --debug --no-bundle
 
   action:
-    name: Action
-    runs-on: ubuntu-22.04
+    name: Action (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-22.04
+          - name: macOS
+            os: macos-15
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
-      # Local uses exercises the source path. Exercise the release download and
-      # provenance verification with @v0 after the next release adds CLI assets.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Local uses exercises the source path. tests/action-smoke.py covers the
+      # release download against a mocked release, here and in Distribution (macOS).
       - uses: ./
         id: plan
         with:
           plan: examples/plugin-workflow.polkameter.xml
           plugin-crates: plugins/example:polkameter-example-plugin
           fail-on: verdict
+      # A second use in the same matrix job must not collide on the artifact name.
+      - uses: ./
+        id: again
+        with:
+          plan: examples/plugin-workflow.polkameter.xml
+          plugin-crates: plugins/example:polkameter-example-plugin
+          artifact-retention-days: "1"
       - name: Assert the example plan passed
         env:
           EXIT_CODE: ${{ steps.plan.outputs.exit-code }}
           VERDICT: ${{ steps.plan.outputs.verdict }}
           INSTALL_METHOD: ${{ steps.plan.outputs.install-method }}
           VERSION: ${{ steps.plan.outputs.version }}
+          ARTIFACT: ${{ steps.plan.outputs.artifact-name }}
+          ARTIFACT_ID: ${{ steps.plan.outputs.artifact-id }}
+          SECOND_ARTIFACT: ${{ steps.again.outputs.artifact-name }}
+          SECOND_ARTIFACT_ID: ${{ steps.again.outputs.artifact-id }}
         run: |
           test "$EXIT_CODE" = 0
           test -z "$VERDICT"
           test "$INSTALL_METHOD" = source
           test -n "$VERSION"
+          test -n "$ARTIFACT_ID" && test -n "$SECOND_ARTIFACT_ID"
+          test "$ARTIFACT" != "$SECOND_ARTIFACT"
+
+  distribution-macos:
+    name: Distribution (macOS)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The binstall contract test reads cargo metadata; nothing is compiled.
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - name: Installer and action tests with macOS tools
+        run: |
+          python3 tests/distribution.py
+          python3 tests/action-smoke.py
 
   container:
     name: Container image
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       # Build only, so the Dockerfile is tested before a release builds and pushes it.
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: Dockerfile
@@ -149,3 +184,40 @@ jobs:
           docker run --rm polkameter:ci --version
           test "$(docker run --rm --entrypoint id polkameter:ci -u)" = 10001
           docker image ls polkameter:ci --format 'Image size: {{.Size}}'
+      # The plugin runs inside the image, so build it for Linux; Ubuntu 22.04's
+      # glibc 2.35 is older than the image's 2.36.
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build the example plugin
+        run: cargo +${{ env.RUST_VERSION }} build --locked --release -p polkameter-example-plugin
+      - name: Stop a running plan with docker stop
+        run: |
+          mkdir -m 777 stop-test
+          cp target/release/polkameter-example-plugin tests/fixtures/stop.polkameter.xml stop-test/
+          image() {
+            docker run -v "$PWD/stop-test:/work" -w /work -e HOME=/tmp \
+              -e POLKAMETER_PLUGIN_REGISTRY=/work/plugins.json "$@"
+          }
+          image --rm polkameter:ci plugin install /work/polkameter-example-plugin
+          image -d --name stop-test polkameter:ci run /work/stop.polkameter.xml --output /work/runs
+          # Wait until the plan's long step is running.
+          for _ in $(seq 60); do
+            if compgen -G 'stop-test/runs/run-*/plugins/example/wait.pid' >/dev/null; then break; fi
+            sleep 1
+          done
+          compgen -G 'stop-test/runs/run-*/plugins/example/wait.pid'
+          start=$(date +%s)
+          docker stop --timeout 45 stop-test
+          elapsed=$(( $(date +%s) - start ))
+          echo "docker stop took ${elapsed}s"
+          docker logs stop-test
+          test "$(docker inspect --format '{{.State.ExitCode}}' stop-test)" = 130
+          test "$elapsed" -lt 30
+          run=$(echo stop-test/runs/run-*)
+          jq -e '.state == "stopped" and .exit_code == 130' "$run/execution.json"
+          tail -n 1 "$run/events.jsonl" | jq -e '.event == "completed"'
+          test -s "$run/junit.xml"
+          test -s "$run/summary.md"
+          docker rm stop-test
