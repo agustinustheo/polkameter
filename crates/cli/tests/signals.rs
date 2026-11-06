@@ -10,7 +10,6 @@
 
 use std::{
 	io::{BufRead, BufReader},
-	net::{TcpListener, TcpStream},
 	path::{Path, PathBuf},
 	process::{Child, Command, ExitStatus, Stdio},
 	time::{Duration, Instant},
@@ -18,15 +17,17 @@ use std::{
 
 use serde_json::Value;
 
+#[path = "support/agent.rs"]
+mod agent;
+#[path = "support/executable.rs"]
+mod executable;
+
 /// How long any one wait in these tests may take before the test fails.
 /// Generous: the whole workspace's tests run in parallel, and a loaded machine starts each
 /// process slowly. Only a failing test waits this long.
 const PATIENCE: Duration = Duration::from_secs(180);
 
 const TOKEN: &str = "signals-test-token-0123456789abcdef";
-
-/// How many times an agent is started on a fresh port when it could not listen on the first.
-const AGENT_ATTEMPTS: usize = 5;
 
 fn plugin_executable() -> PathBuf {
 	if let Some(path) = std::env::var_os("POLKAMETER_EXAMPLE_PLUGIN") {
@@ -341,34 +342,25 @@ fn the_grace_period_bounds_teardown_after_one_signal() {
 struct Agent {
 	process: Process,
 	endpoint: String,
+	stderr: agent::Stderr,
 }
 
 impl Agent {
-	/// Starts the agent on a port that was free a moment ago. Tests run in parallel, so another
-	/// process may take the port first: the agent then exits, and starts again on another.
 	fn start(work: &Work) -> Self {
-		for _ in 0..AGENT_ATTEMPTS {
-			let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-			let bind = format!("127.0.0.1:{port}");
-			let mut process = Process::spawn(
-				work.polkameter()
-					.args(["agent", "serve", "--bind", &bind, "--output-root"])
-					.arg(work.0.join("remote")),
-			);
-			let listening = wait_for("the agent to listen or exit", || {
-				if process.0.try_wait().unwrap().is_some() {
-					return Some(false);
-				}
-				TcpStream::connect(&bind).ok().map(|_| true)
-			});
-			// Listening, and still running: the connection reached this agent, not another
-			// process on the same port.
-			std::thread::sleep(Duration::from_millis(100));
-			if listening && process.0.try_wait().unwrap().is_none() {
-				return Self { process, endpoint: format!("http://{bind}") };
-			}
-		}
-		panic!("the agent could not listen on a free port in {AGENT_ATTEMPTS} attempts");
+		let (child, address, stderr) = agent::start(
+			work.polkameter()
+				.args(["agent", "serve", "--output-root"])
+				.arg(work.0.join("remote"))
+				.stdout(Stdio::piped()),
+			PATIENCE,
+		);
+		Self { process: Process(child), endpoint: format!("http://{address}"), stderr }
+	}
+
+	/// Waits for the agent to exit and returns its status and the rest of its standard error.
+	fn wait(&mut self) -> (ExitStatus, String) {
+		let status = wait_for("the agent to exit", || self.process.0.try_wait().unwrap());
+		(status, self.stderr.read(PATIENCE))
 	}
 
 	fn client(&self, work: &Work) -> Process {
@@ -416,7 +408,7 @@ fn sigterm_stops_the_agent_after_its_run_tears_down() {
 	let run = work.remote_run_directory("remote", &mut client);
 	let pid = waiting_plugin(&run, None);
 	agent.process.signal("TERM");
-	let (status, stderr) = agent.process.wait();
+	let (status, stderr) = agent.wait();
 	assert_eq!(status.code(), Some(143), "{stderr}");
 	assert!(stderr.contains("received SIGTERM; stopping the active run"), "{stderr}");
 	let execution = read_json(&run.join("execution.json"));
@@ -506,17 +498,14 @@ fn processes_a_plugin_starts_do_not_outlive_the_run() {
 		// A wrapper that leaves a child running, then becomes the plugin.
 		let script = directory.join("wrapped-plugin");
 		let descendants = directory.join("descendants");
-		std::fs::write(
+		executable::write_executable(
 			&script,
 			format!(
 				"#!/bin/sh\nsleep 300 &\necho $! >> '{}'\nexec '{}'\n",
 				descendants.display(),
 				plugin.display()
 			),
-		)
-		.unwrap();
-		use std::os::unix::fs::PermissionsExt;
-		std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+		);
 		script
 	});
 	let output = work.0.join("runs");

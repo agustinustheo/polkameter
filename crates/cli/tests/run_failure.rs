@@ -2,13 +2,15 @@
 //! directory, and keeps standard output to the usual lines.
 
 use std::{
-	net::{TcpListener, TcpStream},
 	path::{Path, PathBuf},
 	process::{Child, Command},
-	time::{Duration, Instant},
+	time::Duration,
 };
 
 use serde_json::Value;
+
+#[path = "support/agent.rs"]
+mod agent;
 
 const FAILING_PLAN: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="Failing" timeout-ms="30000">
@@ -174,22 +176,14 @@ fn json_run_failure_keeps_json_on_standard_output_and_the_reason_on_standard_err
 #[test]
 fn remote_run_failure_names_the_run_directory_on_the_agent() {
 	let work = WorkDirectory::new("remote");
-	let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-	let bind = format!("127.0.0.1:{port}");
-	let _agent = Agent(
+	let (child, bind, _stderr) = agent::start(
 		polkameter(work.path())
-			.args(["agent", "serve", "--bind", &bind, "--output-root"])
+			.args(["agent", "serve", "--output-root"])
 			.arg(work.path().join("remote"))
-			.stdout(std::process::Stdio::null())
-			.stderr(std::process::Stdio::null())
-			.spawn()
-			.unwrap(),
+			.stdout(std::process::Stdio::null()),
+		Duration::from_secs(120),
 	);
-	let deadline = Instant::now() + Duration::from_secs(30);
-	while TcpStream::connect(&bind).is_err() {
-		assert!(Instant::now() < deadline, "the agent did not start listening");
-		std::thread::sleep(Duration::from_millis(50));
-	}
+	let _agent = Agent(child);
 	let (code, stdout, stderr) = output(
 		polkameter(work.path())
 			.arg("run")

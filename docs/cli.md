@@ -396,7 +396,7 @@ polkameter agent serve [--bind ADDR] [--token-env ENV_VAR] [--output-root DIR] [
 
 | Name | Type | Required | Default | Limits | Meaning |
 | --- | --- | --- | --- | --- | --- |
-| `--bind ADDR` | address | no | `127.0.0.1:9901` | a loopback address | The address to listen on |
+| `--bind ADDR` | address | no | `127.0.0.1:9901` | a loopback address | The address to listen on. Port `0` picks a free port; the agent prints `PolkaMeter: agent listening on <address>` on standard error once it listens |
 | `--token-env` | variable name | no | `POLKAMETER_AGENT_TOKEN` | set; at least 32 characters with at least 8 different characters | The variable that holds the bearer token; generate it with `openssl rand -hex 32`. There is no flag for the token itself |
 | `--output-root DIR` | path | no | `target/polkameter-agent-runs` | none | Where run directories go. Relative paths start from the agent's working directory |
 | `--keep-runs N` | number | no | keep all | at least 1 | Keep the newest `N` finished run directories. When a run starts, older finished `run-…` directories under `--output-root` are deleted. A run is finished when its `execution.json` holds a final state and no process holds its `run.lock`. Runs still in progress, runs killed while stopping, and other files are never touched |

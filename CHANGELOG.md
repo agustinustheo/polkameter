@@ -77,6 +77,7 @@ Also new:
 - **Concurrent `plugin` commands are safe.** `plugin install`, `credential`, `topology` and `capability` lock `<registry>.lock`, reread the registry and replace it atomically, so parallel commands no longer lose each other's changes. A corrupt registry names its path and how to recover, and is never overwritten.
 - **A closed standard output no longer panics.** `polkameter … | head -1` used to end with a panic and exit code 101. Output now stops quietly and the command finishes with its own exit code.
 - **More help.** Every subcommand, argument and flag has a description, and `--help` shows examples and the exit codes.
+- `agent serve` prints `PolkaMeter: agent listening on <address>` on standard error once it listens. With `--bind 127.0.0.1:0` the system picks a free port, and that line names it.
 
 ### CLI JSON output (breaking for scripts that parse `--format json`)
 
