@@ -1,6 +1,6 @@
 [package]
 name = "polkameter-example-plugin"
-description = "Example Polkameter plugin used by the CLI smoke test"
+description = "Example PolkaMeter plugin used by the CLI smoke test"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

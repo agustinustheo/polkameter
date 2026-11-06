@@ -164,6 +164,8 @@ pub async fn run(
 	};
 	follow.cancel();
 	tracker.set_phase(Phase::Done, now_ms())?;
+	// The run window ends here: scrape now, so it ends on fresh samples.
+	monitors.scraper.scrape_now().await;
 	// The node's CPU and memory per step come from node.jsonl, complete once the sampler stopped.
 	monitors.stop_sampling().await?;
 	let samples: Vec<NodeSample> = dir.read_jsonl("node.jsonl")?;
@@ -219,9 +221,10 @@ pub async fn run(
 		scenario: plan.name.clone(),
 		artifact: Some(Artifact {
 			name: "prepared extrinsics".into(),
-			description:
-				"Each operation is prepared by an installed plugin and submitted by Polkameter"
-					.into(),
+			description: format!(
+				"Each operation is prepared by an installed plugin and submitted by {}",
+				crate::PRODUCT_NAME
+			),
 			context: "XML plugin workload".into(),
 		}),
 		run_id: dir.run_id.clone(),

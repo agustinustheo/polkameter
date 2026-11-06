@@ -82,7 +82,8 @@ impl Samples {
 pub fn read_store(dir: &RunDir) -> Result<Store, FileError> {
 	let mut set = Samples::default();
 	let mut failures: HashMap<(String, String), f64> = HashMap::new();
-	for s in dir.read_jsonl::<ScrapeRecord>("scrapes.jsonl")? {
+	// One scrape at a time: only the registered samples of each are kept, never the whole file.
+	dir.each_jsonl("scrapes.jsonl", |s: ScrapeRecord| {
 		let base = [("job", &s.job), ("instance", &s.instance)];
 		let Some(text) = &s.text else {
 			let n = failures.entry((s.job.clone(), s.instance.clone())).or_default();
@@ -95,7 +96,7 @@ pub fn read_store(dir: &RunDir) -> Result<Store, FileError> {
 				s.t,
 				*n,
 			);
-			continue;
+			return;
 		};
 		for line in text.lines().filter(|l| !l.is_empty() && !l.starts_with('#')) {
 			let Some(p) = parse_sample_line(line) else { continue };
@@ -104,7 +105,7 @@ pub fn read_store(dir: &RunDir) -> Result<Store, FileError> {
 			labels.extend(base.iter().map(|(k, v)| ((*k).to_owned(), (*v).clone())));
 			set.add(family.name, &p.name, labels, s.t, p.value);
 		}
-	}
+	})?;
 	let mut series = vec![
 		("chain.jsonl".to_owned(), "stress".to_owned(), "chain-recorder".to_owned()),
 		("load.jsonl".to_owned(), "stress".to_owned(), "load-tool".to_owned()),
@@ -114,7 +115,7 @@ pub fn read_store(dir: &RunDir) -> Result<Store, FileError> {
 		series.push((format!("plugins/{id}/series.jsonl"), "plugin".to_owned(), id));
 	}
 	for (file, job, instance) in series {
-		for l in dir.read_jsonl::<SeriesRecord>(&file)? {
+		dir.each_jsonl(&file, |l: SeriesRecord| {
 			let mut labels = l.labels;
 			labels.insert("job".into(), job.clone());
 			labels.insert("instance".into(), instance.clone());
@@ -124,7 +125,7 @@ pub fn read_store(dir: &RunDir) -> Result<Store, FileError> {
 					add_histogram(&mut set, &l.name, &labels, l.t, &buckets, sum)
 				},
 			}
-		}
+		})?;
 	}
 	Ok(set.into_store())
 }

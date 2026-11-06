@@ -14,7 +14,9 @@ use crate::observers::files::{registry::Outcome, serde_name};
 use serde::{Deserialize, Serialize};
 
 /// Part of the plugin API (used by out-of-tree plugins).
-pub use data::{CounterReset, Label, Phase, RunData, Window, count_above, quantile};
+pub use data::{
+	CounterReset, Label, Phase, RunData, SCRAPE_TIMEOUT_MS, Window, count_above, quantile,
+};
 #[doc(hidden)]
 pub use limits::LIMITS;
 #[doc(hidden)]
@@ -106,18 +108,32 @@ pub fn smoke_gaps(results: &[CheckResult]) -> Vec<String> {
 }
 
 /// Runs the checks; a counter that went down in a window gives that check no result.
+///
+/// A check without a result whose inputs the plan does not monitor at all (no `<monitors>`, or
+/// no node of the kind it reads) is not applicable: its detail starts with `not applicable:` and
+/// it is optional, so it does not make the verdict INCONCLUSIVE.
 #[doc(hidden)]
 pub fn run(checks: &[Check], data: &RunData) -> Vec<CheckResult> {
 	checks
 		.iter()
-		.map(|c| CheckResult {
-			source: None,
-			outcome: serde_name(c.outcome),
-			check: c.name.to_owned(),
-			verdict: (c.run)(data).unwrap_or_else(|reset| {
+		.map(|c| {
+			let mut verdict = (c.run)(data).unwrap_or_else(|reset| {
 				Verdict::new(Status::NoResult, format!("a node restarted: {reset}"))
-			}),
-			optional: c.optional,
+			});
+			let mut optional = c.optional;
+			if verdict.status == Status::NoResult
+				&& let Some(why) = outcomes::not_applicable(c.name, data)
+			{
+				verdict = Verdict::new(Status::NoResult, format!("not applicable: {why}"));
+				optional = true;
+			}
+			CheckResult {
+				source: None,
+				outcome: serde_name(c.outcome),
+				check: c.name.to_owned(),
+				verdict,
+				optional,
+			}
 		})
 		.collect()
 }
