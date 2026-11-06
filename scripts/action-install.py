@@ -17,7 +17,9 @@ import zipfile
 
 REPO = "agustinustheo/polkameter"
 API = "https://api.github.com"
-TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
+STABLE = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
+# A release tag, optionally with a SemVer prerelease such as v0.3.0-rc.1.
+TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?")
 # gh exit status for "authentication required" (gh help exit-codes).
 GH_AUTH_REQUIRED = 4
 
@@ -77,14 +79,15 @@ class Installer:
         if explicit:
             tag = explicit if explicit.startswith("v") else f"v{explicit}"
             if not TAG.fullmatch(tag):
-                raise ValueError("version must be X.Y.Z or vX.Y.Z")
+                raise ValueError("version must be X.Y.Z or vX.Y.Z, optionally with a prerelease such as -rc.1")
         elif TAG.fullmatch(ref):
             tag = ref
         elif re.fullmatch(r"v[0-9]+", ref):
             # Remote action packages have no .git. Never query the moving tag:
             # it may have advanced since the runner downloaded this package.
+            # Moving tags only ever select stable releases.
             tag = f"v{self.source_version()}"
-            if not TAG.fullmatch(tag) or tag.split(".")[0] != ref:
+            if not STABLE.fullmatch(tag) or tag.split(".")[0] != ref:
                 raise Unavailable("The action package version does not match the moving major tag")
         else:
             raise Unavailable("This action ref is not a release tag; use version to select a release")

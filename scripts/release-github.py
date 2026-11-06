@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """Create or resume a GitHub release: draft, upload every asset, then publish.
 
-Assets of a published release are never replaced. A recovery run whose rebuilt
-asset differs from the published one fails instead of changing a digest that
-users may already have pinned.
+A published asset is never replaced. A recovery run keeps the published file
+when its rebuild differs (Rust builds and the SBOM are not byte-identical) and
+uploads only the assets the release lacks, so the later jobs can still run.
 """
 
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
+
+STABLE = re.compile(r"v([0-9]+)\.([0-9]+)\.([0-9]+)")
 
 
 def gh(*args, capture=False):
@@ -37,39 +40,75 @@ def sha256(path):
     return f"sha256:{digest.hexdigest()}"
 
 
+def previous_stable(tag, tags):
+    """The newest stable tag older than tag, so notes after an rc start at the last stable release."""
+    base = tuple(map(int, re.match(r"v([0-9]+)\.([0-9]+)\.([0-9]+)", tag).groups()))
+    older = [(tuple(map(int, match.groups())), name) for name in tags
+             if (match := STABLE.fullmatch(name)) and tuple(map(int, match.groups())) < base]
+    return max(older)[1] if older else None
+
+
+def release_tags(repository):
+    refs = gh("api", "--paginate", f"repos/{repository}/git/matching-refs/tags/v", "--jq", ".[].ref",
+              capture=True)
+    return [ref.removeprefix("refs/tags/") for ref in refs.split()]
+
+
+def partner(name):
+    """An archive's checksum file, or a checksum file's archive."""
+    return name.removesuffix(".sha256") if name.endswith(".sha256") else f"{name}.sha256"
+
+
 def plan_uploads(release, assets):
-    """Returns (uploads, conflicts) for local assets against the release's assets."""
-    remote = {asset["name"]: asset for asset in release["assets"]} if release else {}
-    uploads, conflicts = [], []
+    """Returns (uploads, kept, conflicts) for local assets against the release's assets.
+
+    kept: published assets whose rebuild differs; the published file stays.
+    conflicts: missing assets whose published partner differs from this run's,
+    which would publish an archive with a checksum that does not match it.
+    """
+    remote = {asset["name"]: asset for asset in release["assets"]}
+    local = {Path(path).name: sha256(path) for path in assets}
+    uploaded = {name: asset.get("digest") for name, asset in remote.items()
+                if asset.get("state", "uploaded") == "uploaded"}
+    uploads, kept, conflicts = [], [], []
     for path in assets:
-        existing = remote.get(Path(path).name)
-        if existing is None or existing.get("state", "uploaded") != "uploaded":
-            uploads.append(path)
-        elif existing.get("digest") == sha256(path):
+        name = Path(path).name
+        if name not in uploaded:
+            other = partner(name)
+            if not release["isDraft"] and other in uploaded and other in local and uploaded[other] != local[other]:
+                conflicts.append(name)
+            else:
+                uploads.append(path)
+        elif uploaded[name] == local[name]:
             continue
         elif release["isDraft"]:
             # A draft is not public: nobody can have downloaded it yet.
             uploads.append(path)
         else:
-            conflicts.append((Path(path).name, existing.get("digest") or "unknown", sha256(path)))
-    return uploads, conflicts
+            kept.append(name)
+    return uploads, kept, conflicts
 
 
-def publish(tag, assets):
+def publish(tag, assets, repository):
     prerelease = "-" in tag.split("+", 1)[0]
     flags = ["--latest=false"] if prerelease else []
     release = view(tag)
     if release is None:
+        start = previous_stable(tag, release_tags(repository))
         gh("release", "create", tag, "--draft", "--verify-tag", "--title", tag, "--generate-notes",
+           *(["--notes-start-tag", start] if start else []),
            *(["--prerelease"] if prerelease else []), *flags)
         release = {"isDraft": True, "assets": []}
-    uploads, conflicts = plan_uploads(release, assets)
+    uploads, kept, conflicts = plan_uploads(release, assets)
     if conflicts:
-        lines = "\n".join(f"  {name}: published {old}, rebuilt {new}" for name, old, new in conflicts)
         raise SystemExit(
-            f"Release {tag} is published and these assets differ from this run's builds:\n{lines}\n"
-            "Published assets are never replaced. Re-run only the failed jobs of the original run, "
-            "which reuses its built assets, or release a new patch version. See RELEASING.md.")
+            f"Release {tag} is published, and these missing assets belong with published files that differ "
+            f"from this run's builds: {', '.join(conflicts)}. Uploading them would publish a checksum that "
+            "does not match its archive. Re-run only the failed jobs of the original run, which reuses its "
+            "built assets, or release a new patch version. See RELEASING.md.")
+    if kept:
+        print(f"::warning::Release {tag} is already published. Keeping the published {', '.join(kept)}: "
+              "this run's rebuild differs, and published assets are never replaced.")
     if uploads:
         # Partial uploads and draft assets may be replaced; published ones never reach here.
         gh("release", "upload", tag, "--clobber", *map(str, uploads))
@@ -81,4 +120,4 @@ if __name__ == "__main__":
     assets = sorted(Path("release-assets").glob("*"))
     if not assets:
         raise SystemExit("No release assets found")
-    publish(os.environ["RELEASE_TAG"], assets)
+    publish(os.environ["RELEASE_TAG"], assets, os.environ["GH_REPO"])

@@ -96,7 +96,8 @@ case "$verify" in
                 0:*) ;;
                 4:1) fail 'gh must be authenticated to github.com to verify attestations; run gh auth login or set GH_TOKEN' ;;
                 4:auto) printf 'polkameter: gh is not authenticated to github.com; only the checksum was verified. Run gh auth login or set GH_TOKEN to verify the build attestation.\n' >&2 ;;
-                *) fail 'attestation verification failed; see the release recovery and trust documentation' ;;
+                # An expired or invalid token also exits 1, like a failed verification.
+                *) fail "attestation verification failed (gh exit $status). If gh's github.com credentials are expired or invalid, run gh auth login or set a valid GH_TOKEN; POLKAMETER_VERIFY_ATTESTATION=0 accepts the checksum only. Otherwise see the release recovery and trust documentation" ;;
             esac
         elif [ "$verify" = 1 ]; then
             fail 'gh is required to verify attestations'

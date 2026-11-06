@@ -70,7 +70,7 @@ To select a version with these assets, add `--version <version>`. The metadata p
 
 Run the CLI from `ghcr.io/agustinustheo/polkameter:<version>`. Stable releases also update `:latest`, `:<major>` and `:<major>.<minor>`; for example, a `0.3.0` release publishes `:0.3.0`, `:0.3`, `:0` and `:latest`. Prereleases use their full version tag only.
 
-The image supports `linux/amd64` and `linux/arm64`, includes CA certificates, and runs as user `10001:10001`. Its entrypoint runs `polkameter` under the `tini` init process, so `docker stop` interrupts a run like Ctrl-C and teardown runs. If you replace the entrypoint with a shell, as the example below does, add `--init` and start the run with `exec`, so the signal reaches `polkameter` rather than the shell. Mount your plan and a plugin built for **Linux and the container's architecture**; a macOS or Windows executable cannot run inside it. Build plugins in `rust:1.93.0-bookworm` or another environment compatible with the runtime’s glibc 2.36. Create a writable output directory before running from your project root:
+The image supports `linux/amd64` and `linux/arm64`, includes CA certificates, and runs as user `10001:10001`. Mount your plan and a plugin built for **Linux and the container's architecture**; a macOS or Windows executable cannot run inside it. Build plugins in `rust:1.93.0-bookworm` or another environment compatible with the runtime’s glibc 2.36. Create a writable output directory before running from your project root:
 
 ```sh
 mkdir -p polkameter-runs
@@ -84,7 +84,19 @@ docker run --rm --init --user "$(id -u):$(id -g)" \
   '
 ```
 
-For a version check, run `docker run --rm ghcr.io/agustinustheo/polkameter:<version> --version`. See [Run PolkaMeter in CI](ci.md#gitlab-ci) for a GitLab `image:` example.
+For a version check, run `docker run --rm ghcr.io/agustinustheo/polkameter:<version> --version`.
+
+### Stop a container run
+
+The image runs `polkameter` under the `tini` init process, and `docker stop` sends it SIGINT. PolkaMeter treats that like Ctrl-C: it stops the run, runs teardown, writes the results and exits `130`. Teardown can take up to 30 seconds, longer than the 10 seconds `docker stop` waits by default before it kills the container. Give it 45 seconds:
+
+```sh
+docker stop --timeout 45 <container>
+```
+
+Or set the timeout when you start the container, with `docker run --stop-timeout 45`. In Kubernetes, set `terminationGracePeriodSeconds: 45` on the pod; Kubernetes sends SIGTERM rather than the image's stop signal.
+
+If you replace the entrypoint with a shell, as the example above does, add `--init` and start the run with `exec`, so the signal reaches `polkameter` rather than the shell. See [Run PolkaMeter in CI](ci.md#gitlab-ci) for a GitLab `image:` example.
 
 ## Build from source
 

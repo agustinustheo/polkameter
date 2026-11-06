@@ -14,8 +14,10 @@ COPY --from=builder /build/target/release/polkameter /usr/local/bin/polkameter
 USER 10001:10001
 WORKDIR /home/polkameter
 # tini runs as PID 1: it forwards signals to polkameter and reaps exited plugin processes.
-# docker stop sends SIGINT, which polkameter handles like Ctrl-C: it stops the run and
-# runs teardown. SIGTERM from other runtimes still ends polkameter promptly.
+# STOPSIGNAL makes docker stop send SIGINT, the signal polkameter treats as Ctrl-C: it
+# stops the run, runs teardown and writes the results. Teardown can outlast docker's
+# default 10-second stop timeout, so stop with `docker stop --timeout 45` or run with
+# `--stop-timeout 45`. Runtimes that ignore STOPSIGNAL, such as Kubernetes, send SIGTERM.
 STOPSIGNAL SIGINT
 ENTRYPOINT ["/usr/bin/tini", "--", "polkameter"]
 CMD ["--help"]

@@ -21,7 +21,7 @@ inputs:
     required: false
     default: auto
   version:
-    description: Release version (X.Y.Z or vX.Y.Z). Empty uses a full release tag or the package version for a moving major tag; other refs build from source.
+    description: Release version (X.Y.Z or vX.Y.Z, optionally with a prerelease such as -rc.1). Empty uses a full release tag or the package version for a moving major tag; other refs build from source.
     required: false
     default: ""
   verify-attestation:
@@ -221,7 +221,12 @@ runs:
         fi
         echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
         if [ -f "$run_dir/summary.md" ]; then
-          cat "$run_dir/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          # PolkaMeter redacts summary.md only when the run finishes normally.
+          if python3 "$GITHUB_ACTION_PATH/scripts/action-stage-artifact.py" --finished "$run_dir"; then
+            cat "$run_dir/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::notice::The run did not finish normally, so its summary.md was not redacted; it is left out of the job summary."
+          fi
         fi
     - name: Stage the run artifact
       id: stage

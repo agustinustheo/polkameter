@@ -4,7 +4,7 @@ Every crate shares `[workspace.package].version` in the root `Cargo.toml`. Inter
 
 ## Cut a release
 
-1. Update the workspace version and every internal dependency version. Run `cargo +1.93.0 check --workspace` so `Cargo.lock` follows.
+1. Update the workspace version and every internal dependency version. Run `cargo +1.93.0 check --workspace` so `Cargo.lock` follows. Retitle the `Unreleased` section of `CHANGELOG.md` with the version, and copy its notes into the GitHub release after publication.
 2. Run the checks in the README, `python3 tests/distribution.py`, `shellcheck install.sh`, `actionlint`, and `cargo +1.93.0 publish --workspace --exclude polkameter-desktop --exclude polkameter-example-plugin --dry-run --locked`.
 3. Commit, merge to `main`, then tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`.
 
@@ -19,7 +19,7 @@ Crates publish one at a time in dependency order computed from `cargo metadata`.
 The published GitHub release, crates.io, the container aliases and the moving action tag all wait until every build has succeeded. Only the container's full version tag is pushed in parallel with the builds.
 
 1. `prepare` checks the tag. The CLI, desktop and container jobs then run in parallel. The container job pushes only the full version tag, such as `:0.3.0`.
-2. `publish` waits for every CLI and desktop build. It generates the SBOM, attests every asset, creates the GitHub release as a draft, uploads the assets and only then publishes the release.
+2. `publish` waits for every CLI and desktop build. It generates the SBOM, attests every asset, creates the GitHub release as a draft, uploads the assets and only then publishes the release. Generated release notes start at the previous stable tag, so `v0.3.0` notes cover everything since `v0.2.0`, including any release candidates.
 3. `crates-io` waits for `publish` and `container`, because crates.io versions can never be replaced. `container-aliases` waits for `container` and `publish`.
 4. `major-tag` waits for `publish`, `container-aliases` and `crates-io`.
 
@@ -37,7 +37,7 @@ To rehearse crates.io publication too, set the repository variable `PUBLISH_PRER
 gh variable set PUBLISH_PRERELEASE_CRATES --body true
 ```
 
-A recovery dispatch can opt in with `-f prerelease-crates=true` instead. That only helps while the prerelease is unpublished: after publication, a full dispatch fails at `publish`, as described below.
+A recovery dispatch can opt in with `-f prerelease-crates=true` instead.
 
 Cargo never selects a prerelease version unless asked, so `0.3.0-rc.1` on crates.io does not affect users. After the rehearsal, set the version to `0.3.0`, merge and tag.
 
@@ -57,10 +57,10 @@ Existing crate versions are skipped and release prerelease flags are reconciled 
 
 - A missing release is created as a draft. A draft accepts every asset and is published after the last upload.
 - An asset that is missing, or only partly uploaded, is uploaded.
-- A published asset with the same SHA-256 digest is kept.
-- A published asset with a different digest fails the `publish` job. Rebuilt Rust binaries are not byte-identical, so a full dispatch after publication always differs. Published assets are never replaced, because users may have pinned their checksums.
+- A published asset is never replaced, because users may have pinned its checksum. If this run's rebuild differs, the job keeps the published file and warns. Rebuilt Rust binaries and the SBOM (new timestamp and document ID) are never byte-identical, so a full dispatch after publication always warns. The tag-ref guard ensures the rebuild comes from the same commit, and the published files keep the original run's attestations.
+- A missing archive or checksum file whose published partner differs from this run's fails the `publish` job, because uploading it would publish a checksum that does not match its archive.
 
-If `publish` succeeded and a later job failed, use **Re-run failed jobs** in the original run: it keeps the successful jobs and their assets. If the published assets themselves are wrong, release a new patch version.
+After publication, a full dispatch therefore uploads only missing assets and continues to crates.io, the container aliases and the major tag. If `publish` succeeded and a later job failed, **Re-run failed jobs** in the original run also works: it keeps the successful jobs and their assets. If the published assets themselves are wrong, release a new patch version.
 
 Prereleases use `--prerelease --latest=false` and never update moving tags or container aliases. Stable container version tags are preserved on recovery; a mismatched version/revision label fails closed. Alias promotion is serialized repository-wide, compares each alias's current image version label numerically, and only moves forward. A recovery for `0.3.1` can update `:0.3` while preserving `:0` and `:latest` at `0.4.0`.
 

@@ -34,7 +34,9 @@ After a successful stable release, the release workflow moves `v0` to the latest
 
 Branches, commit SHAs and local `uses: ./` build from source. Missing releases or platform assets also fall back to source. The action emits a warning with the fallback reason and records the installation method, version and reason in the job summary.
 
-Set `version: "0.3.0"` (or `"v0.3.0"`) to select a release explicitly, including from a branch or commit SHA. Set `install: release` to fail when that release cannot be installed, or `install: source` to always build the CLI from the action's ref, ignoring `version`. Any source fallback builds the action's own version, even when a different release was requested. The source build keeps its cache in `.polkameter-action-target` inside the action directory.
+Set `version: "0.3.0"` (or `"v0.3.0"`) to select a release explicitly, including from a branch or commit SHA. Set `install: release` to fail when that release cannot be installed, or `install: source` to always build the CLI from the action's ref, ignoring `version`. Any source fallback builds the action's own version, even when a different release was requested.
+
+To test a release candidate, use its full tag, such as `@v0.3.0-rc.1`, or set `version: "0.3.0-rc.1"`. A moving major tag such as `@v0` never selects a prerelease. The source build keeps its cache in `.polkameter-action-target` inside the action directory.
 
 Downloads always check the archive's SHA-256 checksum. By default, `gh` must verify the archive's build attestation from `agustinustheo/polkameter/.github/workflows/release.yml`, bound to the selected `refs/tags/v<X.Y.Z>` source ref and the archive's digest. If `gh` is missing, `auto` emits a warning and builds from source; `release` fails. If verification runs and fails (including network or missing-attestation errors), both modes fail the job. A checksum mismatch also fails both modes; these failures do not fall back to source.
 
@@ -79,7 +81,7 @@ You can combine `plugin-crates` with `plugins` for prebuilt executables. A relea
 | `plugin-crates` | no | `""` | Package directories or `Cargo.toml` paths to build and install, one `path` or `path:package` per line. |
 | `plugin-unlocked` | no | `"false"` | Opt in to plugin builds that may update `Cargo.lock`; default builds require an up-to-date lockfile. |
 | `install` | no | `auto` | `auto` downloads a release with a source fallback; `release` requires a matching asset; `source` always builds. |
-| `version` | no | derived | Release version, `X.Y.Z` or `vX.Y.Z`. Empty uses the action's full release tag or its embedded package version for a moving major tag. Other refs build from source. |
+| `version` | no | derived | Release version, `X.Y.Z` or `vX.Y.Z`, optionally with a prerelease such as `-rc.1`. Empty uses the action's full release tag or its embedded package version for a moving major tag. Other refs build from source. |
 | `verify-attestation` | no | `"true"` | Require `gh` verification of the release workflow, source tag and archive digest. `"false"` explicitly opts out with a warning. Checksums are always verified. |
 | `credentials` | no | `""` | Credential profiles to map to environment variables, one `PROFILE=ENV_VAR` per line. Set the secret variables on the calling step with `env:`; secrets are never inputs. |
 | `topologies` | no | `""` | Zombienet topologies to register, one `ALIAS=path` per line. |
@@ -154,6 +156,10 @@ With the default `fail-on: error`, a stress-mode load run exits `0` even when it
 - **Artifact.** The run's reports, uploaded even when the run failed. Read its name from the `artifact-name` output. If validation fails before the run starts, there is no run directory and no artifact.
 
 From v0.3.0, the artifact holds only the files PolkaMeter writes; v0.2.0 uploads the whole run directory. The files are `execution.json`, `summary.md`, `summary.json`, `junit.xml`, `events.jsonl`, `samples.jtl`, the plots, the load-test records listed in [Run directory](results.md) and each plugin's redacted `stderr.log`. Other files in the run directory, such as a plugin's own diagnostics or its `series.jsonl`, stay on the runner. Set `upload-raw-plugin-files: "true"` to upload them too, after checking that your plugins never write secrets.
+
+PolkaMeter redacts plugin logs and summaries when the run finishes, including a failed or stopped run. If the CLI was killed first, for example by the out-of-memory killer, those files still hold what the plugins wrote. The action then leaves `plugins/*/stderr.log`, `summary.md`, `summary.json` and `plugin-checks.json` out of the artifact and the job summary, with a notice. They stay in the run directory on the runner.
+
+The action copies the files after `polkameter run` exits. A plugin process that is still running cannot change the uploaded copy, and the action never follows a symbolic link in the run directory.
 
 If the records exceed `artifact-size-limit-mb`, the action keeps the reports and as many records as fit, in the order above, and warns. `polkameter-artifact-omitted.txt` in the artifact lists the omitted files. Set `artifact-retention-days` to keep the artifact for less time than the repository default.
 
@@ -249,5 +255,13 @@ load-test:
 Set `POLKAMETER_SETUP_SURI` as a masked GitLab CI variable. The container runs as UID `10001` by default, so configure your runner to give that user write access to the checkout and output directory. Release container publication must complete before this job can pull the image.
 
 `--junit` writes a copy of the run's JUnit report to a fixed path, and `reports: junit:` shows its cases in the pipeline's Tests view and the merge request test summary. `when: always` keeps reports from failed runs. A plan rejected before a run directory is created has no JUnit report.
+
+When a job is cancelled or reaches its time limit, the CI system stops the container and may kill it before teardown finishes. To stop the run cleanly first, wrap it in `timeout`, which sends SIGINT and allows 45 seconds for teardown. Choose a duration shorter than the job's time limit:
+
+```yaml
+    - timeout --signal=INT --kill-after=45s 50m polkameter run plans/transfers.polkameter.xml --output polkameter-runs --fail-on-verdict
+```
+
+A run stopped this way still writes its results. `timeout` then exits `124`, which fails the job. When you start the container yourself, see [Stop a container run](install.md#stop-a-container-run).
 
 For Jenkins, publish `polkameter-runs/**/junit.xml` with the `junit` pipeline step in an `always` post condition. The [results reference](results.md#junitxml) lists the case mapping, warning output and timings.

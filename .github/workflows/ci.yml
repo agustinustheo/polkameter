@@ -184,12 +184,40 @@ jobs:
           docker run --rm polkameter:ci --version
           test "$(docker run --rm --entrypoint id polkameter:ci -u)" = 10001
           docker image ls polkameter:ci --format 'Image size: {{.Size}}'
-      - name: Stop the image promptly through its init process
+      # The plugin runs inside the image, so build it for Linux; Ubuntu 22.04's
+      # glibc 2.35 is older than the image's 2.36.
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build the example plugin
+        run: cargo +${{ env.RUST_VERSION }} build --locked --release -p polkameter-example-plugin
+      - name: Stop a running plan with docker stop
         run: |
-          docker run -d --name signal-test --entrypoint /usr/bin/tini polkameter:ci -- sleep 300
+          mkdir -m 777 stop-test
+          cp target/release/polkameter-example-plugin tests/fixtures/stop.polkameter.xml stop-test/
+          image() {
+            docker run -v "$PWD/stop-test:/work" -w /work -e HOME=/tmp \
+              -e POLKAMETER_PLUGIN_REGISTRY=/work/plugins.json "$@"
+          }
+          image --rm polkameter:ci plugin install /work/polkameter-example-plugin
+          image -d --name stop-test polkameter:ci run /work/stop.polkameter.xml --output /work/runs
+          # Wait until the plan's long step is running.
+          for _ in $(seq 60); do
+            if compgen -G 'stop-test/runs/run-*/plugins/example/wait.pid' >/dev/null; then break; fi
+            sleep 1
+          done
+          compgen -G 'stop-test/runs/run-*/plugins/example/wait.pid'
           start=$(date +%s)
-          docker stop --timeout 30 signal-test
+          docker stop --timeout 45 stop-test
           elapsed=$(( $(date +%s) - start ))
           echo "docker stop took ${elapsed}s"
-          test "$elapsed" -lt 10
-          docker rm signal-test
+          docker logs stop-test
+          test "$(docker inspect --format '{{.State.ExitCode}}' stop-test)" = 130
+          test "$elapsed" -lt 30
+          run=$(echo stop-test/runs/run-*)
+          jq -e '.state == "stopped" and .exit_code == 130' "$run/execution.json"
+          tail -n 1 "$run/events.jsonl" | jq -e '.event == "completed"'
+          test -s "$run/junit.xml"
+          test -s "$run/summary.md"
+          docker rm stop-test
