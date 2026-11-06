@@ -49,10 +49,12 @@ pub async fn load<S: Submit>(
 		if let Some(stop) = ended {
 			return Ok(stop);
 		}
+		// After the last step an empty flood only means it was sized to the plan.
+		let last = k as usize + 1 == opts.plan.steps.len();
 		for (lane, steps) in t.steps.iter().enumerate() {
 			let source = &t.lanes()[lane].source;
 			let unsent_kib = t.sender().queued_bytes() / 1024;
-			if let Some(stop) = check_step(steps, source, unsent_kib, block_ms, &opts.rules) {
+			if let Some(stop) = check_step(steps, source, unsent_kib, block_ms, &opts.rules, last) {
 				return Ok(stop);
 			}
 		}

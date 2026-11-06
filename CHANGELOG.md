@@ -10,6 +10,7 @@ Other 0.3.0 changes still need entries here.
 
 Moving `@v0` to 0.3.0 changes these defaults for existing workflows:
 
+- **The job fails on a FAIL or INCONCLUSIVE verdict.** The new default `fail-on: verdict-or-inconclusive` fails the job when a load test's verdict is `FAIL` or `INCONCLUSIVE`; before, the default `fail-on: error` failed it only when the run itself failed. A "Why this job failed" section in the job summary, and an error annotation, say what failed the job: the `FAIL` or `INCONCLUSIVE` verdict and what made it, or, for a smoke-mode plan, the monitor problem or missing result that fails it under every `fail-on`. Set `fail-on: verdict` to fail only on `FAIL`, or `fail-on: error` for the old behaviour.
 - **Smaller artifact by default.** The run artifact holds only the files PolkaMeter writes: reports, records and each plugin's redacted `stderr.log`. Files that plugins write into the run directory are no longer uploaded. Set `upload-raw-plugin-files: "true"` to upload them.
 - **New default artifact name.** The name was `polkameter-run`. It is now `polkameter-run-<job>-<attempt>-<hash>`, unique for each matrix job and each use of the action. Read it from the new `artifact-name` output, or set `artifact-name` to keep a fixed name.
 - **Unfinished runs.** If the CLI is killed before the run finishes, plugin logs and summaries miss PolkaMeter's final redaction pass. The action leaves them out of the artifact and the job summary.
@@ -39,6 +40,7 @@ Also new:
 
 ### CLI
 
+- `polkameter run --fail-on-inconclusive` exits `1` when a load test's verdict is `INCONCLUSIVE`. Use it with `--fail-on-verdict` to also fail on `FAIL`. Without either flag the verdict still does not change the exit code. When the report fails the run, a line on standard error says why once the run has ended `completed_with_failures`, for example which required checks have no result. It blames a flag only when the flag decides the exit: a smoke-mode run fails on its problems whatever the flags, and says so. `execution.json` records the same text as `exit_reason`; `--remote` clients print it, and the JUnit `execution` case shows it. A remote agent must advertise the option; older agents are refused before the run starts.
 - The CLI spells its name `PolkaMeter` in every message. Standard-error lines now start with `PolkaMeter:` and `PolkaMeter warning:` instead of `Polkameter:`. Update scripts that match the old prefix.
 - Redaction no longer leaves part of a secret visible when one credential contains or overlaps another: all of the text they cover becomes `[redacted]`. It also finds a credential, and a whole endpoint URL, in the escaped forms that JSON writers (including Go's and .NET's HTML-safe ones, and uppercase `\uXXXX`) and Rust's `{:?}` give it. Text that is already `[redacted]` is never matched again, and a credential read with a trailing newline is also redacted without it.
 - A plugin's standard error is redacted as it streams into `stderr.log`, so a complete credential never reaches the file, even if the run is killed. If the plugin's output ends in the middle of what may be a credential, that text is written as `[redacted]`. The passes on the first stop request and at the end of the run remain, and read each log in bounded chunks.
@@ -57,6 +59,7 @@ Also new:
 - A transaction's inclusion, latency and `includedPerS` belong to the step that sent it. A block gap counts in each step for the part inside it. A step with no new block counts as slow.
 - A dispatch failure counts only on the finalized chain when the transaction is there. A failure only on a fork is counted apart.
 - A state check that errors or times out makes the verdict INCONCLUSIVE instead of PASS. Its sample comes from the finalized chain.
+- A flood sized exactly to the plan ends on the rate cap (all steps ran), not on budget used up. Budget used up now means the flood ran out before the last step finished, so such a run is no longer INCONCLUSIVE.
 - A backed-up connection no longer drops a transaction. Prepared transactions are deduplicated by their decoded hash.
 - CPU and memory are sampled only for a local node, never for a port forwarder such as an SSH tunnel. A restarted node is followed to its new process.
 

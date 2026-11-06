@@ -18,7 +18,9 @@ trap '[ -n "$agent" ] && kill "$agent" 2>/dev/null; rm -rf "$work"' EXIT
 "$cli" validate "$plan" --format json | grep -q '"valid":true'
 "$cli" preflight "$plan" --format json > /dev/null
 
-"$cli" run "$plan" --output "$work/local" --junit "$work/reports/local.xml" --fail-on-verdict --format json > "$work/local.json"
+# Both verdict policies on a plan without a load test: there is no verdict to fail on.
+"$cli" run "$plan" --output "$work/local" --junit "$work/reports/local.xml" --fail-on-verdict \
+	--fail-on-inconclusive --format json > "$work/local.json"
 run=$(ls -d "$work"/local/run-*)
 [ ! -e "$run/summary.json" ]
 "$cli" report "$run" --format json | grep -q '"exit_code":0'
@@ -85,7 +87,7 @@ for _ in $(seq 1 50); do
 	sleep 0.2
 done
 "$cli" run "$plan" --remote "http://127.0.0.1:$port" --remote-token-env POLKAMETER_AGENT_TOKEN \
-	--junit "$work/reports/remote.xml" --fail-on-verdict --format json | grep -q '"exit_code":0'
+	--junit "$work/reports/remote.xml" --fail-on-verdict --fail-on-inconclusive --format json | grep -q '"exit_code":0'
 xmllint --nonet --noout --schema tests/schemas/junit.xsd "$work/reports/remote.xml"
 cmp "$work/reports/remote.xml" "$work"/remote/run-*/junit.xml
 echo "CLI smoke passed"
