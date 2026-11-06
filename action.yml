@@ -5,7 +5,7 @@ inputs:
     description: Path to the .polkameter.xml plan, relative to the workspace.
     required: true
   plugins:
-    description: Plugin executables to install, one per line, relative to the workspace.
+    description: Plugin executables to install, one per line, relative to the workspace. A bare name, such as polkameter-substrate-plugin, is found on PATH.
     required: false
     default: ""
   plugin-crates:
@@ -148,7 +148,8 @@ runs:
       env:
         TOOLCHAIN: ${{ inputs.toolchain }}
       run: |
-        cargo +"$TOOLCHAIN" build --locked --release -p polkameter --bin polkameter \
+        cargo +"$TOOLCHAIN" build --locked --release -p polkameter -p polkameter-substrate-plugin \
+          --bin polkameter --bin polkameter-substrate-plugin \
           --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml" --target-dir "$GITHUB_ACTION_PATH/.polkameter-action-target"
         echo "$GITHUB_ACTION_PATH/.polkameter-action-target/release" >> "$GITHUB_PATH"
     - name: Run the plan
@@ -180,6 +181,10 @@ runs:
           python3 "$GITHUB_ACTION_PATH/scripts/action-build-plugins.py"
         fi
         while IFS= read -r plugin; do
+          # A bare name such as polkameter-substrate-plugin is looked up on PATH.
+          if [ ! -e "$plugin" ] && [[ "$plugin" != */* ]] && command -v "$plugin" > /dev/null; then
+            plugin=$(command -v "$plugin")
+          fi
           polkameter plugin install "$plugin"
         done < <(lines "$PLUGINS")
         while IFS='=' read -r profile variable; do

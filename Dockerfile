@@ -3,7 +3,7 @@ FROM rust:1.93.0-bookworm@sha256:d0a4aa3ca2e1088ac0c81690914a0d810f2eee188197034
 WORKDIR /build
 COPY . .
 ENV CARGO_PROFILE_RELEASE_STRIP=symbols CARGO_PROFILE_RELEASE_DEBUG=0
-RUN cargo +1.93.0 build --locked --release -p polkameter --bin polkameter
+RUN cargo +1.93.0 build --locked --release -p polkameter -p polkameter-substrate-plugin --bin polkameter --bin polkameter-substrate-plugin
 
 FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 RUN apt-get update \
@@ -11,6 +11,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 10001 polkameter
 COPY --from=builder /build/target/release/polkameter /usr/local/bin/polkameter
+COPY --from=builder /build/target/release/polkameter-substrate-plugin /usr/local/bin/polkameter-substrate-plugin
 USER 10001:10001
 WORKDIR /home/polkameter
 # tini runs as PID 1: it forwards signals to polkameter and reaps exited plugin processes.

@@ -96,9 +96,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: ${{ env.RUST_VERSION }}
-      - name: Build CLI
+      - name: Build CLI and substrate plugin
         working-directory: release-source
-        run: cargo +${{ env.RUST_VERSION }} build --locked --release -p polkameter --bin polkameter --target ${{ matrix.target }}
+        run: cargo +${{ env.RUST_VERSION }} build --locked --release -p polkameter -p polkameter-substrate-plugin --bin polkameter --bin polkameter-substrate-plugin --target ${{ matrix.target }}
       - name: Check Linux compatibility and package
         working-directory: release-source
         env:
@@ -107,12 +107,15 @@ jobs:
         shell: bash
         run: |
           binary="target/$TARGET/release/polkameter"
+          plugin="target/$TARGET/release/polkameter-substrate-plugin"
           "$binary" --version
-          ldd "$binary"
-          baseline=$(readelf --version-info "$binary" | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -1)
-          test "$(printf '%s\n' GLIBC_2.35 "$baseline" | sort -V | tail -1)" = GLIBC_2.35
-          echo "Maximum required glibc version: $baseline"
-          python3 ../scripts/package-cli.py "$VERSION" "$TARGET" "$binary"
+          for executable in "$binary" "$plugin"; do
+            ldd "$executable"
+            baseline=$(readelf --version-info "$executable" | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -1)
+            test "$(printf '%s\n' GLIBC_2.35 "$baseline" | sort -V | tail -1)" = GLIBC_2.35
+            echo "Maximum required glibc version of $executable: $baseline"
+          done
+          python3 ../scripts/package-cli.py "$VERSION" "$TARGET" "$binary" --plugin "$plugin"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cli-${{ matrix.target }}
@@ -156,9 +159,10 @@ jobs:
           TARGET: ${{ matrix.target }}
           BINARY_EXT: ${{ runner.os == 'Windows' && '.exe' || '' }}
         run: |
-          cargo +${{ env.RUST_VERSION }} build --locked --release -p polkameter --bin polkameter --target "$TARGET"
+          cargo +${{ env.RUST_VERSION }} build --locked --release -p polkameter -p polkameter-substrate-plugin --bin polkameter --bin polkameter-substrate-plugin --target "$TARGET"
           "target/$TARGET/release/polkameter$BINARY_EXT" --version
-          python3 ../scripts/package-cli.py "$VERSION" "$TARGET" "target/$TARGET/release/polkameter$BINARY_EXT"
+          python3 ../scripts/package-cli.py "$VERSION" "$TARGET" "target/$TARGET/release/polkameter$BINARY_EXT" \
+            --plugin "target/$TARGET/release/polkameter-substrate-plugin$BINARY_EXT"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cli-${{ matrix.target }}
