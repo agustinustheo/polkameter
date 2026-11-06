@@ -68,7 +68,7 @@ Run these from the directory that holds your plan. Put `polkameter` on your `PAT
    polkameter run plan.polkameter.xml --output runs
    ```
 
-   The run creates one directory inside `runs/`, named `run-<milliseconds>-<pid>-<sequence>`. Ctrl-C stops a local run. The run writes what it has and exits with code `130`.
+   The run creates one directory inside `runs/`, named `run-<milliseconds>-<pid>-<sequence>`. Ctrl-C stops a local run. The run tears down, writes what it has and exits with code `130` (`143` for SIGTERM).
 
 Open `summary.md` in the run directory first. [Read the results](reading-results.md) explains it. [Run directory](results.md#the-run-directory) lists every file.
 

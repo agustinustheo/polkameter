@@ -32,6 +32,9 @@ pub struct Outcome {
 	pub exit_code: i32,
 	pub state: RunState,
 	pub error: Option<String>,
+	/// How teardown ended; absent when it did not run (the plugins never started).
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub teardown: Option<Teardown>,
 }
 /// How a run ended. The serialized names are part of `execution.json`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -41,6 +44,20 @@ pub enum RunState {
 	CompletedWithFailures,
 	Stopped,
 	Failed,
+	/// Provisional: a stop was requested and the run is still tearing down. The final outcome
+	/// replaces it; a run directory left in this state was killed before it could finish.
+	Stopping,
+}
+/// How teardown ended. The serialized names are part of `execution.json`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Teardown {
+	/// Every teardown step succeeded.
+	Completed,
+	/// Every teardown step ran, and at least one failed.
+	Failed,
+	/// A forced stop ended teardown before every step ran.
+	Interrupted,
 }
 impl std::fmt::Display for RunState {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -49,6 +66,7 @@ impl std::fmt::Display for RunState {
 			Self::CompletedWithFailures => "completed_with_failures",
 			Self::Stopped => "stopped",
 			Self::Failed => "failed",
+			Self::Stopping => "stopping",
 		})
 	}
 }
@@ -273,7 +291,7 @@ async fn with_scratch_plugins<T>(
 	let plugins = Plugins::start(&plan.plugins.entries, registry, &context).await?;
 	// Boxed: the bodies are large and would otherwise sit on the caller's stack.
 	let result = Box::pin(body(&plugins, &context, &directory)).await;
-	plugins.shutdown(&context).await;
+	plugins.shutdown(&context, &CancellationToken::new()).await;
 	result
 }
 pub async fn inspect(plan: &Plan, registry: &Registry) -> Result<Value> {
@@ -383,6 +401,54 @@ pub struct RunOptions {
 	pub fail_on_verdict: bool,
 }
 
+/// Exit code of a run stopped by `Stop::request` without an explicit code (SIGINT, `/stop`).
+pub const STOPPED_EXIT_CODE: i32 = 130;
+/// The teardown error of a run whose stop was forced.
+const TEARDOWN_INTERRUPTED: &str = "teardown was interrupted by a forced stop";
+
+/// How a run is asked to stop, in two stages.
+///
+/// The first request ends the running phases and starts teardown, which still runs every step
+/// under its own `timeout-ms`. Forcing also ends teardown: in-flight plugin calls are abandoned,
+/// their processes are killed and reaped, and the outcome is written straight away.
+#[derive(Clone, Debug)]
+pub struct Stop {
+	cancel: CancellationToken,
+	force: CancellationToken,
+	exit_code: Arc<std::sync::atomic::AtomicI32>,
+}
+impl Default for Stop {
+	fn default() -> Self {
+		Self::from_cancel(CancellationToken::new())
+	}
+}
+impl Stop {
+	/// A stop whose first stage is `cancel`, for callers that only cancel.
+	pub fn from_cancel(cancel: CancellationToken) -> Self {
+		Self {
+			cancel,
+			force: CancellationToken::new(),
+			exit_code: Arc::new(STOPPED_EXIT_CODE.into()),
+		}
+	}
+	/// Ends the running phases; teardown still runs. The first request's `exit_code` is kept
+	/// as the stopped run's exit code.
+	pub fn request(&self, exit_code: i32) {
+		if !self.cancel.is_cancelled() {
+			self.exit_code.store(exit_code, std::sync::atomic::Ordering::SeqCst);
+		}
+		self.cancel.cancel();
+	}
+	/// Ends the run and its teardown now.
+	pub fn force(&self, exit_code: i32) {
+		self.request(exit_code);
+		self.force.cancel();
+	}
+	fn exit_code(&self) -> i32 {
+		self.exit_code.load(std::sync::atomic::Ordering::SeqCst)
+	}
+}
+
 /// Runs a plan in a new directory under `root`. Phases: preflight, setup, workflows, measurement,
 /// evaluate, then teardown, which runs whenever the plugins started. The outcome is written to the
 /// run directory and returned; its exit code is 130 when the run was cancelled.
@@ -405,6 +471,19 @@ pub async fn run_with_options(
 	sink: EventSink,
 	options: RunOptions,
 ) -> Result<Outcome> {
+	run_stoppable(plan, registry, root, Stop::from_cancel(cancel), sink, options).await
+}
+
+/// Runs a plan that can be stopped in two stages; see [`Stop`]. A stopped run's exit code is the
+/// one passed to the first [`Stop::request`].
+pub async fn run_stoppable(
+	plan: Plan,
+	registry: Registry,
+	root: &Path,
+	stop: Stop,
+	sink: EventSink,
+	options: RunOptions,
+) -> Result<Outcome> {
 	plan.validate()?;
 	// A new `run-…` directory under `root`: a run never reuses one.
 	std::fs::create_dir_all(root)?;
@@ -416,6 +495,9 @@ pub async fn run_with_options(
 	);
 	let directory = root.join(&run_id);
 	std::fs::create_dir(&directory).context("run directory must be new")?;
+	// Held until the run ends: an agent pruning old run directories skips locked ones.
+	let lock = File::create(directory.join(RUN_LOCK))?;
+	lock.lock()?;
 	let credentials = registry.resolve_credentials(&plan);
 	let log =
 		Log::open(&directory, sink, credentials.as_ref().map(secret_values).unwrap_or_default())?;
@@ -428,14 +510,30 @@ pub async fn run_with_options(
 		registry: &registry,
 		context,
 		directory,
-		cancel,
+		cancel: stop.cancel.clone(),
+		stop,
 		log,
 		started: Instant::now(),
 		options,
+		teardown: Mutex::new(None),
 	};
-	let result = Box::pin(run.execute(credentials)).await;
-	run.outcome(result)
+	let execute = Box::pin(run.execute(credentials));
+	let mut execute = std::pin::pin!(execute);
+	let result = tokio::select! {
+		biased;
+		result = &mut execute => result,
+		() = run.cancel.cancelled() => {
+			run.stopping();
+			execute.await
+		},
+	};
+	let outcome = run.outcome(result);
+	drop(lock);
+	outcome
 }
+
+/// The lock file of a run directory, locked while the run is in progress.
+pub const RUN_LOCK: &str = "run.lock";
 
 /// One run in progress: its plan and host, its directory and event log, and its deadline.
 struct Run<'a> {
@@ -444,12 +542,34 @@ struct Run<'a> {
 	context: Context,
 	directory: PathBuf,
 	cancel: CancellationToken,
+	stop: Stop,
 	log: Log,
 	started: Instant,
 	options: RunOptions,
+	teardown: Mutex<Option<Teardown>>,
 }
 
 impl Run<'_> {
+	/// As soon as a stop is requested: a provisional `execution.json`, so a run killed during
+	/// teardown still says it was stopping, and plugin logs redacted early. Best effort.
+	fn stopping(&self) {
+		let code = self.stop.exit_code();
+		let reason = match code {
+			130 => "SIGINT or a stop request",
+			143 => "SIGTERM",
+			_ => "a stop request",
+		};
+		let provisional = json!({
+			"artifact_dir": self.context.artifact_dir,
+			"exit_code": code,
+			"state": RunState::Stopping,
+			"error": format!("stopped by {reason}; teardown was still running"),
+			"stop_requested_at": polkameter_plugin_sdk::observers::files::now_ms(),
+		});
+		let _ = write_json(&self.directory.join("execution.json"), &provisional);
+		let _ = redact_plugin_logs(&self.directory, &self.log.secrets);
+	}
+
 	/// Starts the plugins, runs the phases under the whole-run deadline, then tears down.
 	async fn execute(&self, credentials: Result<Values>) -> Result<i32> {
 		let credentials = credentials?;
@@ -457,10 +577,15 @@ impl Run<'_> {
 		let mut values = self.values(credentials);
 		let result = self.bounded(Box::pin(self.phases(&plugins, &mut values))).await;
 		let cleanup = self.teardown(&plugins, &mut values).await;
-		plugins.shutdown(&self.context).await;
-		let code = result?;
-		cleanup?;
-		Ok(code)
+		plugins.shutdown(&self.context, &self.stop.force).await;
+		match (result, cleanup) {
+			(Ok(code), Ok(())) => Ok(code),
+			(Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+			// Both failed: the run's error comes first, and the teardown's is kept with it.
+			(Err(error), Err(cleanup)) => {
+				Err(anyhow::anyhow!("{error}; teardown failed: {cleanup}"))
+			},
+		}
 	}
 
 	async fn start_plugins(&self) -> Result<Plugins> {
@@ -635,29 +760,90 @@ impl Run<'_> {
 		Ok(())
 	}
 
-	/// Teardown runs even after a failure or cancellation, under its own deadline.
+	/// Teardown runs even after a failure or cancellation, and runs every step even after one
+	/// fails. Each step runs under its own `timeout-ms`; only a forced stop ends teardown early.
+	/// Before each step, a plugin that a cancellation, crash or timeout ended is started again,
+	/// so its teardown steps can still clean up.
 	async fn teardown(&self, plugins: &Plugins, values: &mut Values) -> Result<()> {
 		self.log.phase("teardown")?;
-		let cleanup = tokio::time::timeout(
-			Duration::from_secs(30),
-			cleanup_steps(&self.plan.teardown.entries, plugins, values, &self.context, &self.log),
-		)
-		.await
-		.map_err(|_| anyhow::anyhow!("teardown deadline exceeded"))
-		.and_then(|r| r);
-		if let Err(error) = &cleanup {
-			self.log.emit(json!({"event": "cleanup-failed", "error": error.to_string()}))?;
+		let force = &self.stop.force;
+		let mut errors = Vec::new();
+		let mut state = Teardown::Completed;
+		for step in &self.plan.teardown.entries {
+			if force.is_cancelled() {
+				state = Teardown::Interrupted;
+				break;
+			}
+			self.restart_for(step, plugins).await?;
+			let result = execute_steps(
+				std::slice::from_ref(step),
+				plugins,
+				values,
+				&self.context,
+				force,
+				&self.log,
+			)
+			.await;
+			if let Err(error) = result {
+				if force.is_cancelled() {
+					state = Teardown::Interrupted;
+					break;
+				}
+				state = Teardown::Failed;
+				errors.push(error.to_string());
+			}
 		}
-		cleanup
+		if state == Teardown::Interrupted {
+			errors.push(TEARDOWN_INTERRUPTED.into());
+		}
+		*self.teardown.lock().map_err(|_| anyhow::anyhow!("teardown state poisoned"))? =
+			Some(state);
+		if errors.is_empty() {
+			return Ok(());
+		}
+		let error = errors.join("; ");
+		self.log
+			.emit(json!({"event": "cleanup-failed", "error": error, "errors": errors}))?;
+		Err(anyhow::anyhow!(error))
+	}
+
+	/// Starts the plugin of a teardown step again if its process failed. A plugin that cannot be
+	/// restarted is reported as a warning, and the step then fails on its own.
+	async fn restart_for(&self, step: &Step, plugins: &Plugins) -> Result<()> {
+		let Some((plugin, _)) = step.operation.split_once('.').filter(|(id, _)| *id != "core")
+		else {
+			return Ok(());
+		};
+		let restarted = tokio::select! {
+			biased;
+			() = self.stop.force.cancelled() => return Ok(()),
+			restarted = plugins.restart_failed(plugin, self.registry, &self.context) => restarted,
+		};
+		match restarted {
+			Ok(true) => self.log.emit(json!({"event": "plugin-restarted", "plugin": plugin})),
+			Ok(false) => Ok(()),
+			Err(error) => self.log.emit(json!({
+				"event": "warning",
+				"message": format!("plugin {plugin} could not be restarted for teardown: {error:#}"),
+			})),
+		}
 	}
 
 	/// Settles how the run ended, writes its artifacts and outcome, and logs the outcome.
 	fn outcome(&self, result: Result<i32>) -> Result<Outcome> {
 		let redacted = redact_plugin_logs(&self.directory, &self.log.secrets);
 		let (exit_code, state, error) = match result {
+			// A stop is honoured even when it came after the phases, during teardown.
+			Ok(_) if self.cancel.is_cancelled() => (
+				self.stop.exit_code(),
+				RunState::Stopped,
+				Some(anyhow::anyhow!("run stopped during teardown")),
+			),
 			Ok(0) => (0, RunState::Completed, None),
 			Ok(code) => (code, RunState::CompletedWithFailures, None),
-			Err(error) if self.cancel.is_cancelled() => (130, RunState::Stopped, Some(error)),
+			Err(error) if self.cancel.is_cancelled() => {
+				(self.stop.exit_code(), RunState::Stopped, Some(error))
+			},
 			Err(error) => (1, RunState::Failed, Some(error)),
 		};
 		let mut outcome = Outcome {
@@ -665,6 +851,7 @@ impl Run<'_> {
 			exit_code,
 			state,
 			error: error.map(|error| redact_text(&error.to_string(), &self.log.secrets)),
+			teardown: self.teardown.lock().ok().and_then(|state| *state),
 		};
 		// Samples and plots come from the raw files.
 		for error in [redacted, artifacts::write_outputs(&self.directory)]
@@ -1060,31 +1247,6 @@ async fn check_requirements(plan: &Plan, registry: &Registry, plugins: &Plugins)
 	Ok(())
 }
 
-/// Runs every teardown step even after a failure, then reports the first error.
-async fn cleanup_steps(
-	steps: &[Step],
-	plugins: &Plugins,
-	values: &mut Values,
-	context: &Context,
-	log: &Log,
-) -> Result<()> {
-	let mut result = Ok(());
-	for step in steps {
-		// Teardown is not cancelled with the run: it is what makes the run's outputs safe to keep.
-		let step_result = execute_steps(
-			std::slice::from_ref(step),
-			plugins,
-			values,
-			context,
-			&CancellationToken::new(),
-			log,
-		)
-		.await;
-		result = result.and(step_result);
-	}
-	result
-}
-
 fn validate_interval(configured: f64, measured: f64) -> Result<()> {
 	ensure!(
 		measured.is_finite()
@@ -1328,6 +1490,7 @@ mod calibration_tests {
 			exit_code: 130,
 			state: RunState::Stopped,
 			error: Some("run cancelled".into()),
+			teardown: None,
 		};
 		fail_report(&mut outcome, "disk full");
 		assert_eq!((outcome.exit_code, outcome.state), (130, RunState::Stopped));

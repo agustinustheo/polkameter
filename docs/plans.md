@@ -334,7 +334,7 @@ Children: `step`, zero or more.
 
 ### teardown
 
-Steps that clean up at the end of the run. They have their own 30-second limit.
+Steps that clean up at the end of the run. They run even after a failure or a stop, and every step runs even if an earlier one fails. Each step runs under its own `timeout-ms`. After SIGINT or SIGTERM, teardown is also bounded by `--shutdown-grace` (see [stop a run](cli.md#stop-a-run)).
 
 Children: `step`, zero or more.
 

@@ -93,7 +93,7 @@ Messages are one line of JSON each. A request carries `operation`, `inputs` and 
 - Standard output carries replies only. Standard error goes to `plugins/<id>/stderr.log`, owner-only on Unix. Never write credentials to it.
 - The host clears the environment and passes only `PATH`, `TMPDIR`, `TEMP`, `SYSTEMROOT`, `SSL_CERT_FILE` and `SSL_CERT_DIR`.
 
-An operation error (including a failed assertion), a crash, a malformed reply, a cancellation or a timeout ends the plugin process. The host never restarts a plugin or retries an operation. Teardown runs the remaining steps, but a dead plugin cannot clean up. Deadlines include time waiting for the plugin's lock, and the whole-run and teardown deadlines bound shutdown. Secret input values are kept out of host events and errors.
+An operation error (a reply with `error`) fails the step, but the plugin keeps running and serves later steps and teardown. A crash, a malformed reply, a cancellation or a timeout ends the plugin process, and later steps of that phase fail. Before each teardown step, the host starts an ended plugin again, after checking its installed checksum and manifest, and logs a `plugin-restarted` event. The host never retries an operation. Each plugin runs in its own process group (on Windows, its own process tree), so signals sent to PolkaMeter's group do not reach it, and when the host kills a plugin it also kills every process the plugin started. Deadlines include time waiting for the plugin's lock. Secret input values are kept out of host events and errors.
 
 > **Warning:** Plugins are trusted code and are not sandboxed, so review them as you would any code that handles your keys.
 

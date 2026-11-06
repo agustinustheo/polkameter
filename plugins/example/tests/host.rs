@@ -295,3 +295,245 @@ async fn missing_credential_persists_failed_outcome_before_setup() {
 	let events = read_events(&outcome.artifact_dir);
 	assert!(!events.iter().any(|e| e["event"] == "step-started"));
 }
+#[tokio::test]
+async fn an_operation_error_keeps_the_plugin_for_later_steps_and_teardown() {
+	let root = scratch("operation-error");
+	let xml = plugin_plan(
+		"Operation error",
+		r#"<setup><step id="failing" use="example.fail"/></setup>
+    <teardown>
+      <step id="first" use="example.fail-with-message"><input name="message" value="cleanup refused"/></step>
+      <step id="second" use="example.double"><input name="value" value="21"/></step>
+    </teardown>"#,
+	);
+	let outcome = run(&xml, registry().await, &root).await;
+	assert_eq!((outcome.exit_code, outcome.state), (1, RunState::Failed));
+	let error = outcome.error.unwrap();
+	assert!(error.starts_with("plugin operation failed: intentional plugin failure"), "{error}");
+	assert!(error.contains("teardown failed: plugin operation failed: cleanup refused"), "{error}");
+	let events = read_events(&outcome.artifact_dir);
+	// The same process answered every call: nothing was killed or restarted.
+	assert!(!events.iter().any(|e| e["event"] == "plugin-restarted"));
+	assert!(finished(&events, "first").any(|e| e["success"] == false));
+	assert!(finished(&events, "second").any(|e| e["success"] == true));
+}
+#[tokio::test]
+async fn teardown_restarts_a_plugin_that_crashed() {
+	let root = scratch("restart");
+	let xml = plugin_plan(
+		"Restart",
+		r#"<setup><step id="failure" use="example.crash"/></setup>
+    <teardown><step id="cleanup" use="example.double"><input name="value" value="21"/></step></teardown>"#,
+	);
+	let outcome = run(&xml, registry().await, &root).await;
+	assert_eq!(outcome.exit_code, 1);
+	assert_eq!(outcome.error.as_deref(), Some("plugin exited before responding"));
+	let events = read_events(&outcome.artifact_dir);
+	assert_eq!(events.iter().filter(|e| e["event"] == "plugin-restarted").count(), 1, "{events:?}");
+	assert!(finished(&events, "cleanup").any(|e| e["success"] == true));
+}
+#[tokio::test]
+async fn teardown_does_not_restart_a_plugin_whose_file_changed() {
+	let root = scratch("restart-changed");
+	let xml = plugin_plan(
+		"Restart refused",
+		r#"<setup><step id="failure" use="example.crash"/></setup>
+    <teardown><step id="cleanup" use="example.double"><input name="value" value="21"/></step></teardown>"#,
+	);
+	let mut registry = registry().await;
+	// Plugins::start checks the checksum, so change the record only after the run started.
+	let plan = Plan::parse(&xml).unwrap();
+	let installed = registry.plugins.get_mut("example").unwrap();
+	let copy = root.join("copied-plugin");
+	std::fs::copy(&installed.executable, &copy).unwrap();
+	installed.executable = copy.clone();
+	let tamper = copy.clone();
+	let sink = Arc::new(move |event: Value| {
+		if event["event"] == "phase" && event["phase"] == "teardown" {
+			std::fs::write(&tamper, b"#!/bin/sh\nexit 1\n").unwrap();
+		}
+	});
+	let outcome = execute::run(plan, registry, &root, CancellationToken::new(), sink)
+		.await
+		.unwrap();
+	assert_eq!(outcome.exit_code, 1);
+	let events = read_events(&outcome.artifact_dir);
+	assert!(events.iter().any(|e| e["event"] == "warning"
+		&& e["message"].as_str().is_some_and(|m| m.contains("version/checksum mismatch"))));
+	assert!(finished(&events, "cleanup").any(|e| e["success"] == false));
+}
+#[tokio::test]
+async fn teardown_steps_run_under_their_own_timeout() {
+	let root = scratch("teardown-timeout");
+	let xml = plugin_plan(
+		"Teardown deadline",
+		r#"<setup><step id="ok" use="example.double"><input name="value" value="1"/></step></setup>
+    <teardown>
+      <step id="slow" use="example.wait" timeout-ms="50"><input name="milliseconds" value="60000"/></step>
+      <step id="cleanup" use="example.double"><input name="value" value="21"/></step>
+    </teardown>"#,
+	);
+	let started = std::time::Instant::now();
+	let outcome = run(&xml, registry().await, &root).await;
+	assert!(started.elapsed() < std::time::Duration::from_secs(30));
+	assert_eq!(outcome.exit_code, 1);
+	assert_eq!(outcome.error.as_deref(), Some("plugin deadline exceeded"));
+	let events = read_events(&outcome.artifact_dir);
+	assert!(finished(&events, "slow").any(|e| e["success"] == false));
+	// The timed-out call killed the plugin, which was started again for the next step.
+	assert_eq!(events.iter().filter(|e| e["event"] == "plugin-restarted").count(), 1);
+	assert!(finished(&events, "cleanup").any(|e| e["success"] == true));
+}
+
+/// A wrapper around the example plugin, for tests that need it to misbehave.
+#[cfg(unix)]
+fn wrapper(directory: &Path, body: &str) -> PathBuf {
+	use std::os::unix::fs::PermissionsExt;
+	let script = directory.join("wrapped-plugin");
+	std::fs::write(
+		&script,
+		format!("#!/bin/sh\n{body}\nexec '{}'\n", env!("CARGO_BIN_EXE_polkameter-example-plugin")),
+	)
+	.unwrap();
+	std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+	script
+}
+
+/// Polls until `ready` holds, failing after a minute.
+#[cfg(unix)]
+fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
+	let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+	while !ready() {
+		assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
+		std::thread::sleep(std::time::Duration::from_millis(10));
+	}
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn teardown_restarts_an_idle_plugin_that_something_else_killed() {
+	let root = scratch("idle-killed");
+	let xml = plugin_plan(
+		"Idle plugin killed",
+		r#"<setup><step id="first" use="example.wait"><input name="milliseconds" value="0"/></step></setup>
+    <teardown><step id="cleanup" use="example.double"><input name="value" value="21"/></step></teardown>"#,
+	);
+	let marker_root = root.0.clone();
+	let sink = Arc::new(move |event: Value| {
+		if event["event"] != "step-finished" || event["step"] != "first" {
+			return;
+		}
+		// The plugin answered and is idle: kill it from outside, as a stray signal would.
+		let marker = std::fs::read_dir(&marker_root)
+			.unwrap()
+			.map(|entry| entry.unwrap().path().join("plugins/example/wait.pid"))
+			.find(|path| path.is_file())
+			.unwrap();
+		let pid = std::fs::read_to_string(marker).unwrap();
+		assert!(
+			std::process::Command::new("kill")
+				.args(["-KILL", pid.trim()])
+				.status()
+				.unwrap()
+				.success()
+		);
+		// The host has not reaped it yet, so it stays a zombie once it is dead.
+		wait_until("the plugin to die", || {
+			let output = std::process::Command::new("ps")
+				.args(["-o", "stat=", "-p", pid.trim()])
+				.output()
+				.unwrap();
+			String::from_utf8_lossy(&output.stdout).trim_start().starts_with('Z')
+		});
+	});
+	let outcome = execute::run(
+		Plan::parse(&xml).unwrap(),
+		registry().await,
+		&root,
+		CancellationToken::new(),
+		sink,
+	)
+	.await
+	.unwrap();
+	assert_eq!(outcome.exit_code, 0, "{:?}", outcome.error);
+	let events = read_events(&outcome.artifact_dir);
+	assert_eq!(events.iter().filter(|e| e["event"] == "plugin-restarted").count(), 1);
+	assert!(finished(&events, "cleanup").any(|e| e["success"] == true));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn admission_leaves_the_status_free_and_ends_when_the_host_closes() {
+	use polkameter::plugin_application::{self as application, State};
+	let root = scratch("admission");
+	let slow = root.join("slow");
+	let entered = root.join("entered");
+	let script = wrapper(
+		&root,
+		&format!(
+			"if [ -e '{}' ]; then touch '{}'; sleep 30; fi",
+			slow.display(),
+			entered.display()
+		),
+	);
+	let mut registry = Registry::default();
+	registry.install(&script).await.unwrap();
+	// From now on, starting the plugin (to inspect the plan) takes 30 s.
+	std::fs::write(&slow, "").unwrap();
+	let xml = plugin_plan(
+		"Admission",
+		r#"<setup><step id="d" use="example.double"><input name="value" value="1"/></step></setup>"#,
+	);
+	let state = Arc::new(State::default());
+	let start = |id: &str| {
+		application::start_plan(
+			Plan::parse(&xml).unwrap(),
+			registry.clone(),
+			root.join("runs").to_string_lossy().into(),
+			state.clone(),
+			Arc::new(|_| {}),
+			Default::default(),
+			Some(id.into()),
+		)
+	};
+	let admitting = tokio::spawn(start("c-first"));
+	let marker = entered.clone();
+	tokio::task::spawn_blocking(move || wait_until("the inspection", || marker.exists()))
+		.await
+		.unwrap();
+	// The plan is being inspected, and the status is still readable at once.
+	let started = std::time::Instant::now();
+	assert!(application::status(&state, "unknown").await.is_err());
+	assert!(started.elapsed() < std::time::Duration::from_secs(5));
+	// Another run is refused; the same run is asked to retry.
+	let other = start("c-second").await.unwrap_err();
+	assert_eq!((other.message.as_str(), other.retry), ("a plugin plan is already running", false));
+	let again = start("c-first").await.unwrap_err();
+	assert!(again.retry, "{again:?}");
+	// Shutting down ends the admission without waiting for the slow plugin.
+	state.closing.cancel();
+	let error = admitting.await.unwrap().unwrap_err();
+	assert_eq!((error.message.as_str(), error.retry), ("the agent is shutting down", true));
+	assert!(started.elapsed() < std::time::Duration::from_secs(20));
+	assert!(state.admitting.lock().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn every_teardown_error_is_reported() {
+	let root = scratch("teardown-errors");
+	let xml = plugin_plan(
+		"Teardown errors",
+		r#"<teardown>
+      <step id="first" use="example.fail-with-message"><input name="message" value="first cleanup failed"/></step>
+      <step id="second" use="example.fail-with-message"><input name="message" value="second cleanup failed"/></step>
+    </teardown>"#,
+	);
+	let outcome = run(&xml, registry().await, &root).await;
+	let expected = "plugin operation failed: first cleanup failed; plugin operation failed: second cleanup failed";
+	assert_eq!(outcome.error.as_deref(), Some(expected));
+	assert_eq!(outcome.teardown, Some(execute::Teardown::Failed));
+	let events = read_events(&outcome.artifact_dir);
+	let failed = events.iter().find(|e| e["event"] == "cleanup-failed").unwrap();
+	assert_eq!(failed["error"], expected);
+	assert_eq!(failed["errors"].as_array().unwrap().len(), 2);
+}

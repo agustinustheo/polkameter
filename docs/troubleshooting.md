@@ -54,6 +54,19 @@ PolkaMeter: run failed: assertion verified failed: expected 85, got 84 (details 
 
 **Fix:** Find the reason on this page. `execution.json` in the run directory holds the full error. If a step failed, `events.jsonl` names it in a `step-finished` event with `"success":false`. A failure outside a step, such as a missing plugin or the plan's deadline, has no such event, so read `execution.json`.
 
+### teardown failed: teardown was interrupted by a forced stop
+
+```text
+PolkaMeter: received SIGTERM; stopping the run (teardown has up to 20 s; send the signal again to stop now)
+Phase: teardown
+PolkaMeter: stopping now; teardown is interrupted
+Run stopped. Artifacts: ~/polkameter/runs/run-…
+```
+
+**Cause:** The run was stopped, and then a second signal arrived, or teardown took longer than `--shutdown-grace` (20 seconds by default). PolkaMeter killed the plugins before teardown finished, so cleanup on the chain may be incomplete. CI systems often send SIGINT and SIGTERM a few seconds apart when a job is cancelled.
+
+**Fix:** Raise `--shutdown-grace` to cover your teardown steps, and give the job that long plus 10 seconds between the first signal and SIGKILL. Then check the chain for state that teardown would have removed.
+
 ## Plans
 
 ### line 6, column 5: expected </setup>, found </polkameter-plan>
@@ -249,13 +262,59 @@ These are the error codes of a Polkadot SDK transaction pool:
 
 **Cause:** The agent runs one plan at a time.
 
-**Fix:** Wait for the run to end, or press Ctrl-C in the client that started it.
+**Fix:** Wait for the run to end, or press Ctrl-C in the client that started it. A client that gives up asks the agent to stop its run, so this clears once that run's teardown ends.
 
 ### remote runner endpoint must use https://, or http:// only through a loopback SSH tunnel
 
 **Cause:** `--remote` uses plain `http://` with a host that is not loopback. The client refuses it before sending anything.
 
 **Fix:** Use `https://`. Or tunnel to the agent and use `http://127.0.0.1:<port>`.
+
+### remote runner endpoint must not contain user information (user@ or user:password@)
+
+**Cause:** `--remote` has a user name or password before the host, as in `http://127.0.0.1:9901@runner.example`. The real host of such an address is the part after `@`, so it is refused before anything is sent.
+
+**Fix:** Remove everything up to and including `@`. The agent authenticates with the bearer token only.
+
+### status polls kept failing for 60 s: …
+
+```text
+PolkaMeter: status poll failed (remote runner request failed: … Connection refused (os error 61)); retrying in 600 ms
+...
+PolkaMeter: status polls kept failing for 60 s: …; asked the agent to stop run <id>
+```
+
+**Cause:** The client lost the agent for a minute: the SSH tunnel closed, the agent restarted, or the agent host is overloaded. The client exits with code `1`. It asks the agent to stop the run first; the message ends with `could not ask the agent to stop run <id>` if that failed too.
+
+**Fix:** Restore the tunnel or the agent. If the agent kept running and could not be told to stop, wait for its run to end before you start another, or send the agent SIGTERM to stop the run cleanly.
+
+### the run did not end within the client's deadline of … s
+
+**Cause:** The remote run lasted longer than the plan's `timeout-ms`, plus its teardown step timeouts, plus one minute. The client asked the agent to stop it and exited with code `1`.
+
+**Fix:** Read the run's `events.jsonl` on the agent to find the step that hung, then fix that step or raise its `timeout-ms`.
+
+### the start request kept failing for 60 s: …
+
+**Cause:** The agent did not accept the start request for a minute: it was unreachable, or it kept answering with a server error. The client asked the agent to stop the run under the ID it chose, in case the run had started, and exited with code `1`.
+
+**Fix:** Restore the tunnel or the agent, then rerun the plan.
+
+### remote runner returned 503 Service Unavailable: the agent is shutting down
+
+**Cause:** The agent received SIGINT or SIGTERM and is stopping its active run. It refuses new runs until it exits.
+
+**Fix:** Start the agent again, then rerun the plan.
+
+### agent token in POLKAMETER_AGENT_TOKEN must have at least 32 characters, at least 8 of them different; generate one with `openssl rand -hex 32`
+
+**Cause:** The agent's bearer token is shorter than 32 characters, or repeats a few characters, as in `aaaa…`. Such a token can be guessed.
+
+**Fix:** Set a random token on the agent and the client:
+
+```sh
+export POLKAMETER_AGENT_TOKEN=$(openssl rand -hex 32)
+```
 
 ### agent binds only to a loopback address; use an SSH tunnel or TLS terminator
 
