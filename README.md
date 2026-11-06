@@ -53,7 +53,7 @@ The run writes a run directory under `target/runs`.
 
 ## GitHub Action
 
-Run a plan in GitHub Actions without installing anything first. The action supports Linux and macOS runners. It runs the plan, uploads the run directory and ends the job with the CLI's exit code. From v0.3.0, it downloads a verified release CLI when available and otherwise builds from source.
+Run a plan in GitHub Actions without installing anything first. The action supports Linux and macOS runners. It runs the plan, uploads the run directory and ends the job with the CLI's exit code. From v0.3.0, it downloads a verified release CLI when available and otherwise builds from source, and the job also fails when the load verdict is `FAIL` or `INCONCLUSIVE`; set `fail-on: verdict` to fail only on `FAIL`.
 
 <!-- v0.3.0: remove after release (change @v0.2.0 to @v0) -->
 ```yaml

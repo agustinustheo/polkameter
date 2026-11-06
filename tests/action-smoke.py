@@ -32,7 +32,11 @@ def shell_block(name):
 
 class ActionTest(unittest.TestCase):
     def run_action(self, policy, verdict, expected, runtime_code=0, *, malformed=False,
-                   preexisting=False, junit=False, killed=False):
+                   preexisting=False, junit=False, killed=False, old_cli=False, smoke=False):
+        """Runs the action's policy and run steps with a stub CLI. `old_cli` stands for a CLI
+        from before v0.3.0, without --fail-on-inconclusive. `smoke` is a smoke-mode plan whose
+        required check has no result, which the CLI fails whatever the flags. Returns the run
+        step's stdout."""
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
             cli = work / "polkameter"
@@ -40,35 +44,65 @@ class ActionTest(unittest.TestCase):
                 #!/usr/bin/env bash
                 set -eu
                 if [ "$1" != run ]; then exit 0; fi
+                if [ "${2:-}" = --help ]; then
+                  echo "      --fail-on-verdict"
+                  if [ "$OLD_CLI" != true ]; then echo "      --fail-on-inconclusive"; fi
+                  exit 0
+                fi
                 shift
                 flag=false
+                inconclusive_flag=false
                 while [ "$#" -gt 0 ]; do
                   case "$1" in
                     --output) output=$2; shift ;;
                     --fail-on-verdict) flag=true ;;
+                    --fail-on-inconclusive) inconclusive_flag=true ;;
                   esac
                   shift
                 done
                 test "$flag" = "$EXPECT_FLAG"
+                test "$inconclusive_flag" = "$EXPECT_INCONCLUSIVE_FLAG"
                 mkdir -p "$output/run-test"
                 echo 'test summary' > "$output/run-test/summary.md"
                 if [ "$KILLED" = true ]; then
                   echo '{"event": "phase", "phase": "setup"}' > "$output/run-test/events.jsonl"
                   exit 137
                 fi
-                echo '{"state": "completed", "exit_code": 0}' > "$output/run-test/execution.json"
+                code=$TEST_CODE
+                reason=""
+                checks="the checks are in summary.md"
+                if [ "$code" -ne 0 ]; then
+                  :
+                elif [ "$SMOKE" = true ]; then
+                  reason="smoke mode fails the run on monitor problems and required checks with no result, whatever the --fail-on flags; fix this one: no silent loss: state check timed out ($checks)"
+                elif [ "$flag" = true ] && [ "$TEST_VERDICT" = FAIL ]; then
+                  reason="verdict FAIL: failed checks: relay slots (level 1); exit 1 because of --fail-on-verdict ($checks)"
+                elif [ "$inconclusive_flag" = true ] && [ "$TEST_VERDICT" = INCONCLUSIVE ]; then
+                  reason="verdict INCONCLUSIVE: required checks with no result: no silent loss; exit 1 because of --fail-on-inconclusive ($checks)"
+                fi
+                if [ -n "$reason" ]; then
+                  code=1
+                  jq -n --arg reason "$reason" '{state: "completed_with_failures", exit_code: 1, exit_reason: $reason}' \
+                    > "$output/run-test/execution.json"
+                else
+                  echo '{"state": "completed", "exit_code": 0}' > "$output/run-test/execution.json"
+                fi
                 echo '{"event": "completed"}' > "$output/run-test/events.jsonl"
                 if [ "$JUNIT" = true ]; then
                   echo '<testsuites/>' > "$output/run-test/junit.xml"
                 fi
                 if [ "$MALFORMED" = true ]; then
                   printf '{"verdict":{"result":"FAIL"}}\\n{' > "$output/run-test/summary.json"
+                elif [ "$SMOKE" = true ]; then
+                  # A smoke-mode run whose required check has no result.
+                  printf '%s\\n' '{"mode":"smoke","verdict":{"result":"INCONCLUSIVE"},"stop":{"rule":"rate cap"},"problems":[],"checks":[{"check":"no silent loss","status":"no result","detail":"state check timed out"}]}' > "$output/run-test/summary.json"
+                elif [ "$TEST_VERDICT" = INCONCLUSIVE ]; then
+                  # Every step ran, but a required check has no result; optional ones do not count.
+                  printf '%s\\n' '{"mode":"stress","verdict":{"result":"INCONCLUSIVE"},"stop":{"rule":"rate cap"},"checks":[{"check":"no silent loss","status":"no result","detail":"state check timed out"},{"check":"collation funnel","status":"no result","optional":true,"detail":"not applicable"},{"check":"refusals are clean","status":"pass","detail":"0 refused"}]}' > "$output/run-test/summary.json"
                 elif [ -n "$TEST_VERDICT" ]; then
                   printf '{"verdict":{"result":"%s"}}\\n' "$TEST_VERDICT" > "$output/run-test/summary.json"
                 fi
-                if [ "$TEST_CODE" -ne 0 ]; then exit "$TEST_CODE"; fi
-                if [ "$flag" = true ] && [ "$TEST_VERDICT" = FAIL ]; then exit 1; fi
-                exit "$TEST_CODE"
+                exit "$code"
                 '''))
             cli.chmod(0o755)
             env = dict(os.environ, PATH=f"{work}:{os.environ['PATH']}",
@@ -77,14 +111,16 @@ class ActionTest(unittest.TestCase):
                        PLAN="test.xml", PLUGINS="", PLUGIN_CRATES="", CREDENTIALS="", TOPOLOGIES="", CAPABILITIES="",
                        OUTPUT=str(work / "runs"), FAIL_ON=policy, TEST_VERDICT=verdict,
                        TEST_CODE=str(runtime_code), JUNIT=str(junit).lower(), MALFORMED=str(malformed).lower(),
-                       EXPECT_FLAG=str(policy == "verdict").lower(), KILLED=str(killed).lower(),
+                       EXPECT_FLAG=str(policy in ("verdict", "verdict-or-inconclusive")).lower(),
+                       EXPECT_INCONCLUSIVE_FLAG=str(policy == "verdict-or-inconclusive" and not old_cli).lower(),
+                       OLD_CLI=str(old_cli).lower(), KILLED=str(killed).lower(), SMOKE=str(smoke).lower(),
                        GITHUB_ACTION_PATH=str(ACTION.parent))
             result = subprocess.run(["bash", "-euo", "pipefail", "-c",
                                      shell_block("Validate failure policy")],
                                     env=env, capture_output=True, text=True)
             if policy == "invalid":
                 self.assertEqual(result.returncode, 2)
-                self.assertIn("fail-on must be error or verdict", result.stdout)
+                self.assertIn("fail-on must be error, verdict or verdict-or-inconclusive", result.stdout)
                 self.assertFalse((work / "runs").exists())
                 self.assertFalse((work / "outputs").exists())
                 return
@@ -104,17 +140,91 @@ class ActionTest(unittest.TestCase):
             self.assertEqual(outputs["verdict"], "" if malformed else verdict)
             self.assertEqual(Path(outputs["run-dir"]).name, "run-test")
             self.assertEqual(outputs["junit"], str(work / "runs/run-test/junit.xml") if junit else "")
+            # What failed the run, when its report did: smoke mode or the verdict.
+            failed_by = None
+            if expected == 1 and runtime_code == 0:
+                failed_by = "smoke" if smoke else verdict
+            summary = "" if killed else (work / "summary").read_text()
             if killed:
                 self.assertFalse((work / "summary").exists())
                 self.assertIn("::notice::The run did not finish normally", result.stdout)
+            elif failed_by == "smoke":
+                self.assertTrue(summary.startswith("test summary\n"), summary)
+                self.assertIn("### Why this job failed", summary)
+                self.assertIn('This smoke-mode run (`mode="smoke"`) failed on: no silent loss: state check '
+                              "timed out.\n", summary)
+                self.assertIn("whatever `fail-on` is set to, so `fail-on: verdict` or `fail-on: error` "
+                              "does not help", summary)
+                self.assertNotIn("set `fail-on: verdict` on this step", summary)
+                self.assertIn("::error title=PolkaMeter smoke run failed::no silent loss: state check "
+                              "timed out. Smoke mode fails the job on this whatever fail-on is set to",
+                              result.stdout)
+                self.assertNotIn("set fail-on: verdict", result.stdout)
+            elif failed_by == "INCONCLUSIVE":
+                self.assertTrue(summary.startswith("test summary\n"), summary)
+                self.assertIn("The load verdict is **INCONCLUSIVE**: required checks with no result: "
+                              "no silent loss. ", summary)
+                self.assertIn("set `fail-on: verdict` on this step", summary)
+                self.assertIn("::error title=PolkaMeter verdict INCONCLUSIVE::required checks with no "
+                              "result: no silent loss. ", result.stdout)
+            elif failed_by == "FAIL":
+                self.assertTrue(summary.startswith("test summary\n"), summary)
+                self.assertIn("The load verdict is **FAIL**: failed checks: relay slots (level 1). ", summary)
+                self.assertIn(f"`fail-on: {policy}` fails the job on that", summary)
+                self.assertIn("set `fail-on: error` on this step", summary)
+                self.assertIn("reading-results.md#did-it-pass", summary)
+                self.assertIn("::error title=PolkaMeter verdict FAIL::failed checks: relay slots (level 1). "
+                              f"fail-on: {policy} fails the job on FAIL; set fail-on: error", result.stdout)
             else:
                 self.assertEqual((work / "summary").read_text(), "test summary\n")
-            result = subprocess.run(["bash", "-c", shell_block("Fail the job if the plan failed")],
-                                    env=dict(env, EXIT_CODE=outputs["exit-code"]))
-            self.assertEqual(result.returncode, expected)
+                self.assertNotIn("::error", result.stdout)
+            self.assertEqual("--fail-on-inconclusive" in result.stdout,
+                             old_cli and policy == "verdict-or-inconclusive")
+            result_code = subprocess.run(["bash", "-c", shell_block("Fail the job if the plan failed")],
+                                         env=dict(env, EXIT_CODE=outputs["exit-code"])).returncode
+            self.assertEqual(result_code, expected)
+            return result.stdout
 
     def test_killed_run_keeps_unredacted_summary_out_of_job_summary(self):
         self.run_action("error", "", 137, killed=True)
+
+    def test_default_policy_fails_on_fail_or_inconclusive(self):
+        inputs = ACTION.read_text().split("\n  fail-on:\n", 1)[1].split("\n  upload:\n", 1)[0]
+        self.assertTrue(inputs.endswith("\n    default: verdict-or-inconclusive"), inputs)
+        for verdict, expected in (("PASS", 0), ("WARN", 0), ("FAIL", 1), ("INCONCLUSIVE", 1), ("", 0)):
+            with self.subTest(verdict=verdict):
+                self.run_action("verdict-or-inconclusive", verdict, expected)
+
+    def test_default_policy_preserves_runtime_exit_codes(self):
+        for code in (1, 2, 130, 143):
+            with self.subTest(code=code):
+                self.run_action("verdict-or-inconclusive", "INCONCLUSIVE", code, runtime_code=code)
+
+    def test_older_cli_degrades_to_fail_verdict_with_a_warning(self):
+        for verdict, expected in (("INCONCLUSIVE", 0), ("FAIL", 1), ("PASS", 0)):
+            with self.subTest(verdict=verdict):
+                stdout = self.run_action("verdict-or-inconclusive", verdict, expected, old_cli=True)
+                self.assertIn("::warning::This PolkaMeter CLI has no --fail-on-inconclusive", stdout)
+                self.assertIn("set fail-on: verdict", stdout)
+
+    def test_older_cli_is_not_asked_for_the_flag_under_other_policies(self):
+        for policy, verdict, expected in (("verdict", "FAIL", 1), ("error", "INCONCLUSIVE", 0)):
+            with self.subTest(policy=policy):
+                stdout = self.run_action(policy, verdict, expected, old_cli=True)
+                self.assertNotIn("::warning::", stdout)
+
+    def test_smoke_failure_does_not_blame_the_policy(self):
+        # Smoke mode fails on a required check with no result under every policy, so the job
+        # summary must not suggest changing fail-on.
+        for policy in ("verdict-or-inconclusive", "verdict", "error"):
+            with self.subTest(policy=policy):
+                self.run_action(policy, "INCONCLUSIVE", 1, smoke=True)
+
+    def test_smoke_runtime_failure_has_no_smoke_section(self):
+        self.run_action("verdict-or-inconclusive", "INCONCLUSIVE", 143, runtime_code=143, smoke=True)
+
+    def test_error_policy_ignores_inconclusive(self):
+        self.run_action("error", "INCONCLUSIVE", 0)
 
     def test_default_preserves_fail_verdict_exit_code(self):
         self.run_action("error", "FAIL", 0)
