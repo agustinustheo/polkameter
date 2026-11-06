@@ -158,12 +158,13 @@ The `verdict` object in `summary.json` after running `polkameter report /tmp/pol
 | `rules` | Effective thresholds, camel case (`minIncludedRatio`). |
 | `stop` | `rule`, `detail`, `step`, `class`. |
 | `breakingPoint` | `step`, `targetRate`, `measure` (`included`, `latency` or `refused`), `detail`. `null` if none. |
-| `maxSustained` | `step`, `targetRate`, `includedPerS` of the step before. The last step if none. `includedPerS` counts only that step's own transactions. |
+| `maxSustained` | `step`, `targetRate`, `includedPerS` of the step before. The last step if none. `includedPerS` is the transactions sent in that step that a block included, at any time, divided by the step's length. It does not count the step before's backlog. |
 | `failureModes` | `class` and `what` per failure. See [Failure modes](#failure-modes). |
 | `recovery` | `measured`, `recovered`, `seconds`, `backlogAtStop`, `backlogAtEnd`, `drainedSeconds`, `drainPerS`, `probes`, `blocks`, `node`. |
 | `loss` | Transaction counts. See [Loss accounting](#loss-accounting). |
 | `baseline` | `probes`, `p50Ms`, `maxMs` of the probes before the load. |
 | `problems` | What the monitors could not record, including each RPC connection that dropped and reconnected, and a node process that restarted. |
+| `unobservedMs` | Time the block follower was reconnecting, when no block could be seen. Present when above 0. |
 | `network`, `runner` | Node URL, parachain ID, runtime spec version, block interval; CPU count and model. |
 | `steps` | Number of load steps. |
 | `checks` | `outcome`, `check`, `status`, `detail`, `numbers` if any. `"optional": true` on optional checks only. |
@@ -198,7 +199,7 @@ The `loss` object in `summary.json`:
 | `onChain` | Finalized blocks walked; `missed`, `onlyOnFork`, `moved` against the tracker. `failedOnlyOnFork`, present when above 0: failed only in a block the finalized chain dropped, so not in `failedInBlock`. |
 | `nodePool` | The node's mempool and ready counts after the run. |
 | `finalized` | Last block with a run transaction, the finalized block at the wait's end, and whether it finalized in time. |
-| `state` | Chain-state check of 100 included transactions: `checked`, `missing`, `detail`. Only with a state check. |
+| `state` | Chain-state check of up to 100 transactions that the finalized chain holds and that did not fail there: `checked`, `missing`, `detail`. Only with a state check. |
 | `stateError` | Why the plan's state check gave no result: an error, a timeout, or no finalized block to read. Present only then. The "no silent loss" check is then `no result`, and the verdict cannot be `PASS`. |
 | `note` | Why something is missing. |
 
@@ -213,13 +214,13 @@ Breaking-point rules record a result, and the load goes on. The other rules end 
 | **Refused**: refused share above the maximum | breaking point | 1% | `max-refused-ratio` |
 | **Pool refuses**: refused share above the limit, this step or the last | graceful | 10% | `pool-refuses-ratio` |
 | **Pool intake**: p95 submit reply above the limit, or one submit waited that long, or node stopped reading submits | graceful | 5 s | `max-submit-reply-ms` |
-| **Slow blocks**: mean block gap above factor times `block-interval-seconds` | hard | 2.0 | `max-block-gap-factor` |
-| **Stall**: no new best block for this long, while the block follower is connected | hard | 30 s | `stall-ms` |
-| **Finality stall**: no new finalized block for this long, while the block follower is connected | hard | 60 s | `finality-stall-ms` |
-| **Node down**: the node stayed unreachable after every reconnect attempt, about 15 s | hard | none | none |
+| **Slow blocks**: mean block gap above factor times `block-interval-seconds`; a step with no new block counts its whole length | hard | 2.0 | `max-block-gap-factor` |
+| **Stall**: no new best block for this long, not counting time the block follower was reconnecting | hard | 30 s | `stall-ms` |
+| **Finality stall**: no new finalized block for this long, not counting time the block follower was reconnecting | hard | 60 s | `finality-stall-ms` |
+| **Node down**: the node stayed unreachable for 15 s of reconnect attempts, a connection dropped more than 5 times in 60 s, or the node restarted | hard | 15 s; 5 drops in 60 s (fixed) | none |
 | **Rate cap**: every step ran | none | none | none |
 | **Budget used up**: prepared transactions ran out, or a short step had nothing to send | none | none | none |
-| **Generator limit**: sent share of target rate below minimum, or the load tool paused over 5 s between sends, or the wall clock moved over 5 s more than the load tool's own clock (machine sleep) | none | 95%; 5 s between sends (fixed) | `min-send-ratio` |
+| **Generator limit**: sent share of target rate below minimum, or the load tool paused over 5 s between sends, or the machine was suspended for over 5 s | none | 95%; 5 s between sends (fixed) | `min-send-ratio` |
 | **Smoke error**: monitor problem, smoke mode only | none | none | none |
 
 Ratios accept values above 0 up to 1. Factors and durations must be above 0. Set them in the plan's [`<thresholds>`](plans.md#thresholds).
@@ -263,7 +264,7 @@ Checks run on the recorded series, in this order. A check whose metric the node 
 | pool: the burst drains | Probes in time, backlog drained, no empty block while over 10 transactions waited. | `fail` unless all three hold. |
 | pool: refusals are clean | Refusals by reason. | `fail`: no code. `warn`: run stopped at pool intake. |
 | pool: pool work leaves time for blocks | Pool maintenance p95; validation backlog. | `fail`: p95 over half the block interval. `warn`: over 1000 waiting for validation. |
-| run: monitors recorded everything | Monitor problems. | `warn` if any. |
+| run: monitors recorded everything | Monitor problems, and time blocks were not observed. | `warn` if any problem. `no result` if blocks went unobserved for longer than `stall-ms` in all. |
 
 Statuses: `pass` (no problem found), `warn` (a `WARN` verdict unless the verdict is `FAIL`), `fail` (a `FAIL` verdict), `info` (a number to read, not judged), `no result` (data missing, or a node restarted inside the window).
 

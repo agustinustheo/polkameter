@@ -123,11 +123,12 @@ pub fn final_step(st: &StepStats, lane: Option<&str>) -> FinalStep {
 }
 
 /// A step's blocks; the gaps by the step's own time: the mean is the time observed over the new
-/// best blocks that arrived in it, the max the longest stretch inside it without one.
+/// best blocks that arrived in it (all of it when none did, so a step without a block is as slow
+/// as it is long), the max the longest stretch inside it without one.
 fn step_blocks(st: &StepStats) -> BlockStats {
 	let observed = st.ended_at.saturating_sub(st.started_at).saturating_sub(st.unobserved_ms);
 	BlockStats {
-		mean_block_gap_ms: (st.heads > 0).then(|| observed as f64 / st.heads as f64),
+		mean_block_gap_ms: (observed > 0).then(|| observed as f64 / st.heads.max(1) as f64),
 		max_block_gap_ms: st.max_gap_ms,
 		..block_stats(&st.blocks)
 	}

@@ -103,3 +103,27 @@ fn a_state_check_without_a_result_makes_the_verdict_inconclusive() {
 	let loss = results.iter().find(|r| r.check == "no silent loss").unwrap();
 	assert_eq!(loss.verdict.status, Status::Pass);
 }
+
+#[test]
+fn blocks_unobserved_for_longer_than_a_stall_are_no_result() {
+	use polkameter_plugin_sdk::observers::checks::{all, report::overall_status, run};
+	use polkameter_plugin_sdk::observers::files::summary::{OverallStatus, Rule, Stop};
+	let mut s = summary();
+	s.breaking_point = None;
+	s.stop = Stop::new(Rule::RateCap, Some(2), "all 3 steps ran");
+	s.problems = vec!["blocks: RPC connection lost (x); reconnected after 14.0 s".into(); 3];
+	let check = |s: &Summary| {
+		let results = run(&all(), &RunData::new(Store::new(), s.clone()));
+		let r = results.iter().find(|r| r.check == "monitors recorded everything").unwrap();
+		(r.verdict.status, r.verdict.detail.clone(), overall_status(s, &results))
+	};
+	// 14 s not observed: within the 30 s stall limit, a warning.
+	s.unobserved_ms = 14_000;
+	assert_eq!(check(&s).0, Status::Warn);
+	// 42 s not observed: a stall could hide in it, so no result, and not a PASS.
+	s.unobserved_ms = 42_000;
+	let (status, detail, overall) = check(&s);
+	assert_eq!(status, Status::NoResult, "{detail}");
+	assert!(detail.contains("not observed for 42.0 s"), "{detail}");
+	assert_ne!(overall, OverallStatus::Pass);
+}

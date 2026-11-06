@@ -51,12 +51,13 @@ impl<S: Submit> Tracker<S> {
 				{
 					gap.to = Some(at);
 				}
-				// The stall rules count from now: the node was not observed meanwhile.
-				self.last_head.0 = self.last_head.0.max(at);
-				self.last_finalized.0 = self.last_finalized.0.max(at);
+				// The stall rules keep the time since the last new block, less the time not
+				// observed (`unobserved_between`): a reconnect does not restart them.
 				self.prev_head_at = Some(at);
 			},
-			BlockEvent::Unreachable(why) => self.node_unreachable = Some(why),
+			BlockEvent::Unreachable(why) | BlockEvent::NodeRestarted(why) => {
+				self.node_down.get_or_insert(why);
+			},
 			BlockEvent::Finalized { number, seen_at } if number > self.last_finalized.1 => {
 				self.last_finalized = (seen_at, number)
 			},

@@ -58,17 +58,17 @@ The table lists every rule. The three breaking point rules do not stop the load.
 | Pool refuses | Graceful. More than 10% of submissions are refused, in this step or the one before |
 | Pool intake | Graceful. The node is slow to accept submissions: p95 reply above 5 s, or a submit waited that long |
 | Slow blocks | Hard. The mean block gap is more than twice the plan's `block-interval-seconds` |
-| Stall | Hard. No new best block for 30 s while PolkaMeter is connected to the node |
-| Finality stall | Hard. No new finalized block for 60 s while PolkaMeter is connected to the node |
-| Node down | Hard. The node stayed unreachable for about 15 s of reconnect attempts |
+| Stall | Hard. No new best block for 30 s, not counting time PolkaMeter was reconnecting |
+| Finality stall | Hard. No new finalized block for 60 s, not counting time PolkaMeter was reconnecting |
+| Node down | Hard. The node stayed unreachable for 15 s, kept dropping the connection, or restarted |
 | Rate cap | Every step ran. The ramp finished |
 | Budget used up | The prepared transactions ran out |
-| Generator limit | The load tool could not send at least 95% of the target rate |
+| Generator limit | The load tool could not send at least 95% of the target rate, or the machine was suspended |
 | Smoke error | A monitor problem, in smoke mode only |
 
 [Results](results.md#stop-rules-and-thresholds) lists the default thresholds. The [plan](plans.md#thresholds) can change them.
 
-If an RPC connection drops and PolkaMeter reconnects, the run goes on. The lost time is listed under problems, and the "monitors recorded everything" check warns. It is not a stall.
+If an RPC connection drops and PolkaMeter reconnects, the run goes on. The lost time is listed under problems, and the "monitors recorded everything" check warns. The time is left out of the stall rules, but the time around it still counts. If blocks went unobserved for longer than 30 s in all, that check has no result and the verdict cannot be PASS.
 
 ## Which step does a number belong to?
 

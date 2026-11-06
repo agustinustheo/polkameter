@@ -120,7 +120,8 @@ pub async fn run(
 		events,
 		problems: monitors.problems.clone(),
 		tool_failed: monitors.tool_failed.clone(),
-		wall: polkameter_plugin_sdk::observers::files::wall_ms,
+		boot: crate::load::clock::boot_ms,
+		restarts: monitors.node_restarts.clone(),
 	};
 
 	let phases = async {
@@ -187,11 +188,15 @@ pub async fn run(
 	lost_out.flush()?;
 	let unreadable = tracker.unreadable.clone();
 	let gaps: Vec<String> = tracker.observation_gaps.iter().map(ToString::to_string).collect();
+	let unobserved_ms = tracker.unobserved_ms(now_ms());
+	// A node that went down or restarted is a problem too: smoke mode exits 1 on it.
+	let node_down = tracker.node_down.clone().map(|why| format!("node down: {why}"));
 	tracker.finish()?.close();
 	monitors.stop_chain().await?;
 	let mut problems = monitors.problems.all();
 	problems.extend(unreadable.into_iter().map(|u| format!("blocks: {u}")));
 	problems.extend(gaps);
+	problems.extend(node_down);
 	monitors.stop().await?;
 
 	// Summary.
@@ -229,6 +234,7 @@ pub async fn run(
 		loss,
 		baseline: base,
 		problems,
+		unobserved_ms,
 		network: Network {
 			url,
 			para_id: plan.monitors.as_ref().map(|m| m.para_id),
@@ -301,7 +307,6 @@ async fn loss_check<S: crate::load::submit::Submit>(
 	finality_wait_ms: u64,
 	state: Option<&dyn crate::load::StateCheck>,
 ) -> (Loss, Vec<LostTx>) {
-	let included_ok: Vec<_> = tracker.included_ok.concat();
 	let scraper = monitors.scraper.clone();
 	let node_pool = async move {
 		scraper.scrape_now().await;
@@ -312,7 +317,6 @@ async fn loss_check<S: crate::load::submit::Submit>(
 		})
 	};
 	let settled = crate::load::loss::Settled {
-		included_ok: &included_ok,
 		last_ours_block: tracker.last_ours_block.max(tracker.last_fetched),
 		flood: &tracker.flood,
 		included_in: &tracker.included_in,

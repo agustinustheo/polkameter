@@ -139,9 +139,21 @@ Polkameter: cannot read run directory target/no-such-run: No such file or direct
 
 ### blocks: RPC connection lost (...); reconnected after <seconds> s, nothing observed meanwhile
 
-**Cause:** A WebSocket connection to the node dropped, for example through a proxy idle timeout, and PolkaMeter opened it again. The run went on. The "monitors recorded everything" check warns, and smoke mode exits `1`.
+**Cause:** A WebSocket connection to the node dropped, for example through a proxy idle timeout, and PolkaMeter opened it again. The run went on. The "monitors recorded everything" check warns, and smoke mode exits `1`. If blocks went unobserved for longer than the stall limit in all, the check has no result.
 
 **Fix:** If it happens often, check the proxy or load balancer between PolkaMeter and the node. Raise its idle timeout above the run's length.
+
+### node down: the node restarted
+
+**Cause:** After a reconnect, the node had a new peer ID or sync starting block, or the node's process ID on its port changed. A restart empties the pool, so PolkaMeter stops the load on node down, even when the node was back within seconds.
+
+**Fix:** Check the node's logs for why it restarted, such as an out-of-memory kill or a supervisor restart.
+
+### generator limit: the machine was suspended for <seconds> s
+
+**Cause:** The machine running PolkaMeter slept or its VM was paused during the load. The chain went on without load, so the numbers after it are not the chain's. A wall-clock step from NTP does not cause this.
+
+**Fix:** Keep the machine awake during the run. On a CI runner, check for host maintenance or an overloaded host.
 
 ## Remote runs
 

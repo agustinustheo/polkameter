@@ -118,10 +118,14 @@ pub struct LiveState {
 	pub finalized: u32,
 	/// Monitor problems, in smoke mode only.
 	pub smoke_problems: Vec<String>,
-	/// The block follower is connected: false while it reconnects, when no block can be seen.
-	pub observing: bool,
-	/// The follower could not reach the node after every reconnect attempt.
-	pub node_unreachable: Option<String>,
+	/// Time since the last new best block that the block follower was disconnected: left out
+	/// of the stall rule, which no block could be seen in.
+	pub unobserved_since_block: Millis,
+	/// The same, since the last new finalized block.
+	pub unobserved_since_finalized: Millis,
+	/// The node is down: unreachable for the reconnect backoff, dropping the connection again
+	/// and again, or restarted.
+	pub node_down: Option<String>,
 }
 
 /// A failure that shows during a step.
@@ -138,25 +142,32 @@ pub fn live_failure(s: &LiveState, rules: &Rules) -> Option<Stop> {
 			),
 		));
 	}
-	if let Some(why) = &s.node_unreachable {
+	if let Some(why) = &s.node_down {
 		return Some(Stop::new(Rule::NodeDown, step, why.clone()));
 	}
-	if !s.observing {
-		// Reconnecting: no block can be seen, so a missing block says nothing about the chain.
-		return (!s.smoke_problems.is_empty())
-			.then(|| Stop::new(Rule::SmokeError, step, s.smoke_problems.join("; ")));
-	}
-	if s.now.saturating_sub(s.last_block_at) > rules.stall_ms {
+	// Observed time only: a reconnect neither hides a stall nor makes one.
+	let since_block =
+		s.now.saturating_sub(s.last_block_at).saturating_sub(s.unobserved_since_block);
+	let since_finalized = s
+		.now
+		.saturating_sub(s.last_finalized_at)
+		.saturating_sub(s.unobserved_since_finalized);
+	if since_block > rules.stall_ms {
 		return Some(Stop::new(
 			Rule::Stall,
 			step,
-			format!("no new best block for {} s", ago(s.last_block_at)),
+			format!(
+				"no new best block for {} s{}",
+				ago(s.last_block_at),
+				not_observed(s.unobserved_since_block)
+			),
 		));
 	}
-	if s.now.saturating_sub(s.last_finalized_at) > rules.finality_stall_ms {
+	if since_finalized > rules.finality_stall_ms {
 		let detail = format!(
-			"no new finalized block for {} s (best {}, finalized {})",
+			"no new finalized block for {} s{} (best {}, finalized {})",
 			ago(s.last_finalized_at),
+			not_observed(s.unobserved_since_finalized),
 			s.best,
 			s.finalized
 		);
@@ -164,6 +175,15 @@ pub fn live_failure(s: &LiveState, rules: &Rules) -> Option<Stop> {
 	}
 	(!s.smoke_problems.is_empty())
 		.then(|| Stop::new(Rule::SmokeError, step, s.smoke_problems.join("; ")))
+}
+
+/// ", N s of it while reconnecting" for a stall detail.
+fn not_observed(ms: Millis) -> String {
+	if ms == 0 {
+		String::new()
+	} else {
+		format!(", {} s of it while reconnecting", secs(ms as f64))
+	}
 }
 
 /// The rules checked at the end of each step for one lane, on it and on the step before (settled by now).
@@ -378,25 +398,54 @@ mod tests {
 		assert!(stop.detail.contains("a block every 10.0 s"), "{}", stop.detail);
 	}
 
+	#[test]
+	fn a_step_without_a_new_block_is_slow() {
+		// 20 s, observed, and no new best block: a block every 20 s at best.
+		let stop = check_step(
+			&[step(0, |s| {
+				s.ended_at = 20_000;
+				s.closed = true;
+			})],
+			&source(),
+			0,
+			6_000.0,
+			&RULES,
+		)
+		.unwrap();
+		assert_eq!(stop.rule, Rule::SlowBlocks, "{}", stop.detail);
+		// Not observed at all: nothing to judge.
+		let unobserved = step(0, |s| {
+			s.ended_at = 20_000;
+			s.closed = true;
+			s.unobserved_ms = 20_000;
+		});
+		assert_eq!(final_step(&unobserved, None).blocks.mean_block_gap_ms, None);
+	}
+
 	fn live() -> LiveState {
 		LiveState {
 			now: 100_000,
 			connections: 4,
 			last_block_at: 60_000,
 			last_finalized_at: 90_000,
-			observing: true,
 			..Default::default()
 		}
 	}
 
 	#[test]
-	fn a_follower_that_is_reconnecting_is_not_a_stall() {
+	fn only_observed_time_counts_towards_a_stall() {
+		// 40 s since the last block.
 		assert_eq!(live_failure(&live(), &RULES).unwrap().rule, Rule::Stall);
-		let reconnecting = LiveState { observing: false, ..live() };
+		// 15 s of it while reconnecting: 25 s observed, not a stall yet.
+		let reconnecting = LiveState { unobserved_since_block: 15_000, ..live() };
 		assert_eq!(live_failure(&reconnecting, &RULES), None);
+		// 5 s of it while reconnecting: 35 s observed is still a stall.
+		let stop = live_failure(&LiveState { unobserved_since_block: 5_000, ..live() }, &RULES);
+		let stop = stop.unwrap();
+		assert_eq!(stop.rule, Rule::Stall);
+		assert!(stop.detail.contains("5.0 s of it while reconnecting"), "{}", stop.detail);
 		let down = LiveState {
-			observing: false,
-			node_unreachable: Some("blocks: the node did not answer for 15 s".into()),
+			node_down: Some("blocks: the node did not answer for 15 s".into()),
 			..live()
 		};
 		let stop = live_failure(&down, &RULES).unwrap();

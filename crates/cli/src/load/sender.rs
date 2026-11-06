@@ -6,15 +6,17 @@
 //! A connection counts as backed up with 4 MiB queued and not yet written (as TS
 //! `bufferedAmount`), so "pool intake" fires at the same point whatever the tx size.
 //!
-//! A connection the node or the network closes is opened again, with backoff: the requests it
-//! had written and not seen answered come back as [`Reply::Interrupted`] (their outcome is
-//! unknown, and the tracker keeps watching blocks for them), and the ones still queued are
-//! written on the new socket. While a connection is down, submits go to the others. Only when
-//! every reconnect attempt fails does it end with [`Reply::Closed`], which the "node down" rule
-//! reads.
+//! A connection the node or the network closes is opened again, with backoff (see
+//! [`crate::load::reconnect`]). The requests it had written and not seen answered are reported
+//! as [`Reply::Interrupted`] and sent again, first, on the new socket with the same ids: the node
+//! may never have read them, and a later nonce would wait behind a missing one. A node that had
+//! read one answers "already imported" or "temporarily banned", which the tracker takes as
+//! accepted. Requests still queued are written after them. While a connection is down, submits
+//! go to the others. When the node stays unreachable for the backoff, or the connection keeps
+//! dropping, it ends with [`Reply::Closed`], which the "node down" rule reads.
 
 use std::{
-	collections::HashSet,
+	collections::BTreeMap,
 	sync::{
 		Arc, Mutex,
 		atomic::{AtomicBool, AtomicU64, Ordering},
@@ -29,19 +31,15 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, tungstenite::Message};
 
 use polkameter_plugin_sdk::chain::hex0x;
 
-use crate::load::{now_ms, submit::Submit};
+use tokio_util::sync::CancellationToken;
+
+use crate::load::{
+	now_ms,
+	reconnect::{Backoff, Drops, Reconnect, reconnect},
+	submit::Submit,
+};
 
 const MAX_QUEUED_BYTES: u64 = 4 * 1024 * 1024;
-
-/// Waits before each reconnect attempt: about 15 s in all, then the node counts as down.
-pub const RECONNECT_BACKOFF: [Duration; 6] = [
-	Duration::from_millis(250),
-	Duration::from_millis(500),
-	Duration::from_secs(1),
-	Duration::from_secs(2),
-	Duration::from_secs(4),
-	Duration::from_secs(8),
-];
 
 /// What came back for one request, or a connection that closed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,11 +63,11 @@ pub enum Reply {
 		error: String,
 	},
 	/// A connection dropped and is being opened again: the requests it had written and not seen
-	/// answered have an unknown outcome. Not a node failure.
+	/// answered are sent again on the new socket. Not a node failure.
 	Interrupted {
 		/// Connection index.
 		connection: usize,
-		/// The unanswered request ids.
+		/// The unanswered request ids, to be sent again.
 		ids: Vec<u64>,
 		/// Why it dropped.
 		reason: String,
@@ -85,7 +83,8 @@ pub enum Reply {
 	Closed {
 		/// Connection index.
 		connection: usize,
-		/// True when it could not be opened again: the node is down. False when we closed it.
+		/// True when it could not be opened again, or kept dropping: the node is down. False
+		/// when we closed it.
 		by_node: bool,
 	},
 }
@@ -100,18 +99,28 @@ struct Connection {
 pub struct Sender {
 	connections: Vec<Connection>,
 	next: usize,
-	closing: Arc<AtomicBool>,
+	closing: CancellationToken,
 }
 
 /// A connection could not be opened: a wrong URL or a node that is down before the run.
 #[derive(Debug, thiserror::Error)]
-#[error("sender: cannot connect to {url}: {source}")]
+#[error("sender: cannot connect to {url}: {why}")]
 pub struct ConnectError {
 	url: String,
-	source: tokio_tungstenite::tungstenite::Error,
+	why: String,
 }
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+/// Opens a WebSocket within `limit`: a server that accepts TCP and never answers the handshake
+/// fails the attempt instead of holding it.
+async fn connect(url: &str, limit: Duration) -> Result<Socket, String> {
+	match tokio::time::timeout(limit, tokio_tungstenite::connect_async(url)).await {
+		Ok(Ok((ws, _))) => Ok(ws),
+		Ok(Err(e)) => Err(e.to_string()),
+		Err(_) => Err(format!("no WebSocket handshake within {} s", limit.as_secs())),
+	}
+}
 
 impl Sender {
 	/// Opens `connections` WebSockets to `url`; replies go to `replies`.
@@ -120,22 +129,22 @@ impl Sender {
 		connections: usize,
 		replies: mpsc::UnboundedSender<Reply>,
 	) -> Result<Self, ConnectError> {
-		Self::open_with(url, connections, replies, &RECONNECT_BACKOFF).await
+		Self::open_with(url, connections, replies, &Backoff::default()).await
 	}
 
-	/// [`Sender::open`], with the waits before each reconnect attempt.
+	/// [`Sender::open`], with the backoff of reconnects.
 	pub async fn open_with(
 		url: &str,
 		connections: usize,
 		replies: mpsc::UnboundedSender<Reply>,
-		backoff: &[Duration],
+		backoff: &Backoff,
 	) -> Result<Self, ConnectError> {
-		let closing = Arc::new(AtomicBool::new(false));
+		let closing = CancellationToken::new();
 		let mut out = Vec::with_capacity(connections);
 		for connection in 0..connections {
-			let (ws, _) = tokio_tungstenite::connect_async(url)
+			let ws = connect(url, backoff.attempt)
 				.await
-				.map_err(|source| ConnectError { url: url.to_owned(), source })?;
+				.map_err(|why| ConnectError { url: url.to_owned(), why })?;
 			let (queue, rx) = mpsc::unbounded_channel();
 			let queued = Arc::new(AtomicU64::new(0));
 			let up = Arc::new(AtomicBool::new(true));
@@ -146,7 +155,7 @@ impl Sender {
 				up: up.clone(),
 				replies: replies.clone(),
 				closing: closing.clone(),
-				backoff: backoff.to_vec(),
+				backoff: backoff.clone(),
 			};
 			tokio::spawn(link.run(ws, rx));
 			out.push(Connection { queue, queued, up });
@@ -156,7 +165,7 @@ impl Sender {
 
 	/// Closes every connection once its queue is written.
 	pub fn close(self) {
-		self.closing.store(true, Ordering::Relaxed);
+		self.closing.cancel();
 	}
 }
 
@@ -168,8 +177,8 @@ struct Link {
 	queued: Arc<AtomicU64>,
 	up: Arc<AtomicBool>,
 	replies: mpsc::UnboundedSender<Reply>,
-	closing: Arc<AtomicBool>,
-	backoff: Vec<Duration>,
+	closing: CancellationToken,
+	backoff: Backoff,
 }
 
 /// How a socket's session ended.
@@ -180,35 +189,34 @@ enum End {
 	Dropped(String),
 }
 
+/// Requests written and not answered yet, by id: sent again on the next socket.
+type Unanswered = Arc<Mutex<BTreeMap<u64, String>>>;
+
 impl Link {
 	async fn run(self, mut ws: Socket, mut rx: mpsc::UnboundedReceiver<(u64, String)>) {
+		let unanswered = Unanswered::default();
+		let mut drops = Drops::default();
 		loop {
-			let reason = match self.session(ws, &mut rx).await {
-				(End::Done, _) => {
-					let _ = self
-						.replies
-						.send(Reply::Closed { connection: self.connection, by_node: false });
-					return;
-				},
-				(End::Dropped(_), _) if self.closing.load(Ordering::Relaxed) => {
-					let _ = self
-						.replies
-						.send(Reply::Closed { connection: self.connection, by_node: false });
-					return;
-				},
-				(End::Dropped(reason), ids) => {
-					let _ = self.replies.send(Reply::Interrupted {
-						connection: self.connection,
-						ids,
-						reason: reason.clone(),
-					});
-					reason
-				},
+			let reason = match self.session(ws, &mut rx, &unanswered).await {
+				End::Done => return self.closed(false),
+				End::Dropped(_) if self.closing.is_cancelled() => return self.closed(false),
+				End::Dropped(reason) => reason,
 			};
+			let ids: Vec<u64> = unanswered.lock().expect("unanswered").keys().copied().collect();
+			let _ = self.replies.send(Reply::Interrupted {
+				connection: self.connection,
+				ids,
+				reason: reason.clone(),
+			});
 			self.up.store(false, Ordering::Relaxed);
+			if !drops.record() {
+				eprintln!("sender: connection {}: {}", self.connection, Drops::reason());
+				return self.closed(true);
+			}
 			let down_at = now_ms();
-			match self.reconnect().await {
-				Some(socket) => {
+			let attempt = self.backoff.attempt;
+			match reconnect(|| connect(&self.url, attempt), &self.backoff, &self.closing).await {
+				Reconnect::Connected(socket) => {
 					ws = socket;
 					self.up.store(true, Ordering::Relaxed);
 					let _ = self.replies.send(Reply::Reconnected {
@@ -216,44 +224,32 @@ impl Link {
 						down_ms: now_ms().saturating_sub(down_at),
 					});
 				},
-				None => {
+				Reconnect::Stopped => return self.closed(false),
+				Reconnect::GaveUp(why) => {
 					eprintln!(
-						"sender: connection {} dropped ({reason}) and could not be opened again",
+						"sender: connection {} dropped ({reason}) and the node was {why}",
 						self.connection
 					);
-					let _ = self
-						.replies
-						.send(Reply::Closed { connection: self.connection, by_node: true });
-					return;
+					return self.closed(true);
 				},
 			}
 		}
 	}
 
-	/// Opens the socket again, waiting before each attempt; `None` when every attempt failed.
-	async fn reconnect(&self) -> Option<Socket> {
-		for wait in &self.backoff {
-			tokio::time::sleep(*wait).await;
-			if self.closing.load(Ordering::Relaxed) {
-				return None;
-			}
-			if let Ok((ws, _)) = tokio_tungstenite::connect_async(&self.url).await {
-				return Some(ws);
-			}
-		}
-		None
+	fn closed(&self, by_node: bool) {
+		let _ = self.replies.send(Reply::Closed { connection: self.connection, by_node });
 	}
 
-	/// Writes the queue and reads replies until the socket drops or the queue is done. Returns
-	/// how it ended and the ids written and not answered.
+	/// Sends what the last socket left unanswered again, then writes the queue and reads replies
+	/// until the socket drops or the queue is done.
 	async fn session(
 		&self,
 		ws: Socket,
 		rx: &mut mpsc::UnboundedReceiver<(u64, String)>,
-	) -> (End, Vec<u64>) {
+		unanswered: &Unanswered,
+	) -> End {
 		let (mut sink, mut stream) = ws.split();
-		let pending: Arc<Mutex<HashSet<u64>>> = Arc::default();
-		let (reader_pending, replies) = (pending.clone(), self.replies.clone());
+		let (reader_unanswered, replies) = (unanswered.clone(), self.replies.clone());
 		// Reading runs apart from writing, so a slow write never stops replies being read.
 		let mut reader = tokio::spawn(async move {
 			while let Some(msg) = stream.next().await {
@@ -261,7 +257,7 @@ impl Link {
 					Ok(Message::Text(text)) => {
 						if let Some(r) = parse_reply(&text) {
 							if let Reply::Accepted { id, .. } | Reply::Refused { id, .. } = &r {
-								reader_pending.lock().expect("pending").remove(id);
+								reader_unanswered.lock().expect("unanswered").remove(id);
 							}
 							let _ = replies.send(r);
 						}
@@ -275,30 +271,36 @@ impl Link {
 			}
 			"the socket ended".to_owned()
 		});
-		let end = loop {
+		// The node may never have read these: send them again, in order (same ids).
+		let resend: Vec<String> =
+			unanswered.lock().expect("unanswered").values().cloned().collect();
+		for text in resend {
+			if let Err(e) = sink.send(Message::text(text)).await {
+				reader.abort();
+				return End::Dropped(e.to_string());
+			}
+		}
+		loop {
 			tokio::select! {
-				reason = &mut reader => break End::Dropped(reason.unwrap_or_else(|e| e.to_string())),
+				reason = &mut reader => return End::Dropped(reason.unwrap_or_else(|e| e.to_string())),
 				item = rx.recv() => {
 					let Some((id, text)) = item else {
 						let _ = sink.close().await; // the queue was dropped: our own close
 						// Replies to what was written still arrive until the node closes.
 						let _ = tokio::time::timeout(Duration::from_secs(5), &mut reader).await;
-						break End::Done;
+						return End::Done;
 					};
 					let len = text.len() as u64;
-					pending.lock().expect("pending").insert(id);
+					unanswered.lock().expect("unanswered").insert(id, text.clone());
 					let sent = sink.send(Message::text(text)).await;
 					self.queued.fetch_sub(len, Ordering::Relaxed);
 					if let Err(e) = sent {
 						reader.abort();
-						break End::Dropped(e.to_string());
+						return End::Dropped(e.to_string());
 					}
 				},
 			}
-		};
-		let mut ids: Vec<u64> = pending.lock().expect("pending").drain().collect();
-		ids.sort_unstable();
-		(end, ids)
+		}
 	}
 }
 
@@ -376,12 +378,34 @@ mod tests {
 			.unwrap()
 	}
 
-	/// A proxy or idle timeout closes the socket: the sender opens it again and goes on; the
-	/// request it lost is reported as interrupted, and the node is not "down".
+	fn backoff() -> Backoff {
+		Backoff {
+			waits: vec![Duration::from_millis(10)],
+			attempt: Duration::from_millis(500),
+			total: Duration::from_secs(2),
+		}
+	}
+
+	/// Answers every request on `ws` with a success.
+	async fn answer_all(mut ws: WebSocketStream<TcpStream>, seen: mpsc::UnboundedSender<u64>) {
+		while let Some(Ok(msg)) = ws.next().await {
+			if msg.is_text() {
+				let id = request_id(&msg);
+				let _ = seen.send(id);
+				let answer = format!(r#"{{"jsonrpc":"2.0","id":{id},"result":"0x00"}}"#);
+				ws.send(Message::text(answer)).await.unwrap();
+			}
+		}
+	}
+
+	/// A proxy or idle timeout closes the socket after the node read nothing of a request: the
+	/// sender opens it again, sends the unanswered request again first, and the node is not
+	/// "down". (A dropped submit would leave every later nonce stuck in the future pool.)
 	#[tokio::test]
-	async fn a_dropped_socket_reconnects_and_is_not_node_down() {
+	async fn a_dropped_socket_reconnects_and_resends_the_unanswered() {
 		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 		let url = format!("ws://{}", listener.local_addr().unwrap());
+		let (seen_tx, mut seen) = mpsc::unbounded_channel();
 		let node = tokio::spawn(async move {
 			// First socket: read one request, then drop it without an answer.
 			let (tcp, _) = listener.accept().await.unwrap();
@@ -391,26 +415,20 @@ mod tests {
 			drop(ws);
 			// Second socket: answer everything.
 			let (tcp, _) = listener.accept().await.unwrap();
-			let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
-			while let Some(Ok(msg)) = ws.next().await {
-				if msg.is_text() {
-					let id = request_id(&msg);
-					let answer = format!(r#"{{"jsonrpc":"2.0","id":{id},"result":"0x00"}}"#);
-					ws.send(Message::text(answer)).await.unwrap();
-				}
-			}
+			answer_all(tokio_tungstenite::accept_async(tcp).await.unwrap(), seen_tx).await;
 		});
 		let (tx, mut rx) = mpsc::unbounded_channel();
-		let backoff = [Duration::from_millis(10); 3];
-		let mut sender = Sender::open_with(&url, 1, tx, &backoff).await.unwrap();
+		let mut sender = Sender::open_with(&url, 1, tx, &backoff()).await.unwrap();
 		assert_eq!(sender.submit(1, &[1]), Some(0));
 		let Reply::Interrupted { connection: 0, ids, .. } = reply(&mut rx).await else {
 			panic!("interrupted")
 		};
-		assert_eq!(ids, [1], "the unanswered request has an unknown outcome");
+		assert_eq!(ids, [1], "the unanswered request is sent again");
 		assert!(matches!(reply(&mut rx).await, Reply::Reconnected { connection: 0, .. }));
+		assert!(matches!(reply(&mut rx).await, Reply::Accepted { id: 1, .. }), "resent");
 		assert_eq!(sender.submit(2, &[2]), Some(0));
 		assert!(matches!(reply(&mut rx).await, Reply::Accepted { id: 2, .. }));
+		assert_eq!((seen.recv().await, seen.recv().await), (Some(1), Some(2)), "in order");
 		sender.close();
 		node.abort();
 	}
@@ -427,11 +445,35 @@ mod tests {
 			drop(listener); // and nothing listens any more
 		});
 		let (tx, mut rx) = mpsc::unbounded_channel();
-		let backoff = [Duration::from_millis(10); 3];
-		let mut sender = Sender::open_with(&url, 1, tx, &backoff).await.unwrap();
+		let mut sender = Sender::open_with(&url, 1, tx, &backoff()).await.unwrap();
 		assert!(matches!(reply(&mut rx).await, Reply::Interrupted { connection: 0, .. }));
 		assert_eq!(reply(&mut rx).await, Reply::Closed { connection: 0, by_node: true });
 		assert_eq!(sender.submit(3, &[3]), None, "no connection left to queue on");
 		node.await.unwrap();
+	}
+
+	/// A node that accepts TCP and never answers the WebSocket handshake: each attempt times out
+	/// and the node is down when the backoff's deadline passes, instead of the sender hanging.
+	#[tokio::test]
+	async fn a_stalled_handshake_ends_in_node_down_at_the_deadline() {
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let url = format!("ws://{}", listener.local_addr().unwrap());
+		let node = tokio::spawn(async move {
+			let (tcp, _) = listener.accept().await.unwrap();
+			let ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+			drop(ws);
+			let mut held = Vec::new();
+			loop {
+				let (tcp, _) = listener.accept().await.unwrap();
+				held.push(tcp); // never a handshake
+			}
+		});
+		let (tx, mut rx) = mpsc::unbounded_channel();
+		let _sender = Sender::open_with(&url, 1, tx, &backoff()).await.unwrap();
+		assert!(matches!(reply(&mut rx).await, Reply::Interrupted { connection: 0, .. }));
+		let started = std::time::Instant::now();
+		assert_eq!(reply(&mut rx).await, Reply::Closed { connection: 0, by_node: true });
+		assert!(started.elapsed() < Duration::from_secs(4), "{:?}", started.elapsed());
+		node.abort();
 	}
 }

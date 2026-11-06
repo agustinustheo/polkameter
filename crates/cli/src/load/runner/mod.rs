@@ -104,8 +104,11 @@ pub struct Io {
 	pub problems: Problems,
 	/// Cancelled when a monitor fails with an error of our tools: the run stops at once.
 	pub tool_failed: tokio_util::sync::CancellationToken,
-	/// The wall clock, only to see that the machine slept (`wall_ms`; a test changes it).
-	pub wall: fn() -> Millis,
+	/// A clock that counts sleep ([`crate::load::clock::boot_ms`]), only to see that the
+	/// machine was suspended; a test changes it.
+	pub boot: fn() -> Option<Millis>,
+	/// Node restarts the process sampler saw (the node's PID changed): node down.
+	pub restarts: Problems,
 }
 
 /// No result: the network was not healthy before the load, or a raw file could not be written.
@@ -236,7 +239,7 @@ pub async fn recover<S: Submit>(
 	let deadline = started + Duration::from_secs(u64::from(opts.recovery_s));
 	let (mut back_at, mut drained_at, mut last_log) = (None, None, started);
 	let mut tick = interval(500);
-	while Instant::now() < deadline && t.closed_by_node == 0 && t.node_unreachable.is_none() {
+	while Instant::now() < deadline && t.closed_by_node == 0 && t.node_down.is_none() {
 		if !next(t, io, &mut tick).await? {
 			continue;
 		}

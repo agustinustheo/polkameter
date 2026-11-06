@@ -8,12 +8,17 @@
 //!   before the inclusions of an earlier one.
 //!
 //! When the connection drops, the heads task sends [`BlockEvent::Disconnected`], opens it again
-//! with backoff and sends [`BlockEvent::Reconnected`]: the time between is an observation gap,
-//! not a chain stall, and the first block after it has no gap to the block before. The blocks
-//! missed meanwhile are filled in below the next best block. Only a node that stays unreachable
-//! after the backoff is [`BlockEvent::Unreachable`] (node down).
+//! with backoff, subscribes, and only then sends [`BlockEvent::Reconnected`]: the time between is
+//! an observation gap, not a chain stall, and the first block after it has no gap to the block
+//! before. The blocks missed meanwhile are filled in below the next best block. A node that stays
+//! unreachable for the backoff (about 15 s), or that drops the connection again and again, is
+//! [`BlockEvent::Unreachable`]; a node that comes back as another process is
+//! [`BlockEvent::NodeRestarted`]. Both are node down.
 
 use std::{collections::HashSet, future::Future, time::Duration};
+
+use subxt::{PolkadotConfig, client::Blocks};
+use subxt_rpcs::rpc_params;
 
 use polkameter_plugin_sdk::chain::{
 	ChainError, Client, DecodeAsType, Fault, events, failed_extrinsics, fetch, hex0x, tx_hash,
@@ -22,7 +27,11 @@ use polkameter_plugin_sdk::observers::files::{BlockRecord, Millis};
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
-use crate::load::{now_ms, source::TxHash};
+use crate::load::{
+	now_ms,
+	reconnect::{Backoff, Drops, Reconnect, reconnect},
+	source::TxHash,
+};
 
 /// What the follower saw.
 #[derive(Debug)]
@@ -63,8 +72,12 @@ pub enum BlockEvent {
 		/// When.
 		at: Millis,
 	},
-	/// The node stayed unreachable after every reconnect attempt: the node is down.
+	/// The node stayed unreachable for the whole reconnect backoff, or kept dropping the
+	/// connection: the node is down.
 	Unreachable(String),
+	/// After a reconnect the node is another process (a new peer ID or starting block): it
+	/// restarted, which counts as node down.
+	NodeRestarted(String),
 	/// An answer did not decode as our types: an error of our tools, the run stops.
 	Tool(String),
 }
@@ -92,17 +105,6 @@ type Queued = ([u8; 32], u32, Millis, bool, bool);
 /// Blocks filled in below one best block at most; a longer walk is an unreadable stretch.
 const MAX_FILL: usize = 64;
 
-/// Waits before each reconnect attempt: about 15 s in all, then the node counts as down (the
-/// follower keeps trying at the last wait, and goes on if the node comes back).
-pub const RECONNECT_BACKOFF: [Duration; 6] = [
-	Duration::from_millis(250),
-	Duration::from_millis(500),
-	Duration::from_secs(1),
-	Duration::from_secs(2),
-	Duration::from_secs(4),
-	Duration::from_secs(8),
-];
-
 /// Best-block read errors in a row that count as a lost connection.
 const ERRORS_IN_A_ROW: u32 = 3;
 
@@ -116,80 +118,128 @@ pub fn start(
 ) {
 	let (queue_tx, queue) = mpsc::unbounded_channel();
 	let (clients, current) = watch::channel(client.clone());
-	let connect = move || {
-		let url = url.clone();
-		async move { Client::connect(&url).await }
-	};
-	tokio::spawn(heads(client, connect, clients, out.clone(), queue_tx, stop.clone()));
+	tokio::spawn(heads(client, url, clients, out.clone(), queue_tx, stop.clone()));
 	tokio::spawn(fetcher(current, limit, out, queue, stop));
 }
 
-/// Opens a connection with [`RECONNECT_BACKOFF`]. `None` at `stop`. When the schedule runs
-/// out, `gave_up` is called once and the last wait repeats.
-pub async fn reconnect<T, E, F, Fut>(
-	mut connect: F,
-	backoff: &[Duration],
-	stop: &CancellationToken,
-	mut gave_up: impl FnMut(&E),
-) -> Option<T>
-where
-	F: FnMut() -> Fut,
-	Fut: Future<Output = Result<T, E>>,
-{
-	let last = *backoff.last()?;
-	let mut attempt = 0;
-	loop {
-		let wait = backoff.get(attempt).copied().unwrap_or(last);
-		tokio::select! {
-			() = stop.cancelled() => return None,
-			() = tokio::time::sleep(wait) => {},
+/// Who the node is, to see that it restarted while the follower was away: its peer ID, and
+/// the block it started syncing at (`system_syncState.startingBlock`, fixed for a process).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Identity {
+	/// `system_localPeerId`.
+	pub peer_id: Option<String>,
+	/// `system_syncState.startingBlock`.
+	pub starting_block: Option<u64>,
+}
+
+impl Identity {
+	async fn read(client: &Client) -> Self {
+		let peer_id = client.request::<String>("system_localPeerId", rpc_params![]).await.ok();
+		let sync = client.request::<serde_json::Value>("system_syncState", rpc_params![]).await;
+		Self { peer_id, starting_block: sync.ok().and_then(|s| s["startingBlock"].as_u64()) }
+	}
+
+	/// Why `now` is another process than `self`, if it is. A value either side could not read
+	/// tells nothing.
+	pub fn restarted(&self, now: &Identity) -> Option<String> {
+		if let (Some(a), Some(b)) = (&self.peer_id, &now.peer_id)
+			&& a != b
+		{
+			return Some(format!("the node restarted: its peer ID changed from {a} to {b}"));
 		}
-		match connect().await {
-			Ok(t) => return Some(t),
-			Err(e) if attempt + 1 == backoff.len() => gave_up(&e),
-			Err(_) => {},
+		if let (Some(a), Some(b)) = (self.starting_block, now.starting_block)
+			&& a != b
+		{
+			return Some(format!(
+				"the node restarted: it started again at block {b} (it had started at {a})"
+			));
 		}
-		attempt += 1;
+		None
+	}
+}
+
+/// One connection, subscribed to best and finalized blocks.
+struct Session {
+	client: Client,
+	best: Blocks<PolkadotConfig>,
+	finalized: Blocks<PolkadotConfig>,
+	identity: Identity,
+}
+
+impl Session {
+	/// Subscribes on `client`; only a session that got this far counts as connected.
+	async fn subscribe(client: Client) -> Result<Self, String> {
+		let best = client.api().stream_best_blocks().await;
+		let finalized = client.api().stream_blocks().await;
+		let (best, finalized) = match (best, finalized) {
+			(Ok(best), Ok(finalized)) => (best, finalized),
+			(Err(e), _) | (_, Err(e)) => return Err(format!("cannot subscribe to blocks: {e}")),
+		};
+		let identity = Identity::read(&client).await;
+		Ok(Self { client, best, finalized, identity })
+	}
+
+	/// Connects to `url` and subscribes.
+	async fn open(url: &str) -> Result<Self, String> {
+		let client = Client::connect(url).await.map_err(|e| e.to_string())?;
+		Self::subscribe(client).await
 	}
 }
 
 /// Follows best and finalized blocks; when the connection drops, reports it, opens it again
-/// and follows on. Blocks below the first new best block after a reconnect are filled in, as
-/// after a reorg.
-async fn heads<F, Fut>(
-	mut client: Client,
-	mut connect: F,
+/// (connected means subscribed) and follows on. Blocks below the first new best block after a
+/// reconnect are filled in, as after a reorg. A node that cannot be reached within the backoff,
+/// that keeps dropping the connection, or that came back as another process is down.
+async fn heads(
+	client: Client,
+	url: String,
 	clients: watch::Sender<Client>,
 	out: mpsc::UnboundedSender<BlockEvent>,
 	queue: mpsc::UnboundedSender<Queued>,
 	stop: CancellationToken,
-) where
-	F: FnMut() -> Fut,
-	Fut: Future<Output = Result<Client, ChainError>>,
-{
+) {
+	let backoff = Backoff::default();
 	let mut followed = Followed::default();
+	let mut drops = Drops::default();
+	let mut session = Session::subscribe(client).await;
 	loop {
-		let Some(reason) = follow(&client, &out, &queue, &stop, &mut followed).await else {
-			return;
+		let reason = match session {
+			Ok(s) => {
+				followed.identity.get_or_insert_with(|| s.identity.clone());
+				let _ = clients.send(s.client.clone());
+				match follow(s, &out, &queue, &stop, &mut followed).await {
+					None => return,
+					Some(reason) => reason,
+				}
+			},
+			Err(reason) => reason,
 		};
 		let lost_at = now_ms();
 		eprintln!("blocks: lost the node ({reason}); reconnecting");
 		let _ = out.send(BlockEvent::Disconnected { at: lost_at, reason: reason.clone() });
-		let gave_up = |e: &ChainError| {
-			let _ = out.send(BlockEvent::Unreachable(format!(
-				"the block follower could not reach the node for {} s after it was lost ({reason}): {e}",
-				now_ms().saturating_sub(lost_at) / 1000
-			)));
-		};
-		let Some(c) = reconnect(&mut connect, &RECONNECT_BACKOFF, &stop, gave_up).await else {
+		if !drops.record() {
+			let _ = out.send(BlockEvent::Unreachable(format!("blocks: {}", Drops::reason())));
 			return;
+		}
+		let s = match reconnect(|| Session::open(&url), &backoff, &stop).await {
+			Reconnect::Connected(s) => s,
+			Reconnect::Stopped => return,
+			Reconnect::GaveUp(why) => {
+				let _ = out.send(BlockEvent::Unreachable(format!(
+					"the block follower lost the node ({reason}) and it was {why}"
+				)));
+				return;
+			},
 		};
-		client = c;
-		let _ = clients.send(client.clone());
+		if let Some(why) = followed.identity.as_ref().and_then(|id| id.restarted(&s.identity)) {
+			eprintln!("blocks: {why}");
+			let _ = out.send(BlockEvent::NodeRestarted(why));
+		}
 		let at = now_ms();
 		eprintln!("blocks: reconnected after {:.1} s", at.saturating_sub(lost_at) as f64 / 1000.0);
 		let _ = out.send(BlockEvent::Reconnected { at });
 		followed.after_gap = true;
+		session = Ok(s);
 	}
 }
 
@@ -202,21 +252,19 @@ struct Followed {
 	first: Option<u32>,
 	/// The next block queued is the first after a reconnect.
 	after_gap: bool,
+	/// Who the node was on the first connection.
+	identity: Option<Identity>,
 }
 
-/// Follows on one connection. `None` at `stop`; else why the connection was lost.
+/// Follows on one session. `None` at `stop`; else why the connection was lost.
 async fn follow(
-	client: &Client,
+	session: Session,
 	out: &mpsc::UnboundedSender<BlockEvent>,
 	queue: &mpsc::UnboundedSender<Queued>,
 	stop: &CancellationToken,
 	f: &mut Followed,
 ) -> Option<String> {
-	let (mut best, mut finalized) =
-		match (client.api().stream_best_blocks().await, client.api().stream_blocks().await) {
-			(Ok(best), Ok(finalized)) => (best, finalized),
-			(Err(e), _) | (_, Err(e)) => return Some(format!("cannot subscribe to blocks: {e}")),
-		};
+	let Session { client, mut best, mut finalized, .. } = session;
 	// At start the stream goes back to the finalized block; record from the best one on, or
 	// the first probes would be sent on old blocks and land "fast".
 	let first = match f.first {
@@ -447,31 +495,28 @@ mod tests {
 		assert_eq!(fill(&chain, h(6), 7, 5, &[]), [(h(5), 5), (h(6), 6)]);
 	}
 
-	#[tokio::test(start_paused = true)]
-	async fn reconnect_backs_off_and_reports_a_node_that_stays_down_once() {
-		let stop = CancellationToken::new();
-		let backoff = [Duration::from_secs(1), Duration::from_secs(2)];
-		// Fails four times, then the node is back.
-		let mut tries = 0;
-		let mut gave_up = 0;
-		let started = tokio::time::Instant::now();
-		let got = reconnect(
-			|| {
-				tries += 1;
-				std::future::ready(if tries > 4 { Ok(tries) } else { Err("refused") })
-			},
-			&backoff,
-			&stop,
-			|_| gave_up += 1,
-		)
-		.await;
-		assert_eq!(got, Some(5));
-		assert_eq!(gave_up, 1, "down once the schedule ran out, then it keeps trying");
-		// 1 + 2, then the last wait again: 2 + 2 + 2.
-		assert_eq!(started.elapsed(), Duration::from_secs(9));
-		stop.cancel();
-		let none: Option<()> =
-			reconnect(|| std::future::ready(Err::<(), _>("x")), &backoff, &stop, |_| {}).await;
-		assert_eq!(none, None);
+	#[test]
+	fn a_new_peer_id_or_starting_block_is_a_restart() {
+		let id = |peer: Option<&str>, start| Identity {
+			peer_id: peer.map(str::to_owned),
+			starting_block: start,
+		};
+		let before = id(Some("12D3a"), Some(100));
+		assert_eq!(before.restarted(&id(Some("12D3a"), Some(100))), None);
+		assert!(
+			before
+				.restarted(&id(Some("12D3b"), Some(100)))
+				.unwrap()
+				.contains("peer ID changed")
+		);
+		// The node key is kept on disk: the same peer ID, but it started again.
+		assert!(
+			before
+				.restarted(&id(Some("12D3a"), Some(140)))
+				.unwrap()
+				.contains("started again at block 140")
+		);
+		// What could not be read tells nothing.
+		assert_eq!(before.restarted(&id(None, None)), None);
 	}
 }

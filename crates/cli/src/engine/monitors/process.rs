@@ -178,6 +178,7 @@ pub struct NodeSampler<P> {
 	processes: P,
 	out: JsonlWriter,
 	problems: Problems,
+	restarts: Problems,
 	/// The last sample: when, and the node's CPU seconds then.
 	last: Option<(Millis, f64)>,
 	/// The sampled process ended and no new one was found yet.
@@ -185,9 +186,16 @@ pub struct NodeSampler<P> {
 }
 
 impl<P: Processes> NodeSampler<P> {
-	/// Samples process `pid` into `out` (`node.jsonl`); a restart goes to `problems`.
-	pub fn new(pid: u32, processes: P, out: JsonlWriter, problems: Problems) -> Self {
-		Self { pid, processes, out, problems, last: None, lost: false }
+	/// Samples process `pid` into `out` (`node.jsonl`); a restart goes to `problems`, and to
+	/// `restarts`, which the load reads as node down.
+	pub fn new(
+		pid: u32,
+		processes: P,
+		out: JsonlWriter,
+		problems: Problems,
+		restarts: Problems,
+	) -> Self {
+		Self { pid, processes, out, problems, restarts, last: None, lost: false }
 	}
 
 	/// Samples every 5 s until `stop`, then writes the file out.
@@ -214,7 +222,8 @@ impl<P: Processes> NodeSampler<P> {
 						self.pid
 					);
 					eprintln!("{what}");
-					self.problems.record(what);
+					self.problems.record(what.clone());
+					self.restarts.record(what);
 					(self.pid, self.last, self.lost) = (pid, None, false);
 					let Some(usage) = self.processes.usage(pid).await else { return Ok(()) };
 					usage
@@ -239,12 +248,13 @@ impl<P: Processes> NodeSampler<P> {
 			.last
 			.map(|(at, was)| 100.0 * (cpu_s - was) / (t.saturating_sub(at).max(1) as f64 / 1000.0));
 		self.last = Some((t, cpu_s));
-		self.out.write(&NodeSample {
+		let rss_mi_b = (rss_kib / 1024.0).round() as u64;
+		self.out.write(&NodeSample::new(
 			t,
-			cpu_pct: cpu_pct.map(|p| p.round() as i64),
-			rss_mi_b: (rss_kib / 1024.0).round() as u64,
-			pid: Some(self.pid),
-		})
+			cpu_pct.map(|p| p.round() as i64),
+			rss_mi_b,
+			Some(self.pid),
+		))
 	}
 }
 
@@ -311,9 +321,14 @@ mod tests {
 		let fake = Fake::default();
 		*fake.alive.lock().unwrap() = vec![(10, 5.0, 2048.0)];
 		*fake.listener.lock().unwrap() = Some(10);
-		let problems = Problems::default();
-		let mut sampler =
-			NodeSampler::new(10, &fake, dir.jsonl("node.jsonl").unwrap(), problems.clone());
+		let (problems, restarts) = (Problems::default(), Problems::default());
+		let mut sampler = NodeSampler::new(
+			10,
+			&fake,
+			dir.jsonl("node.jsonl").unwrap(),
+			problems.clone(),
+			restarts.clone(),
+		);
 		sampler.sample().await.unwrap();
 		// The node restarts as PID 20.
 		*fake.alive.lock().unwrap() = vec![];
@@ -334,6 +349,7 @@ mod tests {
 		assert_eq!(problems.len(), 2, "{problems:?}");
 		assert!(problems[0].contains("process 10 ended and no node process listens"));
 		assert!(problems[1].contains("sampling the node process now on its port, 20"));
+		assert_eq!(restarts.all(), [problems[1].clone()], "the restart is node down");
 		std::fs::remove_dir_all(&dir.path).ok();
 	}
 }

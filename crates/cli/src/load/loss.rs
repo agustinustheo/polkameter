@@ -10,7 +10,7 @@ use std::{
 
 use polkameter_plugin_sdk::chain::{Client, tx_hash};
 use polkameter_plugin_sdk::observers::files::summary::{
-	Finality, Loss, LostTx, NodePool, OnChain, StateSample,
+	Finality, Loss, LostTx, NodePool, StateSample,
 };
 use serde::Serialize;
 
@@ -27,8 +27,6 @@ pub struct Settled<'a> {
 	pub flood: &'a HashMap<TxHash, FloodTx>,
 	/// The block the tracker saw each included flood tx in.
 	pub included_in: &'a HashMap<TxHash, u32>,
-	/// Included flood txs that did not fail, in send order.
-	pub included_ok: &'a [TxHash],
 	/// The highest block with one of ours.
 	pub last_ours_block: u32,
 	/// The first block the tracker read.
@@ -47,7 +45,8 @@ pub async fn loss_check(
 	finality_wait_ms: u64,
 ) -> (Loss, Vec<LostTx>, Vec<serde_json::Value>) {
 	let mut notes = Vec::new();
-	let mut loss = Loss { sent: run.flood.len() as u64, ..Loss::default() };
+	let mut loss = Loss::default();
+	loss.sent = run.flood.len() as u64;
 	// Snapshot the pool first, then require finality through the best head observed
 	// after listing it. A tx can leave the pool while we walk, but cannot disappear
 	// between a late pool snapshot and an earlier chain cutoff. The reads are awaited in
@@ -112,31 +111,22 @@ pub async fn loss_check(
 	loss.lost = known.then(|| count(Status::Lost));
 	loss.failed_in_block = rows.iter().filter(|r| r.failed).count() as u64;
 	if let Some((first, last, _)) = &on_chain {
-		loss.on_chain = OnChain {
-			blocks: (*first, *last),
-			included: loss.included,
-			missed: rows.iter().filter(|r| r.finalized.is_some() && r.best.is_none()).count()
-				as u64,
-			only_on_fork: rows.iter().filter(|r| r.finalized.is_none() && r.best.is_some()).count()
-				as u64,
-			moved: rows
-				.iter()
-				.filter(|r| matches!((r.best, r.finalized), (Some(b), Some(f)) if b != f))
-				.count() as u64,
-			failed_only_on_fork: rows.iter().filter(|r| r.failed_on_fork).count() as u64,
-		};
+		let c = &mut loss.on_chain;
+		c.blocks = (*first, *last);
+		c.included = loss.included;
+		c.missed = rows.iter().filter(|r| r.finalized.is_some() && r.best.is_none()).count() as u64;
+		c.only_on_fork =
+			rows.iter().filter(|r| r.finalized.is_none() && r.best.is_some()).count() as u64;
+		c.moved = rows
+			.iter()
+			.filter(|r| matches!((r.best, r.finalized), (Some(b), Some(f)) if b != f))
+			.count() as u64;
+		c.failed_only_on_fork = rows.iter().filter(|r| r.failed_on_fork).count() as u64;
 	}
 	loss.node_pool = node_pool.await;
 	let at = finalized.as_ref().ok().map(|(_, at)| *at);
 	if let Some(check) = state {
-		let ok: Vec<_> = run
-			.included_ok
-			.iter()
-			.filter(|hash| {
-				found.is_some_and(|f| f.contains_key(*hash)) && !finalized_failed.contains(*hash)
-			})
-			.copied()
-			.collect();
+		let ok = state_candidates(run.flood, found, &finalized_failed);
 		let result =
 			state_check(
 				&ok,
@@ -186,6 +176,23 @@ pub async fn loss_check(
 	let mut records: Vec<serde_json::Value> = rows.into_iter().map(|r| r.json).collect();
 	records.sort_by_key(|record| record["sentAt"].as_u64());
 	(loss, lost, records)
+}
+
+/// The txs the state check samples: every flood tx in a finalized block whose dispatch did not
+/// fail there, in send order. The finalized chain decides, not the tracker's best blocks: a tx
+/// that failed on a dropped fork and succeeded in the finalized block is checked too.
+fn state_candidates(
+	flood: &HashMap<TxHash, FloodTx>,
+	found: Option<&HashMap<TxHash, u32>>,
+	finalized_failed: &HashSet<TxHash>,
+) -> Vec<TxHash> {
+	let Some(found) = found else { return Vec::new() };
+	let mut ok: Vec<(&TxHash, &FloodTx)> = flood
+		.iter()
+		.filter(|(hash, _)| found.contains_key(*hash) && !finalized_failed.contains(*hash))
+		.collect();
+	ok.sort_by_key(|(hash, tx)| (tx.sent_at, **hash));
+	ok.into_iter().map(|(hash, _)| *hash).collect()
 }
 
 /// The plan's state check over a sample of `ok` (finalized, not failed) at the finalized block
@@ -489,6 +496,20 @@ mod tests {
 		let evidence = Evidence { found: Some(&found), finalized_failed: &failed, settled: true };
 		let rows = ledger(&flood, &included_in, &evidence, Some(&HashSet::new()), Some(12), true);
 		assert!(rows[0].failed && !rows[0].failed_on_fork);
+	}
+
+	/// A tx failed on a dropped fork, then succeeded in the finalized block: the tracker never
+	/// counted it as a success, but the state check must still read it.
+	#[test]
+	fn state_check_candidates_come_from_the_finalized_chain() {
+		let (a, b, c) = ([1; 32], [2; 32], [3; 32]);
+		let tx =
+			|sent_at, failed_in_block| FloodTx { sent_at, failed_in_block, ..Default::default() };
+		let flood = HashMap::from([(a, tx(3, true)), (b, tx(1, false)), (c, tx(2, false))]);
+		let found = HashMap::from([(a, 11), (b, 10), (c, 10)]);
+		let failed = HashSet::from([c]);
+		assert_eq!(state_candidates(&flood, Some(&found), &failed), [b, a]);
+		assert!(state_candidates(&flood, None, &failed).is_empty(), "no walk, no candidates");
 	}
 
 	#[test]

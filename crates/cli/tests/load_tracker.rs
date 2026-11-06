@@ -7,7 +7,10 @@ use polkameter::load::{
 	submit::Submit,
 	tracker::{Phase, Tracker},
 };
-use polkameter_plugin_sdk::observers::files::{BlockRecord, RunDir, summary::Outcome};
+use polkameter_plugin_sdk::observers::files::{
+	BlockRecord, RunDir,
+	summary::{Outcome, Rule},
+};
 
 #[derive(Default)]
 struct FakeSender {
@@ -167,7 +170,6 @@ fn block(t: &mut Tracker<FakeSender>, number: u32, seen_at: u64, gap: Option<u64
 #[test]
 fn a_block_gap_counts_in_the_steps_it_spans() {
 	use polkameter::load::{rules, steps::final_step};
-	use polkameter_plugin_sdk::observers::files::summary::Rule;
 	let mut t = tracker("gap-edges", (1..=60).map(tx).collect(), vec![]);
 	t.set_phase(Phase::Ramp, 0).unwrap();
 	block(&mut t, 1, 0, None, &[]);
@@ -212,63 +214,140 @@ fn included_per_second_counts_the_step_own_txs() {
 }
 
 #[test]
-fn a_dropped_sender_connection_is_not_node_down() {
-	let mut t = tracker("interrupted", vec![tx(1), tx(2)], vec![]);
+fn a_dropped_sender_connection_resends_and_is_not_node_down() {
+	let mut t = tracker("interrupted", vec![tx(1), tx(2), tx(3)], vec![]);
 	t.set_phase(Phase::Ramp, 0).unwrap();
 	t.start_step(0, &[1.0], 0).unwrap();
-	assert!(t.send_next(0, 0) && t.send_next(0, 0));
-	assert_eq!(t.inflight(), 2);
-	t.on_reply(Reply::Interrupted { connection: 0, ids: vec![1], reason: "reset".into() });
-	assert_eq!(t.inflight(), 1, "the written request has an unknown outcome; the queued one waits");
+	assert!(t.send_next(0, 0) && t.send_next(0, 0) && t.send_next(0, 0));
+	assert_eq!(t.inflight(), 3);
+	// Requests 1 and 2 were written and not answered; 3 still waits in the queue.
+	t.on_reply(Reply::Interrupted { connection: 0, ids: vec![1, 2], reason: "reset".into() });
+	assert_eq!(t.inflight(), 3, "sent again, not given up");
 	assert_eq!(t.closed_by_node, 0);
+	assert_eq!(t.oldest_pending_ms(10_000), 0, "nothing waits on the node while it is down");
+	let from = t.observation_gaps[0].from;
 	t.on_reply(Reply::Reconnected { connection: 0, down_ms: 500 });
-	t.on_reply(Reply::Accepted { id: 2, at: 700 });
+	assert_eq!(t.oldest_pending_ms(from + 1_500), 1_000, "they wait from the reconnect");
+	// The node had read request 1 before the drop: "already imported" means it has it.
+	let already = |id| Reply::Refused {
+		id,
+		at: from + 600,
+		code: 1013,
+		error: "Transaction Already Imported".into(),
+	};
+	t.on_reply(already(1));
+	t.on_reply(Reply::Accepted { id: 2, at: from + 700 });
+	t.on_reply(Reply::Accepted { id: 3, at: from + 700 });
+	assert!(t.flood[&tx(1).hash].accepted && !t.flood[&tx(1).hash].refused);
+	assert_eq!(t.steps[0][0].rejected, 0);
+	assert_eq!(t.steps[0][0].reply_ms, vec![100, 200, 200], "from the reconnect");
 	let gap = &t.observation_gaps[0];
 	assert_eq!(
 		(gap.what.as_str(), gap.to.map(|to| to - gap.from)),
 		("sender connection 0", Some(500))
 	);
-	// The interrupted tx is still watched for, and counts if a block has it.
-	t.on_block(fetched(3, 800, &[&tx(1)]), 800).unwrap();
-	assert_eq!(t.steps[0][0].included, 1);
 }
 
 #[test]
-fn a_follower_reconnect_is_an_observation_gap_not_a_stall() {
-	use polkameter::load::rules::{LiveState, RULES, live_failure};
+fn already_imported_is_a_refusal_for_a_first_submit() {
+	let mut t = tracker("first-refusal", vec![tx(1)], vec![]);
+	t.set_phase(Phase::Ramp, 0).unwrap();
+	t.start_step(0, &[1.0], 0).unwrap();
+	assert!(t.send_next(0, 0));
+	t.on_reply(Reply::Refused { id: 1, at: 10, code: 1013, error: "Already Imported".into() });
+	assert_eq!(t.steps[0][0].rejected, 1, "unchanged for a tx sent once");
+}
+
+fn live(t: &Tracker<FakeSender>, now: u64) -> polkameter::load::rules::LiveState {
+	polkameter::load::rules::LiveState {
+		now,
+		connections: 1,
+		last_block_at: t.last_head.0,
+		last_finalized_at: t.last_finalized.0,
+		unobserved_since_block: t.unobserved_between(t.last_head.0, now),
+		unobserved_since_finalized: t.unobserved_between(t.last_finalized.0, now),
+		node_down: t.node_down.clone(),
+		..Default::default()
+	}
+}
+
+fn rule(t: &Tracker<FakeSender>, now: u64) -> Option<Rule> {
+	polkameter::load::rules::live_failure(&live(t, now), &polkameter::load::rules::RULES)
+		.map(|s| s.rule)
+}
+
+fn drop_and_reconnect(t: &mut Tracker<FakeSender>, at: u64, down: u64) {
+	let lost = BlockEvent::Disconnected { at, reason: "stream ended".into() };
+	t.on_block(lost, at).unwrap();
+	t.on_block(BlockEvent::Reconnected { at: at + down }, at + down).unwrap();
+}
+
+#[test]
+fn a_follower_reconnect_leaves_out_only_the_time_not_observed() {
 	let mut t = tracker("follower-gap", vec![tx(1)], vec![]);
 	t.set_phase(Phase::Ramp, 0).unwrap();
 	t.start_step(0, &[1.0], 0).unwrap();
+	t.on_block(BlockEvent::Finalized { number: 1, seen_at: 1_000 }, 1_000).unwrap();
 	block(&mut t, 1, 1_000, None, &[]);
 	let lost = BlockEvent::Disconnected { at: 2_000, reason: "stream ended".into() };
 	t.on_block(lost, 2_000).unwrap();
 	assert!(!t.observing());
-	let live = |t: &Tracker<FakeSender>, now| LiveState {
-		now,
-		connections: 1,
-		last_block_at: t.last_head.0,
-		last_finalized_at: now,
-		observing: t.observing(),
-		node_unreachable: t.node_unreachable.clone(),
-		..Default::default()
-	};
-	assert_eq!(live_failure(&live(&t, 40_000), &RULES), None, "not observed, so no stall");
+	assert_eq!(rule(&t, 40_000), None, "1 s observed, 38 s not");
 	t.on_block(BlockEvent::Reconnected { at: 40_000 }, 40_000).unwrap();
 	assert!(t.observing());
-	assert_eq!(
-		live_failure(&live(&t, 50_000), &RULES),
-		None,
-		"the stall counts from the reconnect"
-	);
+	assert_eq!(rule(&t, 50_000), None, "11 s observed");
+	assert_eq!(rule(&t, 70_000), Some(Rule::Stall), "31 s observed, across the reconnect");
 	block(&mut t, 9, 41_000, None, &[]);
 	t.end_step(60_000);
 	let st = &t.steps[0][0];
 	assert_eq!(st.unobserved_ms, 38_000);
 	assert_eq!(st.max_gap_ms, Some(19_000), "the gaps around the outage, not the outage");
 	assert!(t.observation_gaps[0].to_string().contains("reconnected after 38.0 s"));
-	// A node that stays unreachable is down.
-	t.on_block(BlockEvent::Unreachable("no answer for 15 s".into()), 61_000)
+	// A node that came back as another process is down.
+	t.on_block(BlockEvent::NodeRestarted("the node restarted".into()), 61_000)
 		.unwrap();
-	let stop = live_failure(&live(&t, 61_000), &RULES).unwrap();
-	assert_eq!(stop.rule, polkameter_plugin_sdk::observers::files::summary::Rule::NodeDown);
+	assert_eq!(rule(&t, 61_000), Some(Rule::NodeDown));
+}
+
+/// Best blocks keep coming, finality does not, and the follower reconnects every 10 s: the
+/// reconnects must not restart the finality stall clock.
+#[test]
+fn reconnects_do_not_hide_a_finality_stall() {
+	let mut t = tracker("finality-reconnects", vec![tx(1)], vec![]);
+	t.set_phase(Phase::Ramp, 0).unwrap();
+	t.start_step(0, &[1.0], 0).unwrap();
+	t.on_block(BlockEvent::Finalized { number: 1, seen_at: 0 }, 0).unwrap();
+	let mut stopped = None;
+	for cycle in 0..12u32 {
+		let at = u64::from(cycle) * 10_000;
+		block(&mut t, 2 + cycle, at + 1_000, Some(6_000), &[]);
+		drop_and_reconnect(&mut t, at + 5_000, 1_000);
+		if let Some(rule) = rule(&t, at + 9_000) {
+			stopped = Some((rule, at + 9_000));
+			break;
+		}
+	}
+	// 60 s of observed time without a new finalized block: 66 s with 6 reconnects of 1 s.
+	assert_eq!(stopped, Some((Rule::FinalityStall, 69_000)));
+}
+
+/// Six drop-and-reconnect cycles in 60 s and not one block: a stall, not six fresh starts.
+#[test]
+fn reconnects_do_not_hide_a_stall() {
+	let mut t = tracker("stall-reconnects", vec![tx(1)], vec![]);
+	t.set_phase(Phase::Ramp, 0).unwrap();
+	t.start_step(0, &[1.0], 0).unwrap();
+	block(&mut t, 1, 0, None, &[]);
+	t.on_block(BlockEvent::Finalized { number: 1, seen_at: 0 }, 0).unwrap();
+	let mut stopped = None;
+	for cycle in 0..6u64 {
+		drop_and_reconnect(&mut t, cycle * 10_000 + 8_000, 2_000);
+		let now = cycle * 10_000 + 10_000;
+		if let Some(rule) = rule(&t, now) {
+			stopped = Some((rule, now));
+			break;
+		}
+	}
+	// 8 s observed per 10 s cycle: over 30 s observed after the fourth cycle.
+	assert_eq!(stopped, Some((Rule::Stall, 40_000)));
 }

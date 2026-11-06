@@ -226,6 +226,11 @@ pub struct Summary {
 	pub baseline: Baseline,
 	/// What the monitors could not record.
 	pub problems: Vec<String>,
+	/// Time the block follower was disconnected (reconnecting), when no block could be seen.
+	/// Left out of the file when 0. More than the stall limit makes "monitors recorded
+	/// everything" a no result: a stall could hide in it.
+	#[serde(default, skip_serializing_if = "after::is_zero")]
+	pub unobserved_ms: u64,
 	/// The chain under load.
 	pub network: Network,
 	/// The load tool's machine.

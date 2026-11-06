@@ -119,8 +119,11 @@ pub struct StateSample {
 /// Our flood txs counted again on the finalized chain, block by block. The tracker reads best
 /// blocks, so a reorg can hide an inclusion from it (the block that replaced the one it read) or
 /// keep one the chain dropped (a block on the abandoned fork).
+///
+/// Fields may be added: start from `OnChain::default()` and set the fields.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub struct OnChain {
 	/// The finalized blocks walked, first and last.
 	pub blocks: (u32, u32),
@@ -139,7 +142,7 @@ pub struct OnChain {
 	pub failed_only_on_fork: u64,
 }
 
-fn is_zero(n: &u64) -> bool {
+pub(super) fn is_zero(n: &u64) -> bool {
 	*n == 0
 }
 
@@ -166,8 +169,11 @@ pub struct LostTx {
 /// Every sent flood tx has one status, and the statuses partition `sent`: `included`, `refused`,
 /// `in_pool`, `lost`, `unverified` and `unknown` add up to it. A `None` count (`in_pool`, `lost`)
 /// was not counted, and its txs fall under the other statuses.
+///
+/// Fields may be added: start from `Loss::default()` and set the fields.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub struct Loss {
 	/// Successful RPC replies (not a dispatch-success count).
 	#[serde(default)]

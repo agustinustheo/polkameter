@@ -72,18 +72,20 @@ async fn send_step<S: Submit>(
 	let end = start + Duration::from_secs(u64::from(seconds));
 	let mut tick = interval(20);
 	let mut tokens = vec![0.0_f64; rates.len()];
-	let (mut last, mut last_wall) = (start, (io.wall)());
+	let (mut last, mut last_boot) = (start, (io.boot)());
 	let step = t.steps[0].last().expect("started").step;
 	while Instant::now() < end {
 		if !next(t, io, &mut tick).await? {
 			continue;
 		}
-		let (at, now, wall) = (Instant::now(), now_ms(), (io.wall)());
+		let (at, now, boot) = (Instant::now(), now_ms(), (io.boot)());
 		let elapsed = at.duration_since(last);
 		let elapsed_ms = elapsed.as_millis() as Millis;
-		if let Some(detail) =
-			paused(elapsed_ms, wall.saturating_sub(last_wall), opts.rules.max_tick_gap_ms)
-		{
+		if let Some(detail) = paused(
+			elapsed_ms,
+			boot.zip(last_boot).map(|(b, l)| b.saturating_sub(l)),
+			opts.rules.max_tick_gap_ms,
+		) {
 			return Ok(Some(Stop::new(Rule::GeneratorLimit, Some(step), detail)));
 		}
 		for (lane, rate) in rates.iter().enumerate() {
@@ -95,7 +97,7 @@ async fn send_step<S: Submit>(
 				tokens[lane] = 0.0; // nothing ready, or backed up
 			}
 		}
-		(last, last_wall) = (at, wall);
+		(last, last_boot) = (at, boot);
 		t.tick(now)?;
 		let live = LiveState {
 			step,
@@ -106,8 +108,9 @@ async fn send_step<S: Submit>(
 			last_finalized_at: t.last_finalized.0,
 			best: t.last_head.1,
 			finalized: t.last_finalized.1,
-			observing: t.observing(),
-			node_unreachable: t.node_unreachable.clone(),
+			unobserved_since_block: t.unobserved_between(t.last_head.0, now),
+			unobserved_since_finalized: t.unobserved_between(t.last_finalized.0, now),
+			node_down: t.node_down.clone().or_else(|| io.restarts.all().into_iter().next()),
 			smoke_problems: if opts.mode == Mode::Smoke { io.problems.all() } else { Vec::new() },
 		};
 		if let Some(stop) = live_failure(&live, &opts.rules) {
@@ -118,24 +121,20 @@ async fn send_step<S: Submit>(
 }
 
 /// Why the load tool itself was paused between two send ticks, if it was: `elapsed` ms passed on
-/// the monotonic clock and `wall` ms on the wall clock. A long monotonic gap is CPU starvation; a
-/// wall clock far ahead of the monotonic one is a machine that slept (the monotonic clock stops
-/// then) or a forward clock step. A wall clock that went back is ignored.
-fn paused(elapsed: Millis, wall: Millis, max_gap: Millis) -> Option<String> {
+/// the run's monotonic clock, and `boot` ms on a clock that also counts sleep (`None` without
+/// one). A long monotonic gap is CPU starvation; a boot clock far ahead of the monotonic one is a
+/// machine that was suspended. The wall clock plays no part: an NTP step either way is ignored.
+fn paused(elapsed: Millis, boot: Option<Millis>, max_gap: Millis) -> Option<String> {
 	const NOT_THE_CHAIN: &str = "the numbers after this are not the chain's";
 	if elapsed > max_gap {
 		return Some(format!(
-			"the load tool was paused for {} s (machine sleep or CPU starvation); {NOT_THE_CHAIN}",
+			"the load tool was paused for {} s (CPU starvation or a suspended machine); {NOT_THE_CHAIN}",
 			elapsed / 1000
 		));
 	}
-	let ahead = wall.saturating_sub(elapsed);
-	(ahead > max_gap).then(|| {
-		format!(
-			"the wall clock moved {} s more than the load tool's own clock (machine sleep or a clock step); {NOT_THE_CHAIN}",
-			ahead / 1000
-		)
-	})
+	let slept = boot?.saturating_sub(elapsed);
+	(slept > max_gap)
+		.then(|| format!("the machine was suspended for {} s; {NOT_THE_CHAIN}", slept / 1000))
 }
 
 fn log_step<S: Submit>(t: &Tracker<S>) {
@@ -161,12 +160,13 @@ mod tests {
 	use super::paused;
 
 	#[test]
-	fn a_pause_is_a_long_tick_or_a_wall_clock_far_ahead() {
-		assert_eq!(paused(20, 20, 5_000), None);
-		// A wall clock that went back (saturated to 0) is not a pause.
-		assert_eq!(paused(20, 0, 5_000), None);
-		assert!(paused(6_000, 6_000, 5_000).unwrap().contains("paused for 6 s"));
-		// Asleep: the monotonic clock stood still while the wall clock moved a minute.
-		assert!(paused(20, 60_020, 5_000).unwrap().contains("moved 60 s more"));
+	fn a_pause_is_a_long_tick_or_a_suspend_not_a_wall_clock_step() {
+		assert_eq!(paused(20, Some(20), 5_000), None);
+		assert_eq!(paused(20, None, 5_000), None, "no boot clock");
+		assert!(paused(6_000, Some(6_000), 5_000).unwrap().contains("paused for 6 s"));
+		// Suspended: the monotonic clock stood still while the boot clock moved a minute.
+		assert!(paused(20, Some(60_020), 5_000).unwrap().contains("suspended for 60 s"));
+		// An NTP step of the wall clock moves neither clock: nothing to see, however large.
+		assert_eq!(paused(20, Some(21), 5_000), None);
 	}
 }
