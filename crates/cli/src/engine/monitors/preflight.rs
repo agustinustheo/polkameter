@@ -20,8 +20,8 @@ async fn read_all(targets: &[Target]) -> Result<Vec<String>> {
 	for t in targets {
 		let body = get(&http, &t.url)
 			.await
-			.map_err(|e| anyhow!("{} at {}: {e}", t.instance, t.url))?;
-		let text = body.text().await.map_err(|e| anyhow!("{}: {e}", t.instance))?;
+			.map_err(|e| anyhow!("{} at {}: {e}", t.instance, crate::redact::endpoint(&t.url)))?;
+		let text = body.text().await.map_err(|e| anyhow!("{}: {}", t.instance, e.without_url()))?;
 		for line in text.lines().filter_map(|l| l.strip_prefix("# TYPE ")) {
 			let mut parts = line.split(' ');
 			let (Some(name), Some(kind)) = (parts.next(), parts.next()) else { continue };
@@ -64,7 +64,9 @@ async fn check_metrics(targets: &[Target], requirements: &[(Job, String)]) -> Re
 			bail!("required role {} has no nodes", role.label());
 		}
 		for node in nodes {
-			let text = get(&http, &node.url).await?.text().await?;
+			let text =
+				get(&http, &node.url).await?.text().await.map_err(reqwest::Error::without_url)?;
+
 			let present = text.lines().any(|line| {
 				line.strip_prefix("# TYPE ")
 					.is_some_and(|line| line.split_whitespace().next() == Some(name.as_str()))

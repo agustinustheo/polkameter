@@ -39,7 +39,28 @@ The name is `run-<milliseconds>-<pid>-<sequence>`, created in `--output`, or `--
 | `plugins/<id>/stderr.log` | Standard error of each plugin started. |
 | `run.lock` | Empty. Locked while the run is in progress, so an agent with `--keep-runs` never deletes it. |
 
-The files PolkaMeter writes, including each plugin's `stderr.log`, store no credential value. Where a plugin or error would echo one, the file shows `[redacted]`. Other files that a plugin writes into the run directory are not redacted.
+The files PolkaMeter writes, including each plugin's `stderr.log`, store no credential value and no endpoint key. Where a plugin or an error would echo one, the file shows `[redacted]`. Other files that a plugin writes into the run directory are not redacted. See [Redaction](#redaction).
+
+## Redaction
+
+PolkaMeter replaces these secrets with `[redacted]`:
+
+- the value of each credential the plan declares, read from the environment variable that [`polkameter plugin credential`](cli.md#plugin) maps it to;
+- the user information, query values and fragment of each target endpoint and monitor URL.
+
+An endpoint keeps its scheme, host, port, path and query parameter names. For example, `wss://user:pass@rpc.example/ws?apikey=KEY` is written as `wss://[redacted]@rpc.example/ws?apikey=[redacted]`. An endpoint part of 8 or more characters is also redacted wherever it appears on its own. A shorter part, such as the `1` of `v=1`, is redacted only inside the endpoint.
+
+Redaction covers every file PolkaMeter writes in the run directory, the events it prints with `--format json`, and the summary and failure reason it prints on standard error. It also covers the targets in `polkameter plugin inspect` and `polkameter preflight` output, and preflight errors.
+ A secret is also found in the escaped forms that JSON writers and Rust's `{:?}` give it, such as `\"`, `\\`, `\n` and `é`. If one secret contains or overlaps another, all of the text they cover is redacted.
+
+A plugin's standard error is redacted as it streams into `stderr.log`, a line at a time. A secret split across writes or lines is still found. Text that could be the start of a secret is held back until the secret is complete or ruled out, and lines over 64 KiB are written in pieces. If the CLI is killed, held-back text is lost rather than written. On the first stop request and when the run ends, PolkaMeter redacts `stderr.log`, `summary.md`, `summary.json` and `plugin-checks.json` again. That second pass also covers text that a plugin wrote into its `stderr.log` by path.
+
+These are not redacted:
+
+- files that a plugin writes into the run directory itself, other than its `stderr.log`;
+- a secret that a plugin encodes or transforms, for example as base64;
+- a key in an endpoint's path, such as `https://rpc.example/v3/KEY`.
+
 
 ## Files in a load test
 

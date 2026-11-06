@@ -13,6 +13,7 @@ use crate::load::sender::Sender;
 use crate::load::steps::final_step;
 use crate::load::tracker::{Phase, Tracker};
 use crate::load::{Lane, QueueSource, StateCheck, Tx, TxHash, follower, now_ms, rules};
+use crate::redact::Redactor;
 use anyhow::{Context as _, Result, bail};
 use polkameter_plugin_sdk::chain::{ChainError, Client};
 use polkameter_plugin_sdk::observers::files::summary::{
@@ -31,6 +32,13 @@ pub struct Measured {
 }
 
 impl Measured {
+	/// Writes summary.json, redacted, for the plugin checks, which read it with the raw files
+	/// before the report adds the checks.
+	pub fn write_summary(&self, dir: &RunDir, redactor: &Redactor) -> Result<()> {
+		dir.write_json("summary.json", &redactor.json(&self.summary)?)?;
+		Ok(())
+	}
+
 	/// What the run shows but does not count as a problem, for the event log.
 	pub fn warnings(&self) -> &[String] {
 		&self.summary.warnings
@@ -249,7 +257,8 @@ pub async fn run(
 		warnings,
 		unobserved_ms,
 		network: Network {
-			url,
+			// The URL may carry an API key in its query or user information.
+			url: crate::redact::endpoint(&url),
 			para_id: plan.monitors.as_ref().map(|m| m.para_id),
 			spec_version: chain.spec_version,
 			block_interval_s: (block_interval_s * 100.0).round() / 100.0,
@@ -259,8 +268,6 @@ pub async fn run(
 		checks: None,
 		verdict: None,
 	};
-	// Plugin checks read it, with the raw files, before the report adds the checks.
-	dir.write_json("summary.json", &summary)?;
 	Ok(Measured { summary, finals, mode })
 }
 
@@ -298,16 +305,19 @@ pub fn report(
 	measured: Measured,
 	plugin_checks: &[polkameter_plugin_sdk::observers::checks::CheckResult],
 	fail_on_verdict: bool,
+	redactor: &Redactor,
 ) -> Result<i32> {
-	dir.write_json(PLUGIN_CHECKS, &plugin_checks)?;
+	dir.write_json(PLUGIN_CHECKS, &redactor.json(&plugin_checks)?)?;
 	let Measured { summary, finals, mode } = measured;
-	let checks = polkameter_plugin_sdk::observers::checks::report::write(
+	// Every text is redacted before summary.md and summary.json are written or printed.
+	let checks = polkameter_plugin_sdk::observers::checks::report::write_redacted(
 		dir,
 		summary.clone(),
 		&finals,
 		plugin_checks,
+		&|text| redactor.text(text),
 	)?;
-	Ok(exit_code(mode, &summary, &checks, fail_on_verdict))
+	Ok(exit_code(mode, &summary, &checks, fail_on_verdict, redactor))
 }
 
 /// The loss check, with the node's pool counts read from the collator we submit to after the
@@ -392,6 +402,7 @@ fn exit_code(
 	summary: &Summary,
 	checks: &[polkameter_plugin_sdk::observers::checks::CheckResult],
 	fail_on_verdict: bool,
+	redactor: &Redactor,
 ) -> i32 {
 	if fail_on_verdict
 		&& polkameter_plugin_sdk::observers::checks::report::overall_status(summary, checks)
@@ -405,7 +416,7 @@ fn exit_code(
 	let mut errors = summary.problems.clone();
 	errors.extend(polkameter_plugin_sdk::observers::checks::smoke_gaps(checks));
 	for e in &errors {
-		eprintln!("smoke: {e}");
+		eprintln!("smoke: {}", redactor.text(e));
 	}
 	i32::from(!errors.is_empty())
 }
@@ -514,7 +525,10 @@ mod tests {
 				let expected = i32::from(
 					status == Status::Fail || (mode == Mode::Smoke && status == Status::NoResult),
 				);
-				assert_eq!(exit_code(mode, &summary, &checks, true), expected);
+				assert_eq!(
+					exit_code(mode, &summary, &checks, true, &Redactor::default()),
+					expected
+				);
 			}
 		}
 	}
@@ -537,9 +551,49 @@ mod tests {
 			polkameter_plugin_sdk::observers::files::summary::OverallStatus::Fail
 		);
 		for mode in [Mode::Smoke, Mode::Stress] {
-			assert_eq!(exit_code(mode, &summary, &checks, false), 0);
-			assert_eq!(exit_code(mode, &summary, &checks, true), 1);
+			assert_eq!(exit_code(mode, &summary, &checks, false, &Redactor::default()), 0);
+			assert_eq!(exit_code(mode, &summary, &checks, true, &Redactor::default()), 1);
 		}
+	}
+
+	#[test]
+	fn plugin_check_details_and_endpoints_are_redacted_before_the_report_renders_them() {
+		let root =
+			std::env::temp_dir().join(format!("polkameter-redacted-report-{}", std::process::id()));
+		std::fs::create_dir_all(&root).unwrap();
+		let dir = RunDir::open(&root);
+		// A `|` is escaped in the Markdown table, so redacting only the rendered text would miss
+		// this secret.
+		let secret = "pipe|secret\"value";
+		let endpoint = "wss://rpc.example/ws?apikey=APIKEY0123456789";
+		let redactor = Redactor::new([secret], [endpoint]);
+		let mut summary: Summary =
+			serde_json::from_str(include_str!("../../tests/fixtures/smoke-run/summary.json"))
+				.unwrap();
+		summary.network.url = endpoint.into();
+		summary.problems = vec![format!("cannot reach {endpoint}")];
+		let check = CheckResult {
+			source: Some("evaluate".into()),
+			outcome: "plugin".into(),
+			check: format!("uses {secret}"),
+			verdict: Verdict::new(Status::Fail, format!("detail {secret} at {endpoint}"))
+				.with(serde_json::json!({ "key": secret })),
+			optional: false,
+		};
+		let measured = Measured { summary, finals: vec![], mode: Mode::Smoke };
+		measured.write_summary(&dir, &redactor).unwrap();
+		let early = std::fs::read_to_string(root.join("summary.json")).unwrap();
+		assert!(!early.contains("APIKEY"), "{early}");
+		assert_eq!(report(&dir, measured, &[check], false, &redactor).unwrap(), 1);
+		for name in ["summary.md", "summary.json", PLUGIN_CHECKS] {
+			let text = std::fs::read_to_string(root.join(name)).unwrap();
+			for leak in ["secret", "APIKEY"] {
+				assert!(!text.contains(leak), "{name} shows {leak}: {text}");
+			}
+		}
+		let md = std::fs::read_to_string(root.join("summary.md")).unwrap();
+		assert!(md.contains("| plugin | uses [redacted] | **fail** | detail [redacted] at wss://rpc.example/ws?apikey=[redacted] |"), "{md}");
+		std::fs::remove_dir_all(root).unwrap();
 	}
 
 	#[test]
@@ -554,7 +608,7 @@ mod tests {
 					.unwrap();
 			let measured = Measured { summary, finals: vec![], mode: Mode::Stress };
 			assert_eq!(
-				report(&dir, measured, &[], fail_on_verdict).unwrap(),
+				report(&dir, measured, &[], fail_on_verdict, &Redactor::default()).unwrap(),
 				i32::from(fail_on_verdict)
 			);
 			let json: serde_json::Value =
@@ -591,7 +645,11 @@ mod tests {
 			summary.problems = if problem { vec!["monitor scrape failed".into()] } else { vec![] };
 			let checks =
 				[result("required", required, false), result("from a plugin", optional, true)];
-			assert_eq!(exit_code(mode, &summary, &checks, false), expected, "{name}");
+			assert_eq!(
+				exit_code(mode, &summary, &checks, false, &Redactor::default()),
+				expected,
+				"{name}"
+			);
 		}
 	}
 }

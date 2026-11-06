@@ -12,7 +12,7 @@ Moving `@v0` to 0.3.0 changes these defaults for existing workflows:
 
 - **Smaller artifact by default.** The run artifact holds only the files PolkaMeter writes: reports, records and each plugin's redacted `stderr.log`. Files that plugins write into the run directory are no longer uploaded. Set `upload-raw-plugin-files: "true"` to upload them.
 - **New default artifact name.** The name was `polkameter-run`. It is now `polkameter-run-<job>-<attempt>-<hash>`, unique for each matrix job and each use of the action. Read it from the new `artifact-name` output, or set `artifact-name` to keep a fixed name.
-- **Unfinished runs.** If the CLI is killed before the run finishes, plugin logs and summaries are not redacted. The action leaves them out of the artifact and the job summary.
+- **Unfinished runs.** If the CLI is killed before the run finishes, plugin logs and summaries miss PolkaMeter's final redaction pass. The action leaves them out of the artifact and the job summary.
 - **Size limit.** At most 500 MiB of run records are uploaded (`artifact-size-limit-mb`). Reports are always uploaded.
 - **GitHub Enterprise Server.** The action no longer fails when it uploads the artifact: it skips the upload with a notice. Upload the `artifact-path` output with an uploader your server supports.
 
@@ -40,6 +40,11 @@ Also new:
 ### CLI
 
 - The CLI spells its name `PolkaMeter` in every message. Standard-error lines now start with `PolkaMeter:` and `PolkaMeter warning:` instead of `Polkameter:`. Update scripts that match the old prefix.
+- Redaction no longer leaves part of a secret visible when one credential contains or overlaps another: all of the text they cover becomes `[redacted]`. It also finds a credential in the escaped forms that JSON writers and Rust's `{:?}` give it.
+- A plugin's standard error is redacted as it streams into `stderr.log`, so a killed run no longer leaves credentials in it. The passes on the first stop request and at the end of the run remain.
+- Plugin check results are redacted before `summary.md` is written or printed, so a check detail no longer shows a credential on standard error or in the job summary.
+- The user information, query values and fragment of target endpoints and monitor URLs are redacted from the run directory, events, error messages and `plugin inspect` and `preflight` output. `summary.json`'s `network.url` and `resolved-targets.json`'s `url` keep only the scheme, host, port, path and parameter names.
+- Preflight errors now include their cause, as run errors do.
 
 ### Load tests
 
@@ -65,3 +70,4 @@ Also new:
   - `Summary.warnings`: what the run shows but does not count as a problem.
 
   Each is left out of the file when empty, and older files read as before.
+- `observers::checks::report::write_redacted` writes the report like `write`, passing every check field, every string in `summary.json` and the whole of `summary.md` through a redaction function before anything is written or printed.

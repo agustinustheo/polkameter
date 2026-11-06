@@ -4136,6 +4136,7 @@ dependencies = [
 name = "polkameter"
 version = "0.3.0"
 dependencies = [
+ "aho-corasick",
  "anyhow",
  "axum",
  "clap",

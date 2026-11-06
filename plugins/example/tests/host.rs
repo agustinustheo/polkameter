@@ -276,6 +276,104 @@ async fn escaped_credentials_are_redacted_from_errors_and_events() {
 		std::env::remove_var(variable);
 	}
 }
+/// Every file under `directory`, recursively.
+fn files(directory: &Path) -> Vec<PathBuf> {
+	let mut out = Vec::new();
+	for entry in std::fs::read_dir(directory).unwrap() {
+		let path = entry.unwrap().path();
+		if path.is_dir() {
+			out.extend(files(&path));
+		} else {
+			out.push(path);
+		}
+	}
+	out
+}
+#[tokio::test]
+async fn credentials_and_endpoint_keys_reach_no_file_and_no_event() {
+	let mut registry = registry().await;
+	let variable = format!("POLKAMETER_TEST_STREAMED_SECRET_{}", std::process::id());
+	// Quotes, a backslash and non-ASCII text: JSON writers escape all of them.
+	let secret = "streamed\"cred\\entiäl-0123456789";
+	// Unique test-only environment key; no other test reads or writes it.
+	unsafe {
+		std::env::set_var(&variable, secret);
+	}
+	registry.credentials.insert("test".into(), variable.clone());
+	let endpoint = "wss://alice:hunter2hunter2@127.0.0.1:1/ws?apikey=APIKEY0123456789&v=1";
+	let root = scratch("streamed-redaction");
+	let xml = plugin_plan(
+		"Streamed redaction",
+		&format!(
+			r#"<credentials><credential id="secret" profile="test"/></credentials>
+    <targets><target id="chain" endpoint="{}"/></targets>
+    <setup>
+      <step id="credential" use="example.log-in-pieces"><input name="message" ref="credentials.secret"/></step>
+      <step id="endpoint" use="example.log-in-pieces"><input name="message" ref="targets.chain"/></step>
+      <step id="pause" use="example.wait"><input name="milliseconds" value="3000"/></step>
+      <step id="echo" use="core.echo"><input name="value" ref="credentials.secret"/></step>
+      <step id="compare" use="core.assert-equal"><input name="actual" ref="targets.chain"/><input name="expected" value="other"/></step>
+    </setup>
+    <teardown><step id="failure" use="example.fail-with-message"><input name="message" ref="credentials.secret"/></step></teardown>"#,
+			endpoint.replace('&', "&amp;")
+		),
+	);
+	let leaks = |text: &str| -> Vec<&str> {
+		let escaped = serde_json::to_string(secret).unwrap();
+		[secret, &escaped[1..escaped.len() - 1], "entiäl", "hunter2", "APIKEY"]
+			.into_iter()
+			.filter(|needle| text.contains(needle))
+			.map(|needle| if needle == secret { "the credential" } else { "a secret part" })
+			.collect()
+	};
+	let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+	let sink_events = events.clone();
+	let paused = Arc::new(tokio::sync::Notify::new());
+	let signal = paused.clone();
+	let sink = Arc::new(move |event: Value| {
+		if event["event"] == "step-started" && event["step"] == "pause" {
+			signal.notify_one();
+		}
+		sink_events.lock().unwrap().push(event.to_string());
+	});
+	let output = root.0.clone();
+	let plan = Plan::parse(&xml).unwrap();
+	let run = tokio::spawn(async move {
+		execute::run(plan, registry, &output, CancellationToken::new(), sink).await
+	});
+	// While the plugin waits, before any end-of-run pass: the streamed log is already redacted.
+	paused.notified().await;
+	let run_dir = std::fs::read_dir(&root.0).unwrap().next().unwrap().unwrap().path();
+	let log = std::fs::read_to_string(run_dir.join("plugins/example/stderr.log")).unwrap();
+	assert_eq!(log.matches("before [redacted] after\n").count(), 1, "{log}");
+	assert!(
+		log.contains(
+			"before wss://[redacted]@127.0.0.1:1/ws?apikey=[redacted]&v=[redacted] after\n"
+		),
+		"{log}"
+	);
+	assert!(leaks(&log).is_empty(), "{log}");
+	let outcome = run.await.unwrap().unwrap();
+	assert_eq!(outcome.exit_code, 1);
+	let error = outcome.error.unwrap();
+	assert!(error.contains("[redacted]") && leaks(&error).is_empty(), "{error}");
+	let files = files(&outcome.artifact_dir);
+	for name in ["plan.json", "events.jsonl", "execution.json", "junit.xml", "samples.jtl"] {
+		assert!(files.contains(&outcome.artifact_dir.join(name)), "{name} is missing");
+	}
+	for file in files {
+		let text = String::from_utf8_lossy(&std::fs::read(&file).unwrap()).into_owned();
+		assert!(leaks(&text).is_empty(), "{} leaks {:?}", file.display(), leaks(&text));
+	}
+	let plan = std::fs::read_to_string(outcome.artifact_dir.join("plan.json")).unwrap();
+	assert!(plan.contains("wss://[redacted]@127.0.0.1:1/ws?apikey=[redacted]&v=[redacted]"));
+	for event in events.lock().unwrap().iter() {
+		assert!(leaks(event).is_empty(), "{event}");
+	}
+	unsafe {
+		std::env::remove_var(variable);
+	}
+}
 #[tokio::test]
 async fn missing_credential_persists_failed_outcome_before_setup() {
 	let root = scratch("missing-credential");

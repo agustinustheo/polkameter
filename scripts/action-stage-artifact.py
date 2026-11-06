@@ -31,8 +31,9 @@ RECORDS = (
     "events.jsonl", "plugins/*/stderr.log", "steps.jsonl", "lost.jsonl", "samples.jtl",
     "blocks.jsonl", "load.jsonl", "node.jsonl", "chain.jsonl", "transactions.jsonl", "scrapes.jsonl",
 )
-# PolkaMeter redacts these only when the run finishes. A run killed before then
-# (SIGKILL, out of memory, a panic) leaves them as the plugins wrote them.
+# PolkaMeter redacts these as it writes them, and again when the run finishes; that
+# final pass also covers text a plugin wrote into its log by path. A run killed
+# before then (SIGKILL, out of memory, a panic) misses it, so they are withheld.
 REDACTED_AT_FINISH = ("plugins/*/stderr.log", "summary.md", "summary.json", "plugin-checks.json")
 FINAL_STATES = {"completed", "completed_with_failures", "stopped", "failed"}
 OMITTED = "polkameter-artifact-omitted.txt"
@@ -235,8 +236,9 @@ def main():
         print(f"::warning::The run artifact omits {len(omitted)} file(s) over artifact-size-limit-mb; "
               f"see {OMITTED} in the artifact. They remain in {run_dir} on the runner.")
     if withheld:
-        print(f"::notice::The run did not finish normally, so PolkaMeter did not redact plugin logs and "
-              f"summaries. The run artifact leaves out {len(withheld)} file(s): {', '.join(withheld)}. "
+        print(f"::notice::The run did not finish normally, so PolkaMeter did not make its final redaction "
+              f"pass over plugin logs and summaries. The run artifact leaves out {len(withheld)} file(s): "
+              f"{', '.join(withheld)}. "
               f"They remain in {run_dir} on the runner.")
     if excluded:
         print(f"::notice::The run artifact excludes {len(excluded)} file(s) that PolkaMeter did not write "

@@ -10,7 +10,7 @@ use std::{
 use anyhow::Result;
 use serde_json::Value;
 
-use crate::engine::execute::{redact, redact_text};
+use crate::redact::Redactor;
 
 /// Maximum message/name length before XML escaping (entities require at most six bytes).
 pub const MESSAGE_CHARS: usize = 2048;
@@ -22,7 +22,7 @@ const SUITE_RESERVE: usize = MESSAGE_CHARS * XML_CHAR_BYTES * 6 + 4096;
 /// Best-effort JUnit warning. Never changes an execution outcome, even if event recording fails.
 /// Remote clients emit the returned event in their own event stream (no local run directory).
 pub fn warning(directory: Option<&Path>, message: &str, secrets: &[String]) -> Value {
-	let message = redact_text(&format!("JUnit report: {message}"), secrets);
+	let message = Redactor::new(secrets, None::<&str>).text(&format!("JUnit report: {message}"));
 	eprintln!("{} warning: {}", crate::PRODUCT_NAME, single_line(&message));
 	let event = serde_json::json!({"event":"warning", "message":message,
 		"timestamp":polkameter_plugin_sdk::observers::files::now_ms(), "version":2});
@@ -69,17 +69,19 @@ pub fn write(directory: &Path, secrets: &[String]) -> Result<()> {
 	let mut plan = read_optional(&directory.join("plan.json"))?;
 	let mut summary = read_optional(&directory.join("summary.json"))?;
 	let mut outcome: Value = serde_json::from_slice(&fs::read(directory.join("execution.json"))?)?;
+	let redactor = Redactor::new(secrets, None::<&str>);
 	for value in [&mut plan, &mut summary, &mut outcome] {
-		redact(value, secrets);
+		redactor.value(value);
 	}
 	let file = fs::File::open(directory.join("events.jsonl"))?;
 	let events = BufReader::new(file).lines().map(|line| -> Result<Value> {
 		let mut event = serde_json::from_str(&line?)?;
-		redact(&mut event, secrets);
+		redactor.value(&mut event);
 		Ok(event)
 	});
 	let suites = suites(&plan, events, &summary, &outcome)?;
-	let safe_path = redact_text(&directory.display().to_string(), secrets);
+	let safe_path = redactor.text(&directory.display().to_string());
+
 	let xml = render(&suites, Path::new(&safe_path));
 	fs::write(directory.join("junit.xml"), xml)?;
 	Ok(())

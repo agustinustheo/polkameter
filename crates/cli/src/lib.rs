@@ -17,5 +17,6 @@ pub mod engine;
 #[doc(hidden)]
 pub mod load;
 pub mod plugin_application;
+pub mod redact;
 pub mod remote;
 pub mod shutdown;

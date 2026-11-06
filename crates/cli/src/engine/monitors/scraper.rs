@@ -179,7 +179,7 @@ impl Scraper {
 					if *n == 1 {
 						self.problems.record(format!(
 							"scraper: cannot read {instance} at {} ({error})",
-							target.url
+							crate::redact::endpoint(&target.url)
 						));
 					}
 					out.insert(instance, None);
@@ -203,14 +203,20 @@ pub(crate) async fn get(
 	http: &reqwest::Client,
 	url: &str,
 ) -> Result<reqwest::Response, reqwest::Error> {
-	http.get(url).send().await?.error_for_status()
+	// The URL may carry credentials, so errors leave it out.
+	http.get(url)
+		.send()
+		.await
+		.and_then(reqwest::Response::error_for_status)
+		.map_err(reqwest::Error::without_url)
 }
 
 /// A node's `/metrics` body, or why it could not be read.
 async fn fetch(http: &reqwest::Client, target: &Target) -> Result<String, String> {
-	let res = http.get(&target.url).send().await.map_err(|e| e.to_string())?;
+	// The URL may carry credentials, so errors leave it out.
+	let res = http.get(&target.url).send().await.map_err(|e| e.without_url().to_string())?;
 	if !res.status().is_success() {
 		return Err(format!("HTTP {}", res.status().as_u16()));
 	}
-	res.text().await.map_err(|e| e.to_string())
+	res.text().await.map_err(|e| e.without_url().to_string())
 }

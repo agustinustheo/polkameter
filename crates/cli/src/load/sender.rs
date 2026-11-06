@@ -144,7 +144,8 @@ impl Sender {
 		for connection in 0..connections {
 			let ws = connect(url, backoff.attempt)
 				.await
-				.map_err(|why| ConnectError { url: url.to_owned(), why })?;
+				.map_err(|why| ConnectError { url: crate::redact::endpoint(url), why })?;
+
 			let (queue, rx) = mpsc::unbounded_channel();
 			let queued = Arc::new(AtomicU64::new(0));
 			let up = Arc::new(AtomicBool::new(true));

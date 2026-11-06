@@ -6,6 +6,7 @@ use crate::engine::{
 	plugins::{Plugins, Registry, checksum},
 	wiring,
 };
+use crate::redact::Redactor;
 use anyhow::{Context as _, Result, bail, ensure};
 use polkameter_plugin_sdk::observers::files::RunDir;
 use polkameter_plugin_sdk::{Artifact, Context, Operation, PreparedTx, Schema, strip_0x};
@@ -71,25 +72,34 @@ impl std::fmt::Display for RunState {
 	}
 }
 
-/// Event writer shared by every task of a run. Events are redacted before they are persisted.
+/// Event writer shared by every task of a run. Events are redacted before they are persisted
+/// and before the sink sees them.
 #[derive(Clone)]
 struct Log {
 	file: Arc<Mutex<File>>,
 	sink: EventSink,
+	/// The credential values, for the JUnit report, which builds its own redactor.
 	secrets: Arc<Vec<String>>,
+	/// The run's credentials and endpoint secrets.
+	redactor: Redactor,
 }
 impl Log {
-	fn open(directory: &Path, sink: EventSink, secrets: Vec<String>) -> Result<Self> {
+	fn open(
+		directory: &Path,
+		sink: EventSink,
+		secrets: Vec<String>,
+		redactor: Redactor,
+	) -> Result<Self> {
 		let file = OpenOptions::new()
 			.create_new(true)
 			.write(true)
 			.open(directory.join("events.jsonl"))?;
-		Ok(Self { file: Arc::new(Mutex::new(file)), sink, secrets: Arc::new(secrets) })
+		Ok(Self { file: Arc::new(Mutex::new(file)), sink, secrets: Arc::new(secrets), redactor })
 	}
 	fn emit(&self, mut value: Value) -> Result<()> {
 		value["timestamp"] = json!(polkameter_plugin_sdk::observers::files::now_ms());
 		value["version"] = json!(2);
-		redact(&mut value, &self.secrets);
+		self.redactor.value(&mut value);
 		let text = serde_json::to_string(&value)?;
 		let mut file = self.file.lock().map_err(|_| anyhow::anyhow!("event writer poisoned"))?;
 		writeln!(file, "{text}")?;
@@ -105,18 +115,19 @@ impl Log {
 fn secret_values(credentials: &Values) -> Vec<String> {
 	credentials.values().filter_map(|v| v.as_str().map(str::to_owned)).collect()
 }
-pub(crate) fn redact_text(text: &str, secrets: &[String]) -> String {
-	secrets
-		.iter()
-		.fold(text.to_owned(), |text, secret| text.replace(secret, "[redacted]"))
-}
-pub(crate) fn redact(value: &mut Value, secrets: &[String]) {
-	match value {
-		Value::String(text) => *text = redact_text(text, secrets),
-		Value::Array(items) => items.iter_mut().for_each(|item| redact(item, secrets)),
-		Value::Object(items) => items.values_mut().for_each(|item| redact(item, secrets)),
-		_ => {},
+/// The endpoints whose user information, query values and fragments are redacted: the plan's
+/// targets and, when the topology can be read, its monitor URLs.
+fn endpoints(plan: &Plan, registry: &Registry) -> Vec<String> {
+	let mut endpoints: Vec<String> =
+		plan.targets.entries.iter().map(|target| target.endpoint.clone()).collect();
+	if let Ok(Some(targets)) = wiring::monitor_targets(plan, registry) {
+		endpoints.extend(targets.into_iter().map(|target| target.url));
 	}
+	endpoints
+}
+/// The redactor of `plan` with the given credential values.
+fn redactor(plan: &Plan, registry: &Registry, secrets: &[String]) -> Redactor {
+	Redactor::new(secrets, endpoints(plan, registry))
 }
 fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
 	std::fs::write(path, serde_json::to_vec_pretty(value)?)?;
@@ -288,7 +299,7 @@ async fn with_scratch_plugins<T>(
 	std::fs::create_dir(&directory)?;
 	let _scratch = Scratch(directory.clone());
 	let context = Context::host(purpose, &directory);
-	let plugins = Plugins::start(&plan.plugins.entries, registry, &context).await?;
+	let plugins = Plugins::start(&plan.plugins.entries, registry, &context, None).await?;
 	// Boxed: the bodies are large and would otherwise sit on the caller's stack.
 	let result = Box::pin(body(&plugins, &context, &directory)).await;
 	plugins.shutdown(&context, &CancellationToken::new()).await;
@@ -296,6 +307,12 @@ async fn with_scratch_plugins<T>(
 }
 pub async fn inspect(plan: &Plan, registry: &Registry) -> Result<Value> {
 	plan.validate()?;
+	let mut inspected = inspect_plugins(plan, registry).await?;
+	// The targets' endpoints may hold API keys.
+	redactor(plan, registry, &[]).value(&mut inspected["targets"]);
+	Ok(inspected)
+}
+async fn inspect_plugins(plan: &Plan, registry: &Registry) -> Result<Value> {
 	with_scratch_plugins(plan, registry, "inspect", async |plugins, _, _| {
 		validate_contracts(plan, plugins)?;
 		let requirements: Vec<_> =
@@ -326,7 +343,7 @@ pub async fn preflight(plan: &Plan, registry: &Registry) -> Result<Value> {
 			check_environment(plan, registry).await?;
 			check_requirements(plan, registry, plugins).await?;
 			let mut values = plan.values("preflight");
-			let mut secrets = Vec::new();
+			let mut redactor = redactor(plan, registry, &[]);
 			// Resolve credentials only if an explicit preflight step references one.
 			if plan
 				.preflight
@@ -336,19 +353,23 @@ pub async fn preflight(plan: &Plan, registry: &Registry) -> Result<Value> {
 				.any(|i| matches!(&i.source, InputSource::Ref(r) if r.starts_with("credentials.")))
 			{
 				let credentials = registry.resolve_credentials(plan)?;
-				secrets = secret_values(&credentials);
+				redactor = self::redactor(plan, registry, &secret_values(&credentials));
 				values.extend(credentials);
 			}
+			let redacted = |e: anyhow::Error| anyhow::anyhow!(redactor.text(&format!("{e:#}")));
 			for step in &plan.preflight.entries {
 				// Plugin errors may echo a credential, so they are redacted as the run's are.
-				let output = invoke(step, plugins, &values, context, &CancellationToken::new())
-					.await
-					.map_err(|e| anyhow::anyhow!(redact_text(&format!("{e:#}"), &secrets)))?;
+				let output =
+					invoke(step, plugins, &values, context, &CancellationToken::new(), &redactor)
+						.await
+						.map_err(redacted)?;
 				values.insert(format!("steps.{}", step.id), output);
 			}
-			calibrate(plan, directory).await
+			calibrate(plan, directory).await.map_err(redacted)
 		})
-		.await?;
+		.await
+		// Monitor and RPC checks may report an endpoint.
+		.map_err(|e| anyhow::anyhow!(redactor(plan, registry, &[]).text(&format!("{e:#}"))))?;
 	if let Some(calibration) = calibration {
 		inspected["calibration"] = calibration;
 	}
@@ -499,10 +520,10 @@ pub async fn run_stoppable(
 	let lock = File::create(directory.join(RUN_LOCK))?;
 	lock.lock()?;
 	let credentials = registry.resolve_credentials(&plan);
-	let log =
-		Log::open(&directory, sink, credentials.as_ref().map(secret_values).unwrap_or_default())?;
-	let mut recorded_plan = serde_json::to_value(&plan)?;
-	redact(&mut recorded_plan, &log.secrets);
+	let secrets = credentials.as_ref().map(secret_values).unwrap_or_default();
+	let redactor = redactor(&plan, &registry, &secrets);
+	let log = Log::open(&directory, sink, secrets, redactor)?;
+	let recorded_plan = log.redactor.json(&plan)?;
 	write_json(&directory.join("plan.json"), &recorded_plan)?;
 	let context = Context::host(run_id, directory.canonicalize()?);
 	let run = Run {
@@ -567,7 +588,7 @@ impl Run<'_> {
 			"stop_requested_at": polkameter_plugin_sdk::observers::files::now_ms(),
 		});
 		let _ = write_json(&self.directory.join("execution.json"), &provisional);
-		let _ = redact_plugin_logs(&self.directory, &self.log.secrets);
+		let _ = redact_plugin_logs(&self.directory, &self.log.redactor);
 	}
 
 	/// Starts the plugins, runs the phases under the whole-run deadline, then tears down.
@@ -592,7 +613,12 @@ impl Run<'_> {
 		cancellable(&self.cancel, async {
 			tokio::time::timeout(
 				Duration::from_millis(self.plan.timeout_ms),
-				Plugins::start(&self.plan.plugins.entries, self.registry, &self.context),
+				Plugins::start(
+					&self.plan.plugins.entries,
+					self.registry,
+					&self.context,
+					Some(&self.log.redactor),
+				),
 			)
 			.await
 			.context("whole-run deadline exceeded during plugin startup")?
@@ -638,18 +664,19 @@ impl Run<'_> {
 				self.log.phase("measurement")?;
 				let setup_seconds = self.started.elapsed().as_secs();
 				let progress = |phase: &str| self.log.phase(phase);
-				Some(
-					measurement::run(
-						self.plan,
-						plugins,
-						self.registry,
-						values,
-						&self.context,
-						setup_seconds,
-						&progress,
-					)
-					.await?,
+				let measured = measurement::run(
+					self.plan,
+					plugins,
+					self.registry,
+					values,
+					&self.context,
+					setup_seconds,
+					&progress,
 				)
+				.await?;
+				measured
+					.write_summary(&RunDir::open(&self.context.artifact_dir), &self.log.redactor)?;
+				Some(measured)
 			},
 			None => None,
 		};
@@ -668,7 +695,13 @@ impl Run<'_> {
 					checks_error = Some(e);
 					Vec::new()
 				});
-				measurement::report(&dir, measured, &checks, self.options.fail_on_verdict)?
+				measurement::report(
+					&dir,
+					measured,
+					&checks,
+					self.options.fail_on_verdict,
+					&self.log.redactor,
+				)?
 			},
 			None => 0,
 		};
@@ -700,7 +733,13 @@ impl Run<'_> {
 				.context("topology is not installed")?;
 			let target_records: Vec<_> = targets
 				.iter()
-				.map(|t| json!({"role": t.job.label(), "instance": t.instance, "url": t.url}))
+				.map(|t| {
+					json!({
+						"role": t.job.label(),
+						"instance": t.instance,
+						"url": crate::redact::endpoint(&t.url),
+					})
+				})
 				.collect();
 			let resolved = json!({
 				"topologyHash": checksum(topology)?,
@@ -831,7 +870,7 @@ impl Run<'_> {
 
 	/// Settles how the run ended, writes its artifacts and outcome, and logs the outcome.
 	fn outcome(&self, result: Result<i32>) -> Result<Outcome> {
-		let redacted = redact_plugin_logs(&self.directory, &self.log.secrets);
+		let redacted = redact_plugin_logs(&self.directory, &self.log.redactor);
 		let (exit_code, state, error) = match result {
 			// A stop is honoured even when it came after the phases, during teardown.
 			Ok(_) if self.cancel.is_cancelled() => (
@@ -850,7 +889,7 @@ impl Run<'_> {
 			artifact_dir: self.context.artifact_dir.clone(),
 			exit_code,
 			state,
-			error: error.map(|error| redact_text(&error.to_string(), &self.log.secrets)),
+			error: error.map(|error| self.log.redactor.text(&error.to_string())),
 			teardown: self.teardown.lock().ok().and_then(|state| *state),
 		};
 		// Samples and plots come from the raw files.
@@ -862,7 +901,11 @@ impl Run<'_> {
 		}
 		write_json(&self.directory.join("execution.json"), &outcome)?;
 		let summary = self.directory.join("summary.md");
-		if !summary.exists() {
+		if summary.exists() {
+			// The report redacted it as it was written; this is a second pass.
+			let text = std::fs::read(&summary)?;
+			std::fs::write(&summary, self.log.redactor.bytes(&text))?;
+		} else {
 			std::fs::write(
 				summary,
 				format!(
@@ -873,13 +916,14 @@ impl Run<'_> {
 				),
 			)?;
 		}
-		// These files are also inputs to offline JUnit regeneration. Reuse event redaction
-		// before persisting plugin-provided text for a later report without credentials.
+		// These files are also inputs to offline JUnit regeneration. They were redacted as they
+		// were written; this second pass keeps a later report free of credentials whatever
+		// wrote them.
 		for name in ["summary.json", "plugin-checks.json"] {
 			let path = self.directory.join(name);
 			if path.exists() {
 				let mut value: Value = serde_json::from_slice(&std::fs::read(&path)?)?;
-				redact(&mut value, &self.log.secrets);
+				self.log.redactor.value(&mut value);
 				write_json(&path, &value)?;
 			}
 		}
@@ -892,13 +936,20 @@ impl Run<'_> {
 	}
 }
 
-/// Plugins write their stderr raw, straight to the file, so each log is redacted once the run is over.
-fn redact_plugin_logs(directory: &Path, secrets: &[String]) -> Result<()> {
+/// Redacts each plugin's `stderr.log` again. PolkaMeter redacts plugin standard error as it
+/// streams into the log; this pass, on the first stop request and when the run ends, also covers
+/// anything that reached the file another way, such as a plugin writing to it by path. It holds
+/// the log write lock, so no streamed line is lost.
+fn redact_plugin_logs(directory: &Path, redactor: &Redactor) -> Result<()> {
+	if redactor.is_empty() {
+		return Ok(());
+	}
 	let Ok(plugins) = std::fs::read_dir(directory.join("plugins")) else { return Ok(()) };
+	let _writes = crate::engine::plugins::lock_logs();
 	for plugin in plugins {
 		let log = plugin?.path().join("stderr.log");
 		if let Ok(bytes) = std::fs::read(&log) {
-			std::fs::write(&log, redact_text(&String::from_utf8_lossy(&bytes), secrets))?;
+			std::fs::write(&log, redactor.bytes(&bytes))?;
 		}
 	}
 	Ok(())
@@ -934,9 +985,13 @@ async fn execute_steps(
 		let mut event = step_event("step-started", step, context);
 		event["operation"] = json!(step.operation);
 		log.emit(event)?;
-		let result: Result<Value> =
-			with_progress(step, started, log, invoke(step, plugins, values, context, cancel))
-				.await?;
+		let result: Result<Value> = with_progress(
+			step,
+			started,
+			log,
+			invoke(step, plugins, values, context, cancel, &log.redactor),
+		)
+		.await?;
 		let mut event = step_event("step-finished", step, context);
 		event["elapsedMs"] = json!(started.elapsed().as_millis());
 		event["success"] = json!(result.is_ok());
@@ -984,6 +1039,7 @@ async fn invoke(
 	values: &Values,
 	context: &Context,
 	cancel: &CancellationToken,
+	redactor: &Redactor,
 ) -> Result<Value> {
 	let inputs = Value::Object(
 		step.inputs
@@ -1004,12 +1060,7 @@ async fn invoke(
 	}
 	// Redact complete values before bounding them: a credential must never be truncated
 	// into a prefix that the event/outcome redactor can no longer recognize.
-	let secrets: Vec<_> = values
-		.iter()
-		.filter(|(key, _)| key.starts_with("credentials."))
-		.filter_map(|(_, value)| value.as_str().map(str::to_owned))
-		.collect();
-	let work = Box::pin(core_operation(step, &inputs, context, &secrets));
+	let work = Box::pin(core_operation(step, &inputs, context, redactor));
 	cancellable(cancel, async {
 		tokio::time::timeout(Duration::from_millis(step.timeout_ms), work)
 			.await
@@ -1023,9 +1074,9 @@ async fn invoke(
 /// Maximum rendered characters, including JSON quotes, escapes and any ellipsis.
 const ASSERTION_VALUE_CHARS: usize = 80;
 
-fn assertion_value(value: &Value, secrets: &[String]) -> String {
+fn assertion_value(value: &Value, redactor: &Redactor) -> String {
 	let mut value = value.clone();
-	redact(&mut value, secrets);
+	redactor.value(&mut value);
 	// JSON escapes ASCII controls; also escape Unicode controls that terminals can interpret.
 	let rendered: String = value
 		.to_string()
@@ -1099,7 +1150,7 @@ async fn core_operation(
 	step: &Step,
 	inputs: &Value,
 	context: &Context,
-	secrets: &[String],
+	redactor: &Redactor,
 ) -> Result<Value> {
 	match step.operation.as_str() {
 		"core.echo" => Ok(json!({"value": inputs["value"]})),
@@ -1107,9 +1158,9 @@ async fn core_operation(
 			ensure!(
 				inputs["actual"] == inputs["expected"],
 				"assertion {} failed: expected {}, got {}",
-				assertion_text(&redact_text(&step.id, secrets)),
-				assertion_value(&inputs["expected"], secrets),
-				assertion_value(&inputs["actual"], secrets)
+				assertion_text(&redactor.text(&step.id)),
+				assertion_value(&inputs["expected"], redactor),
+				assertion_value(&inputs["actual"], redactor)
 			);
 			Ok(json!({"passed": true}))
 		},
@@ -1181,7 +1232,8 @@ async fn submit(inputs: &Value, context: &Context, wait_finalized: bool) -> Resu
 }
 
 /// Check results of the evaluate steps whose operation declares a `checks` output, in plan order.
-/// A step that failed returned nothing.
+/// A step that failed returned nothing. The report redacts the results before it renders, prints
+/// or stores them.
 fn plugin_checks(
 	plan: &Plan,
 	plugins: &Plugins,
@@ -1375,17 +1427,26 @@ mod calibration_tests {
 	fn assertion_details_are_redacted_before_truncation_and_single_line() {
 		let secret = "s".repeat(200);
 		assert_eq!(
-			assertion_value(&json!(format!("{secret}\n\u{1b}\u{202e} tail")), &[secret]),
+			assertion_value(
+				&json!(format!("{secret}\n\u{1b}\u{202e} tail")),
+				&Redactor::new([secret], None::<&str>)
+			),
 			r#""[redacted]\n\u001b\u202e tail""#
 		);
 		assert_eq!(
-			assertion_value(&json!("界".repeat(500)), &[]).chars().count(),
+			assertion_value(&json!("界".repeat(500)), &Redactor::default()).chars().count(),
 			ASSERTION_VALUE_CHARS
 		);
 		let secret = "\n\t\u{1b}\u{202e}";
-		assert_eq!(assertion_value(&json!(secret), &[secret.into()]), r#""[redacted]""#);
 		assert_eq!(
-			assertion_value(&json!({"nested": ["s".repeat(200)]}), &["s".repeat(200)]),
+			assertion_value(&json!(secret), &Redactor::new([secret], None::<&str>)),
+			r#""[redacted]""#
+		);
+		assert_eq!(
+			assertion_value(
+				&json!({"nested": ["s".repeat(200)]}),
+				&Redactor::new(["s".repeat(200)], None::<&str>)
+			),
 			r#"{"nested":["[redacted]"]}"#
 		);
 	}
@@ -1403,7 +1464,7 @@ mod calibration_tests {
 			(json!([1, "two"]), r#"[1,"two"]"#),
 			(json!({"n": 1}), r#"{"n":1}"#),
 		] {
-			assert_eq!(assertion_value(&value, &[]), expected);
+			assert_eq!(assertion_value(&value, &Redactor::default()), expected);
 		}
 	}
 
@@ -1420,18 +1481,18 @@ mod calibration_tests {
 			format!("{}\nend", "a".repeat(76)),
 			format!("{}\u{1b}end", "a".repeat(74)),
 		] {
-			let rendered = assertion_value(&json!(text), &[]);
+			let rendered = assertion_value(&json!(text), &Redactor::default());
 			assert!(rendered.chars().count() <= ASSERTION_VALUE_CHARS, "{rendered}");
 			let content: String = serde_json::from_str(&rendered).unwrap();
 			assert!(content.ends_with('…'), "{rendered}");
 			assert!(text.starts_with(content.strip_suffix('…').unwrap()), "{rendered}");
 		}
 		assert_eq!(
-			assertion_value(&json!("\"".repeat(100)), &[]),
+			assertion_value(&json!("\"".repeat(100)), &Redactor::default()),
 			format!("\"{}…\"", "\\\"".repeat(38))
 		);
 		assert_eq!(
-			assertion_value(&json!("\\".repeat(100)), &[]),
+			assertion_value(&json!("\\".repeat(100)), &Redactor::default()),
 			format!("\"{}…\"", "\\\\".repeat(38))
 		);
 	}
@@ -1439,12 +1500,12 @@ mod calibration_tests {
 	#[test]
 	fn assertion_strings_at_the_cap_are_not_truncated() {
 		for text in ["a".repeat(78), "界".repeat(78), "\"".repeat(39), "\\".repeat(39)] {
-			let rendered = assertion_value(&json!(text), &[]);
+			let rendered = assertion_value(&json!(text), &Redactor::default());
 			assert_eq!(rendered.chars().count(), ASSERTION_VALUE_CHARS);
 			assert_eq!(serde_json::from_str::<String>(&rendered).unwrap(), text);
 		}
 		assert_eq!(
-			assertion_value(&json!("a".repeat(79)), &[]),
+			assertion_value(&json!("a".repeat(79)), &Redactor::default()),
 			format!("\"{}…\"", "a".repeat(77))
 		);
 	}
@@ -1459,26 +1520,26 @@ mod calibration_tests {
 			("\u{202e}", r#""\u202e""#),
 			("\u{85}", r#""\u0085""#),
 		] {
-			assert_eq!(assertion_value(&json!(text), &[]), expected);
+			assert_eq!(assertion_value(&json!(text), &Redactor::default()), expected);
 		}
 	}
 
 	#[test]
 	fn assertion_numbers_and_arrays_are_bounded() {
 		for number in [json!(u64::MAX), json!(i64::MIN), json!(1.2345678901234567e308)] {
-			assert_eq!(assertion_value(&number, &[]), number.to_string());
+			assert_eq!(assertion_value(&number, &Redactor::default()), number.to_string());
 		}
 		for value in [json!(vec![u64::MAX; 100]), json!(vec!["\u{202e}"; 100])] {
-			let rendered = assertion_value(&value, &[]);
+			let rendered = assertion_value(&value, &Redactor::default());
 			assert!(rendered.chars().count() <= ASSERTION_VALUE_CHARS, "{rendered}");
 		}
 		let numbers = json!(vec![u64::MAX; 100]);
 		assert_eq!(
-			assertion_value(&numbers, &[]),
+			assertion_value(&numbers, &Redactor::default()),
 			format!("{}…", numbers.to_string().chars().take(79).collect::<String>())
 		);
 		assert_eq!(
-			assertion_value(&json!(vec!["\u{202e}"; 100]), &[]),
+			assertion_value(&json!(vec!["\u{202e}"; 100]), &Redactor::default()),
 			format!("[{}\"…", r#""\u202e","#.repeat(8))
 		);
 	}
