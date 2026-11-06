@@ -110,7 +110,7 @@ impl Processes for Ps {
 		for pid in listening_pids(port).await {
 			match process_name(pid).await {
 				Some(name) if is_forwarder(&name) => {
-					eprintln!(
+					crate::redact::diag!(
 						"node: port {port} is served by {name} (PID {pid}), a port forwarder, not the node"
 					);
 				},
@@ -163,7 +163,8 @@ pub async fn find_pid(ws_url: &str, processes: &impl Processes) -> Result<u32, S
 	}
 	if local_port(ws_url).is_none() {
 		return Err(format!(
-			"{ws_url} is not on this machine, so its process cannot be sampled (set POLKAMETER_NODE_PID for a local node behind another address)"
+			"{} is not on this machine, so its process cannot be sampled (set POLKAMETER_NODE_PID for a local node behind another address)",
+			crate::redact::endpoint(ws_url)
 		));
 	}
 	processes
@@ -221,7 +222,7 @@ impl<P: Processes> NodeSampler<P> {
 						"node: process {} ended; sampling the node process now on its port, {pid} (the node restarted)",
 						self.pid
 					);
-					eprintln!("{what}");
+					crate::redact::diag!("{what}");
 					self.problems.record(what.clone());
 					self.restarts.record(what);
 					(self.pid, self.last, self.lost) = (pid, None, false);
@@ -235,7 +236,7 @@ impl<P: Processes> NodeSampler<P> {
 							"node: process {} ended and no node process listens on its port; no CPU or memory until one does",
 							self.pid
 						);
-						eprintln!("{what}");
+						crate::redact::diag!("{what}");
 						self.problems.record(what);
 					}
 					return Ok(());
@@ -309,6 +310,17 @@ mod tests {
 		async fn listener(&self) -> Option<u32> {
 			*self.listener.lock().unwrap()
 		}
+	}
+
+	#[tokio::test]
+	async fn a_remote_node_is_reported_without_its_endpoint_key() {
+		if std::env::var_os("POLKAMETER_NODE_PID").is_some() {
+			return;
+		}
+		let url = "wss://rpc.example/ws?apikey=NODE-SAMPLER-KEY";
+		let why = find_pid(url, &&Fake::default()).await.unwrap_err();
+		assert!(!why.contains("NODE-SAMPLER-KEY"), "{why}");
+		assert!(why.starts_with("wss://rpc.example/ws?apikey=[redacted] is not on this machine"));
 	}
 
 	#[tokio::test]

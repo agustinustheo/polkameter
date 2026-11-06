@@ -17,6 +17,15 @@ impl Plugin for Example {
 					.read_only(),
 			),
 			(
+				"log-in-pieces",
+				Operation::new(
+					"Exercise streamed standard error redaction",
+					&[("message", Schema::String)],
+					&[],
+				)
+				.read_only(),
+			),
+			(
 				"double",
 				Operation::new(
 					"Double a number without chain access",
@@ -58,6 +67,21 @@ impl Plugin for Example {
 				let message = inputs["message"].as_str().unwrap_or("");
 				eprintln!("{message}");
 				bail!("{message}")
+			},
+			"log-in-pieces" => {
+				// Three bytes per write, each flushed, so a secret reaches the host split across
+				// many reads; the line ends only after it.
+				use std::io::Write as _;
+				let message = inputs["message"].as_str().unwrap_or("");
+				let mut stderr = std::io::stderr().lock();
+				stderr.write_all(b"before ")?;
+				for piece in message.as_bytes().chunks(3) {
+					stderr.write_all(piece)?;
+					stderr.flush()?;
+					std::thread::sleep(std::time::Duration::from_millis(2));
+				}
+				stderr.write_all(b" after\n")?;
+				Ok(json!({}))
 			},
 			"double" => Ok(
 				json!({"value": inputs["value"].as_i64().and_then(|n| n.checked_mul(2)).ok_or_else(|| anyhow::anyhow!("integer overflow"))?}),

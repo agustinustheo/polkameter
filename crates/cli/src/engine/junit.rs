@@ -10,7 +10,7 @@ use std::{
 use anyhow::Result;
 use serde_json::Value;
 
-use crate::engine::execute::{redact, redact_text};
+use crate::redact::Redactor;
 
 /// Maximum message/name length before XML escaping (entities require at most six bytes).
 pub const MESSAGE_CHARS: usize = 2048;
@@ -22,7 +22,7 @@ const SUITE_RESERVE: usize = MESSAGE_CHARS * XML_CHAR_BYTES * 6 + 4096;
 /// Best-effort JUnit warning. Never changes an execution outcome, even if event recording fails.
 /// Remote clients emit the returned event in their own event stream (no local run directory).
 pub fn warning(directory: Option<&Path>, message: &str, secrets: &[String]) -> Value {
-	let message = redact_text(&format!("JUnit report: {message}"), secrets);
+	let message = Redactor::new(secrets, None::<&str>).text(&format!("JUnit report: {message}"));
 	eprintln!("{} warning: {}", crate::PRODUCT_NAME, single_line(&message));
 	let event = serde_json::json!({"event":"warning", "message":message,
 		"timestamp":polkameter_plugin_sdk::observers::files::now_ms(), "version":2});
@@ -59,27 +59,28 @@ struct Suite {
 
 type Key = (String, Option<u64>, Option<u64>);
 
-/// Writes `junit.xml`. Run-time callers pass the same secrets used to redact events; offline
-/// callers use available credentials and the already-redacted recorded files. Only recorded
+/// Writes `junit.xml`. Run-time callers pass the run's redactor, which redacted its events;
+/// offline callers one of the credentials available now, over the already-redacted files. Only recorded
 /// error summaries (including bounded assertion values), not raw inputs/outputs, are exported.
 ///
 /// `events.jsonl` is read one line at a time and only what the report needs from each step
 /// event is kept, so a long run's event log is never held in memory.
-pub fn write(directory: &Path, secrets: &[String]) -> Result<()> {
+pub fn write(directory: &Path, redactor: &Redactor) -> Result<()> {
 	let mut plan = read_optional(&directory.join("plan.json"))?;
 	let mut summary = read_optional(&directory.join("summary.json"))?;
 	let mut outcome: Value = serde_json::from_slice(&fs::read(directory.join("execution.json"))?)?;
 	for value in [&mut plan, &mut summary, &mut outcome] {
-		redact(value, secrets);
+		redactor.value(value);
 	}
 	let file = fs::File::open(directory.join("events.jsonl"))?;
 	let events = BufReader::new(file).lines().map(|line| -> Result<Value> {
 		let mut event = serde_json::from_str(&line?)?;
-		redact(&mut event, secrets);
+		redactor.value(&mut event);
 		Ok(event)
 	});
 	let suites = suites(&plan, events, &summary, &outcome)?;
-	let safe_path = redact_text(&directory.display().to_string(), secrets);
+	let safe_path = redactor.text(&directory.display().to_string());
+
 	let xml = render(&suites, Path::new(&safe_path));
 	fs::write(directory.join("junit.xml"), xml)?;
 	Ok(())
@@ -607,7 +608,7 @@ mod tests {
 			"{\"event\":\"phase\",\"phase\":\"setup\"}\nnot json\n",
 		)
 		.unwrap();
-		assert!(write(&dir, &[]).is_err());
+		assert!(write(&dir, &Redactor::default()).is_err());
 		assert!(!dir.join("junit.xml").exists());
 		fs::remove_dir_all(&dir).unwrap();
 	}

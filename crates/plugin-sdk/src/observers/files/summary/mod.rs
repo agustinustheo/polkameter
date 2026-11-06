@@ -131,7 +131,8 @@ pub struct FailureMode {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Network {
-	/// RPC URL of the node the load is submitted to.
+	/// RPC URL of the node the load is submitted to, redacted: PolkaMeter writes it with its
+	/// user information, query values and fragment as `[redacted]`.
 	pub url: String,
 	/// The parachain the relay checks judge; absent when the run observes no relay.
 	#[serde(default, skip_serializing_if = "Option::is_none")]

@@ -843,13 +843,17 @@ fn report(path: PathBuf, format: OutputFormat, junit: Option<PathBuf>) -> Result
 	crate::engine::artifacts::write_outputs(&path)
 		.with_context(|| format!("cannot read run directory {}", path.display()))
 		.map_err(runtime)?;
-	if path.join("summary.json").is_file() {
-		crate::engine::measurement::check(&path).map_err(runtime)?;
-	}
+	// The credentials this host has now. The run's endpoints are not known here: the files
+	// hold them redacted already.
 	let secrets = Registry::load()
 		.map(|registry| available_secrets(&registry))
 		.unwrap_or_default();
-	if let Err(error) = crate::engine::junit::write(&path, &secrets) {
+	if path.join("summary.json").is_file() {
+		let redactor = crate::redact::Redactor::new(&secrets, None::<&str>);
+		crate::engine::measurement::check(&path, &redactor).map_err(runtime)?;
+	}
+	let redactor = crate::redact::Redactor::new(&secrets, None::<&str>);
+	if let Err(error) = crate::engine::junit::write(&path, &redactor) {
 		junit_warning(format, Some(&path), &error.to_string(), &secrets);
 	} else if let Err(error) = copy_junit(&path, junit.as_deref()) {
 		junit_warning(format, Some(&path), &error.to_string(), &secrets);

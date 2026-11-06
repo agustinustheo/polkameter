@@ -144,7 +144,8 @@ impl Sender {
 		for connection in 0..connections {
 			let ws = connect(url, backoff.attempt)
 				.await
-				.map_err(|why| ConnectError { url: url.to_owned(), why })?;
+				.map_err(|why| ConnectError { url: crate::redact::endpoint(url), why })?;
+
 			let (queue, rx) = mpsc::unbounded_channel();
 			let queued = Arc::new(AtomicU64::new(0));
 			let up = Arc::new(AtomicBool::new(true));
@@ -212,7 +213,7 @@ impl Link {
 				reason: reason.clone(),
 			});
 			if !drops.record() {
-				eprintln!("sender: connection {}: {}", self.connection, Drops::reason());
+				crate::redact::diag!("sender: connection {}: {}", self.connection, Drops::reason());
 				return self.closed(true);
 			}
 			let down_at = now_ms();
@@ -228,7 +229,7 @@ impl Link {
 				},
 				Reconnect::Stopped => return self.closed(false),
 				Reconnect::GaveUp(why) => {
-					eprintln!(
+					crate::redact::diag!(
 						"sender: connection {} dropped ({reason}) and the node was {why}",
 						self.connection
 					);

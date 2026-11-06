@@ -264,7 +264,7 @@ async fn heads(
 			Err(reason) => reason,
 		};
 		let lost_at = now_ms();
-		eprintln!("blocks: lost the node ({reason}); reconnecting");
+		crate::redact::diag!("blocks: lost the node ({reason}); reconnecting");
 		let _ = out.send(BlockEvent::Disconnected { at: lost_at, reason: reason.clone() });
 		if !drops.record() {
 			let _ = out.send(BlockEvent::Unreachable(format!("blocks: {}", Drops::reason())));
@@ -282,13 +282,16 @@ async fn heads(
 		};
 		if let Some(id) = followed.identity.as_mut() {
 			if let Some(why) = id.other_node(&s.identity) {
-				eprintln!("blocks: {why}");
+				crate::redact::diag!("blocks: {why}");
 				let _ = out.send(BlockEvent::OtherNode(why));
 			}
 			id.update(s.identity.clone());
 		}
 		let at = now_ms();
-		eprintln!("blocks: reconnected after {:.1} s", at.saturating_sub(lost_at) as f64 / 1000.0);
+		crate::redact::diag!(
+			"blocks: reconnected after {:.1} s",
+			at.saturating_sub(lost_at) as f64 / 1000.0
+		);
 		let _ = out.send(BlockEvent::Reconnected { at });
 		followed.after_gap = true;
 		session = Ok(s);

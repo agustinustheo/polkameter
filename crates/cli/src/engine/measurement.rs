@@ -13,6 +13,7 @@ use crate::load::sender::Sender;
 use crate::load::steps::final_step;
 use crate::load::tracker::{Phase, Tracker};
 use crate::load::{Lane, QueueSource, StateCheck, Tx, TxHash, follower, now_ms, rules};
+use crate::redact::{Redactor, diag, records};
 use anyhow::{Context as _, Result, bail};
 use polkameter_plugin_sdk::chain::{ChainError, Client};
 use polkameter_plugin_sdk::observers::checks::{CheckResult, Status, report::overall_status};
@@ -34,6 +35,13 @@ pub struct Measured {
 }
 
 impl Measured {
+	/// Writes summary.json, redacted, for the plugin checks, which read it with the raw files
+	/// before the report adds the checks.
+	pub fn write_summary(&self, dir: &RunDir, redactor: &Redactor) -> Result<()> {
+		dir.write_json("summary.json", &redactor.json(&self.summary)?)?;
+		Ok(())
+	}
+
 	/// What the run shows but does not count as a problem, for the event log.
 	pub fn warnings(&self) -> &[String] {
 		&self.summary.warnings
@@ -43,16 +51,29 @@ impl Measured {
 /// File of the plugin check results, kept so `polkameter report` can write the same summary.
 const PLUGIN_CHECKS: &str = "plugin-checks.json";
 
+/// How the measurement reports to the run around it.
+pub struct Reporting<'a> {
+	/// Seconds the run spent before the measurement, for the summary.
+	pub setup_seconds: u64,
+	/// Called with each phase's name as it starts.
+	pub progress: &'a (dyn Fn(&str) -> Result<()> + Send + Sync),
+	/// The run's redactor: every record and the summary are redacted with it.
+	pub redactor: &'a Redactor,
+}
+
 pub async fn run(
 	plan: &Plan,
 	plugins: &Plugins,
 	registry: &Registry,
 	values: &Values,
 	context: &Context,
-	setup_seconds: u64,
-	progress: &(dyn Fn(&str) -> Result<()> + Send + Sync),
+	reporting: Reporting<'_>,
 ) -> Result<Measured> {
+	let Reporting { setup_seconds, progress, redactor } = reporting;
 	let dir = &RunDir::open(&context.artifact_dir);
+	// Every record is redacted as it is written: RPC errors, metric text and chain errors may
+	// show a credential or an endpoint's key.
+	let jsonl = |name: &str| dir.jsonl(name).map(|writer| records(writer, redactor));
 	let load = plan.load.as_ref().context("load missing")?;
 	let configured_rules = plan.thresholds.rules()?;
 	let mode = plan.mode;
@@ -103,7 +124,7 @@ pub async fn run(
 	// Monitors and the load.
 	let (events, _) = tokio::sync::broadcast::channel(64);
 	let chains = Chains { node_url: &url, relay_url: relay_url.as_deref() };
-	let mut monitors = Monitors::start(dir, targets, &events, chains).await?;
+	let mut monitors = Monitors::start(dir, targets, &events, chains, redactor).await?;
 	let (replies_tx, replies) = tokio::sync::mpsc::unbounded_channel();
 	let (blocks_tx, blocks) = tokio::sync::mpsc::unbounded_channel();
 	let sender = Sender::open(&url, load.connections, replies_tx).await?;
@@ -119,11 +140,12 @@ pub async fn run(
 	let mut tracker = Tracker::new(
 		lanes,
 		sender,
-		dir.jsonl("load.jsonl")?,
-		dir.jsonl("blocks.jsonl")?,
+		jsonl("load.jsonl")?,
+		jsonl("blocks.jsonl")?,
 		load.baseline_probes,
 		now_ms(),
 	);
+	tracker.redact_with(redactor.clone());
 	let mut io = Io {
 		replies,
 		blocks,
@@ -140,16 +162,17 @@ pub async fn run(
 		let threshold_ms = (2 * base.max_ms).max((2000.0 * block_interval_s) as u64);
 		progress("load")?;
 		let stop = apply_load(&mut tracker, &mut io, &run_opts).await?;
-		eprintln!("stop: {}: {}", stop.rule.name(), stop.detail);
+		diag!("stop: {}: {}", stop.rule.name(), stop.detail);
 		progress("recovery")?;
 		let recovery_from = now_ms();
 		let recovery = recover(&mut tracker, &mut io, &run_opts, threshold_ms).await?;
 		let recovery_to = now_ms();
 		// Every block the follower still has queued, so no inclusion is missed by the loss check.
 		if !drain(&mut tracker, &mut io, 30_000).await? {
-			eprintln!(
+			diag!(
 				"drain: block {} not read after 30 s (last read {})",
-				tracker.last_head.1, tracker.last_fetched
+				tracker.last_head.1,
+				tracker.last_fetched
 			);
 		}
 		Ok::<_, anyhow::Error>((base, stop, recovery, (recovery_from, recovery_to)))
@@ -173,14 +196,14 @@ pub async fn run(
 	monitors.stop_sampling().await?;
 	let samples: Vec<NodeSample> = dir.read_jsonl("node.jsonl")?;
 	recovery.node = NodeMax::over(&samples, recovery_window.0, recovery_window.1);
-	let finals = write_steps(dir, &tracker, &samples)?;
+	let finals = write_steps(dir, &tracker, &samples, redactor)?;
 	progress("reconciliation")?;
 	// The connection of the start may have dropped during the run (the follower and the sender
 	// reconnect on their own): the loss check reads on a live one.
 	let client = match client.best_number().await {
 		Ok(_) => client,
 		Err(e) => {
-			eprintln!("loss check: the RPC connection dropped ({e}); reconnecting");
+			diag!("loss check: the RPC connection dropped ({e}); reconnecting");
 			Client::connect(&url).await.unwrap_or(client)
 		},
 	};
@@ -191,9 +214,10 @@ pub async fn run(
 		dir,
 		configured_rules.finality_wait_ms,
 		state_check.as_ref().map(|s| s as &dyn crate::load::StateCheck),
+		redactor,
 	)
 	.await;
-	let mut lost_out = dir.jsonl("lost.jsonl")?;
+	let mut lost_out = jsonl("lost.jsonl")?;
 	for l in &lost {
 		lost_out.write(l)?;
 	}
@@ -252,7 +276,8 @@ pub async fn run(
 		warnings,
 		unobserved_ms,
 		network: Network {
-			url,
+			// The URL may carry an API key in its query or user information.
+			url: crate::redact::endpoint(&url),
 			para_id: plan.monitors.as_ref().map(|m| m.para_id),
 			spec_version: chain.spec_version,
 			block_interval_s: (block_interval_s * 100.0).round() / 100.0,
@@ -262,8 +287,6 @@ pub async fn run(
 		checks: None,
 		verdict: None,
 	};
-	// Plugin checks read it, with the raw files, before the report adds the checks.
-	dir.write_json("summary.json", &summary)?;
 	Ok(Measured { summary, finals, mode })
 }
 
@@ -301,16 +324,21 @@ pub fn report(
 	measured: Measured,
 	plugin_checks: &[polkameter_plugin_sdk::observers::checks::CheckResult],
 	policy: ExitPolicy,
+	redactor: &Redactor,
 ) -> Result<Exit> {
-	dir.write_json(PLUGIN_CHECKS, &plugin_checks)?;
+	dir.write_json(PLUGIN_CHECKS, &redactor.json(&plugin_checks)?)?;
 	let Measured { summary, finals, mode } = measured;
-	let checks = polkameter_plugin_sdk::observers::checks::report::write(
+	// Every text is redacted before summary.md and summary.json are written or printed.
+	let checks = polkameter_plugin_sdk::observers::checks::report::write_redacted(
 		dir,
 		summary.clone(),
 		&finals,
 		plugin_checks,
+		&|text| redactor.text(text),
 	)?;
-	Ok(exit_code(mode, &summary, &checks, policy))
+	let exit = exit_code(mode, &summary, &checks, policy);
+	// The reason quotes stop details, problems and check names, which may show a secret.
+	Ok(Exit { reason: exit.reason.map(|reason| redactor.text(&reason)), ..exit })
 }
 
 /// The loss check, with the node's pool counts read from the collator we submit to after the
@@ -322,6 +350,7 @@ async fn loss_check<S: crate::load::submit::Submit>(
 	dir: &RunDir,
 	finality_wait_ms: u64,
 	state: Option<&dyn crate::load::StateCheck>,
+	redactor: &Redactor,
 ) -> (Loss, Vec<LostTx>) {
 	let scraper = monitors.scraper.clone();
 	let node_pool = async move {
@@ -341,7 +370,7 @@ async fn loss_check<S: crate::load::submit::Submit>(
 	let (mut loss, lost, records) =
 		crate::load::loss::loss_check(client, settled, node_pool, state, finality_wait_ms).await;
 	if let Err(error) = (|| -> Result<()> {
-		let mut out = dir.jsonl("transactions.jsonl")?;
+		let mut out = crate::redact::records(dir.jsonl("transactions.jsonl")?, redactor);
 		for record in &records {
 			out.write(record)?;
 		}
@@ -353,14 +382,23 @@ async fn loss_check<S: crate::load::submit::Submit>(
 			loss.note.unwrap_or_default()
 		));
 	}
-	eprintln!(
+	diag!(
 		"loss check: {} sent, {} included, {} refused, {:?} in the pool, {:?} lost",
-		loss.sent, loss.included, loss.refused, loss.in_pool, loss.lost
+		loss.sent,
+		loss.included,
+		loss.refused,
+		loss.in_pool,
+		loss.lost
 	);
 	let c = &loss.on_chain;
-	eprintln!(
+	diag!(
 		"loss check on the finalized chain (blocks {}-{}): {} included, {} the tracker missed, {} only on a fork, {} moved",
-		c.blocks.0, c.blocks.1, c.included, c.missed, c.only_on_fork, c.moved
+		c.blocks.0,
+		c.blocks.1,
+		c.included,
+		c.missed,
+		c.only_on_fork,
+		c.moved
 	);
 	(loss, lost)
 }
@@ -370,6 +408,7 @@ fn write_steps<S: crate::load::submit::Submit>(
 	dir: &RunDir,
 	tracker: &Tracker<S>,
 	samples: &[NodeSample],
+	redactor: &Redactor,
 ) -> Result<Vec<FinalStep>> {
 	let finals: Vec<FinalStep> = tracker
 		.steps
@@ -381,7 +420,7 @@ fn write_steps<S: crate::load::submit::Submit>(
 			f
 		})
 		.collect();
-	let mut out = dir.jsonl("steps.jsonl")?;
+	let mut out = records(dir.jsonl("steps.jsonl")?, redactor);
 	for f in &finals {
 		out.write(f)?;
 	}
@@ -407,7 +446,7 @@ fn exit_code(mode: Mode, summary: &Summary, checks: &[CheckResult], policy: Exit
 		smoke.extend(polkameter_plugin_sdk::observers::checks::smoke_gaps(checks));
 	}
 	for e in &smoke {
-		eprintln!("smoke: {e}");
+		diag!("smoke: {e}");
 	}
 	let reason = exit_reason(summary, checks, policy, &smoke);
 	Exit { code: i32::from(reason.is_some()), reason }
@@ -516,8 +555,10 @@ pub fn verdict_reason(summary: &Summary, checks: &[CheckResult]) -> String {
 	if reasons.is_empty() { "no reason recorded".into() } else { reasons.join("; ") }
 }
 
-/// `polkameter report <dir>`: the checks again, from the files alone.
-pub fn check(dir: &Path) -> anyhow::Result<()> {
+/// `polkameter report <dir>`: the checks again, from the files alone. The files were redacted
+/// when the run wrote them; `redactor` (the credentials available now) redacts the summary again
+/// as it is written.
+pub fn check(dir: &Path, redactor: &Redactor) -> anyhow::Result<()> {
 	let run = RunDir::open(dir);
 	let summary: Summary =
 		serde_json::from_str(&std::fs::read_to_string(dir.join("summary.json"))?)?;
@@ -528,11 +569,12 @@ pub fn check(dir: &Path) -> anyhow::Result<()> {
 			Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
 			Err(e) => return Err(e.into()),
 		};
-	polkameter_plugin_sdk::observers::checks::report::write(
+	polkameter_plugin_sdk::observers::checks::report::write_redacted(
 		&run,
 		summary,
 		&finals,
 		&plugin_checks,
+		&|text| redactor.text(text),
 	)?;
 	Ok(())
 }
@@ -733,7 +775,7 @@ mod tests {
 				let finals = dir.read_jsonl("steps.jsonl").unwrap();
 				let measured = Measured { summary, finals, mode };
 				assert_eq!(
-					report(&dir, measured, &[], policy).unwrap(),
+					report(&dir, measured, &[], policy, &Redactor::default()).unwrap(),
 					Exit::default(),
 					"{mode:?} {policy:?}"
 				);
@@ -794,6 +836,49 @@ mod tests {
 	}
 
 	#[test]
+	fn plugin_check_details_and_endpoints_are_redacted_before_the_report_renders_them() {
+		let root =
+			std::env::temp_dir().join(format!("polkameter-redacted-report-{}", std::process::id()));
+		std::fs::create_dir_all(&root).unwrap();
+		let dir = RunDir::open(&root);
+		// A `|` is escaped in the Markdown table, so redacting only the rendered text would miss
+		// this secret.
+		let secret = "pipe|secret\"value";
+		let endpoint = "wss://rpc.example/ws?apikey=APIKEY0123456789"; // gitleaks:allow (made-up test key)
+		let redactor = Redactor::new([secret], [endpoint]);
+		let mut summary: Summary =
+			serde_json::from_str(include_str!("../../tests/fixtures/smoke-run/summary.json"))
+				.unwrap();
+		summary.network.url = endpoint.into();
+		summary.problems = vec![format!("cannot reach {endpoint}")];
+		let check = CheckResult {
+			source: Some("evaluate".into()),
+			outcome: "plugin".into(),
+			check: format!("uses {secret}"),
+			verdict: Verdict::new(Status::Fail, format!("detail {secret} at {endpoint}"))
+				.with(serde_json::json!({ "key": secret })),
+			optional: false,
+		};
+		let measured = Measured { summary, finals: vec![], mode: Mode::Smoke };
+		measured.write_summary(&dir, &redactor).unwrap();
+		let early = std::fs::read_to_string(root.join("summary.json")).unwrap();
+		assert!(!early.contains("APIKEY"), "{early}");
+		let exit = report(&dir, measured, &[check], ExitPolicy::default(), &redactor).unwrap();
+		assert_eq!(exit.code, 1);
+		let reason = exit.reason.unwrap();
+		assert!(reason.starts_with("smoke mode") && !reason.contains("APIKEY"), "{reason}");
+		for name in ["summary.md", "summary.json", PLUGIN_CHECKS] {
+			let text = std::fs::read_to_string(root.join(name)).unwrap();
+			for leak in ["secret", "APIKEY"] {
+				assert!(!text.contains(leak), "{name} shows {leak}: {text}");
+			}
+		}
+		let md = std::fs::read_to_string(root.join("summary.md")).unwrap();
+		assert!(md.contains("| plugin | uses [redacted] | **fail** | detail [redacted] at wss://rpc.example/ws?apikey=[redacted] |"), "{md}");
+		std::fs::remove_dir_all(root).unwrap();
+	}
+
+	#[test]
 	fn report_writes_the_same_fail_verdict_with_either_exit_policy() {
 		let root =
 			std::env::temp_dir().join(format!("polkameter-verdict-report-{}", std::process::id()));
@@ -805,7 +890,7 @@ mod tests {
 					.unwrap();
 			let measured = Measured { summary, finals: vec![], mode: Mode::Stress };
 			assert_eq!(
-				report(&dir, measured, &[], policy).unwrap().code,
+				report(&dir, measured, &[], policy, &Redactor::default()).unwrap().code,
 				i32::from(policy.fail_on_verdict)
 			);
 			let json: serde_json::Value =
@@ -816,6 +901,26 @@ mod tests {
 					.unwrap()
 					.contains("- **Verdict:** FAIL")
 			);
+		}
+		std::fs::remove_dir_all(root).unwrap();
+	}
+
+	#[test]
+	fn report_from_the_files_redacts_the_summary_it_writes() {
+		let root =
+			std::env::temp_dir().join(format!("polkameter-offline-report-{}", std::process::id()));
+		std::fs::create_dir_all(&root).unwrap();
+		let mut summary: Summary =
+			serde_json::from_str(include_str!("../../tests/fixtures/smoke-run/summary.json"))
+				.unwrap();
+		// A file written before redaction covered it, or by something else.
+		summary.scenario = "Plan OfflineSecret-0123".into();
+		RunDir::open(&root).write_json("summary.json", &summary).unwrap();
+		check(&root, &Redactor::new(["OfflineSecret-0123"], None::<&str>)).unwrap();
+		for name in ["summary.md", "summary.json"] {
+			let text = std::fs::read_to_string(root.join(name)).unwrap();
+			assert!(!text.contains("OfflineSecret"), "{name}: {text}");
+			assert!(text.contains("Plan [redacted]"), "{name}: {text}");
 		}
 		std::fs::remove_dir_all(root).unwrap();
 	}

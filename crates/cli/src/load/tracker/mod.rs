@@ -143,6 +143,8 @@ pub struct Tracker<S> {
 	prev_head_at: Option<Millis>,
 	phases: Vec<(Millis, Phase)>,
 	baseline_probes: usize,
+	/// Redacts RPC refusals before they are cut to their error key.
+	redactor: crate::redact::Redactor,
 }
 
 /// A stretch of the run the block follower did not observe, or a sender connection that
@@ -215,7 +217,14 @@ impl<S: Submit> Tracker<S> {
 			prev_head_at: None,
 			phases: vec![(now, Phase::Baseline)],
 			baseline_probes,
+			redactor: crate::redact::Redactor::default(),
 		}
+	}
+
+	/// Redacts the run's secrets from RPC refusals, whole, before they are cut to the error
+	/// keys of the step records: a secret cut short would no longer be recognized.
+	pub fn redact_with(&mut self, redactor: crate::redact::Redactor) {
+		self.redactor = redactor;
 	}
 
 	/// The lanes.
@@ -433,7 +442,8 @@ impl<S: Submit> Tracker<S> {
 			Kind::Flood { step } => {
 				let st = &mut self.steps[req.lane][step];
 				st.rejected += 1;
-				let key: String = format!("{code} {error}").trim().chars().take(160).collect();
+				let error = self.redactor.text(format!("{code} {error}").trim());
+				let key = crate::redact::truncate(&error, 160).trim_end().to_owned();
 				*st.errors.entry(key).or_default() += 1;
 				self.load.inc(
 					&TX_REJECTED,

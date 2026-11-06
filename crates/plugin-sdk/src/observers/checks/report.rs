@@ -15,20 +15,38 @@ use crate::observers::checks::{
 };
 
 /// Runs every check on the run's files, appends the plugins' check results, and writes
-/// summary.json (with all checks) and summary.md.
+/// summary.json (with all checks) and summary.md, and prints summary.md to standard error.
 pub fn write(
+	dir: &RunDir,
+	summary: Summary,
+	finals: &[FinalStep],
+	plugin_checks: &[CheckResult],
+) -> Result<Vec<CheckResult>, FileError> {
+	write_redacted(dir, summary, finals, plugin_checks, &|text| text.to_owned())
+}
+
+/// [`write`], passing every text through `redact` before it is rendered, written or printed:
+/// each check's fields first (so Markdown escaping cannot hide a secret from `redact`), then
+/// every string in summary.json and the whole of summary.md. Returns the redacted checks.
+pub fn write_redacted(
 	dir: &RunDir,
 	mut summary: Summary,
 	finals: &[FinalStep],
 	plugin_checks: &[CheckResult],
+	redact: &dyn Fn(&str) -> String,
 ) -> Result<Vec<CheckResult>, FileError> {
 	let data = RunData::new(read_store(dir)?, summary.clone());
 	let mut checks = run(&all(), &data);
 	checks.extend_from_slice(plugin_checks);
+	for check in &mut checks {
+		redact_check(check, redact);
+	}
 	summary.verdict = Some(RunVerdict { result: overall_status(&summary, &checks) });
 	summary.checks = Some(serde_json::to_value(&checks).expect("checks serialize"));
-	dir.write_json("summary.json", &summary)?;
-	let md = markdown(&summary, finals, &data, &checks);
+	let mut json = serde_json::to_value(&summary).expect("summary serializes");
+	redact_value(&mut json, redact);
+	dir.write_json("summary.json", &json)?;
+	let md = redact(&markdown(&summary, finals, &data, &checks));
 	std::fs::write(dir.path.join("summary.md"), &md).map_err(|source| FileError::Io {
 		path: dir.path.join("summary.md").display().to_string(),
 		source,
@@ -40,6 +58,39 @@ pub fn write(
 		let _ = writeln!(std::io::stderr(), "\n{md}");
 	}
 	Ok(checks)
+}
+
+/// Redacts every text of a check result.
+fn redact_check(check: &mut CheckResult, redact: &dyn Fn(&str) -> String) {
+	for text in [&mut check.outcome, &mut check.check, &mut check.verdict.detail]
+		.into_iter()
+		.chain(check.source.as_mut())
+	{
+		*text = redact(text);
+	}
+	if let Some(numbers) = &mut check.verdict.numbers {
+		redact_value(numbers, redact);
+	}
+}
+
+/// Redacts every string in `value`, object keys included.
+fn redact_value(value: &mut serde_json::Value, redact: &dyn Fn(&str) -> String) {
+	match value {
+		serde_json::Value::String(text) => *text = redact(text),
+		serde_json::Value::Array(items) => {
+			items.iter_mut().for_each(|item| redact_value(item, redact))
+		},
+		serde_json::Value::Object(items) => {
+			*items = std::mem::take(items)
+				.into_iter()
+				.map(|(key, mut item)| {
+					redact_value(&mut item, redact);
+					(redact(&key), item)
+				})
+				.collect();
+		},
+		_ => {},
+	}
 }
 
 /// The whole summary.md.

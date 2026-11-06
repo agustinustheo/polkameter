@@ -1,4 +1,5 @@
 use crate::engine::plan::{Credential, PlanError, PluginSpec};
+use crate::redact::{Redactor, StreamRedactor};
 use anyhow::{Context as _, Result, ensure};
 use polkameter_plugin_sdk::{
 	Context, MAX_MESSAGE_BYTES, Manifest, Operation, PROTOCOL, Request, Response,
@@ -13,9 +14,10 @@ use std::{
 	time::Duration,
 };
 use tokio::{
-	io::{AsyncWriteExt, BufReader},
-	process::{Child, ChildStdin, ChildStdout, Command},
+	io::{AsyncReadExt as _, AsyncWriteExt, BufReader},
+	process::{Child, ChildStderr, ChildStdin, ChildStdout, Command},
 	sync::Mutex,
+	task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -477,9 +479,59 @@ impl Group {
 	}
 }
 
+/// Serializes writes to plugin logs with the passes that rewrite them, so a rewrite never drops
+/// a line that was streamed meanwhile. The guard is held for one write, or for the end of one
+/// rewrite: never across an `.await`.
+pub(crate) fn lock_logs() -> std::sync::MutexGuard<'static, ()> {
+	static WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+	WRITES.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Opens a plugin log to append to it, readable only by its owner.
+fn open_log(path: &Path) -> std::io::Result<std::fs::File> {
+	let mut options = std::fs::OpenOptions::new();
+	options.create(true).append(true);
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::OpenOptionsExt;
+		options.mode(0o600);
+	}
+	options.open(path)
+}
+
+/// Copies a plugin's standard error into its log at `path`, redacting it as it streams, so a
+/// complete secret never reaches the file, even if the run is killed. Ends when every process
+/// holding the pipe has exited. The log is opened for each write, so a rewrite pass can replace
+/// it. Bytes held back because they may start a secret are written as `[redacted]` if the
+/// stream ends there; if PolkaMeter itself dies they are lost, never written.
+fn stream_log(mut stderr: ChildStderr, path: PathBuf, redactor: Redactor) -> JoinHandle<()> {
+	use std::io::Write as _;
+	let write = move |bytes: &[u8]| {
+		if !bytes.is_empty() {
+			let _writes = lock_logs();
+			if let Ok(mut file) = open_log(&path) {
+				let _ = file.write_all(bytes);
+			}
+		}
+	};
+	tokio::spawn(async move {
+		let mut stream = StreamRedactor::new(redactor);
+		let mut buffer = vec![0; 8192];
+		while let Ok(read @ 1..) = stderr.read(&mut buffer).await {
+			write(&stream.push(&buffer[..read]));
+		}
+		write(&stream.finish());
+	})
+}
+
+/// Where a plugin's standard error goes: a log, redacted as it streams, or nowhere.
+type Stderr<'a> = Option<(&'a Path, &'a Redactor)>;
+
 struct Process {
 	child: Child,
 	group: Group,
+	/// The task that copies standard error into the log.
+	log: Option<JoinHandle<()>>,
 	input: ChildStdin,
 	output: BufReader<ChildStdout>,
 	sequence: u64,
@@ -508,7 +560,7 @@ impl Drop for Process {
 	}
 }
 impl Process {
-	pub fn spawn(executable: &Path, context: &Context, stderr: Option<&Path>) -> Result<Self> {
+	pub fn spawn(executable: &Path, context: &Context, stderr: Stderr<'_>) -> Result<Self> {
 		let mut command = Command::new(executable);
 		command.env_clear();
 		for key in ["PATH", "TMPDIR", "TEMP", "SYSTEMROOT", "SSL_CERT_FILE", "SSL_CERT_DIR"] {
@@ -516,17 +568,12 @@ impl Process {
 				command.env(key, value);
 			}
 		}
-		let stderr = if let Some(path) = stderr {
-			let mut options = std::fs::OpenOptions::new();
-			options.create(true).append(true);
-			#[cfg(unix)]
-			{
-				use std::os::unix::fs::OpenOptionsExt;
-				options.mode(0o600);
-			}
-			Stdio::from(options.open(path)?)
+		let log = if let Some((path, redactor)) = stderr {
+			// Created now, so the log exists even if the plugin never writes to it.
+			open_log(path)?;
+			Some((path.to_owned(), redactor.clone()))
 		} else {
-			Stdio::null()
+			None
 		};
 		#[cfg(unix)]
 		command.process_group(0);
@@ -539,9 +586,13 @@ impl Process {
 			.current_dir(&context.artifact_dir)
 			.stdin(Stdio::piped())
 			.stdout(Stdio::piped())
-			.stderr(stderr)
+			.stderr(if log.is_some() { Stdio::piped() } else { Stdio::null() })
 			.kill_on_drop(true)
 			.spawn()?;
+		let log = match (log, child.stderr.take()) {
+			(Some((path, redactor)), Some(stderr)) => Some(stream_log(stderr, path, redactor)),
+			_ => None,
+		};
 		let input =
 			child.stdin.take().ok_or_else(|| anyhow::anyhow!("plugin stdin unavailable"))?;
 		let output = BufReader::new(
@@ -551,7 +602,7 @@ impl Process {
 				.ok_or_else(|| anyhow::anyhow!("plugin stdout unavailable"))?,
 		);
 		let group = Group(child.id());
-		Ok(Self { child, group, input, output, sequence: 0, failed: false })
+		Ok(Self { child, group, log, input, output, sequence: 0, failed: false })
 	}
 	pub async fn describe(&mut self, context: &Context) -> Result<Manifest> {
 		let value = self
@@ -608,12 +659,19 @@ impl Process {
 		result?.map_err(|error| anyhow::anyhow!("plugin operation failed: {error}"))
 	}
 	/// Kills the plugin and everything in its group, then waits briefly for the plugin to exit,
-	/// so nothing it started outlives the run.
+	/// so nothing it started outlives the run, and for the rest of its standard error to reach
+	/// the log.
 	async fn reap(&mut self) {
 		self.group.kill();
 		let _ = self.child.start_kill();
 		if let Ok(Ok(_)) = tokio::time::timeout(Duration::from_secs(2), self.child.wait()).await {
 			self.group.forget();
+		}
+		if let Some(mut log) = self.log.take() {
+			// A process that left the group may still hold the pipe; stop copying from it.
+			if tokio::time::timeout(Duration::from_secs(2), &mut log).await.is_err() {
+				log.abort();
+			}
 		}
 	}
 	/// Whether the plugin can take another call: it did not fail and has not exited, for example
@@ -642,9 +700,16 @@ impl Process {
 	}
 }
 
-/// Where a restarted plugin process writes its standard error: the same log as the first one.
+/// Where a restarted plugin process writes its standard error: the same log as the first one,
+/// redacted the same way.
 struct Launch {
 	stderr: PathBuf,
+	redactor: Option<Redactor>,
+}
+impl Launch {
+	fn stderr(&self) -> Stderr<'_> {
+		self.redactor.as_ref().map(|redactor| (self.stderr.as_path(), redactor))
+	}
 }
 /// The plugin processes of one run, shared by every task of the run.
 #[derive(Clone, Default)]
@@ -663,10 +728,14 @@ impl std::ops::Deref for Plugins {
 	}
 }
 impl Plugins {
+	/// Starts the plugins of `specs`. With a redactor, each plugin's standard error goes to
+	/// `plugins/<id>/stderr.log` in the run directory, redacted as it streams; without one it
+	/// is discarded.
 	pub async fn start(
 		specs: &[PluginSpec],
 		registry: &Registry,
 		context: &Context,
+		log: Option<&Redactor>,
 	) -> Result<Self> {
 		// Validate every installation before launching any plugin.
 		let installed = specs
@@ -682,8 +751,8 @@ impl Plugins {
 		for (spec, installed) in installed {
 			let directory = context.artifact_dir.join("plugins").join(&spec.id);
 			std::fs::create_dir_all(&directory)?;
-			let launch = Launch { stderr: directory.join("stderr.log") };
-			let mut process = Process::spawn(&installed.executable, context, Some(&launch.stderr))?;
+			let launch = Launch { stderr: directory.join("stderr.log"), redactor: log.cloned() };
+			let mut process = Process::spawn(&installed.executable, context, launch.stderr())?;
 			let manifest = process.describe(context).await?;
 			if !(manifest.id == spec.id
 				&& manifest.version == spec.version
@@ -729,7 +798,7 @@ impl Plugins {
 		}
 		process.reap().await;
 		let installed = registry.verify(plugin, &manifest.version)?;
-		let mut fresh = Process::spawn(&installed.executable, context, Some(&launch.stderr))?;
+		let mut fresh = Process::spawn(&installed.executable, context, launch.stderr())?;
 		let described = match fresh.describe(context).await {
 			Ok(described) => described,
 			Err(error) => {

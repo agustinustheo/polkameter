@@ -149,7 +149,7 @@ Children: `target`, zero or more.
 | Attribute | Type | Required | Default | Limits | Meaning |
 | --- | --- | --- | --- | --- | --- |
 | `id` | identifier | yes | none | unique | Referenced as `targets.ID` |
-| `endpoint` | URI | yes | none | starts with `ws://` or `wss://` | The chain's WebSocket RPC endpoint |
+| `endpoint` | URI | yes | none | starts with `ws://` or `wss://` | The chain's WebSocket RPC endpoint. Its user information, query and path parameter values and fragment are [redacted](results.md#redaction) from results |
 
 ```xml
 <target id="para" endpoint="ws://127.0.0.1:9988"/>
@@ -168,7 +168,7 @@ Children: `credential`, zero or more.
 | `id` | identifier | yes | none | unique | Referenced as `credentials.ID` |
 | `profile` | string | yes | none | not empty | The profile this host maps to an environment variable with [`polkameter plugin credential`](cli.md#plugin) |
 
-PolkaMeter reads the secret on the host when the run starts. It redacts the secret from events and error messages.
+PolkaMeter reads the secret on the host when the run starts. It redacts the secret from the files it writes and from its output. See [Redaction](results.md#redaction).
 
 ```xml
 <credential id="admin" profile="sudo"/>
@@ -395,7 +395,7 @@ A `ref` names one of the values below. A reference to anything else is rejected 
 | --- | --- | --- |
 | `steps.ID.OUTPUT` | An output of an earlier step, named as its operation declares it | Later steps |
 | `targets.ID` | The endpoint string | After `<targets>` |
-| `credentials.ID` | The secret, read on this host | Wherever the credential is declared. Redacted from events |
+| `credentials.ID` | The secret, read on this host | Wherever the credential is declared. [Redacted](results.md#redaction) from results |
 | `run.id` | The run ID, such as `run-1791091539106-57209-1` | Everywhere |
 | `run.directory` | The absolute path of this run's directory | Everywhere, once the directory exists |
 | `run.probeBudget` | The probe budget of the plan; `0` without a `<load>` | Everywhere |

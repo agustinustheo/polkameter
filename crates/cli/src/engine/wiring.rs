@@ -9,6 +9,7 @@ use crate::engine::monitors::{
 	MonitorError, Scraper, ScraperHandle, Target, chain_series, process, relay,
 };
 use crate::load::runner::RunEvent;
+use crate::redact::{Redactor, diag, records};
 use anyhow::Context as _;
 use polkameter_plugin_sdk::chain::Client;
 use polkameter_plugin_sdk::observers::files::{Problems, RunDir};
@@ -94,19 +95,22 @@ async fn step_edges(
 
 impl Monitors {
 	/// Starts every monitor. A relay that doesn't answer or a chain without a Members pallet
-	/// leaves that recorder out, as a problem (a result), not an error.
+	/// leaves that recorder out, as a problem (a result), not an error. Every record the
+	/// monitors write is redacted with `redactor`: metric text and chain errors may show a
+	/// secret.
 	pub async fn start(
 		dir: &RunDir,
 		targets: Vec<Target>,
 		events: &broadcast::Sender<RunEvent>,
 		chains: Chains<'_>,
+		redactor: &Redactor,
 	) -> Result<Self, MonitorError> {
+		let jsonl = |name: &str| dir.jsonl(name).map(|writer| records(writer, redactor));
 		let (problems, node_restarts) = (Problems::default(), Problems::default());
 		let [failed, stop, stop_sampling, stop_chain] =
 			std::array::from_fn(|_| CancellationToken::new());
 
-		let (scraper, handle) =
-			Scraper::new(targets, dir.jsonl("scrapes.jsonl")?, problems.clone());
+		let (scraper, handle) = Scraper::new(targets, jsonl("scrapes.jsonl")?, problems.clone());
 		let rest = vec![
 			spawn(scraper.run(stop.clone()), &failed),
 			spawn(step_edges(events.subscribe(), handle.clone(), stop.clone()), &failed),
@@ -118,21 +122,21 @@ impl Monitors {
 				let sampler = process::NodeSampler::new(
 					pid,
 					ps,
-					dir.jsonl("node.jsonl")?,
+					jsonl("node.jsonl")?,
 					problems.clone(),
 					node_restarts.clone(),
 				);
 				Some(spawn(sampler.run(stop_sampling.clone()), &failed))
 			},
 			Err(why) => {
-				eprintln!("node: {why}; no CPU or memory recorded");
+				diag!("node: {why}; no CPU or memory recorded");
 				None
 			},
 		};
 
 		// The chain recorders share one writer of chain.jsonl; it ends when both are gone.
 		let (series, ops) = chain_series::channel();
-		let chain = Some(spawn(chain_series::run(dir.jsonl("chain.jsonl")?, ops), &failed));
+		let chain = Some(spawn(chain_series::run(jsonl("chain.jsonl")?, ops), &failed));
 		let mut walkers = Vec::new();
 		if let Some(relay_url) = chains.relay_url {
 			match Client::connect(relay_url).await {
@@ -140,8 +144,10 @@ impl Monitors {
 					relay::walk(client, series.clone(), stop_chain.clone(), problems.clone()),
 					&failed,
 				)),
-				Err(e) => problems
-					.record(format!("relay recorder: cannot connect to {} ({e})", relay_url)),
+				Err(e) => problems.record(format!(
+					"relay recorder: cannot connect to {} ({e})",
+					crate::redact::endpoint(relay_url)
+				)),
 			}
 		}
 		Ok(Self {
