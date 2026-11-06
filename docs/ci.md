@@ -34,17 +34,21 @@ After a successful stable release, the release workflow moves `v0` to the latest
 
 Branches, commit SHAs and local `uses: ./` build from source. Missing releases or platform assets also fall back to source. The action emits a warning with the fallback reason and records the installation method, version and reason in the job summary.
 
-Set `version: "0.3.0"` (or `"v0.3.0"`) to select a release explicitly, including from a branch or commit SHA. Set `install: release` to fail when that release cannot be installed, or `install: source` to always build the CLI from the action's ref, ignoring `version`. Any source fallback builds the action's own version, even when a different release was requested. The source build keeps its cache in `.polkameter-action-target` inside the action directory.
+Set `version: "0.3.0"` (or `"v0.3.0"`) to select a release explicitly, including from a branch or commit SHA. Set `install: release` to fail when that release cannot be installed, or `install: source` to always build the CLI from the action's ref, ignoring `version`. Any source fallback builds the action's own version, even when a different release was requested.
 
-Downloads always check the archive's SHA-256 checksum. By default, `gh` must verify the archive's build attestation from `agustinustheo/polkameter/.github/workflows/release.yml`, bound to the selected `refs/tags/v<X.Y.Z>` source ref and the archive's digest. If `gh` is missing, `auto` emits a warning and builds from source; `release` fails. If verification runs and fails (including authentication, network or missing-attestation errors), both modes fail the job. A checksum mismatch also fails both modes; these failures do not fall back to source.
+To test a release candidate, use its full tag, such as `@v0.3.0-rc.1`, or set `version: "0.3.0-rc.1"`. A moving major tag such as `@v0` never selects a prerelease. The source build keeps its cache in `.polkameter-action-target` inside the action directory.
+
+Downloads always check the archive's SHA-256 checksum. By default, `gh` must verify the archive's build attestation from `agustinustheo/polkameter/.github/workflows/release.yml`, bound to the selected `refs/tags/v<X.Y.Z>` source ref and the archive's digest. If `gh` is missing, `auto` emits a warning and builds from source; `release` fails. If verification runs and fails (including network or missing-attestation errors), both modes fail the job. A checksum mismatch also fails both modes; these failures do not fall back to source.
 
 To explicitly accept checksum-only installation, set `verify-attestation: "false"`. The action warns that release provenance is not verified. Checksums remain mandatory.
+
+`gh` cannot verify attestations anonymously, even for this public repository. On github.com runners, the action gives `gh` the job's `GITHUB_TOKEN` for the github.com host only; no extra permission is needed.
 
 On GitHub Enterprise Server (GHES), releases and attestations still come from `api.github.com` and `github.com`. The action never sends the enterprise runner token to those hosts. Release lookups and downloads are anonymous.
 
 On GHES, the public API limits anonymous requests to 60 per hour per IP address. Hitting that limit falls back to a source build in `auto` mode. On github.com runners, the action sends `GITHUB_TOKEN` for release requests.
 
-For attestation verification, `gh` uses any stored github.com authentication from its own configuration. The action never supplies the GHES runner token to `gh`.
+For attestation verification on GHES, `gh` uses any stored github.com authentication from its own configuration. The action never supplies the GHES runner token to `gh`. If `gh` is not signed in to github.com, `auto` warns and builds from source, and `release` fails. Sign `gh` in to github.com on the runner, or set `verify-attestation: "false"` to accept checksum-only installation.
 
 Runners need outbound access to github.com and its release storage. An unavailable download falls back in `auto`, while a failed attestation verification is fatal as described above.
 
@@ -77,15 +81,18 @@ You can combine `plugin-crates` with `plugins` for prebuilt executables. A relea
 | `plugin-crates` | no | `""` | Package directories or `Cargo.toml` paths to build and install, one `path` or `path:package` per line. |
 | `plugin-unlocked` | no | `"false"` | Opt in to plugin builds that may update `Cargo.lock`; default builds require an up-to-date lockfile. |
 | `install` | no | `auto` | `auto` downloads a release with a source fallback; `release` requires a matching asset; `source` always builds. |
-| `version` | no | derived | Release version, `X.Y.Z` or `vX.Y.Z`. Empty uses the action's full release tag or its embedded package version for a moving major tag. Other refs build from source. |
+| `version` | no | derived | Release version, `X.Y.Z` or `vX.Y.Z`, optionally with a prerelease such as `-rc.1`. Empty uses the action's full release tag or its embedded package version for a moving major tag. Other refs build from source. |
 | `verify-attestation` | no | `"true"` | Require `gh` verification of the release workflow, source tag and archive digest. `"false"` explicitly opts out with a warning. Checksums are always verified. |
 | `credentials` | no | `""` | Credential profiles to map to environment variables, one `PROFILE=ENV_VAR` per line. Set the secret variables on the calling step with `env:`; secrets are never inputs. |
 | `topologies` | no | `""` | Zombienet topologies to register, one `ALIAS=path` per line. |
 | `capabilities` | no | `""` | Capabilities the network provisioner supplies, one name per line. |
 | `output` | no | `polkameter-runs` | Artifact root, relative to the workspace. The run creates one `run-*` directory inside it. |
 | `fail-on` | no | `error` | `error` preserves the CLI defaults; `verdict` also fails on a `FAIL` load verdict. Other values are invalid. |
-| `upload` | no | `"true"` | Upload the run directory as a workflow artifact. |
-| `artifact-name` | no | `polkameter-run` | Name of the uploaded run artifact. |
+| `upload` | no | `"true"` | Upload the run's reports as a workflow artifact. See [What the job keeps](#what-the-job-keeps). |
+| `upload-raw-plugin-files` | no | `"false"` | Also upload files that plugins wrote into the run directory. PolkaMeter does not redact them. |
+| `artifact-name` | no | derived | Name of the uploaded artifact. Empty uses `polkameter-run-<job>-<attempt>-<hash>`, unique for each matrix job and each use of the action in a job. |
+| `artifact-retention-days` | no | `""` | Days to keep the artifact, 1 to 90. Empty uses the repository setting. |
+| `artifact-size-limit-mb` | no | `"500"` | Upload at most this many MiB of run records. `0` means no limit. Reports are always uploaded. |
 | `toolchain` | no | `1.93.0` | Rust toolchain that builds PolkaMeter or `plugin-crates`. It must be 1.93 or newer. |
 
 | Output | Description |
@@ -96,10 +103,15 @@ You can combine `plugin-crates` with `plugins` for prebuilt executables. A relea
 | `run-dir` | The run directory, relative to the workspace. |
 | `verdict` | `PASS`, `WARN`, `FAIL` or `INCONCLUSIVE`, read from `summary.json`. Empty if no verdict was written, including plans without a load test. |
 | `exit-code` | The exit code of `polkameter run`. See [What fails the job](#what-fails-the-job). |
+| `artifact-name` | Name of the run artifact, or empty if nothing was staged. Pass it to `actions/download-artifact` in a later job. |
+| `artifact-path` | Directory on the runner holding the files staged for upload, or empty. |
+| `artifact-id` | ID of the uploaded artifact, or empty if it was not uploaded. |
 
 ## Secrets
 
-The `credentials` input maps a plan's credential profile to the name of an environment variable. The `env:` block on the action step sets that variable from a repository secret. Plugins receive the value only in steps that use the credential. The run directory and the job summary show `[redacted]` in place of the value.
+The `credentials` input maps a plan's credential profile to the name of an environment variable. The `env:` block on the action step sets that variable from a repository secret. Plugins receive the value only in steps that use the credential. The files PolkaMeter writes and the job summary show `[redacted]` in place of the value. Files that a plugin writes into the run directory itself are not redacted, so the action does not upload them unless you set `upload-raw-plugin-files: "true"`.
+
+Redaction replaces the exact credential value. A plugin that prints an encoded or transformed form of a secret, such as base64, is not redacted. Do not run plans with secrets on `pull_request_target` or for pull requests from forks.
 
 Never put a secret in `with:`. Inputs are not secret.
 
@@ -141,11 +153,29 @@ With the default `fail-on: error`, a stress-mode load run exits `0` even when it
 ## What the job keeps
 
 - **Job summary.** From v0.3.0, it records the CLI installation method and reason. The action appends the run's `summary.md` to the job summary. For a plan without a load test, it holds only a short status.
-- **Artifact.** The whole run directory, uploaded as `polkameter-run`. Set `artifact-name` to change the name. The upload runs even when the run failed. If validation fails before the run starts, there is no run directory and no artifact.
+- **Artifact.** The run's reports, uploaded even when the run failed. Read its name from the `artifact-name` output. If validation fails before the run starts, there is no run directory and no artifact.
+
+From v0.3.0, the artifact holds only the files PolkaMeter writes; v0.2.0 uploads the whole run directory. The files are `execution.json`, `summary.md`, `summary.json`, `junit.xml`, `events.jsonl`, `samples.jtl`, the plots, the load-test records listed in [Run directory](results.md) and each plugin's redacted `stderr.log`. Other files in the run directory, such as a plugin's own diagnostics or its `series.jsonl`, stay on the runner. Set `upload-raw-plugin-files: "true"` to upload them too, after checking that your plugins never write secrets.
+
+PolkaMeter redacts plugin logs and summaries when the run finishes, including a failed or stopped run. If the CLI was killed first, for example by the out-of-memory killer, those files still hold what the plugins wrote. The action then leaves `plugins/*/stderr.log`, `summary.md`, `summary.json` and `plugin-checks.json` out of the artifact and the job summary, with a notice. They stay in the run directory on the runner.
+
+The action copies the files after `polkameter run` exits. A plugin process that is still running cannot change the uploaded copy, and the action never follows a symbolic link in the run directory.
+
+If the records exceed `artifact-size-limit-mb`, the action keeps the reports and as many records as fit, in the order above, and warns. `polkameter-artifact-omitted.txt` in the artifact lists the omitted files. Set `artifact-retention-days` to keep the artifact for less time than the repository default.
+
+On GHES, `actions/upload-artifact` v4 and newer are not supported, so the action skips the upload with a notice. Upload the staged files with an uploader your server supports:
+
+```yaml
+      - uses: actions/upload-artifact@v3
+        if: always() && steps.load.outputs.artifact-path != ''
+        with:
+          name: ${{ steps.load.outputs.artifact-name }}
+          path: ${{ steps.load.outputs.artifact-path }}
+```
 
 ## GitHub test reports
 
-The run directory uploaded by the Action contains `junit.xml`. Add a test-report step after the action to show its cases in a GitHub check. Give the job `checks: write` permission:
+The artifact uploaded by the action contains `junit.xml`. Add a test-report step after the action to show its cases in a GitHub check. Give the job `checks: write` permission:
 
 ```yaml
 permissions:
@@ -178,7 +208,7 @@ curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/insta
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-For reproducible jobs, pass a version with `sh -s -- <version>` instead of `sh`. These recipes need a release containing CLI-only assets. See [Install](install.md) for supported systems and source installation.
+For reproducible jobs, pass a version with `sh -s -- <version>` instead of `sh`. These recipes need a release containing CLI-only assets. See [Install](install.md) for supported systems and source installation. `gh` verifies the build attestation only when signed in to github.com; on GitHub Actions, set `GH_TOKEN: ${{ github.token }}` on the step. See [Install](install.md#use-the-install-script).
 
 Configure subsequent shell steps to run from the repository root, replacing the placeholders with your plugin executable and environment variable name:
 
@@ -225,5 +255,13 @@ load-test:
 Set `POLKAMETER_SETUP_SURI` as a masked GitLab CI variable. The container runs as UID `10001` by default, so configure your runner to give that user write access to the checkout and output directory. Release container publication must complete before this job can pull the image.
 
 `--junit` writes a copy of the run's JUnit report to a fixed path, and `reports: junit:` shows its cases in the pipeline's Tests view and the merge request test summary. `when: always` keeps reports from failed runs. A plan rejected before a run directory is created has no JUnit report.
+
+When a job is cancelled or reaches its time limit, the CI system stops the container and may kill it before teardown finishes. To stop the run cleanly first, wrap it in `timeout`, which sends SIGINT and allows 45 seconds for teardown. Choose a duration shorter than the job's time limit:
+
+```yaml
+    - timeout --signal=INT --kill-after=45s 50m polkameter run plans/transfers.polkameter.xml --output polkameter-runs --fail-on-verdict
+```
+
+A run stopped this way still writes its results. `timeout` then exits `124`, which fails the job. When you start the container yourself, see [Stop a container run](install.md#stop-a-container-run).
 
 For Jenkins, publish `polkameter-runs/**/junit.xml` with the `junit` pipeline step in an `always` post condition. The [results reference](results.md#junitxml) lists the case mapping, warning output and timings.

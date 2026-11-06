@@ -35,9 +35,17 @@ curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/insta
 
 Use a version such as `0.3.0` or `v0.3.0`. The script verifies the archive's SHA-256 checksum before installing `polkameter`; the default directory is `~/.local/bin`. It needs `curl`, `tar`, and either `sha256sum` or `shasum`.
 
-When `gh` is available, the script automatically verifies GitHub build provenance and stops if verification fails. Install and authenticate the GitHub CLI before running the script to use this check. It requires the signer workflow `agustinustheo/polkameter/.github/workflows/release.yml` and the source ref `refs/tags/v<version>`, matching the GitHub Action installer.
+When `gh` is available and signed in to github.com, the script also verifies GitHub build provenance and stops if verification fails. It requires the signer workflow `agustinustheo/polkameter/.github/workflows/release.yml` and the source ref `refs/tags/v<version>`, matching the GitHub Action installer.
 
-A checksum detects a damaged download, but an attacker who replaces both files can replace the checksum too. Attestation verification additionally ties the archive to that repository's release workflow and version tag; it does not audit the code. Without `gh`, the script prints that only the checksum was verified. Set `POLKAMETER_VERIFY_ATTESTATION=1` to require `gh`, or `POLKAMETER_VERIFY_ATTESTATION=0` to opt out explicitly:
+`gh` cannot verify attestations anonymously, even for this public repository. Run `gh auth login` first, or set `GH_TOKEN` on the `sh` process. In a GitHub Actions step, `gh` is installed but not signed in; pass the job token:
+
+```yaml
+- run: curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/v<version>/install.sh | sh -s -- <version>
+  env:
+    GH_TOKEN: ${{ github.token }}
+```
+
+A checksum detects a damaged download, but an attacker who replaces both files can replace the checksum too. Attestation verification additionally ties the archive to that repository's release workflow and version tag; it does not audit the code. Without `gh`, or with `gh` not signed in, the script prints that only the checksum was verified. Set `POLKAMETER_VERIFY_ATTESTATION=1` to require a signed-in `gh`, or `POLKAMETER_VERIFY_ATTESTATION=0` to opt out explicitly:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh |
@@ -66,17 +74,29 @@ The image supports `linux/amd64` and `linux/arm64`, includes CA certificates, an
 
 ```sh
 mkdir -p polkameter-runs
-docker run --rm --user "$(id -u):$(id -g)" \
+docker run --rm --init --user "$(id -u):$(id -g)" \
   -e HOME=/tmp -e POLKAMETER_PLUGIN_REGISTRY=/tmp/plugins.json \
   -v "$PWD:/work" -w /work \
   --entrypoint /bin/sh ghcr.io/agustinustheo/polkameter:<version> -ec '
     polkameter plugin install /work/target/release/<plugin-binary>
-    polkameter run /work/plans/transfers.polkameter.xml \
+    exec polkameter run /work/plans/transfers.polkameter.xml \
       --output /work/polkameter-runs --fail-on-verdict
   '
 ```
 
-For a version check, run `docker run --rm ghcr.io/agustinustheo/polkameter:<version> --version`. See [Run PolkaMeter in CI](ci.md#gitlab-ci) for a GitLab `image:` example.
+For a version check, run `docker run --rm ghcr.io/agustinustheo/polkameter:<version> --version`.
+
+### Stop a container run
+
+The image runs `polkameter` under the `tini` init process, and `docker stop` sends it SIGINT. PolkaMeter treats that like Ctrl-C: it stops the run, runs teardown, writes the results and exits `130`. Teardown can take up to 30 seconds, longer than the 10 seconds `docker stop` waits by default before it kills the container. Give it 45 seconds:
+
+```sh
+docker stop --timeout 45 <container>
+```
+
+Or set the timeout when you start the container, with `docker run --stop-timeout 45`. In Kubernetes, set `terminationGracePeriodSeconds: 45` on the pod; Kubernetes sends SIGTERM rather than the image's stop signal.
+
+If you replace the entrypoint with a shell, as the example above does, add `--init` and start the run with `exec`, so the signal reaches `polkameter` rather than the shell. See [Run PolkaMeter in CI](ci.md#gitlab-ci) for a GitLab `image:` example.
 
 ## Build from source
 

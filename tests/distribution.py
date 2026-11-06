@@ -10,7 +10,9 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
+import sys
 import tarfile
 import tempfile
 import threading
@@ -139,6 +141,31 @@ class InstallerTests(unittest.TestCase):
 
     def test_attestation_failure(self):
         self.assertNotEqual(self.run_installer(POLKAMETER_VERIFY_ATTESTATION="1", TEST_GH_EXIT="1").returncode, 0)
+        self.assertFalse((self.destination / "polkameter").exists())
+
+    def test_unauthenticated_gh_falls_back_to_checksum_in_auto(self):
+        # gh exits 4 when it has no github.com credentials, as on a GitHub-hosted
+        # runner step without GH_TOKEN; anonymous verification is not possible.
+        for setting in ("", "auto"):
+            with self.subTest(setting=setting):
+                result = self.run_installer(POLKAMETER_VERIFY_ATTESTATION=setting, TEST_GH_EXIT="4")
+                self.assert_installed(result)
+                self.assertIn("gh is not authenticated to github.com; only the checksum was verified", result.stderr)
+                self.assertIn("--hostname github.com", (self.destination.parent / "gh.log").read_text())
+
+    def test_unauthenticated_gh_fails_when_attestation_required(self):
+        result = self.run_installer(POLKAMETER_VERIFY_ATTESTATION="1", TEST_GH_EXIT="4")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("gh must be authenticated to github.com", result.stderr)
+        self.assertFalse((self.destination / "polkameter").exists())
+
+    def test_failed_verification_is_fatal_in_auto(self):
+        result = self.run_installer(POLKAMETER_VERIFY_ATTESTATION="auto", TEST_GH_EXIT="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("attestation verification failed (gh exit 1)", result.stderr)
+        # gh signed in with an expired or invalid token also exits 1.
+        self.assertIn("credentials are expired or invalid, run gh auth login or set a valid GH_TOKEN", result.stderr)
+        self.assertIn("POLKAMETER_VERIFY_ATTESTATION=0", result.stderr)
         self.assertFalse((self.destination / "polkameter").exists())
 
     def test_attestation_automatic(self):
@@ -492,21 +519,196 @@ except HTTPError as error:
         self.assertEqual(self.run_mixed_publish(403, ""), [("unconfigured", "trusted")])
 
 
+FAKE_GH = r'''
+import hashlib, json, os, sys
+state_path, log_path = os.environ["FAKE_GH_STATE"], os.environ["FAKE_GH_LOG"]
+state = json.load(open(state_path))
+args = sys.argv[1:]
+with open(log_path, "a") as log:
+    log.write(json.dumps(args) + "\n")
+if args[0] == "api":
+    assert args[1:] == ["--paginate", "repos/owner/repo/git/matching-refs/tags/v", "--jq", ".[].ref"], args
+    print("".join(f"refs/tags/{tag}\n" for tag in state.get("tags", [])), end="")
+    sys.exit(0)
+if os.environ.get("FAKE_GH_VIEW_ERROR") and args[:2] == ["release", "view"]:
+    sys.stderr.write("HTTP 502: Bad Gateway\n")
+    sys.exit(1)
+release = state.get("release")
+command = args[1]
+if command == "view":
+    if release is None:
+        sys.stderr.write("release not found\n")
+        sys.exit(1)
+    print(json.dumps({"isDraft": release["isDraft"], "assets": [
+        {"name": name, "digest": digest, "state": "uploaded"} for name, digest in release["assets"].items()]}))
+elif command == "create":
+    assert release is None and "--draft" in args
+    state["release"] = {"isDraft": True, "prerelease": "--prerelease" in args, "assets": {}}
+elif command == "upload":
+    assert release is not None and "--clobber" in args
+    for path in args[4:]:
+        name = os.path.basename(path)
+        if name in release["assets"] and not release["isDraft"]:
+            state.setdefault("replaced_published", []).append(name)
+        release["assets"][name] = "sha256:" + hashlib.sha256(open(path, "rb").read()).hexdigest()
+elif command == "edit":
+    for arg in args[3:]:
+        if arg.startswith("--prerelease="):
+            release["prerelease"] = arg.endswith("true")
+        if arg == "--draft=false":
+            release["isDraft"] = False
+json.dump(state, open(state_path, "w"))
+'''
+
+
 class ReleaseTests(unittest.TestCase):
-    def test_create_and_recovery_flags(self):
+    ARCHIVE = "polkameter-0.3.0-x86_64-unknown-linux-gnu.tar.gz"
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.work = Path(directory.name)
+        bin_dir = self.work / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "gh").write_text(f"#!{sys.executable}\n{FAKE_GH}")
+        (bin_dir / "gh").chmod(0o755)
+        self.assets = []
+        for name in (self.ARCHIVE, self.ARCHIVE + ".sha256", "polkameter.spdx.json"):
+            path = self.work / name
+            path.write_bytes(name.encode())
+            self.assets.append(path)
+        self.state = self.work / "state.json"
+        self.log = self.work / "log"
+        self.environment = patch.dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                                      FAKE_GH_STATE=str(self.state), FAKE_GH_LOG=str(self.log))
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
+        self.set_release(None)
+
+    def set_release(self, release, tags=()):
+        self.state.write_text(json.dumps({"release": release, "tags": list(tags)}))
+
+    def publish(self, tag="v0.3.0"):
+        releaser.publish(tag, self.assets, "owner/repo")
+
+    def digest(self, path):
+        return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+    def published(self, **changes):
+        assets = {p.name: self.digest(p) for p in self.assets}
+        assets.update(changes)
+        return {"isDraft": False, "prerelease": False, "assets": {k: v for k, v in assets.items() if v}}
+
+    def calls(self):
+        return [json.loads(line)[1] for line in self.log.read_text().splitlines()] if self.log.exists() else []
+
+    def commands(self, name):
+        return [json.loads(line) for line in self.log.read_text().splitlines() if json.loads(line)[1] == name]
+
+    def uploaded(self):
+        return sorted(Path(p).name for p in self.commands("upload")[0][4:])
+
+    def final(self):
+        return json.loads(self.state.read_text())
+
+    def test_new_release_is_drafted_uploaded_then_published(self):
         for tag in ("v0.3.0", "v0.3.0-rc.1"):
-            for exists in (False, True):
-                with self.subTest(tag=tag, exists=exists), patch.object(releaser.subprocess, "run") as run:
-                    run.return_value.returncode = 0 if exists else 1
-                    releaser.publish(tag, ["archive", "archive.sha256"])
-                    command = run.call_args_list[1].args[0]
-                    self.assertEqual(command[2], "edit" if exists else "create")
-                    if "-" in tag:
-                        self.assertIn("--latest=false", command)
-                        self.assertIn("--prerelease=true" if exists else "--prerelease", command)
-                    elif exists:
-                        self.assertIn("--prerelease=false", command)
-                    self.assertEqual(run.call_args_list[2].args[0][-2:], ["archive", "archive.sha256"])
+            with self.subTest(tag=tag):
+                self.set_release(None)
+                self.log.unlink(missing_ok=True)
+                self.publish(tag)
+                self.assertEqual(self.calls(), ["view", "--paginate", "create", "upload", "edit"])
+                create, edit = self.commands("create")[0], self.commands("edit")[0]
+                self.assertIn("--draft", create)
+                self.assertIn("--verify-tag", create)
+                self.assertIn("--draft=false", edit)
+                state = self.final()
+                self.assertFalse(state["release"]["isDraft"])
+                self.assertEqual(state["release"]["assets"], {p.name: self.digest(p) for p in self.assets})
+                if "-" in tag:
+                    self.assertIn("--prerelease", create)
+                    self.assertIn("--latest=false", create)
+                    self.assertIn("--prerelease=true", edit)
+                    self.assertIn("--latest=false", edit)
+                else:
+                    self.assertNotIn("--prerelease", create)
+                    self.assertIn("--prerelease=false", edit)
+                    self.assertNotIn("--latest=false", edit)
+
+    def test_notes_start_at_the_previous_stable_tag(self):
+        tags = ["v0", "v0.1.0", "v0.2.0", "v0.2.1-rc.1", "v0.3.0-rc.1", "v0.3.0-rc.2", "v0.4.0", "v0.10.0"]
+        for tag, start in (("v0.3.0", "v0.2.0"), ("v0.3.0-rc.2", "v0.2.0"), ("v0.11.0", "v0.10.0"),
+                           ("v0.1.0", None)):
+            with self.subTest(tag=tag):
+                self.set_release(None, tags)
+                self.log.unlink(missing_ok=True)
+                self.publish(tag)
+                create = self.commands("create")[0]
+                if start:
+                    self.assertEqual(create[create.index("--notes-start-tag") + 1], start)
+                else:
+                    self.assertNotIn("--notes-start-tag", create)
+
+    def test_draft_recovery_replaces_changed_and_uploads_missing_assets(self):
+        self.set_release({"isDraft": True, "prerelease": False, "assets": {self.ARCHIVE: "sha256:" + "0" * 64}})
+        self.publish()
+        self.assertEqual(self.uploaded(), sorted(p.name for p in self.assets))
+        self.assertFalse(self.final()["release"]["isDraft"])
+        self.assertNotIn("replaced_published", self.final())
+
+    def test_published_recovery_skips_identical_assets_and_reconciles_flags(self):
+        release = self.published()
+        release["prerelease"] = True
+        self.set_release(release)
+        self.publish()
+        self.assertEqual(self.calls(), ["view", "edit"])
+        self.assertNotIn("--draft=false", self.commands("edit")[0])
+        self.assertFalse(self.final()["release"]["prerelease"])
+
+    def test_published_recovery_uploads_only_missing_assets(self):
+        self.set_release(self.published(**{"polkameter.spdx.json": None}))
+        self.publish()
+        self.assertEqual(self.uploaded(), ["polkameter.spdx.json"])
+        self.assertNotIn("replaced_published", self.final())
+
+    def test_published_rebuilds_that_differ_keep_the_published_files(self):
+        # A dispatch after publication rebuilds everything: Rust archives and the
+        # SBOM (new timestamp and ID) never match, yet later jobs must still run.
+        published = self.published(**{self.ARCHIVE: "sha256:" + "1" * 64,
+                                      self.ARCHIVE + ".sha256": "sha256:" + "2" * 64,
+                                      "polkameter.spdx.json": "sha256:" + "3" * 64})
+        self.set_release(published)
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            self.publish()
+        self.assertEqual(self.calls(), ["view", "edit"])
+        self.assertEqual(self.final()["release"]["assets"], published["assets"])
+        self.assertIn("::warning::", output.getvalue())
+        self.assertIn("polkameter.spdx.json", output.getvalue())
+        self.assertIn("never replaced", output.getvalue())
+
+    def test_missing_asset_whose_published_partner_differs_fails(self):
+        for missing, changed in ((self.ARCHIVE, self.ARCHIVE + ".sha256"), (self.ARCHIVE + ".sha256", self.ARCHIVE)):
+            with self.subTest(missing=missing):
+                published = self.published(**{missing: None, changed: "sha256:" + "1" * 64})
+                self.set_release(published)
+                self.log.unlink(missing_ok=True)
+                with self.assertRaises(SystemExit) as raised:
+                    self.publish()
+                self.assertIn(missing, str(raised.exception))
+                self.assertIn("Re-run only the failed jobs", str(raised.exception))
+                self.assertEqual(self.calls(), ["view"])
+                self.assertEqual(self.final()["release"]["assets"], published["assets"])
+
+    def test_missing_asset_whose_published_partner_matches_is_uploaded(self):
+        self.set_release(self.published(**{self.ARCHIVE + ".sha256": None}))
+        self.publish()
+        self.assertEqual(self.uploaded(), [self.ARCHIVE + ".sha256"])
+
+    def test_unreadable_release_fails_without_creating_one(self):
+        with patch.dict(os.environ, FAKE_GH_VIEW_ERROR="1"), self.assertRaises(SystemExit) as raised:
+            self.publish()
+        self.assertIn("Could not read release", str(raised.exception))
+        self.assertEqual(self.calls(), ["view"])
 
     def test_tag_ref_guard_runs_before_builds(self):
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
@@ -516,16 +718,64 @@ class ReleaseTests(unittest.TestCase):
                 result = subprocess.run(["bash", "-c", guard], env={**os.environ, "GITHUB_REF": ref, "RELEASE_TAG": "v0.3.0"}, capture_output=True)
                 self.assertEqual(result.returncode, code)
 
-    def test_workflow_alias_serialization_and_permissions(self):
+    def job(self, name):
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
-        container = workflow.split("\n  container:\n", 1)[1].split("\n  container-aliases:", 1)[0]
+        return re.search(rf"^  {name}:\n(.*?)(?=^  [a-z][a-z-]*:\n|\Z)", workflow, re.MULTILINE | re.DOTALL)[1]
+
+    def test_workflow_alias_serialization_and_permissions(self):
+        container = self.job("container")
         self.assertNotIn("id-token: write", container)
         self.assertNotIn("metadata-action", container)
-        aliases = workflow.split("\n  container-aliases:\n", 1)[1].split("\n  publish:", 1)[0]
+        aliases = self.job("container-aliases")
         self.assertIn("group: release-container-aliases\n", aliases)
-        self.assertIn("needs: [prepare, container]", aliases)
+        self.assertIn("needs: [prepare, container, publish]", aliases)
         self.assertIn("!contains(needs.prepare.outputs.version, '-')", aliases)
-        self.assertIn("!contains(needs.prepare.outputs.version, '-')", workflow.split("\n  major-tag:", 1)[1])
+        self.assertIn("!contains(needs.prepare.outputs.version, '-')", self.job("major-tag"))
+
+    def test_crates_publish_only_after_release_and_container(self):
+        crates = self.job("crates-io")
+        self.assertIn("needs: [prepare, publish, container]", crates)
+        # Prerelease tags skip crates.io unless a dispatch opts in explicitly.
+        self.assertIn("if: ${{ !contains(needs.prepare.outputs.version, '-') || vars.PUBLISH_PRERELEASE_CRATES == 'true' || inputs.prerelease-crates }}", crates)
+        self.assertIn("needs: [prepare, cli-linux, cli-other, desktop]", self.job("publish"))
+
+    def test_release_assets_are_uploaded_only_by_release_script(self):
+        publish = self.job("publish")
+        self.assertIn("upload-release-assets: false", publish)
+        self.assertLess(publish.index("attest-build-provenance"), publish.index("scripts/release-github.py"))
+
+    def test_release_builds_use_supported_runners_without_caches(self):
+        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        self.assertNotIn("macos-14", workflow)
+        self.assertNotIn("rust-cache", workflow)
+        self.assertNotIn("type=gha", workflow)
+        self.assertIn('cache: "false"', self.job("desktop"))
+        setup = (ROOT / ".github/actions/setup/action.yml").read_text()
+        self.assertIn("cache: ${{ inputs.cache == 'true' && 'pnpm' || '' }}", setup)
+        self.assertIn("if: inputs.toolchain != '' && inputs.cache == 'true'", setup)
+        self.assertNotIn("macos-14", (ROOT / ".github/workflows/ci.yml").read_text())
+
+    def test_every_action_is_pinned_to_a_commit_with_version_comment(self):
+        files = [ROOT / "action.yml", *sorted((ROOT / ".github").rglob("*.yml"))]
+        for path in files:
+            for line in path.read_text().splitlines():
+                match = re.match(r"\s*(?:- )?uses: (\S+)(.*)", line)
+                if not match or match[1].startswith("./"):
+                    continue
+                with self.subTest(path=path.name, uses=match[1]):
+                    self.assertRegex(match[1], r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
+                    self.assertRegex(match[2], r"^ # \S+")
+
+    def test_dependabot_covers_actions_and_docker(self):
+        config = (ROOT / ".github/dependabot.yml").read_text()
+        self.assertIn("- /.github/actions/setup", config)
+        self.assertIn("package-ecosystem: docker", config)
+
+    def test_container_uses_init_and_non_root_user(self):
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        self.assertIn('ENTRYPOINT ["/usr/bin/tini", "--", "polkameter"]', dockerfile)
+        self.assertIn("STOPSIGNAL SIGINT", dockerfile)
+        self.assertIn("USER 10001:10001", dockerfile)
 
 
 class ContainerTests(unittest.TestCase):

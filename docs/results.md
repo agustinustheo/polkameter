@@ -35,7 +35,7 @@ The name is `run-<milliseconds>-<pid>-<sequence>`, created in `--output`, or `--
 | `plots/*.svg` | Samples per second; p50, p95, p99 of `elapsed`; failed samples by `responseCode`. |
 | `plugins/<id>/stderr.log` | Standard error of each plugin started. |
 
-No file stores a credential value. Where a plugin or error would echo one, the file shows `[redacted]`.
+The files PolkaMeter writes, including each plugin's `stderr.log`, store no credential value. Where a plugin or error would echo one, the file shows `[redacted]`. Other files that a plugin writes into the run directory are not redacted.
 
 ## Files in a load test
 
