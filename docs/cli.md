@@ -130,6 +130,8 @@ With a `<load>`, it rebuilds the built-in and plugin checks, `summary.json`, `su
 
 `report` exits 0 when the rebuild succeeds, even if the outcome is `failed`. Check the `Status:` line or `execution.json`'s `state`.
 
+If `summary.json` has a `schemaVersion` other than `1`, or none, `report` changes no file and exits 2. See [rebuilding a report](results.md#rebuilding-a-report).
+
 ```sh
 polkameter report runs/run-1792255021142-12303-1
 ```
@@ -328,7 +330,7 @@ The client checks each run ID: at most 128 characters, from letters, digits, `-`
 | --- | --- | --- |
 | `0` | A command succeeded, or a run ended `completed` | Nothing to fix |
 | `1` | A run ended `failed` or `completed_with_failures`, or a `report` or remote request failed | A plugin crashed or errored, a deadline or assertion failed, a credential was unavailable, or the agent refused a request. A smoke-mode load run also exits 1 on a monitor problem or a missing required check. With `--fail-on-verdict`, a `FAIL` verdict also exits 1 |
-| `2` | Invalid input or usage | A malformed or invalid plan, a bad flag or argument, an unreadable registry, or a wrong remote endpoint or token variable |
+| `2` | Invalid input or usage | A malformed or invalid plan, a bad flag or argument, an unreadable registry, a wrong remote endpoint or token variable, or a `summary.json` that `report` cannot rewrite (unknown `schemaVersion`) |
 | `3` | Preflight failed | A plugin not installed, a checksum or version mismatch, an operation missing from its manifest, a preflight step that can change state, no calibration answer from the chain, or an unregistered `<monitors>` alias |
 | `130` | Stopped | Ctrl-C (SIGINT) during a local run, or a stopped remote run |
 

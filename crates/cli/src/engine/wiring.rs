@@ -71,7 +71,7 @@ where
 	})
 }
 
-/// Step edges: scrape now, so a step window starts and ends on fresh samples.
+/// Step and phase edges: scrape now, so a window starts and ends on fresh samples.
 async fn step_edges(
 	mut rx: broadcast::Receiver<RunEvent>,
 	scraper: ScraperHandle,
@@ -81,7 +81,7 @@ async fn step_edges(
 		tokio::select! {
 			() = stop.cancelled() => return Ok(()),
 			e = rx.recv() => match e {
-				Ok(RunEvent::StepEdge(_)) => { scraper.scrape_now().await; }
+				Ok(RunEvent::StepEdge(_) | RunEvent::PhaseEdge) => { scraper.scrape_now().await; }
 				// A missed step edge makes a step window wrong: an error of our tools.
 				Err(broadcast::error::RecvError::Lagged(n)) => return Err(MonitorError::Tool(format!("run events lagged by {n}: step edges missed"))),
 				Err(broadcast::error::RecvError::Closed) => return Ok(()),

@@ -5,7 +5,8 @@ use serde::Serialize;
 
 use crate::observers::checks::{
 	Check, LIMITS, Status, Verdict,
-	data::{COLLATOR, CounterReset, END_REASON, Label, Phase, RunData, Window, quantile},
+	data::{COLLATOR, CounterReset, END_REASON, Label, Phase, RunData, Window, add_to, quantile},
+	outcomes::{also_missing, failed_scrapes, gaps, no_data},
 };
 
 /// Our flood txs not yet included or refused, from the load tool's own counters.
@@ -77,9 +78,36 @@ fn burst_drains(d: &RunData) -> Result<Verdict, CounterReset> {
 		String::new()
 	};
 	let ok = r.recovered && r.drained_seconds.is_some() && empty == 0.0;
-	let detail = format!("{back}; backlog {} at the stop, {drained}{stuck}", r.backlog_at_stop);
+	// Empty blocks come from the collator's scrapes: without them at the recovery's edges, a
+	// pass cannot rule out a stuck pool (a failure stands on the load tool's own numbers).
+	let recovery = std::slice::from_ref(&rec);
+	let failed_scrapes = if d.has(END_REASON, &[COLLATOR]) {
+		let missing: Vec<String> =
+			gaps(d, END_REASON, &[COLLATOR], recovery).into_iter().flatten().collect();
+		let note = failed_scrapes(d, &[COLLATOR], recovery);
+		if ok && !missing.is_empty() {
+			return Ok(no_data(&missing, &note));
+		}
+		note
+	} else {
+		String::new()
+	};
+	let detail = format!(
+		"{back}; backlog {} at the stop, {drained}{stuck}{failed_scrapes}",
+		r.backlog_at_stop
+	);
 	Ok(Verdict::new(if ok { Status::Pass } else { Status::Fail }, detail)
 		.with(serde_json::json!({ "drainedSeconds": r.drained_seconds })))
+}
+
+/// How the check names a refusal without an error code.
+const NO_CODE: &str = "no code";
+
+/// A refusal `reason` label without an error code. The load tool labels a refusal with its
+/// JSON-RPC error code, and with `0` when the error had none; `no code` and an empty label mean
+/// the same.
+fn uncoded(reason: &str) -> bool {
+	matches!(reason.trim(), "" | "0" | NO_CODE)
 }
 
 fn refusals_clean(d: &RunData) -> Result<Verdict, CounterReset> {
@@ -89,9 +117,11 @@ fn refusals_clean(d: &RunData) -> Result<Verdict, CounterReset> {
 		let filter: Vec<(&str, &str)> =
 			s.labels.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
 		let n = d.increase("polkameter_tx_rejected_total", &filter, &w)?;
-		by_reason.push((s.labels.get("reason").cloned().unwrap_or_default(), n));
+		let reason = s.labels.get("reason").map_or("", String::as_str);
+		let reason = if uncoded(reason) { NO_CODE } else { reason };
+		add_to(&mut by_reason, reason.to_owned(), n);
 	}
-	let no_code = by_reason.iter().filter(|(r, _)| r == "no code").fold(0.0, |a, x| a + x.1);
+	let no_code = by_reason.iter().filter(|(r, _)| r == NO_CODE).fold(0.0, |a, x| a + x.1);
 	let total = by_reason.iter().fold(0.0, |a, x| a + x.1);
 	let hung = d.summary.stop.rule == crate::observers::files::summary::Rule::PoolIntake;
 	let reasons = if by_reason.is_empty() {
@@ -123,40 +153,60 @@ struct PoolWork {
 }
 
 fn pool_work(d: &RunData) -> Result<Verdict, CounterReset> {
-	if !d.has("substrate_sub_txpool_maintain_duration_seconds_bucket", &[COLLATOR]) {
+	let bucket = "substrate_sub_txpool_maintain_duration_seconds_bucket";
+	if !d.has(bucket, &[COLLATOR]) {
 		return Ok(Verdict::new(Status::NoResult, "no collator metrics"));
 	}
+	let load = d.load_windows();
+	let note = failed_scrapes(d, &[COLLATOR], &load);
 	let budget = LIMITS.max_maintain_share_of_block * d.block_interval_s;
 	let mut windows = Vec::new();
-	for w in d.load_windows() {
+	let mut missing = Vec::new();
+	for (w, gap) in load.iter().zip(gaps(d, bucket, &[COLLATOR], &load)) {
+		if let Some(gap) = gap {
+			missing.push(gap);
+			continue;
+		}
 		let scheduled = d
 			.at("substrate_sub_txpool_validations_scheduled", &[COLLATOR], w.end)
 			.unwrap_or(0.0);
 		let finished = d
 			.at("substrate_sub_txpool_validations_finished", &[COLLATOR], w.end)
 			.unwrap_or(0.0);
-		let b = d.buckets("substrate_sub_txpool_maintain_duration_seconds", &[COLLATOR], &w)?;
-		windows.push(PoolWork {
-			maintain_p95_s: quantile(b.as_ref(), 0.95),
-			backlog: scheduled - finished,
-			window: w.label,
-		});
+		match d.buckets("substrate_sub_txpool_maintain_duration_seconds", &[COLLATOR], w) {
+			Ok(b) => windows.push(PoolWork {
+				maintain_p95_s: quantile(b.as_ref(), 0.95),
+				backlog: scheduled - finished,
+				window: w.label,
+			}),
+			Err(reset) => missing.push(format!("{}: a node restarted: {reset}", w.label)),
+		}
 	}
+	let numbers = serde_json::json!({ "windows": windows });
 	let slow = windows.iter().find(|s| s.maintain_p95_s.unwrap_or(0.0) > budget);
 	let backed = windows.iter().find(|s| s.backlog > LIMITS.max_validation_backlog);
 	let share = LIMITS.max_maintain_share_of_block * 100.0;
+	let also = also_missing(&missing);
 	let (status, detail) = match (slow, backed) {
 		(Some(s), _) => (
 			Status::Fail,
 			format!(
-				"{}: maintenance p95 in the {} s bucket, over {} s ({share}% of a block)",
+				"{}: maintenance p95 in the {} s bucket, over {} s ({share}% of a block){also}",
 				s.window,
 				num(s.maintain_p95_s.unwrap_or(0.0)),
 				to_fixed(budget, 1)
 			),
 		),
 		(None, Some(b)) => {
-			(Status::Warn, format!("{}: {} txs waiting for validation", b.window, b.backlog))
+			(Status::Warn, format!("{}: {} txs waiting for validation{also}", b.window, b.backlog))
+		},
+		(None, None) if !missing.is_empty() => {
+			return Ok(no_data(&missing, &note).with(numbers));
+		},
+		(None, None) if windows.iter().all(|s| s.maintain_p95_s.is_none()) => {
+			let none =
+				["the collator recorded no pool maintenance in any step or in recovery".to_owned()];
+			return Ok(no_data(&none, &note).with(numbers));
 		},
 		(None, None) => (
 			Status::Pass,
@@ -166,7 +216,7 @@ fn pool_work(d: &RunData) -> Result<Verdict, CounterReset> {
 			),
 		),
 	};
-	Ok(Verdict::new(status, detail).with(serde_json::json!({ "windows": windows })))
+	Ok(Verdict::new(status, detail + &note).with(numbers))
 }
 
 /// The pool checks.
