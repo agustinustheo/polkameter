@@ -1,0 +1,4 @@
+# Made-up values in the redaction tests of commit eebf79c, not credentials. The current lines
+# carry gitleaks:allow.
+eebf79c34aa21f88f2cf627228d61310c5a75ce9:crates/cli/src/engine/measurement.rs:generic-api-key:568
+eebf79c34aa21f88f2cf627228d61310c5a75ce9:crates/cli/src/redact.rs:generic-api-key:657
