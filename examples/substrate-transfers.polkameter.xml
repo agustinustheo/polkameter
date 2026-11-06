@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Balances.transfer_keep_alive stress test for any Polkadot SDK chain, with the substrate plugin.
+  Each flood signer sends the existential deposit to the next flood signer, so the transfers
+  never create accounts. Made for the dev chain of scripts/dev-chain.sh (6-second blocks,
+  //Alice funded). For another chain, change the endpoint, block-interval-seconds, the funding
+  amount and the rates.
+  The seed credential is a secret URI, such as //Alice on a dev chain:
+    polkameter plugin credential substrate-dev POLKAMETER_SUBSTRATE_SEED
+    export POLKAMETER_SUBSTRATE_SEED=//Alice
+-->
+<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="Substrate transfers" mode="stress" timeout-ms="1800000">
+  <plugins><plugin id="substrate" version="0.3.0" protocol="1"/></plugins>
+  <targets><target id="chain" endpoint="ws://127.0.0.1:9944"/></targets>
+  <credentials><credential id="seed" profile="substrate-dev"/></credentials>
+  <preflight>
+    <step id="chain" use="substrate.preflight">
+      <input name="target" ref="targets.chain"/>
+      <input name="calls" value="[&quot;Balances.transfer_keep_alive&quot;]"/>
+    </step>
+  </preflight>
+  <setup>
+    <!-- Tops up the 16 flood signers and the probe signer to 1000 UNIT from the seed account. -->
+    <step id="fund" use="substrate.fund-accounts" timeout-ms="300000">
+      <input name="target" ref="targets.chain"/>
+      <input name="seed" ref="credentials.seed"/>
+      <input name="flood-signers" value="16"/>
+      <input name="amount" value="1000000000000000"/>
+    </step>
+    <!-- The ramp sends at most 30 s x (80 + 160 + ... + 480) = 50,400 transactions. -->
+    <step id="prepare" use="substrate.prepare-transfers" timeout-ms="300000">
+      <input name="target" ref="targets.chain"/>
+      <input name="seed" ref="credentials.seed"/>
+      <input name="flood-signers" value="16"/>
+      <input name="count" value="52000"/>
+      <input name="probes" ref="run.probeBudget"/>
+      <input name="mortality" value="1024"/>
+    </step>
+  </setup>
+  <load target="chain" source-ref="steps.prepare.flood" probes-ref="steps.prepare.probes"
+        state-check="substrate.check-state" state-ref="steps.prepare.state"
+        baseline-probes="3" recovery-seconds="120" block-interval-seconds="6">
+    <ramp start="80" step="80" steps="6" seconds="30"/>
+  </load>
+</polkameter-plan>

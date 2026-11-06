@@ -4205,6 +4205,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "polkameter-substrate-plugin"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "hex",
+ "polkameter",
+ "polkameter-plugin-sdk",
+ "serde",
+ "serde_json",
+ "sp-crypto-hashing",
+ "subxt-rpcs",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "polling"
 version = "3.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
