@@ -32,6 +32,9 @@ pub struct Outcome {
 	pub exit_code: i32,
 	pub state: RunState,
 	pub error: Option<String>,
+	/// How teardown ended; absent when it did not run (the plugins never started).
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub teardown: Option<Teardown>,
 }
 /// How a run ended. The serialized names are part of `execution.json`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -41,6 +44,20 @@ pub enum RunState {
 	CompletedWithFailures,
 	Stopped,
 	Failed,
+	/// Provisional: a stop was requested and the run is still tearing down. The final outcome
+	/// replaces it; a run directory left in this state was killed before it could finish.
+	Stopping,
+}
+/// How teardown ended. The serialized names are part of `execution.json`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Teardown {
+	/// Every teardown step succeeded.
+	Completed,
+	/// Every teardown step ran, and at least one failed.
+	Failed,
+	/// A forced stop ended teardown before every step ran.
+	Interrupted,
 }
 impl std::fmt::Display for RunState {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -49,6 +66,7 @@ impl std::fmt::Display for RunState {
 			Self::CompletedWithFailures => "completed_with_failures",
 			Self::Stopped => "stopped",
 			Self::Failed => "failed",
+			Self::Stopping => "stopping",
 		})
 	}
 }
@@ -477,6 +495,9 @@ pub async fn run_stoppable(
 	);
 	let directory = root.join(&run_id);
 	std::fs::create_dir(&directory).context("run directory must be new")?;
+	// Held until the run ends: an agent pruning old run directories skips locked ones.
+	let lock = File::create(directory.join(RUN_LOCK))?;
+	lock.lock()?;
 	let credentials = registry.resolve_credentials(&plan);
 	let log =
 		Log::open(&directory, sink, credentials.as_ref().map(secret_values).unwrap_or_default())?;
@@ -494,10 +515,25 @@ pub async fn run_stoppable(
 		log,
 		started: Instant::now(),
 		options,
+		teardown: Mutex::new(None),
 	};
-	let result = Box::pin(run.execute(credentials)).await;
-	run.outcome(result)
+	let execute = Box::pin(run.execute(credentials));
+	let mut execute = std::pin::pin!(execute);
+	let result = tokio::select! {
+		biased;
+		result = &mut execute => result,
+		() = run.cancel.cancelled() => {
+			run.stopping();
+			execute.await
+		},
+	};
+	let outcome = run.outcome(result);
+	drop(lock);
+	outcome
 }
+
+/// The lock file of a run directory, locked while the run is in progress.
+pub const RUN_LOCK: &str = "run.lock";
 
 /// One run in progress: its plan and host, its directory and event log, and its deadline.
 struct Run<'a> {
@@ -510,9 +546,30 @@ struct Run<'a> {
 	log: Log,
 	started: Instant,
 	options: RunOptions,
+	teardown: Mutex<Option<Teardown>>,
 }
 
 impl Run<'_> {
+	/// As soon as a stop is requested: a provisional `execution.json`, so a run killed during
+	/// teardown still says it was stopping, and plugin logs redacted early. Best effort.
+	fn stopping(&self) {
+		let code = self.stop.exit_code();
+		let reason = match code {
+			130 => "SIGINT or a stop request",
+			143 => "SIGTERM",
+			_ => "a stop request",
+		};
+		let provisional = json!({
+			"artifact_dir": self.context.artifact_dir,
+			"exit_code": code,
+			"state": RunState::Stopping,
+			"error": format!("stopped by {reason}; teardown was still running"),
+			"stop_requested_at": polkameter_plugin_sdk::observers::files::now_ms(),
+		});
+		let _ = write_json(&self.directory.join("execution.json"), &provisional);
+		let _ = redact_plugin_logs(&self.directory, &self.log.secrets);
+	}
+
 	/// Starts the plugins, runs the phases under the whole-run deadline, then tears down.
 	async fn execute(&self, credentials: Result<Values>) -> Result<i32> {
 		let credentials = credentials?;
@@ -707,10 +764,11 @@ impl Run<'_> {
 	async fn teardown(&self, plugins: &Plugins, values: &mut Values) -> Result<()> {
 		self.log.phase("teardown")?;
 		let force = &self.stop.force;
-		let mut cleanup = Ok(());
+		let mut errors = Vec::new();
+		let mut state = Teardown::Completed;
 		for step in &self.plan.teardown.entries {
 			if force.is_cancelled() {
-				cleanup = cleanup.and(Err(anyhow::anyhow!(TEARDOWN_INTERRUPTED)));
+				state = Teardown::Interrupted;
 				break;
 			}
 			self.restart_for(step, plugins).await?;
@@ -723,16 +781,27 @@ impl Run<'_> {
 				&self.log,
 			)
 			.await;
-			if result.is_err() && force.is_cancelled() {
-				cleanup = cleanup.and(Err(anyhow::anyhow!(TEARDOWN_INTERRUPTED)));
-				break;
+			if let Err(error) = result {
+				if force.is_cancelled() {
+					state = Teardown::Interrupted;
+					break;
+				}
+				state = Teardown::Failed;
+				errors.push(error.to_string());
 			}
-			cleanup = cleanup.and(result);
 		}
-		if let Err(error) = &cleanup {
-			self.log.emit(json!({"event": "cleanup-failed", "error": error.to_string()}))?;
+		if state == Teardown::Interrupted {
+			errors.push(TEARDOWN_INTERRUPTED.into());
 		}
-		cleanup
+		*self.teardown.lock().map_err(|_| anyhow::anyhow!("teardown state poisoned"))? =
+			Some(state);
+		if errors.is_empty() {
+			return Ok(());
+		}
+		let error = errors.join("; ");
+		self.log
+			.emit(json!({"event": "cleanup-failed", "error": error, "errors": errors}))?;
+		Err(anyhow::anyhow!(error))
 	}
 
 	/// Starts the plugin of a teardown step again if its process failed. A plugin that cannot be
@@ -761,6 +830,12 @@ impl Run<'_> {
 	fn outcome(&self, result: Result<i32>) -> Result<Outcome> {
 		let redacted = redact_plugin_logs(&self.directory, &self.log.secrets);
 		let (exit_code, state, error) = match result {
+			// A stop is honoured even when it came after the phases, during teardown.
+			Ok(_) if self.cancel.is_cancelled() => (
+				self.stop.exit_code(),
+				RunState::Stopped,
+				Some(anyhow::anyhow!("run stopped during teardown")),
+			),
 			Ok(0) => (0, RunState::Completed, None),
 			Ok(code) => (code, RunState::CompletedWithFailures, None),
 			Err(error) if self.cancel.is_cancelled() => {
@@ -773,6 +848,7 @@ impl Run<'_> {
 			exit_code,
 			state,
 			error: error.map(|error| redact_text(&error.to_string(), &self.log.secrets)),
+			teardown: self.teardown.lock().ok().and_then(|state| *state),
 		};
 		// Samples and plots come from the raw files.
 		for error in [redacted, artifacts::write_outputs(&self.directory)]
@@ -1411,6 +1487,7 @@ mod calibration_tests {
 			exit_code: 130,
 			state: RunState::Stopped,
 			error: Some("run cancelled".into()),
+			teardown: None,
 		};
 		fail_report(&mut outcome, "disk full");
 		assert_eq!((outcome.exit_code, outcome.state), (130, RunState::Stopped));

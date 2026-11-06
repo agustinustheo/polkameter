@@ -26,15 +26,15 @@ Polkameter: run failed: assertion verified failed: expected 85, got 84 (details 
 ### teardown failed: teardown was interrupted by a forced stop
 
 ```text
-Polkameter: received SIGTERM; stopping the run (teardown has up to 30 s; send the signal again to stop now)
+Polkameter: received SIGTERM; stopping the run (teardown has up to 20 s; send the signal again to stop now)
 Phase: teardown
 Polkameter: stopping now; teardown is interrupted
 Run stopped. Artifacts: ~/polkameter/runs/run-…
 ```
 
-**Cause:** The run was stopped, and then a second signal arrived, or teardown took longer than `--shutdown-grace` (30 seconds by default). PolkaMeter killed the plugins before teardown finished, so cleanup on the chain may be incomplete. CI systems often send SIGINT and SIGTERM a few seconds apart when a job is cancelled.
+**Cause:** The run was stopped, and then a second signal arrived, or teardown took longer than `--shutdown-grace` (20 seconds by default). PolkaMeter killed the plugins before teardown finished, so cleanup on the chain may be incomplete. CI systems often send SIGINT and SIGTERM a few seconds apart when a job is cancelled.
 
-**Fix:** Raise `--shutdown-grace` to cover your teardown steps, and give the job at least that long between the first signal and SIGKILL. Then check the chain for state that teardown would have removed.
+**Fix:** Raise `--shutdown-grace` to cover your teardown steps, and give the job that long plus 10 seconds between the first signal and SIGKILL. Then check the chain for state that teardown would have removed.
 
 ## Plans
 
@@ -194,15 +194,21 @@ Polkameter: status polls kept failing for 60 s: …; asked the agent to stop run
 
 **Fix:** Read the run's `events.jsonl` on the agent to find the step that hung, then fix that step or raise its `timeout-ms`.
 
+### the start request kept failing for 60 s: …
+
+**Cause:** The agent did not accept the start request for a minute: it was unreachable, or it kept answering with a server error. The client asked the agent to stop the run under the ID it chose, in case the run had started, and exited with code `1`.
+
+**Fix:** Restore the tunnel or the agent, then rerun the plan.
+
 ### remote runner returned 503 Service Unavailable: the agent is shutting down
 
 **Cause:** The agent received SIGINT or SIGTERM and is stopping its active run. It refuses new runs until it exits.
 
 **Fix:** Start the agent again, then rerun the plan.
 
-### agent token in POLKAMETER_AGENT_TOKEN must have at least 32 characters; generate one with `openssl rand -hex 32`
+### agent token in POLKAMETER_AGENT_TOKEN must have at least 32 characters, at least 8 of them different; generate one with `openssl rand -hex 32`
 
-**Cause:** The agent's bearer token is shorter than 32 characters. A short token can be guessed.
+**Cause:** The agent's bearer token is shorter than 32 characters, or repeats a few characters, as in `aaaa…`. Such a token can be guessed.
 
 **Fix:** Set a random token on the agent and the client:
 

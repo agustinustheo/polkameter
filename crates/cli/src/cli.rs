@@ -69,7 +69,7 @@ enum Command {
 		remote_token_env: Option<String>,
 		/// Seconds a run gets after SIGINT or SIGTERM to finish its teardown and write its
 		/// results. A second signal, or the end of this period, interrupts teardown.
-		#[arg(long, value_name = "SECONDS", default_value_t = 30)]
+		#[arg(long, value_name = "SECONDS", default_value_t = shutdown::DEFAULT_GRACE.as_secs())]
 		shutdown_grace: u64,
 		#[arg(long, value_enum, default_value_t = OutputFormat::Human)]
 		format: OutputFormat,
@@ -122,7 +122,7 @@ enum AgentCommand {
 		keep_runs: Option<u64>,
 		/// Seconds the active run gets after SIGINT or SIGTERM to finish its teardown. A second
 		/// signal, or the end of this period, interrupts teardown.
-		#[arg(long, value_name = "SECONDS", default_value_t = 30)]
+		#[arg(long, value_name = "SECONDS", default_value_t = shutdown::DEFAULT_GRACE.as_secs())]
 		shutdown_grace: u64,
 	},
 }
@@ -521,12 +521,9 @@ async fn agent(command: AgentCommand) -> Result<i32, CliError> {
 					"agent token environment variable {token_env} is not set"
 				))
 			})?;
-			if token.trim().chars().count() < remote::MIN_TOKEN_CHARS {
-				return Err(CliError::Invalid(format!(
-					"agent token in {token_env} must have at least {} characters; generate one with `openssl rand -hex 32`",
-					remote::MIN_TOKEN_CHARS
-				)));
-			}
+			remote::check_token(&token).map_err(|error| {
+				CliError::Invalid(format!("agent token in {token_env} {error}"))
+			})?;
 			let settings = remote::AgentSettings {
 				output_root,
 				keep_runs: keep_runs.map(|keep| usize::try_from(keep).unwrap_or(usize::MAX)),
@@ -753,6 +750,7 @@ mod tests {
 			exit_code: 1,
 			state,
 			error: error.map(Into::into),
+			teardown: None,
 		};
 		let execution = std::path::Path::new("runs/run-1").join("execution.json");
 		let local = |state, error| failure_reason(RunLocation::Local, &outcome(state, error));
@@ -810,6 +808,7 @@ mod tests {
 				exit_code: 1,
 				state: RunState::Failed,
 				error: Some(format!("a\nb\u{1b}[1m{long}")),
+				teardown: None,
 			},
 		)
 		.unwrap();

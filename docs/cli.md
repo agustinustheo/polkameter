@@ -77,7 +77,7 @@ polkameter run --remote URL --remote-token-env ENV_VAR [--junit PATH] [--fail-on
 | `--fail-on-verdict` | no | Default off. Exit `1` on a `FAIL` load verdict after writing the report and running teardown. Other verdicts and plans without a load test keep their existing exit behavior |
 | `--remote URL` | no | The agent's endpoint. See [remote agent](#remote-agent) |
 | `--remote-token-env` | with `--remote` | The variable that holds the agent's bearer token |
-| `--shutdown-grace SECONDS` | no | Default `30`. How long a stopping run gets to finish teardown after SIGINT or SIGTERM. See [stop a run](#stop-a-run) |
+| `--shutdown-grace SECONDS` | no | Default `20`. How long a stopping run gets to finish teardown after SIGINT or SIGTERM. See [stop a run](#stop-a-run) |
 | `--format` | no | `human` (default) or `json`. See [output formats](#output-formats) |
 
 With `--remote`, the agent applies `--fail-on-verdict` and records the exit code in its run directory. If the agent does not support the flag, the client refuses to start the run; update the agent first.
@@ -110,34 +110,71 @@ A failed remote run prints `Polkameter: remote run failed: <reason> (details in 
 
 ### Stop a run
 
-Press Ctrl-C (SIGINT) or send SIGTERM, as CI systems do when they cancel a job or hit a timeout. PolkaMeter stops the running step and runs the plan's teardown. It then writes `execution.json`, `summary.md` and `junit.xml`, kills and reaps the plugin processes, and exits with `130` for SIGINT or `143` for SIGTERM. The run's state is `stopped`.
+Press Ctrl-C (SIGINT) or send SIGTERM, as CI systems do when they cancel a job or hit a timeout. PolkaMeter stops the running step and runs the plan's teardown. It then writes `execution.json`, `summary.md` and `junit.xml`, kills the plugin processes and exits with `130` for SIGINT or `143` for SIGTERM. The run's state is `stopped`, even if the signal arrived during teardown.
 
 ```text
 Phase: preflight
 Phase: setup
-Polkameter: received SIGTERM; stopping the run (teardown has up to 30 s; send the signal again to stop now)
+Polkameter: received SIGTERM; stopping the run (teardown has up to 20 s; send the signal again to stop now)
 Phase: teardown
-Run stopped. Artifacts: ~/polkameter/runs/run-1793901167685-75157-1
+Run stopped. Artifacts: ~/polkameter/runs/run-1793933833255-39334-1
 ```
 
-Teardown can use every plugin, even one whose step was cancelled: PolkaMeter starts that plugin again first. Each teardown step keeps its own `timeout-ms`.
+`execution.json` says whether teardown finished. Its `teardown` field is `completed`, `failed` or `interrupted`:
 
-Teardown after a signal is bounded by `--shutdown-grace`, 30 seconds by default. A second signal, or the end of that period, interrupts teardown: PolkaMeter kills the plugins, writes the results and exits with the code of the first signal. The run's `error` then ends with `teardown failed: teardown was interrupted by a forced stop`.
+```json
+{
+  "artifact_dir": "~/polkameter/runs/run-1793933833255-39334-1",
+  "exit_code": 143,
+  "state": "stopped",
+  "error": "run cancelled",
+  "teardown": "completed"
+}
+```
+
+Teardown can use every plugin, even one whose step was cancelled or that something else killed: PolkaMeter starts that plugin again first. Each teardown step keeps its own `timeout-ms`.
+
+Teardown after a signal is bounded by `--shutdown-grace`, 20 seconds by default. A second signal, or the end of that period, interrupts teardown. PolkaMeter kills the plugins, writes the results and exits with the code of the first signal. `teardown` is then `interrupted`, and `error` ends with `teardown failed: teardown was interrupted by a forced stop`.
 
 ```text
-Polkameter: received SIGTERM; stopping the run (teardown has up to 30 s; send the signal again to stop now)
+Polkameter: received SIGTERM; stopping the run (teardown has up to 20 s; send the signal again to stop now)
 Phase: teardown
 Polkameter: stopping now; teardown is interrupted
-Run stopped. Artifacts: ~/polkameter/runs/run-1793901169005-75228-1
+Run stopped. Artifacts: ~/polkameter/runs/run-1793933833336-39351-1
 ```
 
-> **Warning:** Give the job more time than `--shutdown-grace` between SIGTERM and SIGKILL. SIGKILL cannot be handled: the plugins keep running and the results are not written. GitHub Actions, for example, sends SIGINT, then SIGTERM 7.5 seconds later, then SIGKILL 2.5 seconds after that, so its second signal interrupts teardown.
+As soon as the first signal arrives, PolkaMeter writes a provisional `execution.json` with the state `stopping`, and redacts credentials from the plugins' `stderr.log` files. If the process is killed before it finishes, that file is what remains:
 
-With `--remote`, the first signal asks the agent to stop the run, and the client waits for the outcome. A second signal, or the end of `--shutdown-grace`, asks the agent to interrupt teardown. If the agent still has not reported the outcome 10 seconds later, the client stops waiting and exits; the run directory stays on the agent.
+```json
+{
+  "artifact_dir": "~/polkameter/runs/run-1793933833336-39351-1",
+  "error": "stopped by SIGTERM; teardown was still running",
+  "exit_code": 143,
+  "state": "stopping",
+  "stop_requested_at": 1793933833373
+}
+```
+
+So exit code `130` or `143` alone does not prove that teardown ran. Check `teardown` in `execution.json`. A state of `stopping` means the run was killed during teardown.
+
+Each plugin runs in its own process group, so a Ctrl-C in the terminal, or a signal that a CI runner sends to PolkaMeter's whole group, reaches only PolkaMeter. When PolkaMeter kills a plugin, it kills the plugin's whole group, including any process the plugin started. On Windows it kills the plugin's process tree.
+
+After a forced stop, PolkaMeter waits at most 10 seconds for the run to write its outcome, then exits anyway. A stop can therefore take up to `--shutdown-grace` plus 10 seconds. Set `--shutdown-grace` to the time your CI system allows between SIGTERM and SIGKILL, minus 10 seconds:
+
+| Where | Time from SIGTERM to SIGKILL | `--shutdown-grace` |
+| --- | --- | --- |
+| Kubernetes (`terminationGracePeriodSeconds`, default 30 s) | 30 s | `20` (the default) |
+| GitLab Runner | Depends on the executor; on Kubernetes, the pod's grace period | That time minus 10 |
+| `docker stop` (default `-t 10`) | 10 s | `0`, or raise `docker stop -t` / `--stop-timeout` |
+| GitHub Actions cancellation | SIGINT, then SIGTERM 7.5 s later, then SIGKILL 2.5 s after that | The SIGTERM is the second signal and interrupts teardown |
+
+> **Warning:** SIGKILL cannot be handled. If it comes first, the plugins are not killed and the results are not written. In a container, run PolkaMeter under an init process (`docker run --init`, or `tini`), so that signals reach it and processes it leaves behind are reaped.
+
+With `--remote`, the first signal asks the agent to stop the run, and the client waits for the outcome. A second signal, or the end of `--shutdown-grace`, asks the agent to interrupt teardown at once, even if the first stop request is still waiting for an answer. If the agent has not reported the outcome 10 seconds after that, the client stops waiting and exits with the signal's code; the run directory stays on the agent.
 
 ```text
-Polkameter: received SIGINT; asking the agent to stop the run (teardown has up to 30 s; send the signal again to stop now)
-Remote run stopped. Artifacts: /data/runs/run-1793901168078-75180-2
+Polkameter: received SIGINT; asking the agent to stop the run (teardown has up to 20 s; send the signal again to stop now)
+Remote run stopped. Artifacts: /data/runs/run-1793933833445-39378-2
 ```
 
 ## report
@@ -311,17 +348,19 @@ polkameter agent serve [--bind ADDR] [--token-env ENV_VAR] [--output-root DIR] [
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--bind ADDR` | `127.0.0.1:9901` | The address to listen on, which must be loopback |
-| `--token-env` | `POLKAMETER_AGENT_TOKEN` | The variable that holds the bearer token. It must be set and at least 32 characters long. There is no flag for the token itself |
+| `--token-env` | `POLKAMETER_AGENT_TOKEN` | The variable that holds the bearer token. It must be set, at least 32 characters long and use at least 8 different characters; generate it with `openssl rand -hex 32`. There is no flag for the token itself |
 | `--output-root DIR` | `target/polkameter-agent-runs` | Where run directories go. Relative paths start from the agent's working directory |
-| `--keep-runs N` | keep all | Keep only the newest `N` run directories (at least 1). Older `run-…` directories under `--output-root` are deleted when a run starts. Other files are never touched |
-| `--shutdown-grace SECONDS` | `30` | How long the active run gets to finish teardown after SIGINT or SIGTERM |
+| `--keep-runs N` | keep all | Keep the newest `N` finished run directories (at least 1). When a run starts, older finished `run-…` directories under `--output-root` are deleted. A run is finished when its `execution.json` holds a final state and no process holds its `run.lock`. Runs still in progress, runs killed while stopping, and other files are never touched |
+| `--shutdown-grace SECONDS` | `20` | How long the active run gets to finish teardown after SIGINT or SIGTERM |
 
 The agent does not serve TLS; remote clients need an SSH tunnel or TLS proxy.
 
-On SIGINT or SIGTERM, the agent refuses new runs and stops the active run, which still runs its teardown within `--shutdown-grace`. It keeps answering status requests until the run's client has read the outcome, for at most 5 seconds. Then it exits with `130` for SIGINT or `143` for SIGTERM. A second signal interrupts teardown.
+On SIGINT or SIGTERM, the agent refuses new runs and stops the active run, which still runs its teardown within `--shutdown-grace`. It keeps answering status requests until the run's client has read the outcome, for at most 5 seconds. Then it exits with `130` for SIGINT or `143` for SIGTERM. A second signal interrupts teardown. A run that is still being admitted (its plan inspected) when the signal arrives is not started.
+
+Give each agent its own `--output-root`. With `--keep-runs`, an agent never deletes a run another process is still writing, but sharing a root makes the count of kept runs cover both.
 
 ```text
-Polkameter: received SIGTERM; stopping the active run (teardown has up to 30 s; send the signal again to stop now)
+Polkameter: received SIGTERM; stopping the active run (teardown has up to 20 s; send the signal again to stop now)
 ```
 
 Check the agent. `/health` needs no token:
@@ -341,19 +380,21 @@ Every route except `/health` needs `Authorization: Bearer TOKEN`. A missing or w
 
 `POST /runs` also accepts `"options": {"failOnVerdict": true}`; the default is `false`. `GET /plugins` advertises support as `"runOptions": {"failOnVerdict": true}`.
 
+`POST /runs` also accepts a `"runId"` chosen by the client, with the same character rules as other run IDs. Sending the same `runId` again returns that run instead of starting another, so a client whose start request lost its answer can repeat it. While the first request is still being admitted, a repeat gets `503` and should be retried. `polkameter run --remote` always sends one.
+
 | Method and path | Purpose |
 | --- | --- |
 | `GET /health` | Liveness |
 | `GET /plugins` | Protocol version and installed plugins |
 | `POST /inspect`, `POST /preflight` | Same checks as `plugin inspect` and `preflight` |
-| `POST /runs` | Starts a run. Returns its status and run ID |
+| `POST /runs` | Starts a run, or returns the run already started with the same `runId`. Returns its status and run ID |
 | `GET /runs/{id}` | State, phase, and the outcome once it ends |
 | `POST /runs/{id}/stop` | Stops a running run; teardown still runs. Add `?force=true` to interrupt teardown too |
 
 The client checks each run ID: at most 128 characters, from letters, digits, `-`, `_` and `.`.
 
 - **Transport.** The client accepts `https://`, or `http://` only when the host is a loopback address (`127.0.0.0/8`, `[::1]` or `localhost`). It refuses an endpoint with user information (`user@` or `user:password@`), a query or a fragment. It never follows redirects, so the token goes only to the endpoint you name.
-- **Timeouts.** Connecting may take 10 seconds. A request may take 60 seconds, or 10 minutes for `/inspect` and `/preflight`. A failed status poll is retried with backoff, from 0.6 up to 5 seconds apart, for 60 seconds. If polls keep failing, or the run lasts longer than the plan's `timeout-ms` plus its teardown step timeouts and one minute, the client asks the agent to stop the run, then exits `1`.
+- **Timeouts.** Connecting may take 10 seconds. A request may take 60 seconds, or 10 minutes for `/inspect` and `/preflight`, and a stop request 5 seconds. A failed start request or status poll is retried with backoff, from 0.6 up to 5 seconds apart, for 60 seconds; a start is repeated with the same `runId`. The client's deadline is the plan's `timeout-ms` plus its teardown step timeouts and one minute, counted from before the start request; no request or wait goes past it. If retries run out or the deadline passes, the client asks the agent to stop the run, then exits `1`.
 - **Trust.** The bearer token grants full execution trust. A plan holding it can use every plugin, credential profile and topology on the agent, and name any endpoint in its `<targets>`. Installed plugins are not sandboxed, so use a separate agent and token for each trust domain.
 - **Wire.** Only plan XML is sent, never executable paths or secrets.
 
@@ -367,8 +408,10 @@ The client checks each run ID: at most 128 characters, from letters, digits, `-`
 | `1` | A run ended `failed` or `completed_with_failures`, or a `report` or remote request failed | A plugin crashed or errored, a deadline or assertion failed, a credential was unavailable, or the agent refused a request. A smoke-mode load run also exits 1 on a monitor problem or a missing required check. With `--fail-on-verdict`, a `FAIL` verdict also exits 1 |
 | `2` | Invalid input or usage | A malformed or invalid plan, a bad flag or argument, an unreadable registry, or a wrong remote endpoint or token variable |
 | `3` | Preflight failed | A plugin not installed, a checksum or version mismatch, an operation missing from its manifest, a preflight step that can change state, no calibration answer from the chain, or an unregistered `<monitors>` alias |
-| `130` | Stopped by SIGINT | Ctrl-C during a run, or a remote run that the agent stopped on request. Teardown ran and the results were written. `agent serve` also exits `130` after SIGINT |
-| `143` | Stopped by SIGTERM | A CI system cancelled the job or hit its timeout, or the agent of a remote run received SIGTERM. Teardown ran and the results were written. `agent serve` also exits `143` after SIGTERM |
+| `130` | Stopped by SIGINT | Ctrl-C during a run, or a remote run that the agent stopped on request. `agent serve` also exits `130` after SIGINT |
+| `143` | Stopped by SIGTERM | A CI system cancelled the job or hit its timeout, or the agent of a remote run received SIGTERM. `agent serve` also exits `143` after SIGTERM |
+
+A stopped run usually ran its teardown and wrote its results, but not always: a second signal interrupts teardown, and a forced stop that cannot write its outcome within 10 seconds exits anyway. Check `execution.json`: `teardown` is `completed`, `failed` or `interrupted`, and a `state` of `stopping` means the outcome was never written. See [stop a run](#stop-a-run).
 
 A `run` never exits with `3`. A preflight failure inside a run makes it `failed`, with exit code 1.
 
@@ -381,7 +424,7 @@ By default, a stress-mode load run exits `0` whatever its verdict. Add `--fail-o
 | `POLKAMETER_PLUGIN_REGISTRY` | Commands that use installed plugins | Path of the plugin registry (JSON). Default: `~/.config/polkameter/plugins.json` |
 | `HOME`, `USERPROFILE` | The default registry path | Home directory for the default path. `USERPROFILE` is used if `HOME` is unset. If neither is set, set `POLKAMETER_PLUGIN_REGISTRY` |
 | `POLKAMETER_NODE_PID` | Load runs with `<monitors>` | The node's process ID, for CPU and memory. If unset, PolkaMeter finds the process on the RPC port with `lsof`, then `ss`. If none is found, no CPU or memory is recorded |
-| `POLKAMETER_AGENT_TOKEN` | `agent serve` | Default name of the token variable, used when `--token-env` is not given. At least 32 characters |
+| `POLKAMETER_AGENT_TOKEN` | `agent serve` | Default name of the token variable, used when `--token-env` is not given. At least 32 characters, at least 8 of them different |
 
 Plugins start with a cleared environment. Only `PATH`, `TMPDIR`, `TEMP`, `SYSTEMROOT`, `SSL_CERT_FILE` and `SSL_CERT_DIR` are passed on. A plugin receives credential values only as step inputs.
 

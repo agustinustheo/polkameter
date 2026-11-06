@@ -62,6 +62,11 @@ struct Work(PathBuf);
 
 impl Work {
 	fn new(name: &str, plan_xml: &str) -> Self {
+		Self::with_plugin(name, plan_xml, |_| plugin_executable())
+	}
+
+	/// Like `new`, but installs the executable that `plugin` returns for the work directory.
+	fn with_plugin(name: &str, plan_xml: &str, plugin: impl FnOnce(&Path) -> PathBuf) -> Self {
 		let directory = std::env::temp_dir().join(format!(
 			"polkameter-signals-{name}-{}-{}",
 			std::process::id(),
@@ -73,11 +78,12 @@ impl Work {
 		std::fs::create_dir_all(&directory).unwrap();
 		let work = Self(directory.canonicalize().unwrap());
 		std::fs::write(work.0.join("plan.xml"), plan_xml).unwrap();
+		let executable = plugin(&work.0);
 		let status = work
 			.polkameter()
 			.arg("plugin")
 			.arg("install")
-			.arg(plugin_executable())
+			.arg(executable)
 			.stdout(Stdio::null())
 			.status()
 			.unwrap();
@@ -217,6 +223,7 @@ fn stopped_with_teardown(signal_name: &str, code: i32) {
 	let execution = read_json(&run.join("execution.json"));
 	assert_eq!(execution["state"], "stopped");
 	assert_eq!(execution["exit_code"], code);
+	assert_eq!(execution["teardown"], "completed");
 	for file in ["summary.md", "junit.xml", "samples.jtl"] {
 		assert!(run.join(file).is_file(), "missing {file}");
 	}
@@ -258,6 +265,15 @@ fn stopped_in_teardown(work: &Work, args: &[&str]) -> (Process, PathBuf, String,
 fn a_second_signal_interrupts_teardown() {
 	let work = Work::new("second", &plan(SLOW_TEARDOWN));
 	let (mut process, run, first, second) = stopped_in_teardown(&work, &[]);
+	// While teardown runs, execution.json already says the run is stopping.
+	let provisional = wait_for("a provisional outcome", || {
+		let execution =
+			serde_json::from_slice::<Value>(&std::fs::read(run.join("execution.json")).ok()?)
+				.ok()?;
+		(execution["state"] == "stopping").then_some(execution)
+	});
+	assert_eq!(provisional["exit_code"], 143);
+	assert_eq!(provisional["error"], "stopped by SIGTERM; teardown was still running");
 	let started = Instant::now();
 	process.signal("TERM");
 	let (status, stderr) = process.wait();
@@ -274,6 +290,7 @@ fn a_second_signal_interrupts_teardown() {
 			.ends_with("; teardown failed: teardown was interrupted by a forced stop"),
 		"{execution}"
 	);
+	assert_eq!(execution["teardown"], "interrupted");
 	assert!(run.join("junit.xml").is_file());
 	assert!(!cleanup_succeeded(&run));
 	assert!(!alive(first.trim()) && !alive(second.trim()), "a plugin outlived the run");
@@ -371,4 +388,110 @@ fn sigterm_stops_the_agent_after_its_run_tears_down() {
 	// The client read the outcome before the agent closed, and reports the agent's stop.
 	let (status, stderr) = client.wait();
 	assert_eq!(status.code(), Some(143), "{stderr}");
+}
+
+/// A plan whose setup succeeds at once and whose teardown waits three seconds.
+fn plan_with_slow_cleanup() -> String {
+	r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="Signals" timeout-ms="600000">
+  <plugins><plugin id="example" version="0.1.0" protocol="1"/></plugins>
+  <setup><step id="quick" use="example.double"><input name="value" value="1"/></step></setup>
+  <teardown><step id="cleanup" use="example.wait" timeout-ms="120000"><input name="milliseconds" value="3000"/></step></teardown>
+</polkameter-plan>
+"#
+	.into()
+}
+
+#[test]
+fn a_signal_to_the_whole_process_group_during_teardown_spares_the_plugins() {
+	use std::os::unix::process::CommandExt;
+	let work = Work::new("group", &plan_with_slow_cleanup());
+	let output = work.0.join("runs");
+	// As a terminal's Ctrl-C or a CI runner does: the signal goes to PolkaMeter's whole group.
+	let mut process = Process::spawn(
+		work.polkameter()
+			.arg("run")
+			.arg(work.0.join("plan.xml"))
+			.arg("--output")
+			.arg(&output)
+			.process_group(0),
+	);
+	let run = work.run_directory("runs");
+	let pid = waiting_plugin(&run, None);
+	signal_group(process.0.id(), "INT");
+	let (status, stderr) = process.wait();
+	// The setup had succeeded; the stop during teardown is still the run's outcome.
+	assert_eq!(status.code(), Some(130), "{stderr}");
+	let execution = read_json(&run.join("execution.json"));
+	assert_eq!(execution["state"], "stopped");
+	assert_eq!(execution["exit_code"], 130);
+	assert_eq!(execution["teardown"], "completed");
+	assert_eq!(execution["error"], "run stopped during teardown");
+	// The plugin was not in the signalled group, so its cleanup step finished.
+	assert!(cleanup_succeeded(&run), "the cleanup step failed");
+	assert!(!events(&run).iter().any(|event| event["event"] == "plugin-restarted"));
+	assert!(!alive(pid.trim()));
+}
+
+#[test]
+fn sigterm_during_teardown_after_a_successful_setup_reports_the_stop() {
+	let work = Work::new("teardown-term", &plan_with_slow_cleanup());
+	let output = work.0.join("runs");
+	let mut process = work.run(&["--output", output.to_str().unwrap()]);
+	let run = work.run_directory("runs");
+	waiting_plugin(&run, None);
+	process.signal("TERM");
+	let (status, stderr) = process.wait();
+	assert_eq!(status.code(), Some(143), "{stderr}");
+	let execution = read_json(&run.join("execution.json"));
+	assert_eq!(
+		(execution["state"].as_str(), execution["exit_code"].as_i64()),
+		(Some("stopped"), Some(143))
+	);
+	assert_eq!(execution["teardown"], "completed");
+}
+
+fn signal_group(group: u32, name: &str) {
+	let status = Command::new("kill")
+		.args(["-s", name, "--", &format!("-{group}")])
+		.status()
+		.unwrap();
+	assert!(status.success(), "could not send {name} to group {group}");
+}
+
+#[test]
+fn processes_a_plugin_starts_do_not_outlive_the_run() {
+	let plugin = plugin_executable();
+	let work = Work::with_plugin("descendants", &plan(DOUBLE), |directory| {
+		// A wrapper that leaves a child running, then becomes the plugin.
+		let script = directory.join("wrapped-plugin");
+		let descendants = directory.join("descendants");
+		std::fs::write(
+			&script,
+			format!(
+				"#!/bin/sh\nsleep 300 &\necho $! >> '{}'\nexec '{}'\n",
+				descendants.display(),
+				plugin.display()
+			),
+		)
+		.unwrap();
+		use std::os::unix::fs::PermissionsExt;
+		std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+		script
+	});
+	let output = work.0.join("runs");
+	let mut process = work.run(&["--output", output.to_str().unwrap()]);
+	let run = work.run_directory("runs");
+	waiting_plugin(&run, None);
+	process.signal("TERM");
+	let (status, stderr) = process.wait();
+	assert_eq!(status.code(), Some(143), "{stderr}");
+	assert!(cleanup_succeeded(&run));
+	// Install, the run and the restart for teardown each started the wrapper once.
+	let descendants = std::fs::read_to_string(work.0.join("descendants")).unwrap();
+	let pids = descendants.lines().collect::<Vec<_>>();
+	assert_eq!(pids.len(), 3, "{descendants}");
+	for pid in pids {
+		// Killed with the plugin's group; wait only for the system to reap it.
+		wait_for("a plugin's child to be gone", || (!alive(pid)).then_some(()));
+	}
 }

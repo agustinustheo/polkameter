@@ -8,8 +8,9 @@ use std::{future::Future, time::Duration};
 
 use tokio::sync::mpsc;
 
-/// Default time a stopping run gets to finish its teardown and write its results.
-pub const DEFAULT_GRACE: Duration = Duration::from_secs(30);
+/// Default time a stopping run gets to finish its teardown and write its results. With
+/// [`FORCE_LIMIT`] it fits the 30 s that Kubernetes and GitLab allow between SIGTERM and SIGKILL.
+pub const DEFAULT_GRACE: Duration = Duration::from_secs(20);
 
 /// How long forced work may take to write its outcome before the process gives up on it.
 pub const FORCE_LIMIT: Duration = Duration::from_secs(10);

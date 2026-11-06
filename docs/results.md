@@ -34,6 +34,7 @@ The name is `run-<milliseconds>-<pid>-<sequence>`, created in `--output`, or `--
 | `samples.jtl` | JMeter CSV: a row per step, and per transaction in a load test. |
 | `plots/*.svg` | Samples per second; p50, p95, p99 of `elapsed`; failed samples by `responseCode`. |
 | `plugins/<id>/stderr.log` | Standard error of each plugin started. |
+| `run.lock` | Empty. Locked while the run is in progress, so an agent with `--keep-runs` never deletes it. |
 
 No file stores a credential value. Where a plugin or error would echo one, the file shows `[redacted]`.
 
@@ -57,7 +58,7 @@ No file stores a credential value. Where a plugin or error would echo one, the f
 
 ## execution.json
 
-Written after teardown.
+Written after teardown. When a run is stopped, a provisional `execution.json` with the state `stopping` is written at once and replaced when the run ends.
 
 | Field | Meaning |
 | --- | --- |
@@ -65,12 +66,15 @@ Written after teardown.
 | `exit_code` | The code the `run` command returns. |
 | `state` | How the run ended, as below. |
 | `error` | Error text, redacted. `null` if none. |
+| `teardown` | `completed` (every teardown step succeeded), `failed` (every step ran, at least one failed) or `interrupted` (a forced stop ended it). Absent if teardown did not run, because the plugins never started. |
+| `stop_requested_at` | Only in a provisional outcome: when the stop was requested, in milliseconds. |
 
 | `state` | `exit_code` | When |
 | --- | --- | --- |
 | `completed` | `0` | No error. |
 | `completed_with_failures` | `1` | A `FAIL` verdict with `--fail-on-verdict`, or a smoke-mode monitor problem or required check with no result. |
-| `stopped` | `130` or `143` | `130` after SIGINT (Ctrl-C) or a remote stop request, `143` after SIGTERM. |
+| `stopped` | `130` or `143` | `130` after SIGINT (Ctrl-C) or a remote stop request, `143` after SIGTERM, including a stop during teardown. |
+| `stopping` | `130` or `143` | Provisional. If it is still there after the process ended, the run was killed before it could write its outcome. |
 | `failed` | `1` | Any error, including a failed `core.assert-equal` step and a report that could not be written. |
 
 ## junit.xml
@@ -307,7 +311,7 @@ Each event has a `timestamp` in milliseconds and `version` `2`. Credentials are 
 | `step-started` | `step`, `operation`, `user`, `iteration` | A step starts. |
 | `step-progress` | `step`, `elapsedMs` | Every 5 seconds while a step runs. |
 | `step-finished` | `step`, `elapsedMs`, `success`, `error`, `user`, `iteration` | A step ends. |
-| `cleanup-failed` | `error` | A teardown step failed. |
+| `cleanup-failed` | `error`, `errors` | Teardown steps failed. `errors` lists every failure, and `error` joins them. |
 | `plugin-restarted` | `plugin` | A plugin that crashed, timed out or was stopped was started again for a teardown step. |
 | `warning` | `message` | Something did not stop the run, such as a plugin that could not be restarted or a JUnit file that could not be written. |
 | `completed` | `outcome` | The run ended, with the same outcome as `execution.json`. |

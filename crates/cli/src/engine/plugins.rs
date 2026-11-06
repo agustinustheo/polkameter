@@ -120,18 +120,54 @@ pub(crate) fn checksum(path: &Path) -> Result<String> {
 
 struct InFlight<'a> {
 	child: &'a mut Child,
+	group: &'a mut Group,
 	failed: &'a mut bool,
 }
 impl Drop for InFlight<'_> {
 	fn drop(&mut self) {
 		if *self.failed {
+			self.group.kill();
 			let _ = self.child.start_kill();
 		}
 	}
 }
 
+/// The process group a plugin runs in, led by the plugin process. Plugins get their own group, so
+/// a terminal's Ctrl-C or a signal to PolkaMeter's group does not reach them, and everything a
+/// plugin starts is killed with it. On Windows the plugin's process tree is killed instead.
+struct Group(Option<u32>);
+impl Group {
+	/// Kills every process in the group. Called before the leader is reaped, so its ID cannot have
+	/// been reused.
+	fn kill(&mut self) {
+		let Some(id) = self.0 else { return };
+		#[cfg(unix)]
+		{
+			use nix::{sys::signal, unistd::Pid};
+			if let Ok(id) = i32::try_from(id) {
+				let _ = signal::killpg(Pid::from_raw(id), signal::Signal::SIGKILL);
+			}
+		}
+		#[cfg(windows)]
+		{
+			let _ = std::process::Command::new("taskkill")
+				.args(["/T", "/F", "/PID", &id.to_string()])
+				.stdout(Stdio::null())
+				.stderr(Stdio::null())
+				.status();
+		}
+		#[cfg(not(any(unix, windows)))]
+		let _ = id;
+	}
+	/// The group is gone; never signal its ID again.
+	fn forget(&mut self) {
+		self.0 = None;
+	}
+}
+
 struct Process {
 	child: Child,
+	group: Group,
 	input: ChildStdin,
 	output: BufReader<ChildStdout>,
 	sequence: u64,
@@ -151,6 +187,12 @@ fn reply(response: Response, id: u64) -> Result<Reply> {
 		(Some(result), None) => Ok(Ok(result)),
 		(None, Some(error)) => Ok(Err(error)),
 		_ => anyhow::bail!("invalid plugin response"),
+	}
+}
+impl Drop for Process {
+	fn drop(&mut self) {
+		// A dropped run (forced exit) still takes the plugin's whole group down.
+		self.group.kill();
 	}
 }
 impl Process {
@@ -174,6 +216,13 @@ impl Process {
 		} else {
 			Stdio::null()
 		};
+		#[cfg(unix)]
+		command.process_group(0);
+		#[cfg(windows)]
+		{
+			// CREATE_NEW_PROCESS_GROUP: a console Ctrl-C does not reach the plugin.
+			command.creation_flags(0x0000_0200);
+		}
 		let mut child = command
 			.current_dir(&context.artifact_dir)
 			.stdin(Stdio::piped())
@@ -189,7 +238,8 @@ impl Process {
 				.take()
 				.ok_or_else(|| anyhow::anyhow!("plugin stdout unavailable"))?,
 		);
-		Ok(Self { child, input, output, sequence: 0, failed: false })
+		let group = Group(child.id());
+		Ok(Self { child, group, input, output, sequence: 0, failed: false })
 	}
 	pub async fn describe(&mut self, context: &Context) -> Result<Manifest> {
 		let value = self
@@ -220,7 +270,8 @@ impl Process {
 		// Dropping this future (whole-run timeout/cancellation) must also kill
 		// the in-flight process; no stale reply may be consumed by teardown.
 		self.failed = true;
-		let guard = InFlight { child: &mut self.child, failed: &mut self.failed };
+		let guard =
+			InFlight { child: &mut self.child, group: &mut self.group, failed: &mut self.failed };
 		let exchange = async {
 			self.input.write_all(&bytes).await?;
 			self.input.write_all(b"\n").await?;
@@ -244,10 +295,31 @@ impl Process {
 		}
 		result?.map_err(|error| anyhow::anyhow!("plugin operation failed: {error}"))
 	}
-	/// Waits briefly for a killed process to exit, so it does not outlive the run.
+	/// Kills the plugin and everything in its group, then waits briefly for the plugin to exit,
+	/// so nothing it started outlives the run.
 	async fn reap(&mut self) {
+		self.group.kill();
 		let _ = self.child.start_kill();
-		let _ = tokio::time::timeout(Duration::from_secs(2), self.child.wait()).await;
+		if let Ok(Ok(_)) = tokio::time::timeout(Duration::from_secs(2), self.child.wait()).await {
+			self.group.forget();
+		}
+	}
+	/// Whether the plugin can take another call: it did not fail and has not exited, for example
+	/// because something outside PolkaMeter killed it while it was idle.
+	fn usable(&mut self) -> bool {
+		if self.failed {
+			return false;
+		}
+		match self.child.try_wait() {
+			Ok(None) => true,
+			_ => {
+				self.failed = true;
+				// The leader exited; whatever it started may still run in its group.
+				self.group.kill();
+				self.group.forget();
+				false
+			},
+		}
 	}
 	/// Asks the plugin to exit, unless `force` is set, then kills and reaps it.
 	pub async fn shutdown(&mut self, context: &Context, force: &CancellationToken) {
@@ -336,7 +408,7 @@ impl Plugins {
 			return Ok(false);
 		};
 		let mut process = queue.lock().await;
-		if !process.failed {
+		if process.usable() {
 			return Ok(false);
 		}
 		process.reap().await;
