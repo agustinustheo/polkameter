@@ -17,6 +17,24 @@ polkameter --version
 polkameter <version>
 ```
 
+## init
+
+Writes a load plan for the [substrate plugin](substrate-plugin.md) from a live chain. It checks that the runtime has the calls the plugin needs and measures the block time. [Generate a plan](substrate-plugin.md#generate-a-plan) shows the plan it writes.
+
+```sh
+polkameter init --rpc ENDPOINT [--kind remarks|transfers] [--profile PROFILE] [--output PATH] [--force]
+```
+
+| Name | Type | Required | Default | Limits | Meaning |
+| --- | --- | --- | --- | --- | --- |
+| `--rpc` | URI | yes | none | starts with `ws://` or `wss://` | The chain's endpoint |
+| `--kind` | enum | no | `remarks` | `remarks` or `transfers` | The call the plan loads the chain with |
+| `--profile` | string | no | `substrate` | not empty | The credential profile the plan names for the seed |
+| `--output` | path | no | standard output | | The plan file |
+| `--force` | flag | no | off | | Replace an existing `--output` file |
+
+An unreachable chain exits with code `3`. An existing `--output` file without `--force` exits with code `2`.
+
 ## validate
 
 Checks a plan's structure without starting plugins or connecting to a chain. [Plans](plans.md#validation-rules) lists the rules.

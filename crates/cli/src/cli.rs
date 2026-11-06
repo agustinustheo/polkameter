@@ -32,6 +32,24 @@ enum Command {
 		#[command(subcommand)]
 		command: PluginCommand,
 	},
+	/// Write a starter load-test plan for the substrate plugin from a live chain.
+	Init {
+		/// The chain's WebSocket endpoint, such as ws://127.0.0.1:9944.
+		#[arg(long)]
+		rpc: String,
+		/// The call to load the chain with.
+		#[arg(long, value_enum, default_value_t = crate::init::Kind::Remarks)]
+		kind: crate::init::Kind,
+		/// The credential profile the plan names for the signers' seed.
+		#[arg(long, default_value = "substrate")]
+		profile: String,
+		/// Where to write the plan. Without it, the plan goes to standard output.
+		#[arg(long)]
+		output: Option<PathBuf>,
+		/// Replace the --output file if it exists.
+		#[arg(long)]
+		force: bool,
+	},
 	/// Parse and structurally validate a plan without connecting to a chain.
 	Validate {
 		plan: PathBuf,
@@ -191,6 +209,9 @@ pub fn main() -> i32 {
 async fn execute(cli: Cli) -> Result<i32, CliError> {
 	match cli.command {
 		Command::Plugin { command } => plugin_command(command).await,
+		Command::Init { rpc, kind, profile, output, force } => {
+			init(&rpc, kind, &profile, output, force).await
+		},
 		Command::Validate { plan, format } => {
 			let (_, plan) = load(&plan)?;
 			write_result(
@@ -266,6 +287,53 @@ fn teardown_budget(plan: &Plan) -> Duration {
 		.iter()
 		.map(|step| Duration::from_millis(step.timeout_ms) + Duration::from_secs(10))
 		.sum()
+}
+
+/// `polkameter init`: inspects the chain, renders the plan, checks that it parses and writes it.
+async fn init(
+	rpc: &str,
+	kind: crate::init::Kind,
+	profile: &str,
+	output: Option<PathBuf>,
+	force: bool,
+) -> Result<i32, CliError> {
+	if !(rpc.starts_with("ws://") || rpc.starts_with("wss://")) {
+		return Err(CliError::Invalid(format!("--rpc must start with ws:// or wss://, got {rpc}")));
+	}
+	if profile.trim().is_empty() {
+		return Err(CliError::Invalid("--profile must not be empty".into()));
+	}
+	if let Some(path) = &output
+		&& path.exists()
+		&& !force
+	{
+		return Err(CliError::Invalid(format!(
+			"{} exists; pass --force to replace it",
+			path.display()
+		)));
+	}
+	let facts = crate::init::inspect(rpc, kind)
+		.await
+		.map_err(|e| CliError::Preflight(e.to_string()))?;
+	let xml = crate::init::render(rpc, kind, profile, &facts);
+	Plan::parse(&xml)
+		.map_err(|e| CliError::Runtime(format!("the generated plan does not parse: {e}")))?;
+	match output {
+		Some(path) => {
+			std::fs::write(&path, &xml)
+				.map_err(|e| CliError::Invalid(format!("cannot write {}: {e}", path.display())))?;
+			eprintln!(
+				"Wrote {} for {} ({}, {} s blocks). Next: polkameter validate {}",
+				path.display(),
+				facts.chain,
+				facts.runtime,
+				facts.block_seconds,
+				path.display()
+			);
+		},
+		None => print!("{xml}"),
+	}
+	Ok(0)
 }
 
 /// The plan's XML, which remote runs send as-is, and its parsed form.
