@@ -44,12 +44,9 @@ class SafeRedirect(HTTPRedirectHandler):
 class Installer:
     def __init__(self):
         self.root = Path(os.environ["GITHUB_ACTION_PATH"])
-        # Distribution is hosted on github.com even for GHES callers. A GHES
-        # runner token must never be sent to the public API or to gh.
-        public_runner = (os.environ.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
-                         == "https://github.com"
-                         and os.environ.get("GITHUB_API_URL", API).rstrip("/") == API)
-        self.token = os.environ.get("GITHUB_TOKEN", "") if public_runner else ""
+        # Releases are on github.com: never send another server's runner token there.
+        on_github = os.environ.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/") == "https://github.com"
+        self.token = os.environ.get("GITHUB_TOKEN", "") if on_github else ""
         self.opener = build_opener(SafeRedirect())
 
     def request(self, url, accept="application/vnd.github+json"):
@@ -113,8 +110,7 @@ class Installer:
         assets = {asset["name"]: asset["url"] for asset in release["assets"]}
         if name not in assets or f"{name}.sha256" not in assets:
             raise Unavailable(f"Release {tag} has no archive and checksum for {target}")
-        verify_attestation = os.environ.get("VERIFY_ATTESTATION", "true") != "false"
-        if verify_attestation and not shutil.which("gh"):
+        if not shutil.which("gh"):
             raise Unavailable("Build provenance verification requires gh, but gh is not installed")
         directory = Path(tempfile.mkdtemp(prefix="polkameter-cli-", dir=os.environ["RUNNER_TEMP"]))
         archive = directory / name
@@ -130,31 +126,26 @@ class Installer:
         if not match or match[2] != name or match[1].lower() != digest.hexdigest():
             raise ValueError(f"Checksum verification failed for {name}")
 
-        if verify_attestation:
-            env = dict(os.environ, GH_HOST="github.com")
-            for key in ("GH_TOKEN", "GITHUB_TOKEN"):
-                env.pop(key, None)
-            if self.token:
-                env["GH_TOKEN"] = self.token
-            # gh hashes this exact file and verifies the attested subject digest.
-            # Pin both the trusted signer and the source tag, so a valid archive
-            # from an older release cannot be substituted with its checksum.
-            # gh cannot query attestations anonymously, even for a public
-            # repository; it exits 4 when it has no github.com credentials.
-            verified = subprocess.run(["gh", "attestation", "verify", str(archive),
-                                       "--repo", REPO, "--hostname", "github.com",
-                                       "--signer-workflow", f"{REPO}/.github/workflows/release.yml",
-                                       "--source-ref", f"refs/tags/{tag}", "--digest-alg", "sha256"],
-                                      env=env)
-            if verified.returncode == GH_AUTH_REQUIRED and not self.token:
-                raise Unavailable("Build provenance verification needs gh authenticated to github.com "
-                                  "(for example gh auth login on the runner); "
-                                  "or set verify-attestation: false to accept SHA-256 only")
-            if verified.returncode:
-                raise subprocess.CalledProcessError(verified.returncode, verified.args)
-        else:
-            print("::warning::verify-attestation=false: installing with SHA-256 only; "
-                  "release build provenance is not verified")
+        env = dict(os.environ, GH_HOST="github.com")
+        for key in ("GH_TOKEN", "GITHUB_TOKEN"):
+            env.pop(key, None)
+        if self.token:
+            env["GH_TOKEN"] = self.token
+        # gh hashes this exact file and verifies the attested subject digest.
+        # Pin both the trusted signer and the source tag, so a valid archive
+        # from an older release cannot be substituted with its checksum.
+        # gh cannot query attestations anonymously, even for a public
+        # repository; it exits 4 when it has no github.com credentials.
+        verified = subprocess.run(["gh", "attestation", "verify", str(archive),
+                                   "--repo", REPO, "--hostname", "github.com",
+                                   "--signer-workflow", f"{REPO}/.github/workflows/release.yml",
+                                   "--source-ref", f"refs/tags/{tag}", "--digest-alg", "sha256"],
+                                  env=env)
+        if verified.returncode == GH_AUTH_REQUIRED and not self.token:
+            raise Unavailable("Build provenance verification needs gh authenticated to github.com "
+                              "(for example gh auth login on the runner)")
+        if verified.returncode:
+            raise subprocess.CalledProcessError(verified.returncode, verified.args)
 
         exe = ".exe" if suffix == "zip" else ""
         binary = f"polkameter{exe}"
@@ -195,8 +186,6 @@ def main():
     mode = os.environ.get("INSTALL", "auto")
     if mode not in ("auto", "release", "source"):
         raise ValueError("install must be auto, release or source")
-    if os.environ.get("VERIFY_ATTESTATION", "") not in ("", "true", "false"):
-        raise ValueError("verify-attestation must be true or false")
     installer = Installer()
     method = "source"
     reason = "Source build explicitly requested"
@@ -206,10 +195,7 @@ def main():
             release = installer.resolve(os.environ.get("ACTION_REF", ""), os.environ.get("VERSION", ""))
             version = installer.install(release)
             method = "release"
-            reason = f"Downloaded release v{version}; SHA-256 verified"
-            reason += ("; provenance verification explicitly disabled"
-                       if os.environ.get("VERIFY_ATTESTATION") == "false"
-                       else "; release workflow and source tag attestation verified")
+            reason = f"Downloaded release v{version}; SHA-256 and release attestation verified"
         except Unavailable as error:
             if mode == "release":
                 raise ValueError(str(error)) from error

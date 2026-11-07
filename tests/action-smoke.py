@@ -319,7 +319,7 @@ class InstallTest(unittest.TestCase):
                         GITHUB_TOKEN="test-runner-token", RUNNER_TEMP=str(self.work),
                         GITHUB_OUTPUT=str(self.work / "outputs"), GITHUB_PATH=str(self.work / "path"),
                         RUNNER_OS="Linux", RUNNER_ARCH="X64", INSTALL="auto", VERSION="",
-                        ACTION_REF="v0.3.0", VERIFY_ATTESTATION="false", PLUGIN_CRATES="")
+                        ACTION_REF="v0.3.0", PLUGIN_CRATES="")
         self.env.update(GITHUB_API_URL="https://api.github.com", GITHUB_SERVER_URL="https://github.com",
                         GITHUB_STEP_SUMMARY=str(self.work / "summary"))
         self.harness = self.work / "install.py"
@@ -341,6 +341,8 @@ class InstallTest(unittest.TestCase):
             '''))
         self.release = self.add_release()
         self.payload = b"fake binary"
+        # Release installs always verify the build attestation; gh passes unless a test says otherwise.
+        self.gh()
 
     def route(self, path, value):
         self.routes[self.prefix + path] = value
@@ -489,25 +491,16 @@ exit {code}
         content = self.routes["/assets/" + old["assets"][0]["name"]]
         self.routes[f"/assets/{name}"] = content
         self.routes[f"/assets/{name}.sha256"] = f"{hashlib.sha256(content).hexdigest()}  {name}\n".encode()
-        self.gh()
         # Model an attestation valid only for v0.2.0. A loose gh invocation would
         # accept it; the correctly constrained invocation rejects it.
         stub = self.bin / "gh"
         stub.write_text(stub.read_text().replace(
             "exit 0", 'case "$*" in *"--source-ref refs/tags/v0.3.0"*) exit 1;; *) exit 0;; esac'))
-        self.run_install(error="returned non-zero exit status", VERIFY_ATTESTATION="true")
+        self.run_install(error="returned non-zero exit status")
         self.assertIn("refs/tags/v0.3.0", (self.work / "gh-args").read_text())
 
-    def test_attestation_disabled_warns_and_does_not_call_gh(self):
-        self.gh(1)
-        self.run_install(VERIFY_ATTESTATION="false")
-        self.assertFalse((self.work / "gh-args").exists())
-        self.assertIn("::warning::verify-attestation=false", self.result.stdout)
-        self.assertIn("provenance verification explicitly disabled", (self.work / "summary").read_text())
-
-    def test_attestation_required_binds_workflow_source_tag_and_digest(self):
-        self.gh()
-        self.run_install(VERIFY_ATTESTATION="true")
+    def test_attestation_binds_workflow_source_tag_and_digest(self):
+        self.run_install()
         args = (self.work / "gh-args").read_text().splitlines()
         self.assertEqual(args[:2], ["attestation", "verify"])
         self.assertEqual(args[3:], ["--repo", "agustinustheo/polkameter", "--hostname", "github.com",
@@ -519,61 +512,28 @@ exit {code}
         self.assert_requests(self.prefix + "releases/tags/v0.3.0")
         self.assertFalse(list(self.work.glob("polkameter-cli-*")))
 
-    def test_attestation_default_requires_gh(self):
-        self.run_install("source", VERIFY_ATTESTATION="")
-        self.assertIn("requires gh", self.result.stdout)
-        self.assertIn("requires gh", (self.work / "summary").read_text())
-        self.assert_no_asset_downloads()
-
-    def test_attestation_unset_requires_gh(self):
-        self.env.pop("VERIFY_ATTESTATION")
-        self.run_install("source")
-        self.assert_no_asset_downloads()
-
-    def test_attestation_default_verifies_when_gh_exists(self):
-        self.gh()
-        self.run_install(VERIFY_ATTESTATION="")
-        self.assertTrue((self.work / "gh-args").exists())
-
     def test_attestation_failure_is_fatal_in_auto_and_release(self):
         self.gh(1)
         for mode in ("auto", "release"):
             with self.subTest(mode=mode):
-                self.run_install(error="returned non-zero exit status", INSTALL=mode, VERIFY_ATTESTATION="true")
+                self.run_install(error="returned non-zero exit status", INSTALL=mode)
 
-    def test_attestation_required_without_gh_falls_back_in_auto(self):
-        self.run_install("source", VERIFY_ATTESTATION="true")
+    def test_without_gh_auto_builds_source_and_release_fails(self):
+        (self.bin / "gh").unlink()
+        self.run_install("source")
+        self.assertIn("requires gh", (self.work / "summary").read_text())
+        self.assert_no_asset_downloads()
+        self.requests.clear()
+        self.run_install(error="requires gh", INSTALL="release")
         self.assert_no_asset_downloads()
 
-    def test_default_without_gh_fails_in_release_mode(self):
-        self.run_install(error="requires gh", INSTALL="release", VERIFY_ATTESTATION="")
-        self.assert_no_asset_downloads()
-
-    def test_ghes_uses_public_distribution_without_enterprise_token(self):
-        self.gh()
-        self.run_install(GITHUB_API_URL="https://ghe.example/api/v3",
-                         GITHUB_SERVER_URL="https://ghe.example", VERIFY_ATTESTATION="true",
-                         GH_HOST="ghe.example", GH_TOKEN="enterprise-token")
+    def test_another_servers_token_never_reaches_github_com(self):
+        self.run_install(GITHUB_SERVER_URL="https://ghe.example", GH_TOKEN="enterprise-token")
         self.assertTrue(all(auth is None for _, auth in self.requests))
         self.assertEqual((self.work / "gh-env").read_text().splitlines(), ["github.com", "", ""])
-        urls = (self.work / "urls").read_text().splitlines()
-        self.assertTrue(all(url.startswith("https://api.github.com/") for url in urls))
-        self.assertIn("github.com", (self.work / "gh-args").read_text())
-
-    def test_ghes_anonymous_release_rate_limit_falls_back_to_source(self):
-        self.gh()
-        self.statuses[self.prefix + "releases/tags/v0.3.0"] = 403
-        self.run_install("source", GITHUB_API_URL="https://ghe.example/api/v3",
-                         GITHUB_SERVER_URL="https://ghe.example", VERIFY_ATTESTATION="true",
-                         GH_TOKEN="enterprise-token")
-        self.assertIn("HTTP Error 403", self.result.stdout)
-        self.assertTrue(all(auth is None for _, auth in self.requests))
-        self.assert_no_asset_downloads()
-        self.assertFalse((self.work / "gh-args").exists())
 
     def test_public_runner_passes_token_only_to_public_gh(self):
-        self.gh()
-        self.run_install(VERIFY_ATTESTATION="true", GH_TOKEN="ignored-token", GH_HOST="ghe.example")
+        self.run_install(GH_TOKEN="ignored-token", GH_HOST="ghe.example")
         self.assertEqual((self.work / "gh-env").read_text().splitlines(),
                          ["github.com", "test-runner-token", ""])
 
@@ -635,9 +595,9 @@ printf '%s\\n' "$@" > "{self.work}/cargo-args"
         self.run_install("source", RUNNER_ARCH="ARM")
 
     def test_invalid_inputs_fail(self):
-        for env in (dict(INSTALL="bad"), dict(VERSION="bad"), dict(VERIFY_ATTESTATION="bad")):
+        for env in (dict(INSTALL="bad"), dict(VERSION="bad")):
             with self.subTest(env=env):
-                self.env.update(INSTALL="auto", VERSION="", VERIFY_ATTESTATION="false")
+                self.env.update(INSTALL="auto", VERSION="")
                 self.run_install(error="must be", **env)
 
     def test_toolchain_and_build_steps_are_gated(self):
@@ -648,7 +608,6 @@ printf '%s\\n' "$@" > "{self.work}/cargo-args"
         self.assertEqual(shell_block("Install released PolkaMeter or select source").strip(),
                          'python3 "$GITHUB_ACTION_PATH/scripts/action-install.py"')
         self.assertIn('PLUGIN_UNLOCKED: ${{ inputs.plugin-unlocked }}', action)
-        self.assertIn('default: "true"', action.split('  verify-attestation:', 1)[1].split('  credentials:', 1)[0])
 
     def run_plugins(self, *, unlocked="false", cargo_code=0, expected=0):
         self.run_install(PLUGIN_CRATES="plugin")
@@ -700,14 +659,11 @@ exit {cargo_code}
 
     def test_prerelease_ref_or_version_uses_release_path(self):
         self.add_release(version="0.3.0-rc.1")["prerelease"] = True
-        self.gh()
-        self.run_install(INSTALL="release", ACTION_REF="v0.3.0-rc.1", version="0.3.0-rc.1",
-                         VERIFY_ATTESTATION="true")
+        self.run_install(INSTALL="release", ACTION_REF="v0.3.0-rc.1", version="0.3.0-rc.1")
         self.assertIn("refs/tags/v0.3.0-rc.1", (self.work / "gh-args").read_text())
         for version in ("0.3.0-rc.1", "v0.3.0-rc.1"):
             with self.subTest(version=version):
-                self.run_install(INSTALL="release", ACTION_REF="main", VERSION=version, version="0.3.0-rc.1",
-                                 VERIFY_ATTESTATION="true")
+                self.run_install(INSTALL="release", ACTION_REF="main", VERSION=version, version="0.3.0-rc.1")
         self.assertEqual([p for p, _ in self.requests if "releases/tags/" in p],
                          [self.prefix + "releases/tags/v0.3.0-rc.1"] * 3)
 
@@ -723,19 +679,9 @@ exit {cargo_code}
             with self.subTest(version=version):
                 self.run_install(error="version must be", VERSION=version)
 
-    def test_unauthenticated_gh_on_ghes_falls_back_to_source(self):
-        # gh cannot verify attestations anonymously; it exits 4 without github.com credentials.
-        self.gh(4)
-        ghes = dict(GITHUB_API_URL="https://ghe.example/api/v3", GITHUB_SERVER_URL="https://ghe.example",
-                    VERIFY_ATTESTATION="true")
-        self.run_install("source", **ghes)
-        self.assertIn("needs gh authenticated to github.com", self.result.stdout)
-        self.assertIn("verify-attestation: false", self.result.stdout)
-        self.run_install(error="needs gh authenticated to github.com", INSTALL="release", **ghes)
-
     def test_gh_auth_failure_with_runner_token_is_fatal(self):
         self.gh(4)
-        self.run_install(error="returned non-zero exit status 4", VERIFY_ATTESTATION="true")
+        self.run_install(error="returned non-zero exit status 4")
 
     def test_release_install_path_runs_plan_and_stages_artifact(self):
         # Package a stub CLI with the real release packager, serve it as a mocked
@@ -763,8 +709,7 @@ exit {cargo_code}
         for path in packaged.iterdir():
             self.routes[f"/assets/{path.name}"] = path.read_bytes()
         self.payload = stub.read_bytes()
-        self.gh()
-        self.run_install(INSTALL="release", VERIFY_ATTESTATION="true")
+        self.run_install(INSTALL="release")
         bindir = (self.work / "path").read_text().strip()
         env = dict(self.env, PATH=f"{bindir}{os.pathsep}{self.bin}{os.pathsep}{os.environ['PATH']}",
                    GITHUB_ENV=str(self.work / "env"), PLAN="test.xml", PLUGINS="", CREDENTIALS="",
@@ -779,7 +724,7 @@ exit {cargo_code}
         self.assertIn("# released CLI", (self.work / "summary").read_text())
         (self.work / "outputs").unlink()
         env.update(GITHUB_ACTION_PATH=str(ACTION.parent), RUN_DIR=outputs["run-dir"], ARTIFACT_NAME="",
-                   UPLOAD="true", RAW_PLUGIN_FILES="false", SIZE_LIMIT_MB="500", RETENTION_DAYS="",
+                   UPLOAD="true", RETENTION_DAYS="",
                    GITHUB_JOB="test", GITHUB_RUN_ATTEMPT="1", GITHUB_ACTION="step", RUNNER_NAME="runner")
         result = subprocess.run(["bash", "-euo", "pipefail", "-c", shell_block("Stage the run artifact")],
                                 env=env, capture_output=True, text=True)
@@ -791,7 +736,7 @@ exit {cargo_code}
 
 
 class ArtifactTest(unittest.TestCase):
-    """The artifact staging step: allowlisted reports by default, raw files on request."""
+    """The artifact staging step: only the reports and records PolkaMeter writes."""
 
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
@@ -819,8 +764,7 @@ class ArtifactTest(unittest.TestCase):
         (self.run_dir / "plugins/linked").symlink_to(self.work, target_is_directory=True)
         self.env = dict(os.environ, GITHUB_ACTION_PATH=str(ACTION.parent), RUNNER_TEMP=str(self.work),
                         GITHUB_OUTPUT=str(self.work / "outputs"), RUN_DIR=str(self.run_dir),
-                        ARTIFACT_NAME="", UPLOAD="true", RAW_PLUGIN_FILES="false", SIZE_LIMIT_MB="500",
-                        RETENTION_DAYS="", GITHUB_SERVER_URL="https://github.com", GITHUB_JOB="load-test",
+                        ARTIFACT_NAME="", UPLOAD="true", RETENTION_DAYS="", GITHUB_JOB="load-test",
                         GITHUB_RUN_ATTEMPT="1", GITHUB_ACTION="__agustinustheo_polkameter",
                         RUNNER_NAME="GitHub Actions 7")
 
@@ -837,34 +781,15 @@ class ArtifactTest(unittest.TestCase):
         root = Path(outputs["artifact-path"])
         return sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file())
 
-    def test_default_uploads_only_polkameter_reports(self):
+    def test_uploads_only_polkameter_files_and_never_follows_links(self):
+        # A followed plugins/linked would add plugins/linked/stderr.log.
+        (self.work / "stderr.log").write_text("outside")
         files = self.stage()
         self.assertEqual(files, sorted([
             "execution.json", "summary.md", "summary.json", "junit.xml", "plan.json", "resolved-plan.json",
             "plots/throughput.svg", "events.jsonl", "samples.jtl", "steps.jsonl", "transactions.jsonl",
             "plugins/example/stderr.log"]))
-        self.assertEqual(self.outputs["upload"], "true")
-        self.assertIn("excludes 4 file(s) that PolkaMeter did not write", self.result.stdout)
-        self.assertIn('upload-raw-plugin-files: "true"', self.result.stdout)
-
-    def test_raw_plugin_files_require_opt_in_and_never_follow_links(self):
-        files = self.stage(RAW_PLUGIN_FILES="true")
-        self.assertIn("plugins/example/diagnostic.json", files)
-        self.assertIn("plugin-dump.txt", files)
-        self.assertNotIn("events-link.jsonl", files)
-        self.assertFalse(any(f.startswith("plugins/linked") for f in files))
-        self.assertNotIn("excludes", self.result.stdout)
-
-    def test_size_limit_keeps_reports_and_lists_omitted_records(self):
-        (self.run_dir / "transactions.jsonl").write_bytes(b"x" * (2 * 1024 * 1024))
-        files = self.stage(SIZE_LIMIT_MB="1")
-        self.assertIn("summary.md", files)
-        self.assertIn("events.jsonl", files)
-        self.assertNotIn("transactions.jsonl", files)
-        omitted = Path(self.outputs["artifact-path"]) / "polkameter-artifact-omitted.txt"
-        self.assertIn("transactions.jsonl", omitted.read_text())
-        self.assertIn("::warning::The run artifact omits 1 file(s)", self.result.stdout)
-        self.assertIn("transactions.jsonl", self.stage(SIZE_LIMIT_MB="0"))
+        self.assertIn("leaves out 4 file(s) that plugins wrote", self.result.stdout)
 
     def test_default_name_is_unique_per_matrix_job_and_step(self):
         names = set()
@@ -882,18 +807,8 @@ class ArtifactTest(unittest.TestCase):
         self.stage(ARTIFACT_NAME="load-results")
         self.assertEqual(self.outputs["artifact-name"], "load-results")
 
-    def test_ghes_skips_upload_with_notice_but_stages_files(self):
-        files = self.stage(GITHUB_SERVER_URL="https://ghe.example")
-        self.assertEqual(self.outputs["upload"], "false")
-        self.assertIn("summary.md", files)
-        self.assertIn("not supported on GitHub Enterprise Server", self.result.stdout)
-        self.stage(GITHUB_SERVER_URL="https://octo.ghe.com")
-        self.assertEqual(self.outputs["upload"], "true")
-
     def test_invalid_artifact_inputs_fail_before_the_run(self):
         for env, message in ((dict(UPLOAD="yes"), "upload must be true or false"),
-                             (dict(RAW_PLUGIN_FILES="1"), "upload-raw-plugin-files must be true or false"),
-                             (dict(SIZE_LIMIT_MB="-1"), "artifact-size-limit-mb"),
                              (dict(RETENTION_DAYS="91"), "artifact-retention-days"),
                              (dict(RETENTION_DAYS="x"), "artifact-retention-days")):
             with self.subTest(env=env):
@@ -906,7 +821,7 @@ class ArtifactTest(unittest.TestCase):
     def test_upload_step_uses_staged_allowlist(self):
         action = ACTION.read_text()
         upload = action.split("    - name: Upload the run\n", 1)[1].split("\n    - ", 1)[0]
-        self.assertIn("if: always() && steps.stage.outputs.upload == 'true'", upload)
+        self.assertIn("if: always() && steps.stage.outputs.artifact-path", upload)
         self.assertIn("name: ${{ steps.stage.outputs.artifact-name }}", upload)
         self.assertIn("path: ${{ steps.stage.outputs.artifact-path }}", upload)
         self.assertIn("retention-days: ${{ inputs.artifact-retention-days }}", upload)
@@ -945,7 +860,6 @@ class ArtifactTest(unittest.TestCase):
         # Exit 137: SIGKILL or the OOM killer stopped the CLI before it wrote its outcome.
         sentinel = self.make_unfinished(None)
         self.assert_withheld(self.stage(), sentinel)
-        self.assert_withheld(self.stage(RAW_PLUGIN_FILES="true"), sentinel)
 
     def test_forced_stop_without_final_event_withholds_files(self):
         # A second interrupt during teardown: execution.json may exist, the final event does not.
@@ -989,7 +903,7 @@ class ArtifactTest(unittest.TestCase):
 
         module["walk"] = walk_then_grow
         destination = self.work / "snapshot"
-        module["stage"](str(self.run_dir), destination, False, 0)
+        module["stage"](str(self.run_dir), destination)
         self.assertEqual((destination / "transactions.jsonl").read_text(), "x" * 4000)
 
     def test_directory_swapped_for_link_after_selection_is_not_followed(self):
@@ -1010,7 +924,7 @@ class ArtifactTest(unittest.TestCase):
 
         module["walk"] = walk_then_swap
         destination = self.work / "snapshot"
-        staged, _, _, _ = module["stage"](str(self.run_dir), destination, True, 0)
+        staged, _, _ = module["stage"](str(self.run_dir), destination)
         self.assertNotIn("plugins/example/stderr.log", staged)
         self.assertNotIn("summary.md", staged)
         self.assertFalse(any("outside sentinel" in p.read_text() for p in destination.rglob("*") if p.is_file()))
