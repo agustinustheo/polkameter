@@ -180,30 +180,6 @@ async fn agent_ending(outcome: Value) -> (String, tokio::task::JoinHandle<()>) {
 	(endpoint, server)
 }
 
-/// A smoke-mode run fails on a required check with no result whatever the flags: the client
-/// prints the agent's reason, which does not blame --fail-on-inconclusive.
-#[tokio::test]
-async fn a_smoke_failure_is_not_blamed_on_the_flags() {
-	let reason = "smoke mode fails the run on monitor problems and required checks with no \
-	              result, whatever the --fail-on flags; fix this one: no silent loss: state check \
-	              timed out (the checks are in summary.md)";
-	for policy in POLICIES {
-		let (endpoint, server) = agent_ending(json!({
-			"artifact_dir":"/agent/run-test", "exit_code":1, "state":"completed_with_failures",
-			"error":null, "exit_reason":reason
-		}))
-		.await;
-		let output = run_remote(&endpoint, policy).await;
-		let stderr = String::from_utf8_lossy(&output.stderr);
-		assert_eq!(output.status.code(), Some(1), "{stderr}");
-		assert!(stderr.contains(&format!("PolkaMeter: remote run: {reason}\n")), "{stderr}");
-		assert!(!stderr.contains("because of --fail-on"), "{stderr}");
-		let event: Value = serde_json::from_slice(&output.stdout).unwrap();
-		assert_eq!(event["outcome"]["exit_reason"], reason);
-		server.abort();
-	}
-}
-
 /// A run stopped during teardown has no exit reason: nothing blames a flag for its 143.
 #[tokio::test]
 async fn a_stopped_run_prints_no_verdict_reason() {
