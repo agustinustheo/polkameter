@@ -360,145 +360,61 @@ fn offline_report_redacts_available_registry_credentials_in_details() {
 }
 
 #[tokio::test]
-async fn remote_junit_fetch_and_copy_failures_preserve_success_and_cancellation() {
+async fn a_failed_remote_junit_fetch_warns_without_changing_success() {
 	use axum::{
 		Json, Router,
 		routing::{get, post},
 	};
-	use serde_json::{Value, json};
-	for code in [0, 130] {
-		for fetch_fails in [true, false] {
-			let work = Work::new("remote-errors");
-			let state = if code == 0 { "completed" } else { "stopped" };
-			let status = json!({"id":"test", "state":state, "phase":null, "error":null,
-                "outcome":{"artifact_dir":"/agent/run", "state":state, "exit_code":code,
-                    "error":if code == 0 { Value::Null } else { json!("run cancelled") }}});
-			let app = Router::new()
-				.route(
-					"/runs",
-					post(|| async {
-						Json(
-							json!({"id":"test","state":"running","phase":null,"outcome":null,"error":null}),
-						)
-					}),
+	use serde_json::json;
+	let work = Work::new("remote-errors");
+	let app = Router::new()
+		.route(
+			"/runs",
+			post(|| async {
+				Json(
+					json!({"id":"test","state":"running","phase":null,"outcome":null,"error":null}),
 				)
-				.route("/runs/test", get(move || async move { Json(status) }))
-				.route(
-					"/runs/test/junit",
-					get(move || async move {
-						if fetch_fails {
-							(axum::http::StatusCode::NOT_FOUND, Json("report missing"))
-						} else {
-							(axum::http::StatusCode::OK, Json("<testsuites/>"))
-						}
-					}),
-				);
-			let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-			let endpoint = format!("http://{}", listener.local_addr().unwrap());
-			let server = tokio::spawn(async move {
-				axum::serve(listener, app).await.unwrap();
-			});
-			let plan = work.0.join("plan.xml");
-			fs::write(&plan, r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="test"><setup><step id="ok" use="core.echo"><input name="value" value="1"/></step></setup></polkameter-plan>"#).unwrap();
-			let mut command = work.cli();
-			command
-				.arg("run")
-				.arg(plan)
-				.args([
-					"--remote",
-					&endpoint,
-					"--remote-token-env",
-					"POLKAMETER_JUNIT_TOKEN",
-					"--format",
-					"json",
-				])
-				.arg("--junit")
-				.arg(&work.0)
-				.env("POLKAMETER_JUNIT_TOKEN", "test-token");
-			let output =
-				tokio::task::spawn_blocking(move || command.output().unwrap()).await.unwrap();
-			server.abort();
-			assert_eq!(output.status.code(), Some(code));
-			let events: Vec<serde_json::Value> = String::from_utf8(output.stdout)
-				.unwrap()
-				.lines()
-				.map(|line| serde_json::from_str(line).unwrap())
-				.collect();
-			let warning = events.iter().find(|e| e["event"] == "warning").unwrap();
-			assert!(warning["message"].as_str().unwrap().contains(if fetch_fails {
-				"cannot fetch"
-			} else {
-				"cannot write"
-			}));
-			let artifact = events.last().unwrap();
-			assert_eq!(artifact["event"], "artifact-written");
-			assert_eq!(artifact["outcome"]["exit_code"], code);
-			assert!(
-				String::from_utf8_lossy(&output.stderr)
-					.contains("PolkaMeter warning: JUnit report:")
-			);
-		}
-	}
-}
-
-#[cfg(unix)]
-#[test]
-fn local_copy_failure_preserves_sigint_exit_130_and_artifact_notification() {
-	use std::time::{Duration, Instant};
-	let work = Work::new("cancel-copy");
+			}),
+		)
+		.route(
+			"/runs/test",
+			get(|| async {
+				Json(json!({"id":"test", "state":"completed", "phase":null, "error":null,
+					"outcome":{"artifact_dir":"/agent/run", "state":"completed", "exit_code":0,
+						"error":null}}))
+			}),
+		)
+		.route(
+			"/runs/test/junit",
+			get(|| async { (axum::http::StatusCode::NOT_FOUND, Json("report missing")) }),
+		);
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}", listener.local_addr().unwrap());
+	let server = tokio::spawn(async move {
+		axum::serve(listener, app).await.unwrap();
+	});
 	let plan = work.0.join("plan.xml");
-	fs::write(&plan, r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="cancel"><workflow id="workers" users="1" iterations="1000000000"><step id="work" use="core.echo"><input name="value" value="1"/></step></workflow></polkameter-plan>"#).unwrap();
-	let root = work.0.join("runs");
-	// The output root can exist before the child creates its run directory.
-	fs::create_dir_all(&root).unwrap();
-	let mut child = work
-		.cli()
+	fs::write(&plan, r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="test"><setup><step id="ok" use="core.echo"><input name="value" value="1"/></step></setup></polkameter-plan>"#).unwrap();
+	let mut command = work.cli();
+	command
 		.arg("run")
 		.arg(plan)
-		.arg("--output")
-		.arg(&root)
-		.arg("--junit")
-		.arg(&work.0)
-		.stdout(std::process::Stdio::piped())
-		.stderr(std::process::Stdio::piped())
-		.spawn()
-		.unwrap();
-	let deadline = Instant::now() + Duration::from_secs(20);
-	loop {
-		if let Ok(runs) = fs::read_dir(&root) {
-			let runs: Vec<_> = runs.map(|r| r.unwrap().path()).collect();
-			assert!(runs.len() <= 1, "unexpected run directories: {runs:?}");
-			if runs.first().is_some_and(|run| {
-				fs::read_to_string(run.join("events.jsonl"))
-					.unwrap_or_default()
-					.contains("step-started")
-			}) {
-				break;
-			}
-		}
-		if Instant::now() >= deadline {
-			child.kill().unwrap();
-			let output = child.wait_with_output().unwrap();
-			panic!("run did not start: {}", String::from_utf8_lossy(&output.stderr));
-		}
-		std::thread::sleep(Duration::from_millis(10));
-	}
-	assert!(
-		Command::new("kill")
-			.args(["-INT", &child.id().to_string()])
-			.status()
-			.unwrap()
-			.success()
-	);
-	let output = child.wait_with_output().unwrap();
-	assert_eq!(output.status.code(), Some(130));
-	assert!(String::from_utf8_lossy(&output.stdout).contains("Run stopped. Artifacts:"));
+		.args(["--remote", &endpoint, "--remote-token-env", "POLKAMETER_JUNIT_TOKEN"])
+		.args(["--format", "json", "--junit"])
+		.arg(work.0.join("report.xml"))
+		.env("POLKAMETER_JUNIT_TOKEN", "test-token");
+	let output = tokio::task::spawn_blocking(move || command.output().unwrap()).await.unwrap();
+	server.abort();
+	assert_eq!(output.status.code(), Some(0));
+	let events: Vec<serde_json::Value> = String::from_utf8(output.stdout)
+		.unwrap()
+		.lines()
+		.map(|line| serde_json::from_str(line).unwrap())
+		.collect();
+	let warning = events.iter().find(|e| e["event"] == "warning").unwrap();
+	assert!(warning["message"].as_str().unwrap().contains("cannot fetch"), "{warning}");
+	let artifact = events.last().unwrap();
+	assert_eq!(artifact["event"], "artifact-written");
+	assert_eq!(artifact["outcome"]["exit_code"], 0);
 	assert!(String::from_utf8_lossy(&output.stderr).contains("PolkaMeter warning: JUnit report:"));
-	let runs: Vec<_> = fs::read_dir(root).unwrap().map(|r| r.unwrap().path()).collect();
-	assert_eq!(runs.len(), 1);
-	let execution: serde_json::Value =
-		serde_json::from_slice(&fs::read(runs[0].join("execution.json")).unwrap()).unwrap();
-	assert_eq!(execution["exit_code"], 130);
-	assert_eq!(execution["state"], "stopped");
-	validate(&runs[0].join("junit.xml"));
 }

@@ -434,6 +434,16 @@ pub fn is_dev_key(secret: &str) -> bool {
 	!empty
 }
 
+/// Whether `c` must not reach a terminal or report as is: a control character, a bidirectional
+/// override or isolate (which can make text read differently than it is), or U+FFFE/U+FFFF.
+pub fn is_unsafe_char(c: char) -> bool {
+	c.is_control()
+		|| matches!(
+			c,
+			'\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{fffe}' | '\u{ffff}'
+		)
+}
+
 /// `text` cut to at most `chars` characters, never inside a `[redacted]`: a cut one is dropped.
 pub fn truncate(text: &str, chars: usize) -> String {
 	let mut out: String = text.chars().take(chars).collect();

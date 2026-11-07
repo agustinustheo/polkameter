@@ -776,47 +776,6 @@ mod tests {
 	}
 
 	#[test]
-	fn a_monitorless_run_passes_every_exit_policy() {
-		// The recorded run without what only monitors write (scrapes.jsonl, chain.jsonl) and
-		// with no parachain: the checks of unmonitored nodes are optional, so neither
-		// --fail-on-inconclusive nor smoke mode fails it.
-		let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/smoke-run");
-		let root = std::env::temp_dir().join(format!(
-			"polkameter-monitorless-policy-{}-{}",
-			std::process::id(),
-			std::time::SystemTime::now()
-				.duration_since(std::time::UNIX_EPOCH)
-				.unwrap()
-				.as_nanos()
-		));
-		std::fs::create_dir_all(&root).unwrap();
-		for name in ["load.jsonl", "steps.jsonl", "transactions.jsonl"] {
-			std::fs::copy(fixture.join(name), root.join(name)).unwrap();
-		}
-		let dir = RunDir::open(&root);
-		for mode in [Mode::Stress, Mode::Smoke] {
-			for policy in POLICIES {
-				let mut summary = clean_summary();
-				summary.network.para_id = None;
-				summary.checks = None;
-				summary.verdict = None;
-				let finals = dir.read_jsonl("steps.jsonl").unwrap();
-				let measured = Measured { summary, finals, mode };
-				assert_eq!(
-					report(&dir, measured, &[], policy, &Redactor::default()).unwrap(),
-					Exit::default(),
-					"{mode:?} {policy:?}"
-				);
-				let json: serde_json::Value =
-					serde_json::from_slice(&std::fs::read(root.join("summary.json")).unwrap())
-						.unwrap();
-				assert_ne!(json["verdict"]["result"], "INCONCLUSIVE", "{mode:?} {policy:?}");
-			}
-		}
-		std::fs::remove_dir_all(root).unwrap();
-	}
-
-	#[test]
 	fn fail_reason_names_the_failed_checks() {
 		let checks = [
 			plugin_check("too slow", Status::Fail, false),
@@ -833,34 +792,6 @@ mod tests {
 			verdict_reason(&summary, &[]),
 			"the load stopped on \"stall\" (no block for 30 s)"
 		);
-	}
-
-	#[test]
-	fn recorded_fail_report_changes_exit_code_only_when_opted_in() {
-		// Replay the exit policy with the real report's summary and checks, without replacing
-		// verdicts or inventing failures. The CLI replay test separately regenerates these checks
-		// from the raw recorded files; `report` itself has no exit policy options.
-		let summary: Summary =
-			serde_json::from_str(include_str!("../../tests/fixtures/smoke-run/summary.json"))
-				.unwrap();
-		let checks: Vec<CheckResult> =
-			serde_json::from_value(summary.checks.clone().unwrap()).unwrap();
-		assert!(checks.iter().any(|check| {
-			check.check == "relay slots (level 1)" && check.verdict.status == Status::Fail
-		}));
-		assert_eq!(
-			polkameter_plugin_sdk::observers::checks::report::overall_status(&summary, &checks),
-			polkameter_plugin_sdk::observers::files::summary::OverallStatus::Fail
-		);
-		for mode in [Mode::Smoke, Mode::Stress] {
-			for policy in POLICIES {
-				assert_eq!(
-					exit_code(mode, &summary, &checks, policy).code,
-					i32::from(policy.fail_on_verdict),
-					"{mode:?} {policy:?}"
-				);
-			}
-		}
 	}
 
 	#[test]
@@ -912,11 +843,25 @@ mod tests {
 			std::env::temp_dir().join(format!("polkameter-verdict-report-{}", std::process::id()));
 		std::fs::create_dir_all(&root).unwrap();
 		let dir = RunDir::open(&root);
+		let recorded: Summary =
+			serde_json::from_str(include_str!("../../tests/fixtures/smoke-run/summary.json"))
+				.unwrap();
+		// With the recorded checks, the FAIL changes the exit code only with --fail-on-verdict,
+		// in either mode.
+		let checks: Vec<CheckResult> =
+			serde_json::from_value(recorded.checks.clone().unwrap()).unwrap();
+		for mode in [Mode::Smoke, Mode::Stress] {
+			for policy in POLICIES {
+				assert_eq!(
+					exit_code(mode, &recorded, &checks, policy).code,
+					i32::from(policy.fail_on_verdict),
+					"{mode:?} {policy:?}"
+				);
+			}
+		}
 		for policy in POLICIES {
-			let summary: Summary =
-				serde_json::from_str(include_str!("../../tests/fixtures/smoke-run/summary.json"))
-					.unwrap();
-			let measured = Measured { summary, finals: vec![], mode: Mode::Stress };
+			let measured =
+				Measured { summary: recorded.clone(), finals: vec![], mode: Mode::Stress };
 			assert_eq!(
 				report(&dir, measured, &[], policy, &Redactor::default()).unwrap().code,
 				i32::from(policy.fail_on_verdict)

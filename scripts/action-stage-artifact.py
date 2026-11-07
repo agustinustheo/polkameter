@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Stage the composite action's run artifact: an allowlist of PolkaMeter reports by default.
+"""Stage the composite action's run artifact: an allowlist of the reports and records PolkaMeter
+writes. Files that plugins write into the run directory are not redacted and never uploaded.
 
 The action runs this after `polkameter run` has exited. Plugin processes that
 outlived it may still write to the run directory, so staging takes a copy, not
@@ -16,27 +17,21 @@ import re
 import shutil
 import stat
 import sys
-from urllib.parse import urlsplit
 
-# Files PolkaMeter itself writes, redacted or free of credential values. Kept even
-# when they exceed the size limit: they are small and explain the run.
-REPORTS = (
+# Files PolkaMeter itself writes, redacted or free of credential values, and each plugin's
+# redacted stderr.log.
+UPLOADED = (
     "execution.json", "summary.md", "summary.json", "junit.xml", "plan.json",
     "resolved-plan.json", "resolved-targets.json", "calibration.json", "plugin-checks.json",
-    "plots/*.svg",
-)
-# Larger PolkaMeter records and plugin stderr, in the order they are kept when
-# the size limit cannot hold them all.
-RECORDS = (
-    "events.jsonl", "plugins/*/stderr.log", "steps.jsonl", "lost.jsonl", "samples.jtl",
-    "blocks.jsonl", "load.jsonl", "node.jsonl", "chain.jsonl", "transactions.jsonl", "scrapes.jsonl",
+    "plots/*.svg", "events.jsonl", "plugins/*/stderr.log", "steps.jsonl", "lost.jsonl",
+    "samples.jtl", "blocks.jsonl", "load.jsonl", "node.jsonl", "chain.jsonl", "transactions.jsonl",
+    "scrapes.jsonl",
 )
 # PolkaMeter redacts these as it writes them, and again when the run finishes; that
 # final pass also covers text a plugin wrote into its log by path. A run killed
 # before then (SIGKILL, out of memory, a panic) misses it, so they are withheld.
 REDACTED_AT_FINISH = ("plugins/*/stderr.log", "summary.md", "summary.json", "plugin-checks.json")
 FINAL_STATES = {"completed", "completed_with_failures", "stopped", "failed"}
-OMITTED = "polkameter-artifact-omitted.txt"
 DIRECTORY = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | os.O_NOFOLLOW
 # O_NONBLOCK: a file swapped for a FIFO after selection must not block the open.
 FILE = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
@@ -51,20 +46,9 @@ def boolean(name, label, default):
 
 def check_inputs():
     boolean("UPLOAD", "upload", "true")
-    boolean("RAW_PLUGIN_FILES", "upload-raw-plugin-files", "false")
-    limit = os.environ.get("SIZE_LIMIT_MB", "") or "500"
-    if not re.fullmatch(r"[0-9]+", limit):
-        raise ValueError("artifact-size-limit-mb must be a whole number of MiB (0 for no limit)")
     retention = os.environ.get("RETENTION_DAYS", "")
     if retention and not (re.fullmatch(r"[0-9]+", retention) and 1 <= int(retention) <= 90):
         raise ValueError("artifact-retention-days must be empty or 1 to 90")
-    return int(limit) * 1024 * 1024
-
-
-def upload_supported(server_url):
-    # actions/upload-artifact v4 and newer run only on github.com and GHE.com.
-    host = (urlsplit(server_url).hostname or "").lower()
-    return host == "github.com" or host.endswith(".ghe.com")
 
 
 def default_name(run_dir):
@@ -153,31 +137,18 @@ def finished(root_fd):
             and event.get("event") == "completed")
 
 
-def rank(relative, patterns):
-    for index, pattern in enumerate(patterns):
-        if fnmatch.fnmatchcase(relative, pattern) and relative.count("/") == pattern.count("/"):
-            return index
-    return None
+def matches(relative, patterns):
+    return any(fnmatch.fnmatchcase(relative, pattern) and relative.count("/") == pattern.count("/")
+               for pattern in patterns)
 
 
-def select(files, raw, limit, complete):
-    """Returns (kept, omitted, excluded, withheld): kept as (path, size) pairs."""
-    size = dict(files)
-    names = [name for name, _ in files]
-    withheld = [] if complete else [f for f in names if rank(f, REDACTED_AT_FINISH) is not None]
-    names = [f for f in names if f not in withheld]
-    reports = [f for f in names if rank(f, REPORTS) is not None]
-    records = sorted((f for f in names if rank(f, RECORDS) is not None), key=lambda f: (rank(f, RECORDS), f))
-    others = [f for f in names if f not in reports and f not in records]
-    total = sum(size[f] for f in reports)
-    kept, omitted = [(f, size[f]) for f in reports], []
-    for relative in records + (others if raw else []):
-        if limit and total + size[relative] > limit:
-            omitted.append(relative)
-            continue
-        kept.append((relative, size[relative]))
-        total += size[relative]
-    return kept, omitted, ([] if raw else others), withheld
+def select(files, complete):
+    """Returns (kept, excluded, withheld): kept as (path, size) pairs."""
+    withheld = [] if complete else [f for f, _ in files if matches(f, REDACTED_AT_FINISH)]
+    files = [(f, size) for f, size in files if f not in withheld]
+    kept = [(f, size) for f, size in files if matches(f, UPLOADED)]
+    excluded = [f for f, _ in files if not matches(f, UPLOADED)]
+    return kept, excluded, withheld
 
 
 def copy(root_fd, relative, budget, destination):
@@ -199,20 +170,20 @@ def copy(root_fd, relative, budget, destination):
     return True
 
 
-def stage(run_dir, destination, raw, limit):
+def stage(run_dir, destination):
     root_fd = os.open(run_dir, DIRECTORY)
     try:
         complete = finished(root_fd)
-        kept, omitted, excluded, withheld = select(walk(root_fd), raw, limit, complete)
+        kept, excluded, withheld = select(walk(root_fd), complete)
         destination.mkdir(parents=True)
         staged = [relative for relative, size in kept if copy(root_fd, relative, size, destination)]
     finally:
         os.close(root_fd)
-    return staged, omitted, excluded, withheld
+    return staged, excluded, withheld
 
 
 def main():
-    limit = check_inputs()
+    check_inputs()
     if sys.argv[1:] == ["--check"]:
         return
     if sys.argv[1:2] == ["--finished"]:
@@ -222,35 +193,22 @@ def main():
         finally:
             os.close(root_fd)
     run_dir = os.environ["RUN_DIR"]
-    raw = boolean("RAW_PLUGIN_FILES", "upload-raw-plugin-files", "false")
     name = os.environ.get("ARTIFACT_NAME", "").strip() or default_name(run_dir)
     digest = hashlib.sha256(name.encode()).hexdigest()[:16]
     destination = Path(os.environ["RUNNER_TEMP"]) / f"polkameter-artifact-{digest}"
     if destination.exists():
         shutil.rmtree(destination)
-    _, omitted, excluded, withheld = stage(run_dir, destination, raw, limit)
-    if omitted:
-        (destination / OMITTED).write_text(
-            f"Omitted to stay within artifact-size-limit-mb ({limit // (1024 * 1024)} MiB):\n"
-            + "".join(f"{f}\n" for f in omitted))
-        print(f"::warning::The run artifact omits {len(omitted)} file(s) over artifact-size-limit-mb; "
-              f"see {OMITTED} in the artifact. They remain in {run_dir} on the runner.")
+    _, excluded, withheld = stage(run_dir, destination)
     if withheld:
         print(f"::notice::The run did not finish normally, so PolkaMeter did not make its final redaction "
               f"pass over plugin logs and summaries. The run artifact leaves out {len(withheld)} file(s): "
               f"{', '.join(withheld)}. "
               f"They remain in {run_dir} on the runner.")
     if excluded:
-        print(f"::notice::The run artifact excludes {len(excluded)} file(s) that PolkaMeter did not write "
-              "(plugin-written files are not redacted). Set upload-raw-plugin-files: \"true\" to include them.")
-    supported = upload_supported(os.environ.get("GITHUB_SERVER_URL", "https://github.com"))
-    if not supported:
-        print("::notice::Skipping the run artifact upload: actions/upload-artifact v4 and newer are not "
-              "supported on GitHub Enterprise Server. Upload the artifact-path output with an uploader "
-              "your server supports, such as actions/upload-artifact@v3.")
+        print(f"::notice::The run artifact leaves out {len(excluded)} file(s) that plugins wrote "
+              f"(PolkaMeter does not redact them). They remain in {run_dir} on the runner.")
     with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-        output.write(f"artifact-name={name}\nartifact-path={destination}\n"
-                     f"upload={str(supported).lower()}\n")
+        output.write(f"artifact-name={name}\nartifact-path={destination}\n")
 
 
 if __name__ == "__main__":

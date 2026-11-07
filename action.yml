@@ -24,10 +24,6 @@ inputs:
     description: Release version (X.Y.Z or vX.Y.Z, optionally with a prerelease such as -rc.1). Empty uses a full release tag or the package version for a moving major tag; other refs build from source.
     required: false
     default: ""
-  verify-attestation:
-    description: Require gh verification of the release workflow and source tag. False explicitly skips provenance with a warning; SHA-256 is always checked.
-    required: false
-    default: "true"
   credentials:
     description: Credential profiles to map to environment variables, one PROFILE=ENV_VAR per line. Set the secret variables on the calling step with env:; secrets are never inputs.
     required: false
@@ -49,13 +45,9 @@ inputs:
     required: false
     default: verdict-or-inconclusive
   upload:
-    description: Upload the run's reports as a workflow artifact. Skipped with a notice on GitHub Enterprise Server.
+    description: Upload the run's reports and records as a workflow artifact. Files that plugins write are never uploaded. Set false on GitHub Enterprise Server.
     required: false
     default: "true"
-  upload-raw-plugin-files:
-    description: Also upload files that plugins wrote into the run directory. PolkaMeter does not redact them.
-    required: false
-    default: "false"
   artifact-name:
     description: Name of the uploaded run artifact. Empty derives a name unique to the job, attempt and action step.
     required: false
@@ -64,10 +56,6 @@ inputs:
     description: Days to keep the run artifact, 1 to 90. Empty uses the repository setting.
     required: false
     default: ""
-  artifact-size-limit-mb:
-    description: Upload at most this many MiB of run records; larger records are omitted and listed. Reports are always kept. 0 means no limit.
-    required: false
-    default: "500"
   toolchain:
     description: Rust toolchain that builds PolkaMeter or plugin-crates. It must be 1.93 or newer.
     required: false
@@ -116,8 +104,6 @@ runs:
       shell: bash
       env:
         UPLOAD: ${{ inputs.upload }}
-        RAW_PLUGIN_FILES: ${{ inputs.upload-raw-plugin-files }}
-        SIZE_LIMIT_MB: ${{ inputs.artifact-size-limit-mb }}
         RETENTION_DAYS: ${{ inputs.artifact-retention-days }}
       run: python3 "$GITHUB_ACTION_PATH/scripts/action-stage-artifact.py" --check
     - name: Install released PolkaMeter or select source
@@ -128,7 +114,6 @@ runs:
         VERSION: ${{ inputs.version }}
         ACTION_REF: ${{ github.action_ref }}
         GITHUB_TOKEN: ${{ github.token }}
-        VERIFY_ATTESTATION: ${{ inputs.verify-attestation }}
         PLUGIN_CRATES: ${{ inputs.plugin-crates }}
       run: python3 "$GITHUB_ACTION_PATH/scripts/action-install.py"
     - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
@@ -317,13 +302,11 @@ runs:
         RUN_DIR: ${{ steps.run.outputs.run-dir }}
         ARTIFACT_NAME: ${{ inputs.artifact-name }}
         UPLOAD: ${{ inputs.upload }}
-        RAW_PLUGIN_FILES: ${{ inputs.upload-raw-plugin-files }}
-        SIZE_LIMIT_MB: ${{ inputs.artifact-size-limit-mb }}
         RETENTION_DAYS: ${{ inputs.artifact-retention-days }}
       run: python3 "$GITHUB_ACTION_PATH/scripts/action-stage-artifact.py"
     - name: Upload the run
       id: upload
-      if: always() && steps.stage.outputs.upload == 'true'
+      if: always() && steps.stage.outputs.artifact-path
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: ${{ steps.stage.outputs.artifact-name }}

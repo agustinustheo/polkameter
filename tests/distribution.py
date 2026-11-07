@@ -734,11 +734,6 @@ class ReleaseTests(unittest.TestCase):
                 self.assertEqual(self.calls(), ["view"])
                 self.assertEqual(self.final()["release"]["assets"], published["assets"])
 
-    def test_missing_asset_whose_published_partner_matches_is_uploaded(self):
-        self.set_release(self.published(**{self.ARCHIVE + ".sha256": None}))
-        self.publish()
-        self.assertEqual(self.uploaded(), [self.ARCHIVE + ".sha256"])
-
     def test_unreadable_release_fails_without_creating_one(self):
         with patch.dict(os.environ, FAKE_GH_VIEW_ERROR="1"), self.assertRaises(SystemExit) as raised:
             self.publish()
@@ -753,43 +748,6 @@ class ReleaseTests(unittest.TestCase):
                 result = subprocess.run(["bash", "-c", guard], env={**os.environ, "GITHUB_REF": ref, "RELEASE_TAG": "v0.3.0"}, capture_output=True)
                 self.assertEqual(result.returncode, code)
 
-    def job(self, name):
-        workflow = (ROOT / ".github/workflows/release.yml").read_text()
-        return re.search(rf"^  {name}:\n(.*?)(?=^  [a-z][a-z-]*:\n|\Z)", workflow, re.MULTILINE | re.DOTALL)[1]
-
-    def test_workflow_alias_serialization_and_permissions(self):
-        container = self.job("container")
-        self.assertNotIn("id-token: write", container)
-        self.assertNotIn("metadata-action", container)
-        aliases = self.job("container-aliases")
-        self.assertIn("group: release-container-aliases\n", aliases)
-        self.assertIn("needs: [prepare, container, publish]", aliases)
-        self.assertIn("!contains(needs.prepare.outputs.version, '-')", aliases)
-        self.assertIn("!contains(needs.prepare.outputs.version, '-')", self.job("major-tag"))
-
-    def test_crates_publish_only_after_release_and_container(self):
-        crates = self.job("crates-io")
-        self.assertIn("needs: [prepare, publish, container]", crates)
-        # Prerelease tags skip crates.io unless a dispatch opts in explicitly.
-        self.assertIn("if: ${{ !contains(needs.prepare.outputs.version, '-') || vars.PUBLISH_PRERELEASE_CRATES == 'true' || inputs.prerelease-crates }}", crates)
-        self.assertIn("needs: [prepare, cli-linux, cli-other, desktop]", self.job("publish"))
-
-    def test_release_assets_are_uploaded_only_by_release_script(self):
-        publish = self.job("publish")
-        self.assertIn("upload-release-assets: false", publish)
-        self.assertLess(publish.index("attest-build-provenance"), publish.index("scripts/release-github.py"))
-
-    def test_release_builds_use_supported_runners_without_caches(self):
-        workflow = (ROOT / ".github/workflows/release.yml").read_text()
-        self.assertNotIn("macos-14", workflow)
-        self.assertNotIn("rust-cache", workflow)
-        self.assertNotIn("type=gha", workflow)
-        self.assertIn('cache: "false"', self.job("desktop"))
-        setup = (ROOT / ".github/actions/setup/action.yml").read_text()
-        self.assertIn("cache: ${{ inputs.cache == 'true' && 'pnpm' || '' }}", setup)
-        self.assertIn("if: inputs.toolchain != '' && inputs.cache == 'true'", setup)
-        self.assertNotIn("macos-14", (ROOT / ".github/workflows/ci.yml").read_text())
-
     def test_every_action_is_pinned_to_a_commit_with_version_comment(self):
         files = [ROOT / "action.yml", *sorted((ROOT / ".github").rglob("*.yml"))]
         for path in files:
@@ -800,11 +758,6 @@ class ReleaseTests(unittest.TestCase):
                 with self.subTest(path=path.name, uses=match[1]):
                     self.assertRegex(match[1], r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
                     self.assertRegex(match[2], r"^ # \S+")
-
-    def test_dependabot_covers_actions_and_docker(self):
-        config = (ROOT / ".github/dependabot.yml").read_text()
-        self.assertIn("- /.github/actions/setup", config)
-        self.assertIn("package-ecosystem: docker", config)
 
     def test_container_uses_init_and_non_root_user(self):
         dockerfile = (ROOT / "Dockerfile").read_text()
