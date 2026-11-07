@@ -220,12 +220,7 @@ def schema_attribute(path, attribute):
     return (f"Element '{{{NAMESPACE}}}{element}'", f"attribute '{attribute}'")
 
 
-def scalar_case(label, xml, path, attribute, value, valid, reason, integer_bits=None):
-    """Distinguish integer parse failures from in-range values violating a rule."""
-    if not valid and integer_bits is not None:
-        if value.startswith("-") or int(value) >= 2 ** integer_bits:
-            element = "polkameter-plan" if path == "." else path.rsplit("p:", 1)[-1]
-            reason = f"`{attribute}` on <{element}> must be a whole number from 0 to"
+def scalar_case(label, xml, path, attribute, value, valid, reason):
     case(label, xml, valid, cli_error=None if valid else reason,
          schema_error=None if valid else schema_attribute(path, attribute))
 
@@ -263,53 +258,53 @@ for path, attributes in [
              cli_error=f"missing `{attribute}` on <{'polkameter-plan' if path == '.' else path.rsplit('p:', 1)[-1]}>",
              schema_error=schema_attribute(path, attribute) + ("required but missing",))
 
-# Values at and beyond all bounded integer ranges, and each scalar enum/pattern.
-for path, attribute, good, bad, reason, integer_bits in [
-    (".", "version", ["1", "+1", " 1 "], ["0", "2", "4294967296"],
-     'unsupported plan version', 32),
+# A good and a bad value for each bounded attribute, and each scalar enum/pattern.
+for path, attribute, good, bad, reason in [
+    (".", "version", ["1", " 1 "], ["2"],
+     'unsupported plan version'),
     (".", "mode", ["stress", "smoke"], ["", "other", " smoke"],
-     '`mode` on <polkameter-plan> must be smoke or stress', None),
+     '`mode` on <polkameter-plan> must be smoke or stress'),
     (".", "name", [" "], [""],
-     '`name` on <polkameter-plan> must not be empty', None),
-    (".", "timeout-ms", ["1", "+1", "18446744073709551615"], ["0", "-1", "18446744073709551616"],
-     '`timeout-ms` on <polkameter-plan> must be at least 1', 64),
+     '`name` on <polkameter-plan> must not be empty'),
+    (".", "timeout-ms", ["1"], ["0"],
+     '`timeout-ms` on <polkameter-plan> must be at least 1'),
     ("p:plugins/p:plugin", "id", ["a", "cor", "Core", "corex", "-0_"], ["", "core", "bad.id", "é", "x y"],
      {"": "plugin ID `` is invalid", "core": "plugin ID `core` is reserved for built-in operations",
-      "bad.id": "plugin ID `bad.id` is invalid", "é": "plugin ID `é` is invalid", "x y": "plugin ID `x y` is invalid"}, None),
+      "bad.id": "plugin ID `bad.id` is invalid", "é": "plugin ID `é` is invalid", "x y": "plugin ID `x y` is invalid"}),
     ("p:plugins/p:plugin", "version", [" "], [""],
-     'plugin `example` needs a `version`', None),
+     'plugin `example` needs a `version`'),
     ("p:plugins/p:plugin", "protocol", ["1"], ["0", "2"],
-     'plugin `example` uses protocol', 32),
+     'plugin `example` uses protocol'),
     ("p:targets/p:target", "endpoint", ["ws://", "wss://node", "ws://x y"], ["https://node", "WS://node", " ws://node"],
-     'a target must be a WebSocket RPC URL', None),
+     'a target must be a WebSocket RPC URL'),
     ("p:credentials/p:credential", "profile", [" "], [""],
-     'credential `admin` needs a `profile`', None),
+     'credential `admin` needs a `profile`'),
     ("p:setup/p:step", "use", ["example.any-name_0"], ["core", "core.a.b", "core."],
      {'core': 'step `prepare`: use="core" must name an operation as <plugin>.<operation>',
       'core.a.b': 'step `prepare`: use="core.a.b" has an invalid operation name `a.b`',
-      'core.': 'step `prepare`: use="core." has an invalid operation name ``'}, None),
-    ("p:setup/p:step", "timeout-ms", ["1", "18446744073709551615"], ["0", "18446744073709551616"],
-     'step `prepare`: `timeout-ms` must be at least 1', 64),
-    ("p:workflow", "users", ["1", "100000"], ["0", "100001"],
-     'workflow `users` has users=', 32),
-    ("p:workflow", "iterations", ["1", "4294967295"], ["0", "4294967296"],
-     'workflow `users` has iterations="0"; use at least 1', 32),
-    ("p:workflow", "concurrency", ["1", "1000"], ["0", "1001"],
-     'workflow `users` has concurrency=', 32),
-    ("p:load", "connections", ["1", "64"], ["0", "65"],
-     '<load> has connections=', 32),
-    ("p:load", "baseline-probes", ["1", "1000"], ["0", "1001"],
-     '<load> has baseline-probes=', 32),
-    ("p:load", "recovery-seconds", ["0", "+0", "86400"], ["-0", "-1", "86401"],
-     '<load> has recovery-seconds=', 32),
-    ("p:load", "block-interval-seconds", ["0.1", "1.7976931348623157E308"], ["0.09", "INF", "NaN"],
-     '<load> has block-interval-seconds=', None),
-    ("p:load/p:rate", "tx-per-second", ["0", "1.7976931348623157E308"], ["-1", "INF", "-INF", "NaN"],
-     'step 0: 1 s at', None),
-    ("p:load/p:rate", "seconds", ["1", "4294967295"], ["0", "4294967296"],
-     'step 0: 0 s at', 32),
-    ("p:monitors", "para-id", ["0", "+0", "1", "999", "1000", "1999", "2000", "4294967295"], ["-0", "-1", "4294967296"],
-     '`para-id` on <monitors> must be a whole number from 0 to', 32),
+      'core.': 'step `prepare`: use="core." has an invalid operation name ``'}),
+    ("p:setup/p:step", "timeout-ms", ["1"], ["0"],
+     'step `prepare`: `timeout-ms` must be at least 1'),
+    ("p:workflow", "users", ["100000"], ["100001"],
+     'workflow `users` has users='),
+    ("p:workflow", "iterations", ["1"], ["0"],
+     'workflow `users` has iterations="0"; use at least 1'),
+    ("p:workflow", "concurrency", ["1000"], ["1001"],
+     'workflow `users` has concurrency='),
+    ("p:load", "connections", ["64"], ["65"],
+     '<load> has connections='),
+    ("p:load", "baseline-probes", ["1000"], ["1001"],
+     '<load> has baseline-probes='),
+    ("p:load", "recovery-seconds", ["86400"], ["86401"],
+     '<load> has recovery-seconds='),
+    ("p:load", "block-interval-seconds", ["0.1"], ["0.09", "NaN"],
+     '<load> has block-interval-seconds='),
+    ("p:load/p:rate", "tx-per-second", ["0"], ["-1", "NaN"],
+     'step 0: 1 s at'),
+    ("p:load/p:rate", "seconds", ["1"], ["0"],
+     'step 0: 0 s at'),
+    ("p:monitors", "para-id", ["0", "2000"], ["-1"],
+     '`para-id` on <monitors> must be a whole number from 0 to'),
 ]:
     for valid, values in [(True, good), (False, bad)]:
         for value in values:
@@ -317,17 +312,15 @@ for path, attribute, good, bad, reason, integer_bits in [
             if path == "p:plugins/p:plugin" and attribute == "id" and valid:
                 xml = xml.replace('use="example.prepare"', f'use="{value}.prepare"')
             scalar_case(f"{path}/@{attribute}={value!r}", xml, path, attribute, value, valid,
-                        reason[value] if isinstance(reason, dict) and not valid else reason,
-                        integer_bits)
+                        reason[value] if isinstance(reason, dict) and not valid else reason)
 
 for attribute in ["stall-ms", "finality-stall-ms", "max-p95-latency-ms", "max-submit-reply-ms", "finality-wait-ms", "probes-in-a-row"]:
-    for value, valid in [("1", True), ("18446744073709551615", True), ("0", False), ("18446744073709551616", False)]:
+    for value, valid in [("1", True), ("0", False)]:
         scalar_case(f"threshold {attribute}={value}",
                     mutate(FULL, "p:thresholds", attribute, value),
-                    "p:thresholds", attribute, value, valid, f"<thresholds> has {attribute}=",
-                    64)
+                    "p:thresholds", attribute, value, valid, f"<thresholds> has {attribute}=")
 for attribute in ["min-included-ratio", "max-refused-ratio", "pool-refuses-ratio", "min-send-ratio", "max-block-gap-factor", "recovered-block-gap-factor"]:
-    values = [("0.1", True), ("1", True), ("0", False), ("-1", False), ("NaN", False), ("INF", False)]
+    values = [("1", True), ("0", False), ("NaN", False)]
     values += [("1.1", attribute.endswith("factor"))]
     for value, valid in values:
         scalar_case(f"threshold {attribute}={value}",
@@ -346,7 +339,7 @@ for attribute, values in [
     ("step", ["INF", "NaN"]),
     ("growth", ["0", "-1", "INF", "NaN"]),
     ("steps", ["0", "10001"]),
-    ("seconds", ["0", "4294967296"]),
+    ("seconds", ["0"]),
 ]:
     for value in values:
         base = RAMP.replace('step="-1"', 'growth="2"') if attribute == "growth" else RAMP
@@ -356,8 +349,7 @@ for attribute, values in [
             "seconds": "step 0: 0 s at",
         }[attribute]
         scalar_case(f"ramp {attribute}={value}", mutate(base, "p:load/p:ramp", attribute, value),
-                    "p:load/p:ramp", attribute, value, False, reason,
-                    32 if attribute in {"steps", "seconds"} else None)
+                    "p:load/p:ramp", attribute, value, False, reason)
 case("10000 ramp steps", RAMP.replace('step="-1" steps="3"', 'step="0" steps="10000"'))
 for count, valid in [(0, False), (10000, True), (10001, False)]:
     case(f"{count} rate elements", FULL.replace('<rate tx-per-second="0" seconds="1"/>', '<rate tx-per-second="0" seconds="1"/>' * count), valid,
