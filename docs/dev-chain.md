@@ -1,19 +1,17 @@
 # Stress-test a local dev chain
 
-<!-- v0.3.0: remove after release -->
-> **Unreleased:** The substrate plugin, `polkameter init` and the CI jobs below need v0.3.0, which is not released yet. Until then, build the CLI and the plugin from a checkout, as below, and run the CI jobs only after the release.
+Let's start a dev chain and increase the transaction rate until a test limit fails. We'll use the [substrate plugin](substrate-plugin.md), so you don't write any plugin code. The same steps run in CI at the end.
 
-You will start a Polkadot SDK dev chain with one script, load it with the [substrate plugin](substrate-plugin.md), and find the rate at which it stops keeping up. The same steps run in CI.
+The chain is `polkadot-omni-node` in dev mode with the parachain template runtime. That runtime has the standard `System`, `Balances` and `Sudo` pallets, and `//Alice` holds funds. It makes a block every 6 seconds, and each block is final at once. The script pins the node and runtime versions and checks both downloads against SHA-256 sums.
 
-The script runs `polkadot-omni-node` in dev mode with the parachain template runtime. That runtime has the standard `System`, `Balances` and `Sudo` pallets, and `//Alice` holds funds. One process produces a block every 6 seconds, and every block is final at once. The script pins the node to the `polkadot-stable2609-1` release and the runtime to the template's `v0.0.5` release, and checks both downloads against SHA-256 sums.
-
-You need Linux on x86-64 or macOS on Apple silicon, `bash`, `curl`, PolkaMeter and the substrate plugin. [Install](install.md) covers PolkaMeter. From v0.3.0, the install script and the container also install `polkameter-substrate-plugin`; `cargo install --locked polkameter` does not. From a checkout, build both:
+You need Linux on x86-64 or macOS on Apple silicon, with `bash` and `curl`. Clone [the repository](https://github.com/agustinustheo/polkameter), then build the CLI and the plugin from its root:
 
 ```sh
 cargo build -p polkameter -p polkameter-substrate-plugin
+export PATH="$PWD/target/debug:$PATH"
 ```
 
-Run every command below from the root of a PolkaMeter checkout, with `target/debug` on your `PATH` or `polkameter` installed.
+Run every command below from the root of the checkout.
 
 ## Start the chain
 
@@ -28,9 +26,11 @@ dev-chain: started pid 38403, log .polkameter/dev-chain/node.log
 dev-chain: ready at ws://127.0.0.1:9944, block 21, 6000 ms blocks
 ```
 
-The first start downloads about 155 MB into `.polkameter/dev-chain/bin`, under the directory you run it from. Add `.polkameter/` to your `.gitignore`. Later starts reuse the files when their checksums match. `start` returns once the chain has 21 blocks, about two minutes, because preflight measures the block time over 20 blocks.
+The first start downloads about 155 MB into `.polkameter/dev-chain/bin`. Add `.polkameter/` to your `.gitignore`. Later starts reuse the files.
 
-> **Warning:** `start` wipes the chain's data from the previous start. Each start is a new chain.
+`start` waits for 21 blocks, about two minutes. Preflight needs 20 blocks to measure the block time.
+
+> **Warning:** `start` deletes the chain data from the previous start. Each start is a new chain.
 
 ## Install the plugin and the seed
 
@@ -47,11 +47,11 @@ Installed plugin substrate 0.3.0 (5 operations) from ~/polkameter/target/debug/p
 }
 ```
 
-The example plans name the credential profile `substrate-dev`. The plugin derives its signers from the seed, `//Alice` here, and funds them from it.
+The second command maps the credential profile `substrate-dev` to the variable `POLKAMETER_SUBSTRATE_SEED`. The example plans use that profile. The plugin derives its signers from the seed, `//Alice` here, and funds them from it.
 
 ## Run the remarks plan
 
-[`examples/substrate-remarks.polkameter.xml`](https://github.com/agustinustheo/polkameter/blob/main/examples/substrate-remarks.polkameter.xml) funds 16 flood signers and one signer per probe, signs 65,000 remarks, and ramps from 100 to 600 transactions per second in steps of 30 seconds:
+[`examples/substrate-remarks.polkameter.xml`](https://github.com/agustinustheo/polkameter/blob/main/examples/substrate-remarks.polkameter.xml) funds 16 flood signers and one signer per probe. It signs 65,000 remarks. Then it ramps from 100 to 600 transactions per second (tx/s), 30 seconds per step:
 
 ```sh
 polkameter run examples/substrate-remarks.polkameter.xml --output target/runs --fail-on-verdict
@@ -67,13 +67,9 @@ baseline: 3 probes landed, p50 6.0 s, max 6.0 s
 Phase: load
 step 0 prepared: target 100 tx/s, sent 100 tx/s, 4 blocks, 79.8 tx/s included, reply p95 0.0 s, 2 replies pending, backlog 606
 ...
-step 4 prepared: target 500 tx/s, sent 500 tx/s, 5 blocks, 399.7 tx/s included, reply p95 0.0 s, 11 replies pending, backlog 3010
 step 5 prepared: target 600 tx/s, sent 600 tx/s, 5 blocks, 409.6 tx/s included, reply p95 0.0 s, 12 replies pending, backlog 5712
 stop: rate cap: all 6 steps ran
 Phase: recovery
-recovery: load stopped with 5712 txs outstanding; one probe per block for up to 120 s
-recovery: back (3 probes in a row landed within 12.0 s); backlog 0 left
-Phase: reconciliation
 ...
 #### Result
 
@@ -82,53 +78,18 @@ Phase: reconciliation
 - **Max sustained:** 500 tx/s target (step 4), 500 tx/s included
 - **Load stop:** rate cap: all 6 steps ran
 - **Recovery:** back 1 s after the load stopped (3 probes in a row landed within 12.0 s). Backlog at stop 5712 txs, drained after 8 s, at 317.3 tx/s.
-- **Loss check:** 63002 sent: 63002 finalized (0 failed after inclusion), 0 refused, 0 still ready in the pool, 0 seen in a block but not verified final, **0 lost**, 0 unknown. ... State check: 100 of 100 every sampled transaction's signer nonce is past it at block 0xf10f4c80faa8cba181d33faf86bcc712505c030d6b292b808fd6db5a54c88250
-...
-#### Load steps
-
-| step | target tx/s | duration s | transactions sent | sent/s | included/s | included % | p50 s | p95 s (limit 10.0) | ... | max ours/block | max ref time % | max proof % |
-...
-| 3 | 400 | 30.0 | 12000 | 400 | 400 | 100.0 | 3.9 | 6.6 | ... | 2409 | 78.3 | 5.4 |
-| 4 | 500 | 30.0 | 15001 | 500 | 500 | 100.0 | 4.1 | 6.8 | ... | 3011 | 97.9 | 6.8 |
-| 5 | 600 | 30.0 | 18001 | 600 | 600 | 100.0 | 6.2 | 12.9 | ... | 3075 | 100.0 | 6.9 |
+- **Loss check:** 63002 sent: 63002 finalized (0 failed after inclusion), 0 refused, 0 still ready in the pool, 0 seen in a block but not verified final, **0 lost**, 0 unknown. ...
 ...
 Run completed_with_failures. Artifacts: ~/polkameter/target/runs/run-1793952055743-80142-1
 PolkaMeter: verdict FAIL: step 5 broke its latency measure (p95 send -> best block 12.9 s); exit 1 because of --fail-on-verdict (the checks are in summary.md)
 1
 ```
 
-The verdict is `FAIL` because the last step broke a limit. At 600 transactions per second, blocks were full: 3,075 remarks used 100% of a block's compute time (ref time). Transactions queued, and the p95 time from send to a block rose to 12.9 s, above the 10-second limit. The chain sustained 500 transactions per second. All 63,002 transactions sent were finalized, none were lost, and the state check found the nonce of every sampled transaction used. [Read the results](reading-results.md) explains each line of `summary.md`.
+The last step exceeded the latency limit, so the verdict is FAIL. At 600 tx/s, blocks were full. Transactions queued, and the p95 time from send to a block rose to 12.9 s. The limit is 10 s. "Failure onset" in the report is the breaking point. The max sustained rate was 500 tx/s. All 63,002 flood transactions were finalized, and none were lost. [Read the results](reading-results.md) explains each line.
 
-`--fail-on-verdict` makes a `FAIL` verdict exit with `1`. Leave it out when you explore a chain's limit, and keep it in CI.
+`--fail-on-verdict` makes a FAIL verdict exit `1`. Leave it out while you explore, and keep it in CI.
 
-## Run the transfers plan
-
-[`examples/substrate-transfers.polkameter.xml`](https://github.com/agustinustheo/polkameter/blob/main/examples/substrate-transfers.polkameter.xml) loads `Balances.transfer_keep_alive` the same way, ramping from 80 to 480 transactions per second:
-
-```sh
-polkameter run examples/substrate-transfers.polkameter.xml --output target/runs --fail-on-verdict
-```
-
-```text
-...
-step 4 prepared: target 400 tx/s, sent 400 tx/s, 5 blocks, 307.0 tx/s included, reply p95 0.0 s, 8 replies pending, backlog 2789
-step 5 prepared: target 480 tx/s, sent 480 tx/s, 5 blocks, 291.8 tx/s included, reply p95 0.0 s, 10 replies pending, backlog 5645
-stop: rate cap: all 6 steps ran
-...
-- **Verdict:** FAIL
-- **Failure onset** (first failed load step): step 5 (480 tx/s): latency, p95 send -> best block 18.6 s
-- **Max sustained:** 400 tx/s target (step 4), 400 tx/s included
-- **Load stop:** rate cap: all 6 steps ran
-- **Recovery:** back 1 s after the load stopped (3 probes in a row landed within 12.0 s). Backlog at stop 5645 txs, drained after 13 s, at 313.6 tx/s.
-- **Loss check:** 50401 sent: 50401 finalized (0 failed after inclusion), 0 refused, 0 still ready in the pool, 0 seen in a block but not verified final, **0 lost**, 0 unknown. ...
-...
-| 4 | 400 | 30.0 | 12000 | 400 | 400 | 100.0 | 4.6 | 7.3 | ... | 2309 | 100.0 | 4.3 |
-| 5 | 480 | 30.0 | 14401 | 480 | 480 | 100.0 | 7.4 | 18.6 | ... | 2309 | 100.0 | 4.3 |
-...
-Run completed_with_failures. Artifacts: ~/polkameter/target/runs/run-1793938491211-22925-1
-```
-
-A transfer weighs more than a remark, so a block holds fewer: 2,309 transfers filled a block's compute time. The chain kept up at 400 transactions per second. At 480, transactions queued and the p95 time to a block rose to 18.6 s. All 50,401 transfers were finalized.
+[`examples/substrate-transfers.polkameter.xml`](https://github.com/agustinustheo/polkameter/blob/main/examples/substrate-transfers.polkameter.xml) does the same with `Balances.transfer_keep_alive`. A transfer weighs more than a remark. On this chain it kept up at 400 tx/s and broke the latency limit at 480.
 
 ## Generate a plan for your chain
 
@@ -144,15 +105,13 @@ Wrote target/init.polkameter.xml for Custom (parachain-template-runtime 1, 6 s b
 Plan is structurally valid. Preflight checks the installed plugins.
 ```
 
-The plan ramps from 10 to 50 transactions per second. Run it like the examples:
+The plan ramps from 10 to 50 tx/s. Run it like the examples:
 
 ```sh
 polkameter run target/init.polkameter.xml --output target/runs
 ```
 
 ```text
-...
-step 4 prepared: target 50 tx/s, sent 50 tx/s, 5 blocks, 39.8 tx/s included, reply p95 0.0 s, 1 replies pending, backlog 305
 ...
 - **Verdict:** PASS
 - **Failure onset** (first failed load step): no measure violated
@@ -161,7 +120,7 @@ step 4 prepared: target 50 tx/s, sent 50 tx/s, 5 blocks, 39.8 tx/s included, rep
 Run completed. Artifacts: ~/polkameter/target/runs/run-1793938851237-30197-1
 ```
 
-`PASS` means that every step stayed within the limits, so the run did not find the chain's limit. Raise the ramp's rates and the prepare step's `count` until a step fails, as the remarks plan does.
+PASS means every step stayed within the limits. So this run didn't find the chain's limit. Raise the ramp's rates and the prepare step's `count` until a step fails, as the remarks plan does.
 
 ## Load your own runtime
 
@@ -171,7 +130,7 @@ Set `POLKAMETER_DEV_RUNTIME` to your runtime's compressed Wasm to run it instead
 POLKAMETER_DEV_RUNTIME=<path-to-your-runtime>.compact.compressed.wasm scripts/dev-chain.sh start
 ```
 
-The runtime must run on `polkadot-omni-node`: a parachain runtime with Aura, as the parachain template builds. It must have a genesis preset named `development`, or the one you name in `POLKAMETER_DEV_PRESET`, that funds `//Alice`. Its block time is the runtime's slot duration, so `start` prints no block time for it. Set the plan's `block-interval-seconds` to the slot duration; `polkameter init` measures it for you.
+The runtime must run on `polkadot-omni-node`. That means a parachain runtime with Aura, like the parachain template. It needs a genesis preset that funds `//Alice`, named `development` or the name in `POLKAMETER_DEV_PRESET`. `start` doesn't know its block time. Set the plan's `block-interval-seconds` to the runtime's slot duration, or let `polkameter init` measure it.
 
 ## Stop the chain
 
@@ -183,41 +142,32 @@ scripts/dev-chain.sh stop
 dev-chain: stopped pid 38403
 ```
 
-`stop` stops only the node that `start` started. It checks that the process in its pid file is still that `polkadot-omni-node`, started at the same time, so it never signals a process that reused the pid.
+`stop` stops only the node that `start` started.
 
 ## Script settings
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `POLKAMETER_DEV_CHAIN_DIR` | `.polkameter/dev-chain` | Where the binaries, chain spec, chain data and `node.log` go |
-| `POLKAMETER_DEV_CHAIN_PORT` | `9944` | The JSON-RPC port, for `ws://` and `http://`. If another program uses the port, `start` fails and names this variable |
-| `POLKAMETER_DEV_BLOCK_MS` | `6000` | Block time in milliseconds. The template runtime's timestamps assume 6000 |
-| `POLKAMETER_DEV_WAIT_BLOCKS` | `21` | Blocks `start` waits for |
-| `POLKAMETER_DEV_POOL_TYPE` | `single-state` | The transaction pool. See below |
-| `POLKAMETER_DEV_RUNTIME` | the template runtime | Your runtime's Wasm |
-| `POLKAMETER_DEV_PRESET` | `development` | The genesis preset of your runtime |
-| `POLKAMETER_DEV_NODE_ARGS` | none | More `polkadot-omni-node` arguments, separated by spaces |
+The header of [`scripts/dev-chain.sh`](https://github.com/agustinustheo/polkameter/blob/main/scripts/dev-chain.sh) lists its variables. You'll most likely need `POLKAMETER_DEV_CHAIN_PORT` (default `9944`) when the port is taken, and `POLKAMETER_DEV_CHAIN_DIR` (default `.polkameter/dev-chain`) to move the files.
 
-The script uses the single-state transaction pool. This node release's default, the fork-aware pool, loses transactions in dev mode. With `POLKAMETER_DEV_POOL_TYPE=fork-aware`, the remarks plan above finalized 2,826 of 62,993 transactions: from the 200 transactions per second step on, the pool accepted transactions without an error but almost no block included them. PolkaMeter reported them as lost. That loss comes from dev mode, not from the runtime, so the script avoids it.
+The script uses the single-state transaction pool. The node's default fork-aware pool loses transactions in dev mode, and PolkaMeter would report them as lost.
 
 ## Run it in GitHub Actions
 
-This job starts the dev chain, runs the short CI plan with `fail-on: verdict`, and uploads the run directory. It caches the downloads on the script's hash. It needs v0.3.0 or newer, whose release archives hold the plugin. In your repository, commit:
+This job starts the dev chain, runs the short CI plan with `fail-on: verdict`, and uploads the run's reports. It caches the downloads on the script's hash. Commit these files to your repository:
 
-- the job as `.github/workflows/load-test.yml`;
-- `dev-chain.sh` at the repository root, from the same PolkaMeter version;
-- the CI plan as `plans/substrate-remarks-ci.polkameter.xml`, from [`examples/`](https://github.com/agustinustheo/polkameter/blob/main/examples/substrate-remarks-ci.polkameter.xml).
-
-<!-- v0.3.0: remove after release (and replace main with v0.3.0) -->
-Until v0.3.0 is tagged, fetch the script from `main`:
+- the job as `.github/workflows/load-test.yml`
+- `dev-chain.sh` at the repository root, from the same PolkaMeter version
+- the CI plan as `plans/substrate-remarks-ci.polkameter.xml`
 
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/agustinustheo/polkameter/main/scripts/dev-chain.sh
+curl -fsSLO https://raw.githubusercontent.com/agustinustheo/polkameter/v0.3.0/scripts/dev-chain.sh
 mkdir -p plans
-curl -fsSL -o plans/substrate-remarks-ci.polkameter.xml https://raw.githubusercontent.com/agustinustheo/polkameter/main/examples/substrate-remarks-ci.polkameter.xml
+curl -fsSL -o plans/substrate-remarks-ci.polkameter.xml https://raw.githubusercontent.com/agustinustheo/polkameter/v0.3.0/examples/substrate-remarks-ci.polkameter.xml
 ```
 
-The plan's `<plugin id="substrate" version="0.3.0">` must equal the action's `version` input. The plugin ships with the CLI, and PolkaMeter refuses a plugin of another version, so change both together when you upgrade.
+<!-- v0.3.0: remove after release -->
+Both CI jobs need the v0.3.0 release. Until then, replace `v0.3.0` with `main` in the two URLs above.
+
+Keep the action's `version` equal to the plan's substrate plugin version, `<plugin id="substrate" version="0.3.0">`. The plugin ships with the CLI, and PolkaMeter refuses a plugin of another version.
 
 ```yaml
 name: load-test
@@ -260,11 +210,11 @@ jobs:
         run: bash dev-chain.sh stop
 ```
 
-`plugins: polkameter-substrate-plugin` names the plugin installed with the CLI. [Run PolkaMeter in CI](ci.md) lists the action's inputs. The PolkaMeter repository runs the same steps from source in its `dev-chain` CI job. The PolkaMeter skill holds this job as `templates/github-workflow.yml`.
+`plugins: polkameter-substrate-plugin` names the plugin installed with the CLI. [Run in CI](ci.md) covers the action.
 
 ## Run it in GitLab CI
 
-GitLab needs a Linux x86-64 runner. Add this job to `.gitlab-ci.yml`, with `dev-chain.sh` and the plan committed as for GitHub. `POLKAMETER_VERSION` must equal the plan's `<plugin version>`:
+Use a Linux x86-64 runner. Add this job to `.gitlab-ci.yml`, and commit `dev-chain.sh` and the plan as for GitHub. Keep `POLKAMETER_VERSION` equal to the plan's substrate plugin version:
 
 ```yaml
 load-test:
@@ -299,4 +249,6 @@ load-test:
       - test-results/polkameter.xml
 ```
 
-`//Alice` is a public dev key, so it can sit in the job. For a shared network, put the seed in a masked CI/CD variable instead.
+`//Alice` is a public dev key, so it's fine in the job. On a shared network, put the seed in a masked CI/CD variable.
+
+You now have a chain, a failing step and a job that catches it. Have fun breaking things!
