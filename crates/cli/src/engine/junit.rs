@@ -461,13 +461,7 @@ fn single_line(text: &str) -> String {
 			break;
 		}
 		match c {
-			c if c.is_control() || c.is_whitespace() => out.push(' '),
-			'\u{fffe}'
-			| '\u{ffff}'
-			| '\u{200e}'
-			| '\u{200f}'
-			| '\u{202a}'..='\u{202e}'
-			| '\u{2066}'..='\u{2069}' => out.push(' '),
+			c if c.is_whitespace() || crate::redact::is_unsafe_char(c) => out.push(' '),
 			c => out.push(c),
 		}
 	}
@@ -488,21 +482,6 @@ fn escape(text: &str) -> String {
 		}
 	}
 	out
-}
-
-// Hash the complete identity before truncation; retain invocation/source suffixes too.
-fn escape_name(name: &str, index: usize) -> String {
-	if name.chars().count() <= MESSAGE_CHARS {
-		return escape(name);
-	}
-	let hash = name
-		.bytes()
-		.fold(0xcbf29ce484222325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100000001b3));
-	let tail: String = name.chars().rev().take(100).collect::<Vec<_>>().into_iter().rev().collect();
-	escape(&format!(
-		"{}…{tail} [id={hash:016x}-{index}]",
-		name.chars().take(MESSAGE_CHARS - 150).collect::<String>()
-	))
 }
 
 fn render_case(case: &Case, suite_name: &str, name: &str) -> String {
@@ -581,7 +560,7 @@ fn render(suites: &[Suite], directory: &Path) -> String {
 }
 
 fn distinct_name(name: &str, index: usize, used: &mut BTreeMap<String, usize>) -> String {
-	let mut safe = escape_name(name, index);
+	let mut safe = escape(name);
 	// XML sanitization can merge different names; reserve every emitted name.
 	while used.insert(safe.clone(), index).is_some() {
 		safe = format!("{} [case={index}]", safe);
@@ -821,7 +800,7 @@ mod tests {
 	}
 
 	#[test]
-	fn checks_keep_source_and_duplicate_counter_and_long_names_keep_identity() {
+	fn checks_keep_source_and_duplicate_counter() {
 		let summary = json!({"checks":[
 			{"outcome":"pool","check":"same","status":"pass","source":"first"},
 			{"outcome":"pool","check":"same","status":"fail","source":"second"},
@@ -831,13 +810,6 @@ mod tests {
 		assert_eq!(suite.cases[0].name, "pool: same [evaluate:first]");
 		assert_eq!(suite.cases[1].name, "pool: same [evaluate:second]");
 		assert_eq!(suite.cases[2].name, "pool: same [evaluate:second] [check=2]");
-		let long = "界".repeat(MESSAGE_CHARS * 2);
-		let a = escape_name(&case_name(&(format!("{long}a"), Some(1), Some(2))), 0);
-		let b = escape_name(&case_name(&(format!("{long}b"), Some(1), Some(2))), 1);
-		assert_ne!(a, b);
-		assert!(a.contains("a [user=1, iteration=2]"));
-		assert!(b.contains("b [user=1, iteration=2]"));
-		assert!(a.contains("[id="));
 		let mut used = BTreeMap::new();
 		assert_ne!(distinct_name("a\nb", 0, &mut used), distinct_name("a b", 1, &mut used));
 	}
