@@ -37,7 +37,7 @@ polkameter-plugin-sdk = { version = "0.3", features = ["observers"] }
 
 Without features the crate does not depend on subxt.
 
-`examples/hello.rs` is a complete plugin with one operation. The [API documentation](https://docs.rs/polkameter-plugin-sdk/0.3) starts with the same plugin. The [substrate plugin](https://github.com/agustinustheo/polkameter/tree/main/plugins/substrate), which signs remarks and transfers for any runtime with the `System` and `Balances` pallets, is built on the `chain` feature.
+`examples/hello.rs` is a complete plugin with one operation. The [API documentation](https://docs.rs/polkameter-plugin-sdk/0.3) starts with the same plugin. <!-- v0.3.0: remove after release -->Until v0.3.0 is published, read the API locally with `cargo doc -p polkameter-plugin-sdk --all-features --open` from a repository checkout. The [substrate plugin](https://github.com/agustinustheo/polkameter/tree/main/plugins/substrate), which signs remarks and transfers for runtimes with the standard `System` and `Balances` pallets, sr25519-compatible accounts and signatures, and transaction extensions supported by subxt, is built on the `chain` feature.
 
 Version 0.3 replaces the 0.2 crates `polkameter-chain`, `polkameter-files`, `polkameter-checks` and `polkameter-monitors`: `polkameter_chain::` becomes `polkameter_plugin_sdk::chain::`, and the other three become `polkameter_plugin_sdk::observers::`. See [Migrating from 0.2](https://agustinustheodorus.com/polkameter/plugins.html#migrating-from-02).
 

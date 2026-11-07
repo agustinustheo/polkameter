@@ -1,12 +1,14 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
-    <img src="assets/logo.svg" alt="PolkaMeter: a gauge whose needle points into the red zone" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/agustinustheo/polkameter/main/assets/logo-dark.svg">
+    <img src="https://raw.githubusercontent.com/agustinustheo/polkameter/main/assets/logo.svg" alt="PolkaMeter: a gauge whose needle points into the red zone" width="820">
   </picture>
 </p>
 
+# PolkaMeter
+
 <p align="center">
-  <b>Load and stress tests for Polkadot SDK chains, built to fail your CI before your chain fails in production.</b>
+  <b>Load and stress tests for Polkadot SDK chains, with verdicts and reports for CI.</b>
 </p>
 
 <p align="center">
@@ -15,7 +17,7 @@
   <a href="https://crates.io/crates/polkameter"><img alt="crates.io: polkameter" src="https://img.shields.io/crates/v/polkameter?label=polkameter&logo=rust&color=E6007A"></a>
   <a href="https://crates.io/crates/polkameter-plugin-sdk"><img alt="crates.io: polkameter-plugin-sdk" src="https://img.shields.io/crates/v/polkameter-plugin-sdk?label=polkameter-plugin-sdk&logo=rust&color=E6007A"></a>
   <a href="https://docs.rs/polkameter-plugin-sdk"><img alt="docs.rs" src="https://img.shields.io/docsrs/polkameter-plugin-sdk?logo=docsdotrs"></a>
-  <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
+  <a href="https://github.com/agustinustheo/polkameter/blob/main/LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
   <br>
   <img alt="Rust 1.93+" src="https://img.shields.io/badge/rust-1.93%2B-F74C00?logo=rust&logoColor=white">
   <img alt="Linux x86-64 | arm64" src="https://img.shields.io/badge/linux-x86--64%20%7C%20arm64-555?logo=linux&logoColor=white">
@@ -31,16 +33,16 @@
 
 PolkaMeter loads a Polkadot SDK chain with signed transactions at rising rates and tells you where it stops keeping up. It is a command-line tool, modeled on JMeter: an XML plan (`*.polkameter.xml`) lists the steps, and plugins, which run as separate processes, prepare the transactions for your runtime.
 
-Each run checks every transaction against the finalized chain and ends with a verdict: `PASS`, `WARN`, `FAIL` or `INCONCLUSIVE`. The verdict, the exit code and the files in the run directory are made for a CI job.
+A completed load test reconciles its sent transactions against the finalized chain and reports `PASS`, `WARN`, `FAIL` or `INCONCLUSIVE`. Every run records an execution status and exit code. The verdict, the exit code and the files in the run directory are made for a CI job.
 
 ## Highlights
 
-- **CI first.** A verdict and a documented exit code for every run. By default, the GitHub Action fails the job on `FAIL` or `INCONCLUSIVE`, uploads the run directory, and puts `summary.md` in the job summary.
-- **Any chain.** The substrate plugin signs `System.remark` or `Balances.transfer_keep_alive` for any runtime with the standard `System` and `Balances` pallets, from its metadata. `polkameter init --rpc <endpoint>` writes a plan for your chain.
+- **CI first.** A documented exit code for every run, and a verdict for completed load tests. By default, the GitHub Action fails the job on `FAIL` or `INCONCLUSIVE`, uploads the run directory, and puts `summary.md` in the job summary.
+- **Standard Substrate runtimes.** The substrate plugin signs remarks and transfers for runtimes with the standard `System` and `Balances` pallets, sr25519-compatible accounts and signatures, and transaction extensions supported by subxt. `polkameter init --rpc <endpoint>` writes a starter plan.
 - **Finds the breaking point.** Ramps the rate step by step and reports the first failed step, the highest rate the chain sustained, and how fast it recovered after the load stopped.
 - **Zero-loss accounting.** Every sent transaction ends with exactly one status, such as finalized, refused or lost, so a transaction the chain silently dropped shows up as lost. A state check confirms a sample of them on chain.
 - **Results CI understands.** `junit.xml` for test reports, `samples.jtl` in JMeter's CSV format, and `summary.md` and `summary.json` with the verdict and the numbers.
-- **Secrets stay secret.** Plans name credential profiles, never values. Credential values and endpoint keys are written as `[redacted]` in every file and log PolkaMeter writes.
+- **Credential redaction.** Plans name credential profiles rather than storing their values. PolkaMeter redacts credential values and supported endpoint secrets from its reports and logs. [Redaction](https://agustinustheodorus.com/polkameter/results.html#redaction) lists the exclusions, including transformed secrets, keys in URL paths and plugin-written files.
 - **Agent-friendly.** `--format json` prints one JSON object per line for `validate`, `preflight`, `run` and `report`. A Claude Code plugin and an Agent Skill set up a load test for you.
 
 ## Install
@@ -145,7 +147,7 @@ Phase: teardown
 Run completed. Artifacts: ~/polkameter/runs/run-1794021000609-68835-1
 ```
 
-The generated plan ramps from 10 to 50 transactions per second, so a dev chain passes it. To find the limit, raise the rates. The remarks example, [`examples/substrate-remarks.polkameter.xml`](examples/substrate-remarks.polkameter.xml), ramps to 600 transactions per second:
+The generated plan ramps from 10 to 50 transactions per second, so a dev chain passes it. To find the limit, raise the rates. The remarks example, [`examples/substrate-remarks.polkameter.xml`](https://github.com/agustinustheo/polkameter/blob/main/examples/substrate-remarks.polkameter.xml), ramps to 600 transactions per second:
 
 ```console
 $ polkameter run examples/substrate-remarks.polkameter.xml --output target/runs --fail-on-verdict
@@ -197,7 +199,10 @@ jobs:
 <!-- v0.3.0: remove after release -->
 `@v0.2.0` builds the CLI from source. From v0.3.0, `@v0` downloads a verified release CLI and the default `fail-on` also fails the job on `INCONCLUSIVE`.
 
-The job fails with the exit code of `polkameter run`:
+<!-- v0.3.0: remove after release -->
+> **Warning:** The table below describes the unreleased CLI built from `main`. The `@v0.2.0` action above returns `1` when a run fails before setup and does not support `--fail-on-inconclusive`.
+
+The action preserves the exit code of `polkameter run`:
 
 | Exit code | Meaning |
 | --- | --- |
@@ -220,9 +225,9 @@ The repository is a Claude Code plugin marketplace. In a Claude Code session:
 
 Then ask for a load test, for example: *"Stress-test the chain my node serves at ws://127.0.0.1:9944 with PolkaMeter, and add a CI job that runs a short check on every pull request."*
 
-- **Without the marketplace:** copy [`skills/polkameter`](skills/polkameter) into `.claude/skills/` in your project, or into another assistant's skills directory.
+- **Without the marketplace:** copy [`skills/polkameter`](https://github.com/agustinustheo/polkameter/tree/main/skills/polkameter) into `.claude/skills/` in your project, or into another assistant's skills directory.
 - **Other assistants:** point them at [`llms.txt`](https://agustinustheodorus.com/polkameter/llms.txt), an index of the documentation.
-- **Working on PolkaMeter itself:** [`AGENTS.md`](AGENTS.md) has the build and test commands and the conventions.
+- **Working on PolkaMeter itself:** [`AGENTS.md`](https://github.com/agustinustheo/polkameter/blob/main/AGENTS.md) has the build and test commands and the conventions.
 
 [Use PolkaMeter with an AI assistant](https://agustinustheodorus.com/polkameter/ai-assistants.html) has the details.
 
@@ -257,24 +262,23 @@ The book is at <https://agustinustheodorus.com/polkameter/>.
 
 | Path | What |
 | --- | --- |
-| [`crates/cli`](crates/cli) | The `polkameter` CLI: plan engine, load runner, `init`, remote agent |
-| [`crates/plugin-sdk`](crates/plugin-sdk) | `polkameter-plugin-sdk`, the crate plugins build on |
-| [`plugins/substrate`](plugins/substrate) | The substrate plugin, `polkameter-substrate-plugin` |
-| [`plugins/example`](plugins/example) | An example plugin that needs no chain |
-| [`schemas`](schemas) | The plan XSD, `polkameter-plan.xsd` |
-| [`examples`](examples) | Example plans, including the substrate remarks and transfers plans |
-| [`skills/polkameter`](skills/polkameter) | The Agent Skill, with plan and CI templates |
-| [`scripts`](scripts) | `dev-chain.sh`, release, packaging and action helpers, `make_logo.py` |
-| [`docs`](docs) | The mdBook documentation |
-| [`action.yml`](action.yml) | The GitHub Action |
-| [`install.sh`](install.sh) | The install script |
-| [`Dockerfile`](Dockerfile) | The container image |
-| [`src-tauri`](src-tauri), [`src`](src) | A desktop app (Tauri), experimental and not documented |
+| [`crates/cli`](https://github.com/agustinustheo/polkameter/tree/main/crates/cli) | The `polkameter` CLI: plan engine, load runner, `init`, remote agent |
+| [`crates/plugin-sdk`](https://github.com/agustinustheo/polkameter/tree/main/crates/plugin-sdk) | `polkameter-plugin-sdk`, the crate plugins build on |
+| [`plugins/substrate`](https://github.com/agustinustheo/polkameter/tree/main/plugins/substrate) | The substrate plugin, `polkameter-substrate-plugin` |
+| [`plugins/example`](https://github.com/agustinustheo/polkameter/tree/main/plugins/example) | An example plugin that needs no chain |
+| [`schemas`](https://github.com/agustinustheo/polkameter/tree/main/schemas) | The plan XSD, `polkameter-plan.xsd` |
+| [`examples`](https://github.com/agustinustheo/polkameter/tree/main/examples) | Example plans, including the substrate remarks and transfers plans |
+| [`skills/polkameter`](https://github.com/agustinustheo/polkameter/tree/main/skills/polkameter) | The Agent Skill, with plan and CI templates |
+| [`scripts`](https://github.com/agustinustheo/polkameter/tree/main/scripts) | `dev-chain.sh`, release, packaging and action helpers, `make_logo.py` |
+| [`docs`](https://github.com/agustinustheo/polkameter/tree/main/docs) | The mdBook documentation |
+| [`action.yml`](https://github.com/agustinustheo/polkameter/blob/main/action.yml) | The GitHub Action |
+| [`install.sh`](https://github.com/agustinustheo/polkameter/blob/main/install.sh) | The install script |
+| [`Dockerfile`](https://github.com/agustinustheo/polkameter/blob/main/Dockerfile) | The container image |
 
-To build and test, see [`AGENTS.md`](AGENTS.md#build-and-test). Release steps are in [`RELEASING.md`](RELEASING.md), and changes in [`CHANGELOG.md`](CHANGELOG.md).
+To build and test, see [`AGENTS.md`](https://github.com/agustinustheo/polkameter/blob/main/AGENTS.md#build-and-test). Release steps are in [`RELEASING.md`](https://github.com/agustinustheo/polkameter/blob/main/RELEASING.md), and changes in [`CHANGELOG.md`](https://github.com/agustinustheo/polkameter/blob/main/CHANGELOG.md).
 
 ## License
 
-PolkaMeter is licensed under the [Apache License 2.0](LICENSE).
+PolkaMeter is licensed under the [Apache License 2.0](https://github.com/agustinustheo/polkameter/blob/main/LICENSE).
 
 <sub>Polkadot is a trademark of the Web3 Foundation. PolkaMeter is an independent project and is not endorsed by the Web3 Foundation.</sub>

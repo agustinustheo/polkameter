@@ -28,7 +28,7 @@ polkameter run examples/plugin-workflow.polkameter.xml --output target/runs
 A run needs three things from you:
 
 - **A plan**: the XML file. It lists the steps, how many users run them and what to check.
-- **Plugins**: programs that supply the steps that depend on the runtime, such as building a transaction. The example plan uses the repository's example plugin. <!-- v0.3.0: remove after release -->From v0.3.0, the [substrate plugin](substrate-plugin.md) loads any chain with the standard `System` and `Balances` pallets. For other runtimes, you write a plugin; [Writing a plugin](writing-a-plugin.md) shows how.
+- **Plugins**: programs that supply the steps that depend on the runtime, such as building a transaction. The example plan uses the repository's example plugin. <!-- v0.3.0: remove after release -->From v0.3.0, the [substrate plugin](substrate-plugin.md) loads runtimes with the standard `System` and `Balances` pallets, sr25519-compatible accounts and signatures, and transaction extensions supported by subxt. For other runtimes, you write a plugin; [Writing a plugin](writing-a-plugin.md) shows how.
 - **A chain**: the network under test. The example needs none.
 
 ## Where to start
