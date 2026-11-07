@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  A short System.remark check for CI, with the substrate plugin: one low rate that any healthy
-  chain sustains. Run it with polkameter run fail-on-verdict, so that the job fails when fewer
-  than 99% of the transactions are included or they take too long.
+  A short System.remark test for CI, with the substrate plugin, at a low rate for this dev chain.
+  Run polkameter run with an output directory and the fail-on-verdict flag. The job fails on a FAIL verdict,
+  for example when too few transactions are included or they take too long.
   Made for the dev chain of scripts/dev-chain.sh (6-second blocks, //Alice funded).
   The seed credential is a secret URI, such as //Alice on a dev chain:
     polkameter plugin credential substrate-dev POLKAMETER_SUBSTRATE_SEED

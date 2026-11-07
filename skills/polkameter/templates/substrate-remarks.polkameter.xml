@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  System.remark stress test for any Polkadot SDK chain, with the substrate plugin.
-  Made for the dev chain of scripts/dev-chain.sh (6-second blocks, //Alice funded). For another
-  chain, change the endpoint, block-interval-seconds, the funding amount and the rates.
+  A System.remark stress test for the dev chain of scripts/dev-chain.sh (6-second blocks,
+  //Alice funded), with the substrate plugin. Check plugin compatibility before you use another
+  runtime. Then change the endpoint, block-interval-seconds, the funding amount and the rates.
   The seed credential is a secret URI, such as //Alice on a dev chain:
     polkameter plugin credential substrate-dev POLKAMETER_SUBSTRATE_SEED
     export POLKAMETER_SUBSTRATE_SEED=//Alice
@@ -34,8 +34,8 @@
       <input name="count" value="65000"/>
       <input name="probes" ref="run.probeBudget"/>
       <input name="payload-bytes" value="64"/>
-      <!-- The run takes about 400 s after this step. 256 blocks of 6 s cover it twice over;
-           raise expected-seconds with the ramp, and the step checks the mortality. -->
+      <!-- The run takes about 400 s after this step. If you lengthen the test, increase
+           expected-seconds. The prepare step checks the configured mortality. -->
       <input name="mortality" value="256"/>
       <input name="expected-seconds" value="400"/>
     </step>

@@ -1,5 +1,5 @@
-//! A starting point for a plugin that loads a runtime with calls of its own: a call the
-//! substrate plugin does not send. Use it as `src/main.rs` with this `Cargo.toml`:
+//! Use this template when you need a call the substrate plugin does not provide. Use it as
+//! `src/main.rs` with this `Cargo.toml`:
 //!
 //! ```toml
 //! [dependencies]
@@ -102,8 +102,8 @@ async fn prepare(inputs: &Json, context: &Context) -> Result<Json> {
 	let count = u32::try_from(inputs["count"].as_u64().context("input count is missing")?)?;
 	let probes = u32::try_from(inputs["probes"].as_u64().context("input probes is missing")?)?;
 	let seed = keypair(inputs["seed"].as_str().context("input seed is missing")?)?;
-	// One signer for the flood, and one per probe: probes go out one at a time, so a probe the
-	// chain drops must not hold back the nonces of the next.
+	// One signer for the flood, and one per probe. A missing probe must not block the next
+	// probe's nonce.
 	let signers = derive_range(&seed, "//my-runtime//", 0..1 + probes)?;
 	let client = Client::connect(target).await?;
 	let builder = client.tx_builder().await?;
