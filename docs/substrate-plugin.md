@@ -1,9 +1,8 @@
 # The substrate plugin
 
-<!-- v0.3.0: remove after release -->
-> **Unreleased:** The substrate plugin and `polkameter init` ship with v0.3.0, which is not released yet. Until then, build them from the repository: [Install](#install).
+The substrate plugin signs `System.remark` or `Balances.transfer_keep_alive` transactions from accounts derived from one seed. It funds those accounts and checks the chain's state after the run. It reads the runtime's metadata, so you need no plugin code.
 
-The substrate plugin loads any Polkadot SDK chain that has the standard `System` and `Balances` pallets. It signs `System.remark` or `Balances.transfer_keep_alive` transactions from accounts derived from one seed, funds those accounts, and checks the chain's state after the run. It reads the runtime's metadata, so you need no plugin code for your runtime. [Stress-test a local dev chain](dev-chain.md) runs it end to end.
+The plugin needs the standard `System` and `Balances` pallets, compatible sr25519 account and signature types, and supported transaction extensions. [Limits](#limits) gives the details. [Stress-test a local dev chain](dev-chain.md) runs it end to end.
 
 ## Example
 
@@ -35,55 +34,32 @@ The plan below funds 16 flood signers and one signer per probe from the seed acc
 </load>
 ```
 
-`polkameter init --rpc <endpoint>` writes a plan like this one for your chain. See [`init`](#generate-a-plan).
+`polkameter init --rpc <endpoint>` writes a plan like this one for your chain. See [Generate a plan](#generate-a-plan).
 
 ## Install
 
-From v0.3.0, the release archives, the install script and the container image hold the plugin executable, `polkameter-substrate-plugin`, next to `polkameter`. `cargo install --locked polkameter` installs only the CLI. To build both from the repository:
+The install script, the release archives and the container install `polkameter-substrate-plugin` next to `polkameter`. `cargo install polkameter` does not. [Install](install.md) covers each method, including a source build before the v0.3.0 release. Then register the plugin:
 
-<!-- v0.3.0: remove after release (replace main with the release tag) -->
 ```sh
-cargo install --locked --git https://github.com/agustinustheo/polkameter --branch main polkameter polkameter-substrate-plugin
 polkameter plugin install "$(command -v polkameter-substrate-plugin)"
-```
-
-From a checkout, build it, then install it from the checkout's root:
-
-```sh
-cargo build -p polkameter-substrate-plugin
-polkameter plugin install target/debug/polkameter-substrate-plugin
-```
-
-```text
-Installed plugin substrate 0.3.0 (5 operations) from ~/polkameter/target/debug/polkameter-substrate-plugin
 ```
 
 The plugin's version is the PolkaMeter version it ships with, such as `0.3.0`. The plan's `<plugin version>` must match it.
 
 ## Signers and secrets
 
-Every operation that signs derives its accounts from `seed`, a secret URI such as `//Alice` or `<mnemonic>//stress`. Pass it from a credential profile, never as a literal value:
+Every operation that signs derives its accounts from `seed`, a secret URI such as `//Alice` or `<mnemonic>//stress`. Pass it from a [credential profile](cli.md#plugin), never as a literal value:
 
 ```sh
 polkameter plugin credential substrate-dev POLKAMETER_SUBSTRATE_SEED
 export POLKAMETER_SUBSTRATE_SEED='//Alice'
 ```
 
-```text
-{
-  "configured": true
-}
-```
+The plugin derives `flood-signers` accounts for the flood, then `probe-signers` accounts for the probes. It appends an index to `derivation` for each account. By default, each probe has its own signer, up to 1000 signers. So a probe the chain drops never holds back the next one. With the defaults and 33 probes, the flood signers are `<seed>//polkameter//0` to `<seed>//polkameter//15` and the probe signers `<seed>//polkameter//16` to `<seed>//polkameter//48`. The two sets never share an account.
 
-The plugin derives `flood-signers` accounts for the flood, then `probe-signers` accounts for the probes, by appending an index to `derivation`. Without `probe-signers`, each probe gets a signer of its own, up to 1000. PolkaMeter sends probes one at a time, so a probe the chain drops never holds back the next one. With the defaults and 33 probes, the flood signers are `<seed>//polkameter//0` to `<seed>//polkameter//15` and the probe signers `<seed>//polkameter//16` to `<seed>//polkameter//48`. The two sets never share an account.
-
-Give `fund-accounts` and the prepare step the same `seed`, `derivation`, `flood-signers`, `probe-signers` and `probes` inputs, so that it funds the accounts the prepare step signs with.
+Use the same signer settings in the funding and prepare steps: `seed`, `derivation`, `flood-signers`, `probe-signers` and `probes`. Otherwise, the plugin can prepare transactions for unfunded accounts.
 
 > **Warning:** Use the seed's accounts for one run at a time. Two runs that sign with the same accounts take the same nonces, and one run's transactions replace the other's. Within a run, a second prepare step that signs with a signer of an earlier one fails; give it another `derivation`.
-
-Transaction `i` of the flood goes to flood signer `i mod flood-signers`, with that signer's next nonce. The signers take turns, so each signer's nonces reach the pool in order.
-
-A signer's spendable balance is its free balance minus its frozen balance. `fund-accounts`, `min-balance` and the fee check use it.
 
 ## Operations
 
@@ -91,12 +67,7 @@ Every operation takes `target`, the chain's `ws://` or `wss://` endpoint. Amount
 
 ### preflight
 
-Checks the chain without changing it. Read-only, so it can run in `<preflight>`. It checks that:
-
-- the runtime has each of `calls`;
-- its address type is `MultiAddress` or `AccountId32` and its signature type `MultiSignature`, which sr25519 keys sign for;
-- the plugin can fill in its transaction extensions, and the chain accepts the format: it validates a remark signed by an unfunded key and expects only that the key cannot pay;
-- with `min-balance`, every signer can spend at least that much.
+Checks the chain without changing it, so it can run in `<preflight>`. It checks that the runtime has each of `calls` and that the plugin can sign for it. With `min-balance`, it also checks that every signer can spend at least that much.
 
 | Input | Type | Required | Default | Meaning |
 | --- | --- | --- | --- | --- |
@@ -106,15 +77,11 @@ Checks the chain without changing it. Read-only, so it can run in `<preflight>`.
 | `min-balance` | amount | no | none | The spendable balance every signer must hold |
 | `derivation`, `flood-signers`, `probe-signers`, `probes` | | no | see [prepare-remarks](#prepare-remarks) | The signer layout |
 
-| Output | Meaning |
-| --- | --- |
-| `identity` | The chain name, `specName`, `specVersion`, `transactionVersion`, genesis hash, token symbol and decimals |
-| `calls` | The calls checked |
-| `signers` | `count`, and the first 50 signers with their role, derivation path, address, free and spendable balance, and nonce |
+It returns `identity` (the chain name, runtime version, genesis hash and token), `calls`, and `signers` with the first 50 signers and their balances.
 
 ### fund-accounts
 
-Tops up every flood and probe signer to a spendable balance of `amount` from the funder, then waits until the transfers are final and checks that every signer can spend `amount`. A signer that can already spend `amount` is skipped, so running it again after a success sends nothing. With `Utility.batch_all` in the runtime, it sends up to `batch-size` transfers per transaction.
+Tops up every flood and probe signer to a spendable balance of `amount` from the funder. With `Utility.batch_all` in the runtime, it sends up to `batch-size` transfers per transaction.
 
 | Input | Type | Required | Default | Limits | Meaning |
 | --- | --- | --- | --- | --- | --- |
@@ -127,18 +94,9 @@ Tops up every flood and probe signer to a spendable balance of `amount` from the
 | `probes` | integer | no | none | 1 to 100,000 | The prepare step's `probes`. Pass `run.probeBudget`, so that each probe's signer is funded |
 | `derivation`, `flood-signers`, `probe-signers` | | no | see [prepare-remarks](#prepare-remarks) | | The signer layout |
 
-| Output | Meaning |
-| --- | --- |
-| `funded` | Signers topped up |
-| `skipped` | Signers that could already spend `amount` |
-| `accounts` | All signers |
-| `transactions` | Hashes of the funding transactions |
+It returns `funded`, `skipped` (signers that could already spend `amount`), `accounts` and the funding `transactions`.
 
-Before it sends anything, the step checks that the funder can spend the total top-up, plus the existential deposit it must keep, plus the fee of each funding transaction. It asks the runtime for the fee with `TransactionPaymentApi.query_info`. If the funder is short, the step fails with `Nothing was sent`, naming the funder, what it can spend and the sum. A failed attempt spends no fees, so you can fund the funder and run the step again.
-
-After the transfers are final, the step reads each signer's balance at that block. If a funding transaction failed, or a signer can still spend less than `amount`, the step fails with `funding failed`, naming the signers and the dispatch error, such as `Balances.InsufficientBalance`.
-
-If the funder or a signer still has transactions in the pool that are not final, such as those of an attempt that timed out or a probe of an earlier run, the step waits up to `timeout-seconds` for them before it reads the balances. It never sends the same top-up twice, and a signer never pays for an old transaction after its top-up was computed.
+Before it sends, the step checks the funder's balance. If fee estimation fails, it warns and does the balance check without the fees. After the transfers are final, it checks that every signer can spend `amount`. Running it again only tops up what is missing. A short funder fails with `Nothing was sent`, and a failed transfer fails with `funding failed`.
 
 ### prepare-remarks
 
@@ -151,25 +109,19 @@ Signs the flood and the probes as `System.remark` transactions. Each payload is 
 | `count` | integer | yes | none | 1 to 1,000,000 | Flood transactions |
 | `probes` | integer | yes | none | 1 to 100,000 | Probe transactions. Pass `run.probeBudget` |
 | `flood-signers` | integer | no | `16` | 1 to 10,000, at most `count` | Accounts that sign the flood |
-| `probe-signers` | integer | no | `1` | 1 to 1000, at most `probes` | Accounts that sign the probes |
+| `probe-signers` | integer | no | `probes`, at most 1000 | 1 to 1000, at most `probes` | Accounts that sign the probes |
 | `derivation` | string | no | `//polkameter//` | starts and ends with `/` | The path each signer's index is appended to |
 | `payload-bytes` | integer | no | `32` | 1 to 16,384 | Remark size |
 | `with-event` | boolean | no | `false` | | Use `System.remark_with_event` |
-| `mortality` | integer | no | `0` | `0`, or a power of two from 4 to 65,536 | Blocks each transaction stays valid, from the block it was signed at. `0` is immortal |
+| `mortality` | integer | no | `0` | `0`, or a power of two from 4 to 65,536 | The validity period in blocks. `0` is immortal |
 | `expected-seconds` | integer | no | none | 1 to 604,800 | How long the plan runs after this step. With `mortality`, the step fails if the transactions would expire sooner |
 | `tip` | amount | no | `0` | | Tip per transaction |
 
-The flood, the probes and the state must fit in 200 MiB of artifacts together. The step fails before it signs anything if `count`, `probes` and `payload-bytes` exceed that.
+The flood, the probes and the state must fit in 200 MiB of artifacts together.
 
-A mortal transaction expires `mortality` blocks after the block it was signed at. Choose a mortality that covers the rest of the run: the baseline, the load, the recovery and the wait for finality. With `expected-seconds`, the step measures the chain's block time and fails if the transactions would expire before then, suggesting a mortality. Without it, the step prints how long they stay valid. `polkameter init` sets both inputs. For a mortality above 4096, the chain starts the period at a block a little before the signing block, a multiple of `mortality / 4096`; the step signs against that block.
+Mortality sets the validity period in blocks. For periods above 4096, the period can start before the signing block. `validUntil` gives the expiry block. Choose a mortality that covers the rest of the run: the baseline, the load, the recovery and the wait for finality. With `expected-seconds`, the step measures the block time and fails if the transactions would expire too soon. `polkameter init` sets both inputs.
 
-| Output | Meaning |
-| --- | --- |
-| `flood` | Artifact of the flood's `PreparedTx` list |
-| `probes` | Artifact of the probes' `PreparedTx` list |
-| `state` | Artifact mapping each transaction hash to its signer and nonce, for `check-state` |
-| `identity` | As in [preflight](#preflight) |
-| `summary` | The call, the counts, the signers, the block it signed at, the mortality, the block the transactions stay valid until (`validUntil`, for a mortal step) and the transfer amount |
+It returns three artifacts: `flood` and `probes` hold the [`PreparedTx`](plugins.md#preparedtx-and-the-load-contract) lists, and `state` maps each transaction to its signer and nonce. It also returns `identity` and a `summary` with the signing block and `validUntil`.
 
 Before it returns, the step asks the chain to validate the first and last flood transactions and the first probe of every probe signer. A signer without funds fails here with `the signer cannot pay the fees; fund it with substrate.fund-accounts`.
 
@@ -186,20 +138,13 @@ Without `dest`, each flood signer pays the next flood signer, and each probe sig
 
 ### check-state
 
-The load's state check. For each sampled transaction, it reads its signer's account at the finalized block `at` and counts the transaction as missing unless the account's nonce is past the transaction's nonce. Read-only.
-
-| Input | Type | Meaning |
-| --- | --- | --- |
-| `target` | string | Set by PolkaMeter |
-| `state` | artifact | The `state` output of the prepare step, from `state-ref` |
-| `hashes` | list of strings | Set by PolkaMeter: the sampled transactions |
-| `at` | string | Set by PolkaMeter: the finalized block |
+The load's state check. PolkaMeter calls it with the prepare step's `state` artifact, the sampled transaction hashes and a finalized block. For each sampled transaction, it reads the signer's nonce at that block. It counts the transaction as missing unless the nonce is past the transaction's nonce. Read-only.
 
 It returns `checked`, `missing` and `detail`. `detail` names up to five missing transactions.
 
 ## Generate a plan
 
-`polkameter init` connects to a chain, checks that it has the calls the plugin needs, measures its block time and writes a plan for the substrate plugin:
+`polkameter init` connects to a chain, checks that it has the calls the plugin needs, measures its block time and writes a plan for the substrate plugin. `polkameter init --help` lists its options.
 
 ```sh
 polkameter init --rpc ws://127.0.0.1:9944 --output plans/load.polkameter.xml
@@ -209,21 +154,10 @@ polkameter init --rpc ws://127.0.0.1:9944 --output plans/load.polkameter.xml
 Wrote plans/load.polkameter.xml for Custom (parachain-template-runtime 1, 6 s blocks). Next: polkameter validate plans/load.polkameter.xml
 ```
 
-| Flag | Default | Meaning |
-| --- | --- | --- |
-| `--rpc` | required | The chain's `ws://` or `wss://` endpoint |
-| `--kind` | `remarks` | `remarks` or `transfers` |
-| `--profile` | `substrate-dev` | The credential profile the plan names for the seed |
-| `--output` | standard output | The plan file. An existing file needs `--force`. `init` creates its directory |
-
-The plan ramps from 10 to 50 transactions per second and funds each signer with 1000 tokens. Change the rates and the amount to suit your chain. Its `mortality` covers twice the blocks the run spans at the measured block time, and its `expected-seconds` is the run's length after the prepare step. If you lengthen the ramp or the recovery, raise `expected-seconds`, and the prepare step tells you if the mortality is too short. If the chain cannot be reached, `init` exits with code `3`:
-
-```text
-PolkaMeter: cannot connect to ws://127.0.0.1:1: connect: RPC error: client error: RPC error: client error: Error when opening the TCP socket: Connection refused (os error 61)
-```
+The plan ramps from 10 to 50 transactions per second and funds each signer with 1000 tokens. Set rates your test needs. Set the funding amount high enough for each signer's transfers and fees. The plan's `mortality` covers twice the blocks the run spans. Its `expected-seconds` is the run's length after the prepare step. If you lengthen the ramp or the recovery, raise `expected-seconds`. If `init` cannot reach the chain, it exits `3`.
 
 ## Limits
 
-- The plugin signs with sr25519 keys for `MultiAddress` or `AccountId32` accounts, with `MultiSignature` signatures and the chain's default transaction extensions. A runtime with `AccountId20` accounts and ECDSA signatures, or with an extension that carries data the plugin does not know, fails in `preflight` with `the substrate plugin cannot sign transactions for this runtime`, and the reason. Write a plugin for that runtime: [Writing a plugin](writing-a-plugin.md).
-- Signed transactions commit to the runtime version. If the runtime is upgraded during a run, the chain refuses the remaining prepared transactions as having a bad signature. A mortal transaction that has expired is refused the same way. Do not upgrade the runtime during a load test.
+- The plugin signs with sr25519 keys for `MultiAddress` or `AccountId32` accounts and `MultiSignature` signatures. It fills in the chain's default transaction extensions. Other runtimes, such as one with `AccountId20` accounts, fail in `preflight` with `the substrate plugin cannot sign transactions for this runtime`. [Write a plugin](writing-a-plugin.md) for them.
+- Signed transactions commit to the runtime version. Do not upgrade the runtime during a load test. The chain refuses the remaining transactions as having a bad signature. It refuses expired mortal transactions the same way.
 - The state check proves that each sampled transaction's nonce was used. It does not read remark contents or balances.
