@@ -132,11 +132,14 @@ fn secret_values(credentials: &Values) -> Vec<String> {
 	credentials.values().filter_map(|v| v.as_str().map(str::to_owned)).collect()
 }
 /// A warning for each credential so short that redacting it may also hide text that is not it.
-/// The credential is still used and redacted.
+/// The credential is still used and redacted. A well-known development key such as `//Alice` is
+/// public, so it gets no warning.
 fn short_credentials(credentials: &Values) -> Vec<String> {
 	credentials
 		.iter()
-		.filter(|(_, value)| value.as_str().is_some_and(crate::redact::is_short))
+		.filter(|(_, value)| {
+			value.as_str().is_some_and(|v| crate::redact::is_short(v) && !crate::redact::is_dev_key(v))
+		})
 		.map(|(name, _)| {
 			format!(
 				"{name} is shorter than {} bytes: wherever its value appears in the run's files and logs it is redacted, also inside unrelated text",
@@ -1951,6 +1954,29 @@ mod calibration_tests {
 mod contract_tests {
 	use super::*;
 	use crate::engine::plan::{Location, PlanError};
+
+	#[test]
+	fn short_credentials_warn_except_for_development_keys() {
+		let credentials: Values = [
+			("credentials.seed", json!("//Alice")),
+			("credentials.stash", json!("//Bob/1")),
+			("credentials.token", json!("abc123")),
+			("credentials.long", json!("a long enough secret")),
+			("credentials.count", json!(7)),
+		]
+		.into_iter()
+		.map(|(k, v)| (k.to_owned(), v))
+		.collect();
+		let warnings = short_credentials(&credentials);
+		assert_eq!(warnings.len(), 1, "{warnings:?}");
+		assert!(
+			warnings[0].starts_with("credentials.token is shorter than 8 bytes"),
+			"{warnings:?}"
+		);
+		// A development key is still redacted.
+		let redactor = Redactor::new(secret_values(&credentials), Vec::<String>::new());
+		assert_eq!(redactor.text("seed //Alice"), "seed [redacted]");
+	}
 
 	/// The contract error for a plan whose setup is `setup`, and its position.
 	fn failure(setup: &str) -> (String, Option<Location>) {

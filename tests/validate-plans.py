@@ -351,7 +351,7 @@ for attribute, values in [
     for value in values:
         base = RAMP.replace('step="-1"', 'growth="2"') if attribute == "growth" else RAMP
         reason = {
-            "start": "<ramp> start must be", "step": "step 0: 1 s at [NaN] tx/s",
+            "start": "<ramp> start must be", "step": "step 0: 1 s at NaN tx/s",
             "growth": "<ramp> growth must be", "steps": "<ramp> steps must be at least 1" if value == "0" else "a ramp has at most 10000 steps",
             "seconds": "step 0: 0 s at",
         }[attribute]
@@ -396,8 +396,8 @@ for label, xml, reason in [
     ("input has both ref and value", FULL.replace('value="21"', 'value="21" ref="run.id"'), "<input> needs exactly one of ref or value"),
     ("state-check without state-ref", mutate(FULL, "p:load", "state-check", "example.check"), "state-check and state-ref must be given together"),
     ("state-ref without state-check", mutate(FULL, "p:load", "state-ref", "steps.prepare.state"), "state-check and state-ref must be given together"),
-    ("expanded ramp goes negative", RAMP.replace('step="-1"', 'step="-2"'), "step 2: 1 s at [-2.0] tx/s"),
-    ("expanded ramp overflows", RAMP.replace('step="-1"', 'growth="1e308"'), "step 1: 1 s at [inf] tx/s"),
+    ("expanded ramp goes negative", RAMP.replace('step="-1"', 'step="-2"'), "step 2: 1 s at -2 tx/s"),
+    ("expanded ramp overflows", RAMP.replace('step="-1"', 'growth="1e308"'), "step 1: 1 s at inf tx/s"),
     ("unknown operation provider", mutate(FULL, "p:setup/p:step", "use", "missing.prepare"), 'use="missing.prepare" names plugin `missing`, which <plugins> does not declare'),
     ("unknown reference", mutate(FULL, "p:load", "source-ref", "steps.missing.flood"), "<load> source-ref is `steps.missing.flood`, but nothing in the plan defines it"),
     ("forward reference", FULL.replace('value="21"', 'ref="steps.echo.value"'), "step `prepare` (example.prepare): input `value` refers to `steps.echo.value`, but step `echo` does not run before this step"),

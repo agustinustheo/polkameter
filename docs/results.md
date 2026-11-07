@@ -62,7 +62,7 @@ A secret is also found in the escaped forms that JSON writers and Rust's `{:?}` 
 
 If one secret contains or overlaps another, all of the text they cover is redacted. Text that is already `[redacted]` is never matched again, so redacting a file twice gives the same result as once.
 
-In JSON files, object keys are names, and PolkaMeter keeps them. A key is redacted only if it is a secret, or contains a secret of 8 or more characters or an endpoint URL. A credential shorter than 8 characters, such as the development key `//Alice`, still works. PolkaMeter warns about it: wherever its value appears, it is redacted, also inside unrelated text.
+In JSON files, object keys are names, and PolkaMeter keeps them. A key is redacted only if it is a secret, or contains a secret of 8 or more characters or an endpoint URL. A credential shorter than 8 characters still works. PolkaMeter warns about it: wherever its value appears, it is redacted, also inside unrelated text. The well-known development keys `//Alice`, `//Bob`, `//Charlie`, `//Dave`, `//Eve` and `//Ferdie`, also with further derivation junctions such as `//Alice//stash`, are public, so they get no warning; they are redacted all the same.
 
 ### Plugin logs
 
