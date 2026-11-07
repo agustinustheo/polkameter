@@ -56,7 +56,8 @@ impl Plan {
 				return Err(format!("step {k} has {} rates for {n} lanes", s.rates.len()));
 			}
 			if s.seconds == 0 || s.rates.iter().any(|r| !r.is_finite() || *r < 0.0) {
-				return Err(format!("step {k}: {} s at {:?} tx/s", s.seconds, s.rates));
+				let rates: Vec<String> = s.rates.iter().map(f64::to_string).collect();
+				return Err(format!("step {k}: {} s at {} tx/s", s.seconds, rates.join(", ")));
 			}
 		}
 		Ok(())

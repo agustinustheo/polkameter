@@ -382,14 +382,7 @@ async fn loss_check<S: crate::load::submit::Submit>(
 			loss.note.unwrap_or_default()
 		));
 	}
-	diag!(
-		"loss check: {} sent, {} included, {} refused, {:?} in the pool, {:?} lost",
-		loss.sent,
-		loss.included,
-		loss.refused,
-		loss.in_pool,
-		loss.lost
-	);
+	diag!("{}", loss_line(&loss));
 	let c = &loss.on_chain;
 	diag!(
 		"loss check on the finalized chain (blocks {}-{}): {} included, {} the tracker missed, {} only on a fork, {} moved",
@@ -401,6 +394,23 @@ async fn loss_check<S: crate::load::submit::Submit>(
 		c.moved
 	);
 	(loss, lost)
+}
+
+/// The loss check's line on standard error. A count that was not counted (`None`) reads
+/// "not counted", never Rust's `Some(…)`/`None`.
+fn loss_line(loss: &Loss) -> String {
+	let count = |n: Option<u64>, what: &str| match n {
+		Some(n) => format!("{n} {what}"),
+		None => format!("{what}: not counted"),
+	};
+	format!(
+		"loss check: {} sent, {} included, {} refused, {}, {}",
+		loss.sent,
+		loss.included,
+		loss.refused,
+		count(loss.in_pool, "in the pool"),
+		count(loss.lost, "lost")
+	)
 }
 
 /// steps.jsonl: one record per step, with the node's highest CPU and memory while the step ran.
@@ -622,6 +632,24 @@ impl StateCheck for PluginState {
 mod tests {
 	use super::*;
 	use polkameter_plugin_sdk::observers::checks::{CheckResult, Status, Verdict};
+
+	#[test]
+	fn the_loss_line_prints_counts_not_options() {
+		let mut loss = Loss::default();
+		(loss.sent, loss.included, loss.refused) = (4500, 4500, 0);
+		(loss.in_pool, loss.lost) = (Some(0), Some(0));
+		assert_eq!(
+			loss_line(&loss),
+			"loss check: 4500 sent, 4500 included, 0 refused, 0 in the pool, 0 lost"
+		);
+		(loss.in_pool, loss.lost) = (None, None);
+		let line = loss_line(&loss);
+		assert_eq!(
+			line,
+			"loss check: 4500 sent, 4500 included, 0 refused, in the pool: not counted, lost: not counted"
+		);
+		assert!(!line.contains("Some(") && !line.contains("None"));
+	}
 
 	#[test]
 	fn the_same_transaction_spelled_twice_is_a_duplicate() {

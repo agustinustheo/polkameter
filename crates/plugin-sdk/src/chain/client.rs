@@ -108,7 +108,7 @@ pub fn decode_err<E: std::fmt::Display>(what: &'static str) -> impl FnOnce(E) ->
 
 /// Our encoding no longer matches the runtime: an error of our tools, so the run stops.
 #[derive(Debug, thiserror::Error)]
-#[error("the runtime's tx extensions changed; ours: {ours:?}, live: {live:?}")]
+#[error("the runtime's tx extensions changed; ours: {}, live: {}", ours.join(", "), live.join(", "))]
 pub struct LayoutChanged {
 	ours: Vec<&'static str>,
 	live: Vec<String>,

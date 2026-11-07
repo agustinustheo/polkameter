@@ -407,6 +407,33 @@ pub fn is_short(secret: &str) -> bool {
 	secret.trim().len() < MIN_ENDPOINT_SECRET
 }
 
+/// The public development accounts every Polkadot SDK dev chain funds.
+const DEV_ACCOUNTS: [&str; 6] = ["Alice", "Bob", "Charlie", "Dave", "Eve", "Ferdie"];
+
+/// Whether `secret` is a well-known development key URI: `//Alice`, `//Bob`, `//Charlie`,
+/// `//Dave`, `//Eve` or `//Ferdie`, optionally followed by more `//x` or `/x` junctions, as in
+/// `//Alice//stash`. These keys are public, so a short one needs no warning; it is still redacted.
+pub fn is_dev_key(secret: &str) -> bool {
+	let Some(rest) = secret.trim().strip_prefix("//") else { return false };
+	let mut junctions = rest.split('/');
+	if !junctions.next().is_some_and(|name| DEV_ACCOUNTS.contains(&name)) {
+		return false;
+	}
+	// Each further junction is `/x` or `//x`: a non-empty part, at most one empty part before it.
+	let mut empty = false;
+	for part in junctions {
+		if part.is_empty() {
+			if empty {
+				return false;
+			}
+			empty = true;
+		} else {
+			empty = false;
+		}
+	}
+	!empty
+}
+
 /// `text` cut to at most `chars` characters, never inside a `[redacted]`: a cut one is dropped.
 pub fn truncate(text: &str, chars: usize) -> String {
 	let mut out: String = text.chars().take(chars).collect();
@@ -902,6 +929,40 @@ pub(crate) use diag;
 mod tests {
 	use super::*;
 	use serde_json::json;
+
+	#[test]
+	fn well_known_development_keys_are_recognised() {
+		for key in [
+			"//Alice",
+			"//Bob",
+			"//Charlie",
+			"//Dave",
+			"//Eve",
+			"//Ferdie",
+			" //Alice ",
+			"//Alice//stash",
+			"//Bob/0",
+			"//Eve//1/x",
+		] {
+			assert!(is_dev_key(key), "{key}");
+		}
+		for key in [
+			"",
+			"Alice",
+			"/Alice",
+			"//alice",
+			"//Mallory",
+			"//Alicee",
+			"//Alice/",
+			"//Alice//",
+			"//Alice///pw",
+			"//Bob///",
+			"abc",
+			"//Alice:x",
+		] {
+			assert!(!is_dev_key(key), "{key}");
+		}
+	}
 
 	fn secrets(secrets: &[&str]) -> Redactor {
 		Redactor::new(secrets, None::<&str>)
