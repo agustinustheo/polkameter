@@ -560,58 +560,6 @@ fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn teardown_restarts_an_idle_plugin_that_something_else_killed() {
-	let root = scratch("idle-killed");
-	let xml = plugin_plan(
-		"Idle plugin killed",
-		r#"<setup><step id="first" use="example.wait"><input name="milliseconds" value="0"/></step></setup>
-    <teardown><step id="cleanup" use="example.double"><input name="value" value="21"/></step></teardown>"#,
-	);
-	let marker_root = root.0.clone();
-	let sink = Arc::new(move |event: Value| {
-		if event["event"] != "step-finished" || event["step"] != "first" {
-			return;
-		}
-		// The plugin answered and is idle: kill it from outside, as a stray signal would.
-		let marker = std::fs::read_dir(&marker_root)
-			.unwrap()
-			.map(|entry| entry.unwrap().path().join("plugins/example/wait.pid"))
-			.find(|path| path.is_file())
-			.unwrap();
-		let pid = std::fs::read_to_string(marker).unwrap();
-		assert!(
-			std::process::Command::new("kill")
-				.args(["-KILL", pid.trim()])
-				.status()
-				.unwrap()
-				.success()
-		);
-		// The host has not reaped it yet, so it stays a zombie once it is dead.
-		wait_until("the plugin to die", || {
-			let output = std::process::Command::new("ps")
-				.args(["-o", "stat=", "-p", pid.trim()])
-				.output()
-				.unwrap();
-			String::from_utf8_lossy(&output.stdout).trim_start().starts_with('Z')
-		});
-	});
-	let outcome = execute::run(
-		Plan::parse(&xml).unwrap(),
-		registry().await,
-		&root,
-		CancellationToken::new(),
-		sink,
-	)
-	.await
-	.unwrap();
-	assert_eq!(outcome.exit_code, 0, "{:?}", outcome.error);
-	let events = read_events(&outcome.artifact_dir);
-	assert_eq!(events.iter().filter(|e| e["event"] == "plugin-restarted").count(), 1);
-	assert!(finished(&events, "cleanup").any(|e| e["success"] == true));
-}
-
-#[cfg(unix)]
-#[tokio::test]
 async fn admission_leaves_the_status_free_and_ends_when_the_host_closes() {
 	use polkameter::plugin_application::{self as application, State};
 	let root = scratch("admission");

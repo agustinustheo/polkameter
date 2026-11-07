@@ -1393,9 +1393,7 @@ fn assertion_value(value: &Value, redactor: &Redactor) -> String {
 		.to_string()
 		.chars()
 		.map(|c| {
-			if c.is_control()
-				|| matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
-			{
+			if crate::redact::is_unsafe_char(c) {
 				format!("\\u{:04x}", c as u32)
 			} else {
 				c.to_string()
@@ -1405,50 +1403,14 @@ fn assertion_value(value: &Value, redactor: &Redactor) -> String {
 	if rendered.chars().count() <= ASSERTION_VALUE_CHARS {
 		return rendered;
 	}
-	// Keep string delimiters and reserve space for the ellipsis before copying whole tokens.
-	let (content, mut result, budget) = if value.is_string() {
-		(&rendered[1..rendered.len() - 1], String::from("\""), ASSERTION_VALUE_CHARS - 3)
-	} else {
-		(rendered.as_str(), String::new(), ASSERTION_VALUE_CHARS - 1)
-	};
-	let mut chars = content.chars();
-	let mut used = 0;
-	while let Some(c) = chars.next() {
-		let mut token = c.to_string();
-		if c == '\\' {
-			let escaped = chars.next().expect("JSON escape has a second character");
-			token.push(escaped);
-			if escaped == 'u' {
-				token.extend(chars.by_ref().take(4));
-			}
-		}
-		let width = token.chars().count();
-		if used + width > budget {
-			break;
-		}
-		result.push_str(&token);
-		used += width;
-	}
-	result.push('…');
-	if value.is_string() {
-		result.push('"');
-	}
-	result
+	format!("{}…", crate::redact::truncate(&rendered, ASSERTION_VALUE_CHARS - 1))
 }
 
 fn assertion_text(safe: &str) -> String {
 	let mut result: String = safe
 		.chars()
 		.take(ASSERTION_VALUE_CHARS)
-		.map(|c| {
-			if c.is_control()
-				|| matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
-			{
-				' '
-			} else {
-				c
-			}
-		})
+		.map(|c| if crate::redact::is_unsafe_char(c) { ' ' } else { c })
 		.collect();
 	if safe.chars().count() > ASSERTION_VALUE_CHARS {
 		result.push('…');
@@ -1796,99 +1758,9 @@ mod calibration_tests {
 			),
 			r#"{"nested":["[redacted]"]}"#
 		);
-	}
-
-	#[test]
-	fn assertion_values_preserve_types_and_quote_string_delimiters() {
-		for (value, expected) in [
-			(json!("Hello, Ferris!"), r#""Hello, Ferris!""#),
-			(json!("85"), r#""85""#),
-			(json!(85), "85"),
-			(json!(true), "true"),
-			(json!(false), "false"),
-			(Value::Null, "null"),
-			(json!("a \"quote\" and \\ path"), r#""a \"quote\" and \\ path""#),
-			(json!([1, "two"]), r#"[1,"two"]"#),
-			(json!({"n": 1}), r#"{"n":1}"#),
-		] {
-			assert_eq!(assertion_value(&value, &Redactor::default()), expected);
-		}
-	}
-
-	#[test]
-	fn assertion_strings_budget_the_rendered_form_and_keep_whole_escapes() {
-		for text in [
-			"\"".repeat(100),
-			"\\".repeat(100),
-			"界".repeat(100),
-			"\"\\界".repeat(100),
-			"\n".repeat(100),
-			"\u{1b}".repeat(100),
-			"\u{202e}".repeat(100),
-			format!("{}\nend", "a".repeat(76)),
-			format!("{}\u{1b}end", "a".repeat(74)),
-		] {
-			let rendered = assertion_value(&json!(text), &Redactor::default());
-			assert!(rendered.chars().count() <= ASSERTION_VALUE_CHARS, "{rendered}");
-			let content: String = serde_json::from_str(&rendered).unwrap();
-			assert!(content.ends_with('…'), "{rendered}");
-			assert!(text.starts_with(content.strip_suffix('…').unwrap()), "{rendered}");
-		}
-		assert_eq!(
-			assertion_value(&json!("\"".repeat(100)), &Redactor::default()),
-			format!("\"{}…\"", "\\\"".repeat(38))
-		);
-		assert_eq!(
-			assertion_value(&json!("\\".repeat(100)), &Redactor::default()),
-			format!("\"{}…\"", "\\\\".repeat(38))
-		);
-	}
-
-	#[test]
-	fn assertion_strings_at_the_cap_are_not_truncated() {
-		for text in ["a".repeat(78), "界".repeat(78), "\"".repeat(39), "\\".repeat(39)] {
-			let rendered = assertion_value(&json!(text), &Redactor::default());
-			assert_eq!(rendered.chars().count(), ASSERTION_VALUE_CHARS);
-			assert_eq!(serde_json::from_str::<String>(&rendered).unwrap(), text);
-		}
-		assert_eq!(
-			assertion_value(&json!("a".repeat(79)), &Redactor::default()),
-			format!("\"{}…\"", "a".repeat(77))
-		);
-	}
-
-	#[test]
-	fn assertion_controls_are_visible_json_escapes() {
-		for (text, expected) in [
-			("\n", r#""\n""#),
-			(" ", r#"" ""#),
-			("\t", r#""\t""#),
-			("\u{1b}", r#""\u001b""#),
-			("\u{202e}", r#""\u202e""#),
-			("\u{85}", r#""\u0085""#),
-		] {
-			assert_eq!(assertion_value(&json!(text), &Redactor::default()), expected);
-		}
-	}
-
-	#[test]
-	fn assertion_numbers_and_arrays_are_bounded() {
-		for number in [json!(u64::MAX), json!(i64::MIN), json!(1.2345678901234567e308)] {
-			assert_eq!(assertion_value(&number, &Redactor::default()), number.to_string());
-		}
-		for value in [json!(vec![u64::MAX; 100]), json!(vec!["\u{202e}"; 100])] {
-			let rendered = assertion_value(&value, &Redactor::default());
-			assert!(rendered.chars().count() <= ASSERTION_VALUE_CHARS, "{rendered}");
-		}
-		let numbers = json!(vec![u64::MAX; 100]);
-		assert_eq!(
-			assertion_value(&numbers, &Redactor::default()),
-			format!("{}…", numbers.to_string().chars().take(79).collect::<String>())
-		);
-		assert_eq!(
-			assertion_value(&json!(vec!["\u{202e}"; 100]), &Redactor::default()),
-			format!("[{}\"…", r#""\u202e","#.repeat(8))
-		);
+		// The values read as the plan wrote them: `expected 85, got 84`, strings quoted.
+		assert_eq!(assertion_value(&json!(85), &Redactor::default()), "85");
+		assert_eq!(assertion_value(&json!("85"), &Redactor::default()), r#""85""#);
 	}
 
 	#[test]

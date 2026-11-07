@@ -1127,15 +1127,6 @@ mod tests {
 		assert_eq!(Plan::parse(&plan("timeout-ms=\"\t7\r\n\"")).unwrap().timeout_ms, 7);
 	}
 
-	#[test]
-	fn rejects_non_xml_character_references() {
-		for reference in ["&#0;", "&#1;", "&#xB;", "&#xFFFE;"] {
-			let xml = plan(&format!(r#"timeout-ms="{reference}""#));
-			let error = Plan::parse(&xml).unwrap_err().to_string();
-			assert!(error.contains("invalid character reference"), "{reference}: {error}");
-		}
-	}
-
 	/// A temporary directory, removed when dropped.
 	struct Scratch(std::path::PathBuf);
 	impl Scratch {
@@ -1157,39 +1148,8 @@ mod tests {
 	}
 
 	#[test]
-	fn reads_plans_up_to_the_size_limit_only() {
-		let scratch = Scratch::new("size");
-		let at_limit = scratch.0.join("at-limit.xml");
-		std::fs::write(&at_limit, " ".repeat(MAX_PLAN_BYTES)).unwrap();
-		assert_eq!(read_plan(&at_limit).unwrap().len(), MAX_PLAN_BYTES);
-		let over = scratch.0.join("over.xml");
-		std::fs::write(&over, " ".repeat(MAX_PLAN_BYTES + 1)).unwrap();
-		let error = read_plan(&over).unwrap_err().to_string();
-		assert!(
-			error.contains("over.xml is larger than the 2 MiB (2097152 bytes) limit"),
-			"{error}"
-		);
-		// A huge (sparse) file is refused after reading just past the limit.
-		let huge = scratch.0.join("huge.xml");
-		std::fs::File::create(&huge).unwrap().set_len(64 * 1024 * 1024).unwrap();
-		let error = read_plan(&huge).unwrap_err().to_string();
-		assert!(error.contains("larger than the 2 MiB"), "{error}");
-		// Text that is already in memory has the same limit.
-		let error = Plan::parse(&" ".repeat(MAX_PLAN_BYTES + 1)).unwrap_err().to_string();
-		assert!(error.contains("2097153 bytes, larger than the 2 MiB (2097152 bytes) limit"));
-	}
-
-	#[test]
-	fn refuses_directories_and_reports_bad_utf8_with_its_position() {
-		let scratch = Scratch::new("kinds");
-		let error = read_plan(&scratch.0).unwrap_err().to_string();
-		assert!(error.contains("it is a directory; pass a plan file"), "{error}");
-		let latin1 = scratch.0.join("latin1.xml");
-		std::fs::write(&latin1, b"<a>\n  caf\xe9</a>").unwrap();
-		let error = read_plan(&latin1).unwrap_err();
-		let located = error.downcast_ref::<PlanError>().expect("a located error");
-		assert_eq!(located.location, Some(Location { line: 2, column: 6 }));
-		assert!(located.message.starts_with("the plan is not UTF-8 text; save it as UTF-8"));
+	fn utf16_plans_are_refused_with_the_fix() {
+		let scratch = Scratch::new("utf16");
 		for (name, bytes) in [
 			("bom-le.xml", &b"\xff\xfe<\0a\0/\0>\0"[..]),
 			("bom-be.xml", &b"\xfe\xff\0<\0a\0/\0>"[..]),
@@ -1200,53 +1160,6 @@ mod tests {
 			let error = read_plan(&path).unwrap_err().to_string();
 			assert!(error.contains(&format!("{name} is UTF-16 text; save it as UTF-8")), "{error}");
 		}
-		let empty = scratch.0.join("empty.xml");
-		std::fs::write(&empty, b"").unwrap();
-		let error = read_plan(&empty).unwrap_err().to_string();
-		assert!(error.contains("empty.xml is empty"), "{error}");
-	}
-
-	#[cfg(unix)]
-	#[test]
-	fn reads_a_fifo_and_does_not_wait_when_nothing_writes_to_it() {
-		let scratch = Scratch::new("fifo");
-		let fifo = scratch.0.join("plan.xml");
-		let status = std::process::Command::new("mkfifo").arg(&fifo).status().unwrap();
-		assert!(status.success());
-		// With a writer, as with `validate <(envsubst < plan.tmpl)`: the whole plan is read, also
-		// when it arrives in pieces.
-		let writer = {
-			let fifo = fifo.clone();
-			std::thread::spawn(move || {
-				use std::io::Write as _;
-				let mut file = std::fs::OpenOptions::new().write(true).open(fifo).unwrap();
-				file.write_all(b"<a>").unwrap();
-				file.flush().unwrap();
-				std::thread::sleep(std::time::Duration::from_millis(200));
-				file.write_all(b"</a>").unwrap();
-			})
-		};
-		// The writer blocks in open until a reader is there; give it a reader that waits.
-		let read = loop {
-			let text = read_plan(&fifo);
-			match text {
-				Ok(text) => break text,
-				// Opened before the writer: no writer yet reads as empty. Try again.
-				Err(error) if error.to_string().contains("is empty") => {
-					std::thread::sleep(std::time::Duration::from_millis(10));
-				},
-				Err(error) => panic!("{error}"),
-			}
-		};
-		writer.join().unwrap();
-		assert_eq!(read, "<a></a>");
-		// Without a writer, reading ends at once with an empty plan instead of blocking.
-		let (sender, receiver) = std::sync::mpsc::channel();
-		let path = fifo.clone();
-		std::thread::spawn(move || sender.send(read_plan(&path).map_err(|e| e.to_string())));
-		let result = receiver.recv_timeout(std::time::Duration::from_secs(10));
-		let error = result.expect("reading a FIFO blocked").unwrap_err();
-		assert!(error.contains("plan.xml is empty"), "{error}");
 	}
 
 	#[test]

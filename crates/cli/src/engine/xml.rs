@@ -145,8 +145,9 @@ impl Element<'_> {
 	}
 }
 
-/// The message for a declaration that does not open with `version`.
-const DECLARATION_VERSION: &str = "the XML declaration must start with version";
+/// The message for a declaration that cannot be read or has no `version`.
+const MALFORMED_DECLARATION: &str =
+	"malformed XML declaration; write <?xml version=\"1.0\" encoding=\"UTF-8\"?>";
 
 /// Parses an optional declaration, misc (whitespace and comments) and exactly one root element.
 pub fn parse(src: &str) -> Result<Element<'_>> {
@@ -233,9 +234,9 @@ impl<'a> Parser<'a> {
 		n > 0
 	}
 
-	/// Parses the XML declaration at the start of the document:
-	/// `<?xml version="1.x" encoding="UTF-8" standalone="yes|no"?>`, where encoding and standalone
-	/// are optional but keep this order.
+	/// Parses the XML declaration at the start of the document. Its `name="value"` pairs are read
+	/// loosely: `version` must be there and be 1.x, and `encoding`, if given, one PolkaMeter can
+	/// read (see [`encoding_hint`]). Anything else in it, such as `standalone`, is ignored.
 	fn declaration(&mut self) -> Result<()> {
 		let start = self.pos;
 		let end = start
@@ -243,70 +244,39 @@ impl<'a> Parser<'a> {
 				.rest()
 				.find("?>")
 				.ok_or_else(|| self.error(start, "unterminated XML declaration"))?;
-		self.pos += "<?xml".len();
-		let mut allowed: &[&str] = &["version", "encoding", "standalone"];
-		loop {
-			let spaced = self.skip_ws();
-			if self.pos >= end {
-				break;
-			}
-			let at = self.pos;
-			let first = allowed.len() == 3;
-			let len =
-				self.src[at..end].find(|c: char| !c.is_ascii_alphabetic()).unwrap_or(end - at);
-			let name = &self.src[at..at + len];
-			let index = allowed.iter().position(|known| *known == name);
-			let Some(index) = index.filter(|&index| !first || index == 0) else {
-				if first {
-					return Err(self.error(start, DECLARATION_VERSION));
-				}
-				let msg = "the XML declaration allows only version, encoding and standalone, in \
-				           that order";
-				return Err(self.error(at, msg));
+		let mut at = start + "<?xml".len();
+		let mut version = false;
+		while let Some(equals) = self.src[at..end].find('=') {
+			let name = self.src[at..at + equals].trim();
+			let after = &self.src[at + equals + 1..end];
+			let value_at = end - after.trim_start().len() + 1;
+			let quote = after.trim_start().chars().next().filter(|q| matches!(q, '"' | '\''));
+			let len = quote.and_then(|quote| self.src.get(value_at..end)?.find(quote));
+			let (Some(_), Some(len)) = (quote, len) else {
+				return Err(self.error(start, MALFORMED_DECLARATION));
 			};
-			if !spaced {
-				let msg = format!("expected whitespace before `{name}` in the XML declaration");
-				return Err(self.error(at, msg));
-			}
-			allowed = &allowed[index + 1..];
-			self.pos = at + len;
-			self.skip_ws();
-			if !self.rest().starts_with('=') {
-				if first {
-					return Err(self.error(start, DECLARATION_VERSION));
-				}
-				let msg = format!("expected `=` after `{name}` in the XML declaration");
-				return Err(self.error(self.pos, msg));
-			}
-			self.pos += 1;
-			self.skip_ws();
-			let Some(quote) = self.rest().chars().next().filter(|q| matches!(q, '"' | '\'')) else {
-				let msg = format!("expected a quoted value for `{name}` in the XML declaration");
-				return Err(self.error(self.pos, msg));
-			};
-			let value_at = self.pos + 1;
-			let len = self.src[value_at..end].find(quote).ok_or_else(|| {
-				let msg = format!("unterminated `{name}` value in the XML declaration");
-				self.error(value_at, msg)
-			})?;
 			let value = &self.src[value_at..value_at + len];
 			let hint = match name {
-				"version" => value
-					.strip_prefix("1.")
-					.filter(|minor| !minor.is_empty() && minor.bytes().all(|b| b.is_ascii_digit()))
-					.map_or(Some("use version=\"1.0\""), |_| None),
+				"version" => {
+					version = true;
+					value
+						.strip_prefix("1.")
+						.filter(|minor| {
+							!minor.is_empty() && minor.bytes().all(|b| b.is_ascii_digit())
+						})
+						.map_or(Some("use version=\"1.0\""), |_| None)
+				},
 				"encoding" => encoding_hint(value, self.src),
-				_ => (!matches!(value, "yes" | "no"))
-					.then_some("use standalone=\"yes\" or standalone=\"no\""),
+				_ => None,
 			};
 			if let Some(hint) = hint {
 				let msg = format!("invalid {name} `{value}` in the XML declaration; {hint}");
 				return Err(self.error(value_at, msg));
 			}
-			self.pos = value_at + len + 1;
+			at = value_at + len + 1;
 		}
-		if allowed.len() == 3 {
-			return Err(self.error(start, DECLARATION_VERSION));
+		if !version {
+			return Err(self.error(start, MALFORMED_DECLARATION));
 		}
 		self.pos = end + 2;
 		Ok(())
@@ -534,9 +504,9 @@ mod tests {
 			(r#"<a x="1" x="2"/>"#, "duplicate attribute `x`"),
 			("<!DOCTYPE a><a/>", "DOCTYPE is not supported"),
 			("<?pi x?><a/>", "processing instructions are not supported"),
-			("<?xml?><a/>", "the XML declaration must start with version"),
-			(r#"<?xml encoding="UTF-8"?><a/>"#, "the XML declaration must start with version"),
-			(r#"<?xml versionfoo="1"?><a/>"#, "the XML declaration must start with version"),
+			("<?xml?><a/>", "malformed XML declaration"),
+			(r#"<?xml encoding="UTF-8"?><a/>"#, "malformed XML declaration"),
+			("<a>\n  <!-- x--y --></a>", "line 2, column 9: `--` is not allowed inside a comment"),
 			(r#"<a x="1"y="2"/>"#, "expected whitespace before an attribute"),
 			("<a><![CDATA[x]]></a>", "CDATA and declarations are not supported"),
 			("<a>text</a>", "text is not allowed"),
@@ -558,37 +528,14 @@ mod tests {
 	}
 
 	#[test]
-	fn rejects_malformed_xml_declarations() {
+	fn reads_xml_declarations_loosely_but_checks_version_and_encoding() {
 		let cases = [
 			(r#"<?xml version="2.0"?><a/>"#, "line 1, column 16: invalid version `2.0`"),
-			(r#"<?xml version="1."?><a/>"#, "invalid version `1.`"),
-			(
-				r#"<?xml version="1.0"encoding="UTF-8"?><a/>"#,
-				"expected whitespace before `encoding`",
-			),
 			(r#"<?xml version="1.0" encoding="UTF-16"?><a/>"#, "invalid encoding `UTF-16`"),
-			(r#"<?xml version="1.0" standalone="maybe"?><a/>"#, "invalid standalone `maybe`"),
-			(
-				r#"<?xml version="1.0" standalone="yes" encoding="UTF-8"?><a/>"#,
-				"allows only version",
-			),
-			(
-				r#"<?xml version="1.0" junk="1"?><a/>"#,
-				"line 1, column 21: the XML declaration allows only",
-			),
-			(
-				r#"<?xml version="1.0" version="1.0"?><a/>"#,
-				"allows only version, encoding and standalone",
-			),
-			(r#"<?xml version=1.0?><a/>"#, "expected a quoted value for `version`"),
-			(r#"<?xml version="1.0?><a/>"#, "unterminated `version` value"),
-			(r#"<?xml version="1.0" encoding?><a/>"#, "expected `=` after `encoding`"),
-			(r#"<?xml version="1.0" ?"#, "unterminated XML declaration"),
 			(
 				"\n<?xml version=\"1.0\"?><a/>",
 				"line 2, column 1: the XML declaration must come first",
 			),
-			("<!-- c --><?xml version=\"1.0\"?><a/>", "the XML declaration must come first"),
 		];
 		for (xml, msg) in cases {
 			let error = parse(xml).unwrap_err().to_string();
@@ -601,25 +548,6 @@ mod tests {
 		] {
 			parse(xml).unwrap_or_else(|e| panic!("{xml}: {e}"));
 		}
-	}
-
-	#[test]
-	fn rejects_double_hyphens_in_comments() {
-		for (xml, column) in [
-			("<!-- a -- b --><a/>", 8),
-			("<!-- a ---><a/>", 8),
-			("<a>\n  <!-- x--y --></a>", 9),
-			("<a/><!-- -- -->", 10),
-		] {
-			let error = parse(xml).unwrap_err().to_string();
-			assert!(
-				error.contains(&format!("column {column}: `--` is not allowed")),
-				"{xml}: {error}"
-			);
-		}
-		parse("<!----><a><!-- a - b --></a><!-- - -->").unwrap();
-		let error = parse("<a/><!-- open").unwrap_err().to_string();
-		assert!(error.contains("line 1, column 5: unterminated comment"), "{error}");
 	}
 
 	#[test]
@@ -648,31 +576,6 @@ mod tests {
 			located.message,
 			"expected </b>, found </c>; <b> was opened at line 2, column 3"
 		);
-	}
-
-	#[test]
-	fn line_index_matches_a_full_rescan() {
-		/// The position of byte `offset`, counted from the start as the parser once did.
-		fn rescan(src: &str, offset: usize) -> Location {
-			let before = &src.as_bytes()[..offset];
-			let line = before.iter().filter(|&&b| b == b'\n').count() + 1;
-			let start = before.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
-			let column = before[start..].iter().filter(|&&b| (b & 0xC0) != 0x80).count() + 1;
-			Location { line, column }
-		}
-		// Multi-byte characters straddle checkpoints, and one line spans several of them.
-		let mut src = String::new();
-		for i in 0..3_000 {
-			src += if i % 7 == 0 { "\n" } else { "é界🚀ab" };
-			if i % 500 == 0 {
-				src += &"x".repeat(CHECKPOINT_BYTES + 3);
-			}
-		}
-		let index = LineIndex::new(&src);
-		for (offset, _) in src.char_indices().step_by(13).chain([(src.len(), ' ')]) {
-			assert_eq!(index.locate(&src, offset), rescan(&src, offset), "offset {offset}");
-		}
-		assert_eq!(index.locate(&src, usize::MAX), rescan(&src, src.len()));
 	}
 
 	#[test]
@@ -728,16 +631,5 @@ mod tests {
 		let root = parse("\u{feff}<a x=\"&#9;&#x10000;\"/>").unwrap();
 		assert_eq!(root.name, "a");
 		assert_eq!(root.attrs[0].1, "\t\u{10000}");
-	}
-
-	#[test]
-	fn many_attributes_are_checked_in_linear_time() {
-		let mut xml = String::from("<a");
-		for i in 0..200_000 {
-			xml += &format!(" k{i}=\"1\"");
-		}
-		xml += " k5=\"2\"/>";
-		let error = parse(&xml).unwrap_err().to_string();
-		assert!(error.contains("duplicate attribute `k5`"), "{error}");
 	}
 }

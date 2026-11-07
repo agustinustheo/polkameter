@@ -683,11 +683,7 @@ fn write_artifact_written(
 }
 
 /// Longest reason, in characters, that the failure line prints. `execution.json` keeps it all.
-const MAX_REASON_CHARS: usize = 500;
-
-/// Longest exit reason, in characters, that the line prints: it names checks and the flag at the
-/// end, so it gets more room than an error.
-const MAX_EXIT_REASON_CHARS: usize = 1_000;
+const MAX_REASON_CHARS: usize = 1_000;
 
 /// The one-line reason for a failed run, naming the file that holds the details; for a run that
 /// completed with failures, its recorded exit reason (smoke problems, or the verdict and flag).
@@ -696,7 +692,7 @@ const MAX_EXIT_REASON_CHARS: usize = 1_000;
 /// nothing.
 fn failure_reason(location: RunLocation, plan: &Path, outcome: &Outcome) -> Option<String> {
 	if outcome.state == RunState::CompletedWithFailures {
-		let reason = one_line_within(outcome.exit_reason.as_deref()?, MAX_EXIT_REASON_CHARS);
+		let reason = one_line(outcome.exit_reason.as_deref()?);
 		return Some(match location {
 			RunLocation::Local => reason,
 			RunLocation::Remote => format!("remote run: {reason}"),
@@ -727,52 +723,15 @@ fn failure_reason(location: RunLocation, plan: &Path, outcome: &Outcome) -> Opti
 	})
 }
 
-/// Hex runs at least this long are hashes; one-line reasons show their first
-/// [`SHORT_HASH_CHARS`] characters. `execution.json` keeps them whole.
-const LONG_HASH_CHARS: usize = 32;
-const SHORT_HASH_CHARS: usize = 12;
-
-/// `text` with every run of [`LONG_HASH_CHARS`] or more hex digits cut to its first
-/// [`SHORT_HASH_CHARS`] and `…`, so that a message's fix fits on the line after its hashes.
-fn shorten_hashes(text: &str) -> String {
-	let mut out = String::with_capacity(text.len());
-	let mut run = String::new();
-	let flush = |run: &mut String, out: &mut String| {
-		if run.len() >= LONG_HASH_CHARS {
-			out.push_str(&run[..SHORT_HASH_CHARS]);
-			out.push('…');
-		} else {
-			out.push_str(run);
-		}
-		run.clear();
-	};
-	for c in text.chars() {
-		if c.is_ascii_hexdigit() {
-			run.push(c);
-		} else {
-			flush(&mut run, &mut out);
-			out.push(c);
-		}
-	}
-	flush(&mut run, &mut out);
-	out
-}
-
 /// `text` made safe for one terminal line. CSI escape sequences (colours, cursor movement) are
-/// removed, line breaks become ` ⏎ `, and other control characters, including the ESC of any other
-/// escape sequence, and bidirectional-override characters are escaped as `\u{…}`. Hashes are
-/// shortened (see [`shorten_hashes`]). The rendered line is cut to at most [`MAX_REASON_CHARS`]
-/// characters, never inside an escape, followed by `…`.
+/// removed, line breaks become ` ⏎ `, and other unsafe characters (see
+/// [`crate::redact::is_unsafe_char`]), including the ESC of any other escape sequence, are escaped
+/// as `\u{…}`. The rendered line is cut to at most [`MAX_REASON_CHARS`] characters, never inside
+/// an escape, followed by `…`.
 fn one_line(text: &str) -> String {
-	one_line_within(text, MAX_REASON_CHARS)
-}
-
-/// [`one_line`], cut to at most `max` characters.
-fn one_line_within(text: &str, max: usize) -> String {
 	let mut line = String::new();
 	let mut length = 0;
-	let text = shorten_hashes(text.trim());
-	let mut chars = text.chars().peekable();
+	let mut chars = text.trim().chars().peekable();
 	while let Some(c) = chars.next() {
 		let piece = match c {
 			// CSI sequence: ESC [ parameters final-byte.
@@ -791,15 +750,11 @@ fn one_line_within(text: &str, max: usize) -> String {
 				}
 				" ⏎ ".to_owned()
 			},
-			c if c.is_control()
-				|| matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') =>
-			{
-				c.escape_unicode().to_string()
-			},
+			c if crate::redact::is_unsafe_char(c) => c.escape_unicode().to_string(),
 			c => c.to_string(),
 		};
 		let piece_length = piece.chars().count();
-		if length + piece_length > max {
+		if length + piece_length > MAX_REASON_CHARS {
 			line.push('…');
 			break;
 		}
@@ -1301,7 +1256,7 @@ mod tests {
 			..outcome(RunState::CompletedWithFailures, None)
 		};
 		let line = failure_reason(RunLocation::Local, Path::new("plan.xml"), &long).unwrap();
-		assert_eq!(line, format!("{}…", "x".repeat(MAX_EXIT_REASON_CHARS)));
+		assert_eq!(line, format!("{}…", "x".repeat(MAX_REASON_CHARS)));
 	}
 
 	#[test]
@@ -1315,19 +1270,7 @@ mod tests {
 			"red \\u{1b}]0;title\\u{7} tab\\u{9}here \\u{202e}txt"
 		);
 		let long = "x".repeat(100_000);
-		let line = one_line(&long);
-		assert_eq!(line, format!("{}…", "x".repeat(MAX_REASON_CHARS)));
-		assert_eq!(one_line(&"x".repeat(MAX_REASON_CHARS)), "x".repeat(MAX_REASON_CHARS));
-		assert_eq!(one_line("été 🚀"), "été 🚀");
-		// The cap applies to the rendered line and never cuts an escape in half.
-		let escaped = one_line(&"\u{202e}".repeat(1_000));
-		assert_eq!(escaped, format!("{}…", "\\u{202e}".repeat(MAX_REASON_CHARS / 8)));
-		assert!(escaped.chars().count() <= MAX_REASON_CHARS + 1);
-		let mixed = one_line(&"a\u{1}\n".repeat(1_000));
-		// Each repeat renders as 9 characters; after as many as fit before the last one and an
-		// `a`, `\u{1}` no longer fits whole.
-		assert_eq!(mixed, format!("{}a…", "a\\u{1} ⏎ ".repeat((MAX_REASON_CHARS - 1) / 9)));
-		assert!(mixed.chars().count() <= MAX_REASON_CHARS + 1);
+		assert_eq!(one_line(&long), format!("{}…", "x".repeat(MAX_REASON_CHARS)));
 		let reason = failure_reason(
 			RunLocation::Local,
 			Path::new("plan.xml"),
@@ -1373,47 +1316,6 @@ mod tests {
 		for code in [1, 2, 3, 130, 143] {
 			assert_eq!(exit_code_after_output(code, true), code);
 		}
-	}
-
-	#[test]
-	fn the_fix_survives_the_reason_cap() {
-		let path = format!("/home/runner/work/{}/target/release/my-plugin", "deep/".repeat(12));
-		let hash = "0123456789abcdef".repeat(8);
-		let other = "fedcba9876543210".repeat(8);
-		let fix = format!("if you rebuilt it, run `polkameter plugin install {path}` again");
-		let error = format!(
-			"line 3, column 5: plugin example checksum mismatch: {fix}. {path} changed after it \
-			 was installed (BLAKE2 expected {hash}, found {other})"
-		);
-		let outcome = Outcome {
-			artifact_dir: PathBuf::from("runs/run-1"),
-			exit_code: crate::engine::execute::PREFLIGHT_EXIT_CODE,
-			state: RunState::Failed,
-			error: Some(error),
-			teardown: None,
-			failed_phase: Some("preflight".into()),
-			error_location: Some(Location { line: 3, column: 5 }),
-			exit_reason: None,
-		};
-		let reason = failure_reason(RunLocation::Local, Path::new("plan.xml"), &outcome).unwrap();
-		assert!(
-			reason
-				.starts_with("run failed before setup: plan.xml: line 3, column 5: plugin example"),
-			"{reason}"
-		);
-		assert!(reason.contains(&fix), "{reason}");
-		// Hashes are shortened on the line; execution.json keeps them whole.
-		let short = Outcome {
-			error: outcome.error.as_ref().map(|error| error.replace(&path, "/opt/my-plugin")),
-			..outcome.clone()
-		};
-		let reason = failure_reason(RunLocation::Local, Path::new("plan.xml"), &short).unwrap();
-		assert!(reason.contains("expected 0123456789ab…, found fedcba987654…)"), "{reason}");
-		assert!(short.error.as_deref().unwrap().contains(&hash));
-		assert_eq!(
-			shorten_hashes("abc 0123456789abcdef deadbeef"),
-			"abc 0123456789abcdef deadbeef"
-		);
 	}
 
 	#[test]

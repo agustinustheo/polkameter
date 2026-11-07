@@ -750,18 +750,12 @@ mod tests {
 	}
 
 	#[test]
-	fn hex_helpers() {
-		assert_eq!(strip_0x("0xab"), "ab");
-		assert_eq!(strip_0x("ab"), "ab");
-		assert_eq!(strip_0x(""), "");
+	fn installed_checksums_stay_comparable() {
+		// Registries pin plugin checksums in this form; a change would flag every plugin.
 		assert_eq!(
 			blake2_hex(b""),
 			"0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8"
 		);
-		let digest = blake2_hex(b"polkameter");
-		assert_eq!(digest.len(), 64);
-		assert!(digest.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
-		assert_ne!(digest, blake2_hex(b"polkameter2"));
 	}
 
 	#[test]

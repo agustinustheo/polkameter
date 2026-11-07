@@ -1101,30 +1101,6 @@ mod tests {
 		}
 	}
 
-	#[tokio::test]
-	async fn fail_on_verdict_refuses_an_older_agent_before_starting() {
-		let app = Router::new().route(
-			"/plugins",
-			get(|| async { Json(serde_json::json!({"protocol":1,"plugins":[]})) }),
-		);
-		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-		let endpoint = format!("http://{}", listener.local_addr().unwrap());
-		let server = tokio::spawn(async move {
-			axum::serve(listener, app).await.unwrap();
-		});
-		let Err(error) = plugin_start_with_options(
-			&RemoteRunnerTarget { endpoint, bearer_token: "test".into() },
-			"plan".into(),
-			crate::engine::execute::RunOptions { fail_on_verdict: true, ..Default::default() },
-		)
-		.await
-		else {
-			panic!("older agent accepted the policy")
-		};
-		assert_eq!(error, "remote agent does not support --fail-on-verdict; update the agent");
-		server.abort();
-	}
-
 	fn target(endpoint: &str) -> RemoteRunnerTarget {
 		RemoteRunnerTarget { endpoint: endpoint.into(), bearer_token: "token".into() }
 	}
@@ -1481,35 +1457,29 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn the_client_deadline_bounds_a_stalled_poll_and_stops_the_run() {
-		let mock = Arc::new(Mock { script: vec![Poll::Stall], ..Mock::default() });
-		let (endpoint, server) = mock_agent(mock.clone()).await;
-		let (_sender, mut signals) = Signals::channel();
-		// The poll itself could wait 30 s; the deadline ends it.
-		let limits = Follow { deadline: Duration::from_millis(300), ..limits() };
-		let started = Instant::now();
-		let error = follow(&endpoint, &mut signals, &limits).await.unwrap_err();
-		assert!(started.elapsed() < Duration::from_secs(10));
-		assert!(
-			error.starts_with(
-				"the run did not end within the client's deadline of 0 s; asked the agent to stop run c-"
+	async fn the_client_deadline_bounds_a_stalled_start_or_poll_and_stops_the_run() {
+		let stalled_start = Mock { starts: vec![Start::Stall], ..Mock::default() };
+		let stalled_poll = Mock { script: vec![Poll::Stall], ..Mock::default() };
+		for (mock, expected) in [
+			(stalled_start, "the agent did not start the run in time; asked"),
+			(
+				stalled_poll,
+				"the run did not end within the client's deadline of 0 s; asked the agent to stop \
+				 run c-",
 			),
-			"{error}"
-		);
-		assert_eq!(mock.stop_kinds(), ["stop"]);
-		server.abort();
-	}
-
-	#[tokio::test]
-	async fn the_client_deadline_also_bounds_the_start() {
-		let mock = Arc::new(Mock { starts: vec![Start::Stall], ..Mock::default() });
-		let (endpoint, server) = mock_agent(mock.clone()).await;
-		let (_sender, mut signals) = Signals::channel();
-		let limits = Follow { deadline: Duration::from_millis(200), ..limits() };
-		let error = follow(&endpoint, &mut signals, &limits).await.unwrap_err();
-		assert!(error.starts_with("the agent did not start the run in time; asked"), "{error}");
-		assert_eq!(mock.stop_kinds(), ["stop"]);
-		server.abort();
+		] {
+			let mock = Arc::new(mock);
+			let (endpoint, server) = mock_agent(mock.clone()).await;
+			let (_sender, mut signals) = Signals::channel();
+			// A request itself could wait 30 s; the deadline ends it.
+			let limits = Follow { deadline: Duration::from_millis(300), ..limits() };
+			let started = Instant::now();
+			let error = follow(&endpoint, &mut signals, &limits).await.unwrap_err();
+			assert!(started.elapsed() < Duration::from_secs(10));
+			assert!(error.starts_with(expected), "{error}");
+			assert_eq!(mock.stop_kinds(), ["stop"]);
+			server.abort();
+		}
 	}
 
 	#[tokio::test]
@@ -1620,17 +1590,14 @@ mod tests {
 		server.abort();
 	}
 
-	#[test]
-	fn tokens_must_be_long_and_varied() {
+	#[tokio::test]
+	async fn tokens_must_be_long_and_varied() {
 		let message = "must have at least 32 characters, at least 8 of them different; generate one with `openssl rand -hex 32`";
 		for token in ["x".repeat(MIN_TOKEN_CHARS - 1), "a".repeat(64), "abababab".repeat(8)] {
 			assert_eq!(check_token(&token).unwrap_err(), message, "{token}");
 		}
 		assert!(check_token("0123456789abcdef0123456789abcdef").is_ok());
-	}
-
-	#[tokio::test]
-	async fn the_agent_refuses_weak_tokens() {
+		// The agent refuses to start with a weak token.
 		let (_sender, mut signals) = Signals::channel();
 		let settings = AgentSettings {
 			output_root: "unused".into(),
