@@ -164,7 +164,7 @@ Fields of the `loss` object in `summary.json`:
 | `inPool` | Count of `in_pool`. `null` when the ready pool could not be read. |
 | `stateError` | Why the plan's state check gave no result. Present only then. |
 
-If the state check gives no result, the "no silent loss" check cannot pass. Confirmed loss still fails it, and any failure keeps the verdict FAIL. The SDK type [`Loss`](https://docs.rs/polkameter-plugin-sdk/latest/polkameter_plugin_sdk/observers/files/summary/struct.Loss.html) documents the other fields.
+If the state check gives no result, the "no silent loss" check cannot pass. Confirmed loss still fails it, and any failure keeps the verdict FAIL. Otherwise the verdict is INCONCLUSIVE. The SDK type [`Loss`](https://docs.rs/polkameter-plugin-sdk/latest/polkameter_plugin_sdk/observers/files/summary/struct.Loss.html) documents the other fields.
 
 ## Stop rules and thresholds
 
@@ -190,7 +190,7 @@ A dropped RPC connection that reconnects is a problem, not a stop. See [Why a dr
 
 ## Recovery
 
-After the load, the run sends one probe per block, with no load on the chain. A probe is in time if it lands within the larger of twice the slowest baseline probe and twice the block interval.
+After the flood stops, the run sends one probe transaction per block. A probe is in time if it lands within the larger of twice the slowest baseline probe and twice the block interval.
 
 The chain has recovered when `probes-in-a-row` consecutive probes are in time and the mean block gap from then on is at most `recovered-block-gap-factor` block intervals. Probing continues until the recovery criteria are met and the backlog drains, unless the `recovery-seconds` budget or a node failure ends it. Then PolkaMeter waits up to `finality-wait-ms` for finality.
 
@@ -214,13 +214,13 @@ Checks run on the recorded data, in this order. A check whose metric the node do
 | pvf: no timed-out candidates or disputes | Timed-out candidates and relay disputes. | `fail` if any. |
 | pvf: PVF time on validators (level 2, all parachains) | Validation time. | `warn`: a validation over 2 s, or an invalid result. |
 | pvf: collation funnel | Expired collations, and mean backing-to-inclusion time. | `warn`: any expired, or mean over 1.5 relay blocks. |
-| pool: no silent loss | Accepted transactions in no block, without error. | `fail` if any. `no result` if the pool cannot be listed or the state check gave no result. |
+| pool: no silent loss | Accepted transactions in no block, without error. | `fail`: confirmed loss. Otherwise `no result` when evidence or the requested state check is missing. |
 | pool: the burst drains | Probes in time, backlog drained, no empty block while more than 10 transactions waited. | `fail` unless all three hold. |
 | pool: refusals are clean | Refusals by error code. | `fail`: a refusal without an error code. `warn`: the run stopped on pool intake. |
 | pool: pool work leaves time for blocks | Pool maintenance p95, and validation backlog. | `fail`: p95 over half the block interval. `warn`: over 1000 waiting for validation. |
 | run: monitors recorded everything | Monitor problems, and time when blocks were not observed. | `warn` if any problem. `no result` if blocks went unobserved for longer than `stall-ms` in total. |
 
-Statuses: `pass` (no problem found), `warn` (a WARN verdict unless the verdict is FAIL), `fail` (a FAIL verdict), `info` (a number to read), `no result` (no data).
+Statuses: `pass` (no problem found), `warn` (a WARN verdict only when no FAIL or INCONCLUSIVE rule applies), `fail` (a FAIL verdict), `info` (a number to read), `no result` (no data).
 
 A check measures each window: a rate step, or recovery. A window has no data when a node's metrics are stale at its edges, a node restarted in it, or nothing was recorded. The detail names the window and the cause. A failure or warning in any window decides the status. Otherwise a window without data makes the check `no result`.
 
@@ -270,9 +270,3 @@ Each event has a `timestamp` in milliseconds and `version` `2`. Credentials are 
 | With `<load>` | Also the checks, `summary.json` and `summary.md` |
 
 The result comes only from the files. So you can copy a run directory to another machine and report it there.
-
-`polkameter report` rewrites `summary.json` only if its `schemaVersion` is `1`. Otherwise it changes no file and exits `2`:
-
-```text
-PolkaMeter: runs/run-1/summary.json has schemaVersion 2, but polkameter 0.3.0 reads and writes only schemaVersion 1; report it with the polkameter version that recorded the run. Nothing was rewritten
-```

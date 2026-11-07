@@ -31,7 +31,7 @@ Work through [checklist.md](checklist.md) and tick items as you go.
    Until v0.3.0 is released, the installer stops because v0.2.0 has no CLI archive. Build both executables from source:
 
    ```sh
-   cargo install --locked --git https://github.com/agustinustheo/polkameter --branch main polkameter polkameter-substrate-plugin
+   cargo install --locked --git https://github.com/agustinustheo/polkameter --rev 259400a67647d9f662506e3b7469a0d565d7c676 polkameter polkameter-substrate-plugin
    ```
 
    `cargo install --locked polkameter` alone never installs the plugin. Register the plugin after every install, upgrade or rebuild:

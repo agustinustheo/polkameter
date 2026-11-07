@@ -71,8 +71,6 @@ POLKAMETER_DEV_CHAIN_WS=ws://127.0.0.1:9944 cargo +1.93.0 test -p polkameter-sub
 scripts/dev-chain.sh stop
 ```
 
-`scripts/dev-chain.sh stop` stops only the node the script started. Don't kill other processes.
-
 ## Conventions
 
 - Formatting follows `rustfmt.toml`: hard tabs, width 100. Lints in `Cargo.toml` deny warnings in CI.
@@ -81,6 +79,6 @@ scripts/dev-chain.sh stop
 - Plans never hold secrets. They name credential profiles.
 - New example plans go in `examples/` and must pass `polkameter validate` and the XSD.
 - Keep plan templates identical to their example files. Keep CI templates identical to the jobs in `docs/dev-chain.md`. `tests/validate-plans.py` checks both.
-- Docs follow `docs/STYLE.md`. Show real output from a real run, never invented output. Add new pages to `docs/SUMMARY.md` and `docs/llms.txt`.
+- Docs follow `docs/STYLE.md`. Add new pages to `docs/SUMMARY.md` and `docs/llms.txt`.
 - Pin GitHub Actions in new workflow steps to a full commit SHA, with the version in a comment.
 - Commit messages are plain and describe the change. Don't add AI attribution: no `Co-Authored-By` lines for assistants and no "Generated with" footers, in commits or pull requests.

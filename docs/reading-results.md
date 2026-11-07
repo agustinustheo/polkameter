@@ -89,11 +89,11 @@ Only `lost` counts as lost. A transaction is `lost` only when PolkaMeter could r
 
 `lost.jsonl` lists the first 1000 lost transactions. An empty file means no confirmed loss, not proof that nothing was lost.
 
-If the plan has a state check and it gives no result, the loss check line says `State check: no result`. Then the "no silent loss" check can't pass. Confirmed loss still fails it, and any failure keeps the verdict FAIL. Otherwise the missing result makes the verdict INCONCLUSIVE.
+If the plan's state check gives no result, the loss check line says `State check: no result`. [Loss accounting](results.md#loss-accounting) explains how that affects the verdict.
 
 ## Did the chain recover?
 
-Before the load, the baseline sends a few probe transactions to measure latency on a quiet chain. After the load stops, PolkaMeter sends one probe per block. Recovery needs consecutive probes within the latency threshold and a mean block gap within the configured limit. By default, that's three probes in a row and a mean gap of at most 1.5 block intervals. The latency threshold is the larger of twice the slowest baseline probe and twice the block interval.
+Before the load, the baseline sends a few probe transactions to measure latency on a quiet chain. After the load stops, PolkaMeter sends one probe per block until enough of them land in time again. [Recovery](results.md#recovery) gives the exact criteria.
 
 ```markdown
 - **Recovery:** back 1 s after the load stopped (3 probes in a row landed within 12.0 s). Backlog at stop 5712 txs, drained after 8 s, at 317.3 tx/s.

@@ -32,8 +32,6 @@ flowchart TD
 8. Teardown. Teardown steps run even after a failure in setup or later. Then the plugins shut down. A run that fails in preflight sent nothing, so it skips teardown.
 9. Report. The run writes its outcome, `samples.jtl` and the plots.
 
-The plan's `timeout-ms` limits the startup and test phases, including the load checks and summary generation. It's one hour by default. Teardown and final artifact writing happen outside that deadline.
-
 An error in preflight, setup, a workflow or an evaluate step ends the run as `failed`. A stop rule that fires during the load is a result, not an error, so the report is still written. [Exit codes](cli.md#exit-codes) lists what each case returns.
 
 ## Why every transaction gets one status
@@ -42,9 +40,9 @@ After the load, PolkaMeter checks each flood transaction against two sources: th
 
 A loss count is only useful if you can trust it, so `lost` needs evidence from both sources. Without reading the finalized chain, a transaction that a reorg moved to another block would look lost. So anything PolkaMeter couldn't check becomes `unknown` or `unverified`. A failed read never creates a loss.
 
-The same goes for dispatch failures. A transaction can fail in a best block that a reorg then drops, and succeed in the block that replaces it. Once PolkaMeter reads the finalized chain, the finalized block decides. A failure only in a dropped block is counted apart, as `failedOnlyOnFork`. Before finality is verified, the best block is the only evidence, so its failure counts.
+The same goes for dispatch failures. A transaction can fail in a best block that a reorg then drops, and succeed in the block that replaces it. Once PolkaMeter reads the finalized chain, the finalized block decides. Before finality is verified, the best block is the only evidence, so its failure counts.
 
-A state check is part of the loss check. It reads a sample of the transactions that the finalized chain holds and that didn't fail there. If the state check gives no result, PolkaMeter has no proof that those transactions left their state. Then the "no silent loss" check can't pass. Confirmed loss still fails it, and any failure keeps the verdict FAIL. Otherwise the verdict is INCONCLUSIVE.
+A state check is part of the loss check. It reads a sample of the transactions that the finalized chain holds and that didn't fail there. If it gives no result, PolkaMeter has no proof that those transactions changed state. [Loss accounting](results.md#loss-accounting) gives the effect on the verdict.
 
 ## Why a dropped connection is not a chain failure
 
@@ -58,13 +56,13 @@ The node counts as down when it stays unreachable for 15 s, when a connection dr
 
 A chain that's really down still stops the load. If no new blocks arrive, the stall rule stops it after 30 s by default. If blocks arrive but none is finalized, the finality stall rule stops it after 60 s by default.
 
-All timing in a run uses a clock that never goes back, so a wall-clock change can't end a step early. If the machine is suspended for more than 5 s, the load stops on generator limit.
+If the machine is suspended for more than 5 s, the load stops on generator limit.
 
 ## Node CPU and memory
 
 PolkaMeter can only sample a node that runs on the same machine. It samples the process in `POLKAMETER_NODE_PID`, or the process listening on the RPC port of a loopback URL (`localhost`, `127.0.0.1` or `::1`).
 
-A port forwarder on that port isn't the node, so PolkaMeter doesn't sample it. That covers an SSH tunnel, `kubectl port-forward`, `socat` and Docker's port proxy. For a remote URL, nothing is sampled. In both cases the run prints why and goes on, and `node.jsonl` stays empty.
+Without `POLKAMETER_NODE_PID`, PolkaMeter samples neither a port forwarder nor a process behind a non-loopback URL. It explains why and continues with an empty `node.jsonl`.
 
 If the sampled process ends during the run, the node probably restarted. PolkaMeter finds the new process on the port, records the restart under problems and samples the new process. A restart during the load stops it on node down. With `POLKAMETER_NODE_PID` and a URL that isn't loopback, PolkaMeter can't find a restarted node again.
 

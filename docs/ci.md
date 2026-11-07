@@ -1,6 +1,6 @@
 # Run in CI
 
-The PolkaMeter action runs a plan in a GitHub Actions job. It installs the CLI, installs your plugins and credentials, and runs the plan. Then it uploads the run's reports and selected records. It supports Linux and macOS runners on GitHub.com. On GitHub Enterprise Server, set `upload: false`. For other CI systems, see [Other CI systems](#other-ci-systems).
+The PolkaMeter action runs a plan in a GitHub Actions job. It installs the CLI, installs your plugins and credentials, and runs the plan. Then it uploads the run's reports and selected records. It supports Linux and macOS runners. For other CI systems, see [Other CI systems](#other-ci-systems).
 
 ## A minimal workflow
 
@@ -27,11 +27,9 @@ jobs:
 ```
 
 <!-- v0.3.0: remove after release -->
-Until v0.3.0 is released, `@v0` does not exist. Use `@12952a99aa3e2ff6ab160e11a3158fc87fdadf72` instead, which builds the CLI from source in several minutes.
+Until v0.3.0 is released, `@v0` does not exist. Use `@259400a67647d9f662506e3b7469a0d565d7c676` instead, which builds the CLI from source in several minutes. Without the action, use the [source install](install.md#before-v030-is-released).
 
-`@v0` installs the latest 0.x release of the CLI. The action checks the archive's SHA-256 checksum and its GitHub build attestation. To fix the version, use a full tag such as `@v0.3.0`, or set the `version` input. A moving tag never selects a prerelease. To test a release candidate, use its full tag, such as `@v0.3.0-rc.1`. A branch or commit SHA builds the CLI from source. The `install` input in [`action.yml`](https://github.com/agustinustheo/polkameter/blob/main/action.yml) controls the fallback.
-
-The action installs Rust only for a source build or for `plugin-crates`. It uses the `toolchain` input, Rust 1.93.0 by default, and makes it the job's default toolchain.
+`@v0` installs the latest 0.x release of the CLI and checks its checksum and build attestation. To fix the version, use a full tag such as `@v0.3.0`. A branch or commit SHA builds the CLI from source. [`action.yml`](https://github.com/agustinustheo/polkameter/blob/main/action.yml) describes the `version`, `install` and `toolchain` inputs.
 
 ## Build plugins in the action
 
@@ -88,7 +86,7 @@ The `fail-on` input decides which [verdicts](reading-results.md#did-it-pass) als
 | `verdict` | passes | passes | fails | passes | `--fail-on-verdict` |
 | `error` | passes | passes | passes | passes | none |
 
-A failed run fails the job under every policy. A plan without a load test has no verdict. In smoke mode, `fail-on` does not change the result. See [`run`](cli.md#run).
+A failed run fails the job under every policy. A plan without a load test has no verdict. In smoke mode, monitor problems and missing required check results fail the run under every policy; see [`run`](cli.md#run). Other verdict failures still follow `fail-on`.
 
 When a verdict fails the job, the job summary ends with a "Why this job failed" section. A ramp that pushes the chain past its limit usually ends FAIL. To keep that job green and read the verdict instead, set `fail-on: error`. A later step can read the outputs even when the action failed:
 
@@ -140,9 +138,6 @@ Without the action, install the CLI with the install script on Linux or macOS:
 curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh | sh -s -- <version>
 export PATH="$HOME/.local/bin:$PATH"
 ```
-
-<!-- v0.3.0: remove after release -->
-Until v0.3.0 is released, use the source install in [Before v0.3.0 is released](install.md#before-v030-is-released) instead.
 
 On GitHub Actions, set `GH_TOKEN: ${{ github.token }}` on that step so `gh` can check build provenance. Then run from the repository root. Replace `<plugin-binary>`, `<profile>`, `<ENV_VAR>` and `<plan>`:
 
@@ -230,4 +225,4 @@ pipeline {
 }
 ```
 
-The `post { always }` block keeps the reports of failed runs too. With `allowEmptyResults: true`, a plan rejected before it writes a run directory does not also fail the `junit` step, so the log shows the real error.
+The `post { always }` block keeps the reports of failed runs too.

@@ -85,7 +85,7 @@ PolkaMeter starts one process per plugin per run and keeps it until the run ends
 
 An `error` reply fails the step, but the plugin keeps running. A crash, a malformed reply, a cancellation or a timeout ends the plugin process, and later steps of that phase fail. Before each teardown step, the host starts an ended plugin again and logs a `plugin-restarted` event. The host never retries an operation.
 
-Each plugin runs in its own process group. Signals sent to PolkaMeter's group don't reach it. When the host kills a plugin, it also kills every process the plugin started.
+When the host kills a plugin, it also kills every process the plugin started.
 
 > **Warning:** Plugins run as trusted code. They are not sandboxed. Review a plugin as you would any code that handles your keys.
 
@@ -93,7 +93,7 @@ Each plugin runs in its own process group. Signals sent to PolkaMeter's group do
 
 The registry is a JSON file, `~/.config/polkameter/plugins.json` by default. Set `POLKAMETER_PLUGIN_REGISTRY` to use another path. It stores plugins, credential profiles, topology aliases and capabilities. For a credential profile it stores only the variable name. [`polkameter plugin`](cli.md#plugin) manages it.
 
-`plugin install` records the executable's hash. Install the plugin again after a rebuild. A checksum or version mismatch stops `run` before setup and exits `3`.
+`plugin install` records the executable's hash. Install the plugin again after a rebuild.
 
 A plan names a credential profile, never the secret. The host reads the mapped variable at run start. The run fails if the variable is unset or empty. A plugin gets the value only as the input `credentials.ID`, and only in steps that reference it.
 
@@ -109,7 +109,7 @@ A `PreparedTx` is one transaction a plugin prepared before the load:
 
 `PreparedTx::new(bytes, metadata)` computes the hash. `decode()` refuses empty bytes and a hash that does not match.
 
-A `<load>` takes two `PreparedTx` lists, inline or as an `Artifact`. `source-ref` holds the flood transactions. `probes-ref` holds the probe transactions. Use separate prepared transactions for the flood and probes. After a connection drops, the load sender can resend a transaction whose reply is missing. The [probe budget](plans.md#load) sets how many probes to reserve. If the probes run out, the load stops.
+A `<load>` takes two `PreparedTx` lists, inline or as an `Artifact`. `source-ref` holds the flood transactions. `probes-ref` holds the probe transactions. Use separate prepared transactions for the flood and probes. The [probe budget](plans.md#load) sets how many probes to reserve. If the probes run out, the load stops.
 
 With `state-check` and `state-ref`, PolkaMeter calls the named operation on a sample of finalized flood transactions. The operation gets `target` (the WebSocket endpoint), `state`, `hashes` and `at`. `hashes` and `at` are lowercase hex without `0x`. It returns `checked`, `missing` and `detail`.
 
@@ -133,7 +133,7 @@ polkameter-plugin-sdk = { version = "0.3", features = ["observers"] }
 ```
 
 <!-- v0.3.0: remove after release -->
-> **Warning:** crates.io has 0.2.0 only. Until v0.3.0 is released, use `polkameter-plugin-sdk = { git = "https://github.com/agustinustheo/polkameter", rev = "12952a99aa3e2ff6ab160e11a3158fc87fdadf72", features = ["observers"] }`.
+> **Warning:** crates.io has 0.2.0 only. Until v0.3.0 is released, use `polkameter-plugin-sdk = { git = "https://github.com/agustinustheo/polkameter", rev = "259400a67647d9f662506e3b7469a0d565d7c676", features = ["observers"] }`.
 
 The default features give the plugin protocol: `Plugin`, `serve`, the manifest types, `Artifact` and `PreparedTx`. The default build does not depend on subxt, so it builds faster.
 

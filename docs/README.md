@@ -25,6 +25,6 @@ Run the full plan, `examples/plugin-workflow.polkameter.xml`, from a checkout of
 polkameter run examples/plugin-workflow.polkameter.xml --output target/runs
 ```
 
-Plugins are programs that supply the steps that depend on your runtime, such as building a transaction. The [substrate plugin](substrate-plugin.md) covers chains with the standard `System` and `Balances` pallets. For other runtimes, you [write a plugin](writing-a-plugin.md).
+Plugins are programs that supply the steps that depend on your runtime, such as building a transaction. The [substrate plugin](substrate-plugin.md#limits) covers compatible runtimes with the standard `System` and `Balances` pallets. For other runtimes, you [write a plugin](writing-a-plugin.md).
 
 New here? Start with [Getting started](getting-started.md). It needs no chain. Then [stress-test a local dev chain](dev-chain.md) and [run it in CI](ci.md).

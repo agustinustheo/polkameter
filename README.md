@@ -38,9 +38,9 @@ A finished load test gives a verdict: `PASS`, `WARN`, `FAIL` or `INCONCLUSIVE`. 
 ## Highlights
 
 - Built for CI. Every run has a documented exit code. The GitHub Action fails the job on `FAIL` or `INCONCLUSIVE`, uploads the run's reports and puts `summary.md` in the job summary.
-- No plugin code for standard runtimes. The [substrate plugin](https://agustinustheodorus.com/polkameter/substrate-plugin.html) signs remarks and transfers for runtimes with the standard `System` and `Balances` pallets. `polkameter init --rpc <endpoint>` writes a starter plan.
+- No plugin code for standard runtimes. The [substrate plugin](https://agustinustheodorus.com/polkameter/substrate-plugin.html#limits) signs remarks and transfers for compatible runtimes. `polkameter init --rpc <endpoint>` writes a starter plan.
 - Finds the limit. It increases the rate in steps to find the first test limit the chain exceeds, then checks how fast the chain recovers.
-- Transaction loss accounting. Each sent flood transaction gets one final status, such as finalized, refused or lost. A transaction the chain silently dropped shows up as lost.
+- Transaction loss accounting. Each sent flood transaction gets one final status, such as finalized, refused or lost. PolkaMeter reports loss only when finalized-chain and ready-pool evidence is sufficient.
 - Reports CI can read: `junit.xml` for test reports, `summary.md` and `summary.json`, and `samples.jtl` in the CSV format of JMeter, a popular load-testing tool. Secrets stay out of plans, and PolkaMeter [redacts](https://agustinustheodorus.com/polkameter/results.html#redaction) them from its reports and logs.
 
 ## Install
@@ -120,7 +120,7 @@ The generated plan ramps from 10 to 50 transactions per second, so a dev chain p
 
 The action installs the CLI, your plugins and credentials, runs the plan and uploads the run's reports. Save this as `.github/workflows/load-test.yml`:
 
-<!-- v0.3.0: remove after release (change @v0.2.0 to @v0) -->
+<!-- v0.3.0: remove after release (change the action ref below to @v0) -->
 ```yaml
 name: load-test
 on: workflow_dispatch
@@ -131,7 +131,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - id: load
-        uses: agustinustheo/polkameter@v0.2.0
+        uses: agustinustheo/polkameter@259400a67647d9f662506e3b7469a0d565d7c676
         with:
           plan: <plan>
           plugins: plugins/<plugin-binary>

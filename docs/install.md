@@ -9,7 +9,7 @@ The script, binstall, the container and the archives need the v0.3.0 release. Un
 
 ```sh
 cargo install --locked --git https://github.com/agustinustheo/polkameter \
-  --rev 12952a99aa3e2ff6ab160e11a3158fc87fdadf72 polkameter polkameter-substrate-plugin
+  --rev 259400a67647d9f662506e3b7469a0d565d7c676 polkameter polkameter-substrate-plugin
 polkameter --version
 ```
 

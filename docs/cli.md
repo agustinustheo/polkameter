@@ -2,8 +2,6 @@
 
 `polkameter` checks and runs plans, rebuilds reports, manages plugins and serves a remote agent. Use `polkameter COMMAND --help` for a command's options and examples. `polkameter --version` prints the installed version. For error messages, see [Troubleshooting](troubleshooting.md).
 
-Commands that take a `PLAN` read a plan file of at most 2 MiB. They also read a pipe, such as `/dev/stdin` or `<(envsubst < plan.tmpl)`.
-
 ## init
 
 Writes a load plan for the [substrate plugin](substrate-plugin.md) from a live chain. It checks that the runtime has the calls the plan needs and measures the block time. [Generate a plan](substrate-plugin.md#generate-a-plan) shows the result.
@@ -78,7 +76,7 @@ By default, the [verdict](reading-results.md#did-it-pass) of a stress-mode load 
 PolkaMeter: verdict INCONCLUSIVE: required checks with no result: no silent loss; exit 1 because of --fail-on-inconclusive (the checks are in summary.md)
 ```
 
-A smoke-mode run exits `1` on a monitor problem or a required check with no result, whatever these flags say. `execution.json` keeps the reason line as [`exit_reason`](results.md#executionjson). With `--remote`, the agent applies both flags, and the client prints the reason as `PolkaMeter: remote run: <reason>`. A failed remote run prints `PolkaMeter: remote run failed: <reason> (details in <run directory>/execution.json on the agent)`.
+In smoke mode, a monitor problem or a required check with no result exits `1`, whatever these flags say. Other verdict failures still follow the flags. `execution.json` keeps the reason line as [`exit_reason`](results.md#executionjson). With `--remote`, the agent applies both flags.
 
 ### Stop a run
 
@@ -142,7 +140,7 @@ polkameter plugin install target/debug/polkameter-example-plugin
 ```
 
 ```text
-Installed plugin example 0.1.0 (6 operations) from ~/polkameter/target/debug/polkameter-example-plugin
+Installed plugin example 0.1.0 (7 operations) from ~/polkameter/target/debug/polkameter-example-plugin
 ```
 
 A credential profile maps a plan's credential name to an environment variable on the run host. The registry stores the variable's name, not its value. PolkaMeter reads the variable when a run starts. An unmapped profile, or an unset or empty variable, makes `preflight` and `run` exit `3`.
@@ -163,8 +161,6 @@ polkameter plugin list
       "blake2": "2167d642faa16293c70c23a1aa10faef6b570aad31f24184d40d41727614e789",
       ...
 ```
-
-Several `plugin` commands can run at once, for example in parallel CI steps. Each one locks the registry, so no change is lost.
 
 ## agent serve
 
@@ -232,4 +228,4 @@ Every line has `event` and `schemaVersion`. `schemaVersion` is `1`. It changes o
 
 Keys that PolkaMeter adds are camelCase. `outcome` keeps the snake_case keys of [execution.json](results.md#executionjson). The plugin manifests keep the plugin protocol's keys, such as `read_only`.
 
-Remote runs do not stream the agent's events. They print `artifact-written`, and a failed local JUnit download can also print a `warning`. Load runs also print `stop:`, `loss check:` and `smoke:` lines and the summary to standard error. Argument errors, such as an unknown flag, print as text and exit `2` before any JSON. A closed standard output, as with `| head -1`, ends the output but not the command. Any other output error, such as a full disk, prints `PolkaMeter: cannot write to standard output: <error>` once. A command that would exit `0` then exits `1`.
+Remote runs do not stream the agent's events. They print `artifact-written`, and a failed local JUnit download can also print a `warning`. Load runs also print `stop:`, `loss check:` and `smoke:` lines and the summary to standard error. Argument errors, such as an unknown flag, print as text and exit `2` before any JSON.

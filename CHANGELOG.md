@@ -6,7 +6,7 @@ User-visible changes in each release. The GitHub release notes list every merged
 
 ### Highlights
 
-- The substrate plugin, `polkameter-substrate-plugin`, loads chains with the standard `System` and `Balances` pallets without plugin code. It also needs compatible sr25519 account and signature types and supported transaction extensions; see [its limits](docs/substrate-plugin.md#limits). It funds signers derived from one seed, sends remark or transfer transactions and checks the chain's state after the run. The release archives, the install script, the container and the action include it. It isn't on crates.io.
+- The substrate plugin, `polkameter-substrate-plugin`, loads chains with the standard `System` and `Balances` pallets without plugin code. See [its limits](docs/substrate-plugin.md#limits). It funds signers derived from one seed, sends remark or transfer transactions and checks the chain's state after the run. The release archives, the install script, the container and the action include it. It isn't on crates.io.
 - `polkameter init --rpc <endpoint>` writes a load plan for the substrate plugin from a live chain.
 - `scripts/dev-chain.sh start|stop` runs a pinned, checksummed dev chain for local and CI load tests.
 - You can install the CLI with `install.sh`, `cargo binstall`, the `ghcr.io/agustinustheo/polkameter` container or the release archives for Linux, macOS and Windows.
@@ -38,9 +38,9 @@ User-visible changes in each release. The GitHub release notes list every merged
 - A flood sized exactly to the plan ends on the rate cap, not on budget used up.
 - If the state check gives no result, the loss check can't pass and the verdict can't be `PASS`.
 - Redaction now also covers load-test records, plugin `stderr.log` as it's written, endpoint URL secrets and JSON-escaped forms of a credential. See [Redaction](docs/results.md#redaction).
-- Preflight checks every declared credential. It passes a credential to a read-only preflight operation only when that step references it.
+- Preflight checks every declared credential.
 - `validate` checks built-in `core.` operations and their inputs. Plan and run errors name the file, line and column.
-- Plans must be UTF-8. PolkaMeter also accepts a US-ASCII or ISO-8859-1 declaration when the whole plan is ASCII. Other XML declaration attributes, such as `standalone`, are ignored.
+- Plans must be UTF-8. The [plan reference](docs/plans.md#validation-rules) gives the accepted XML declarations.
 
 ### Fixed
 

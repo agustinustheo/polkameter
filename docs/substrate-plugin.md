@@ -38,7 +38,7 @@ The plan below funds 16 flood signers and one signer per probe from the seed acc
 
 ## Install
 
-The install script, the release archives and the container install `polkameter-substrate-plugin` next to `polkameter`. `cargo install polkameter` does not. [Install](install.md) covers each method, including a source build before the v0.3.0 release. Then register the plugin:
+The install script, the release archives and the container install `polkameter-substrate-plugin` next to `polkameter`. `cargo install polkameter` does not. [Install](install.md) covers each method. <!-- v0.3.0: remove after release -->Until v0.3.0 is released, use [the source build](install.md#before-v030-is-released). Then register the plugin:
 
 ```sh
 polkameter plugin install "$(command -v polkameter-substrate-plugin)"
@@ -55,7 +55,7 @@ polkameter plugin credential substrate-dev POLKAMETER_SUBSTRATE_SEED
 export POLKAMETER_SUBSTRATE_SEED='//Alice'
 ```
 
-The plugin derives `flood-signers` accounts for the flood, then `probe-signers` accounts for the probes. It appends an index to `derivation` for each account. By default, each probe has its own signer, up to 1000 signers. So a probe the chain drops never holds back the next one. With the defaults and 33 probes, the flood signers are `<seed>//polkameter//0` to `<seed>//polkameter//15` and the probe signers `<seed>//polkameter//16` to `<seed>//polkameter//48`. The two sets never share an account.
+The plugin derives `flood-signers` accounts for the flood, then `probe-signers` accounts for the probes. It appends an index to `derivation` for each account. By default, each probe has its own signer, up to 1000 signers. So a probe the chain drops never holds back the next one. The two sets never share an account.
 
 Use the same signer settings in the funding and prepare steps: `seed`, `derivation`, `flood-signers`, `probe-signers` and `probes`. Otherwise, the plugin can prepare transactions for unfunded accounts.
 
@@ -96,11 +96,11 @@ Tops up every flood and probe signer to a spendable balance of `amount` from the
 
 It returns `funded`, `skipped` (signers that could already spend `amount`), `accounts` and the funding `transactions`.
 
-Before it sends, the step checks the funder's balance. If fee estimation fails, it warns and does the balance check without the fees. After the transfers are final, it checks that every signer can spend `amount`. Running it again only tops up what is missing. A short funder fails with `Nothing was sent`, and a failed transfer fails with `funding failed`.
+Running it again only tops up what is missing. Insufficient funder balance fails the step with `Nothing was sent`, and a failed transfer fails with `funding failed`.
 
 ### prepare-remarks
 
-Signs the flood and the probes as `System.remark` transactions. Each payload is unique to the run, the lane and the index. Use its outputs as the load's `source-ref`, `probes-ref` and `state-ref`.
+Signs the flood and the probes as `System.remark` transactions. Each payload is unique to its run, transaction list (flood or probes) and index. Use its outputs as the load's `source-ref`, `probes-ref` and `state-ref`.
 
 | Input | Type | Required | Default | Limits | Meaning |
 | --- | --- | --- | --- | --- | --- |
@@ -144,17 +144,7 @@ It returns `checked`, `missing` and `detail`. `detail` names up to five missing 
 
 ## Generate a plan
 
-`polkameter init` connects to a chain, checks that it has the calls the plugin needs, measures its block time and writes a plan for the substrate plugin. `polkameter init --help` lists its options.
-
-```sh
-polkameter init --rpc ws://127.0.0.1:9944 --output plans/load.polkameter.xml
-```
-
-```text
-Wrote plans/load.polkameter.xml for Custom (parachain-template-runtime 1, 6 s blocks). Next: polkameter validate plans/load.polkameter.xml
-```
-
-The plan ramps from 10 to 50 transactions per second and funds each signer with 1000 tokens. Set rates your test needs. Set the funding amount high enough for each signer's transfers and fees. The plan's `mortality` covers twice the blocks the run spans. Its `expected-seconds` is the run's length after the prepare step. If you lengthen the ramp or the recovery, raise `expected-seconds`. If `init` cannot reach the chain, it exits `3`.
+[`polkameter init`](cli.md#init) writes a plan for the substrate plugin. The plan ramps from 10 to 50 transactions per second and funds each signer with 1000 tokens. Its `mortality` covers twice the blocks the run spans. Its `expected-seconds` is the run's length after the prepare step. If you lengthen the ramp or the recovery, raise `expected-seconds`. [Stress-test a local dev chain](dev-chain.md) walks through it.
 
 ## Limits
 

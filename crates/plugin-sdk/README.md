@@ -13,7 +13,7 @@ polkameter-plugin-sdk = { version = "0.3", features = ["observers"] }     # chai
 The `chain` feature reads runtime metadata and signs transactions for supported account types and transaction extensions. The `observers` feature records metrics and returns check results. It turns on `chain` too. Without features, the crate does not depend on subxt.
 
 <!-- v0.3.0: remove after release -->
-> **Unreleased:** crates.io has 0.2.0 only. Until v0.3.0 is released, use `polkameter-plugin-sdk = { git = "https://github.com/agustinustheo/polkameter", rev = "12952a99aa3e2ff6ab160e11a3158fc87fdadf72" }` and add the features you need.
+> **Unreleased:** crates.io has 0.2.0 only. Until v0.3.0 is released, use `polkameter-plugin-sdk = { git = "https://github.com/agustinustheo/polkameter", rev = "259400a67647d9f662506e3b7469a0d565d7c676" }` and add the features you need.
 
 `examples/hello.rs` is a complete plugin with one operation. The [API documentation](https://docs.rs/polkameter-plugin-sdk/0.3) lists every item. The [substrate plugin](https://github.com/agustinustheo/polkameter/tree/main/plugins/substrate) is built on the `chain` feature.
 

@@ -46,7 +46,7 @@ Remote run completed. Artifacts: .../run-1792254490330-1974-2
 
 Run files stay on the agent. Use `--junit PATH` to download a local copy of `junit.xml`, or copy the run directory yourself. You can also run `polkameter report <run-dir>` on the agent host.
 
-If the client can't reach the agent for 60 seconds, it asks the agent to stop the run and exits `1`. It does the same when the run lasts longer than the plan's `timeout-ms`, plus its teardown step timeouts, plus one minute.
+If the client can't reach the agent for 60 seconds, it asks the agent to stop the run and exits `1`. It does the same when the run lasts longer than the plan's `timeout-ms`, plus each teardown step's timeout and a 10-second restart allowance per step, plus one minute.
 
 ## Stop a run
 

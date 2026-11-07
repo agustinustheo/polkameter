@@ -69,7 +69,7 @@ The next example adds targets, credentials, a load test, monitors and thresholds
 </polkameter-plan>
 ```
 
-`prepare` runs in setup, so the load can read its outputs `flood`, `probes` and `expected`. `<thresholds>` changes two stop rules. The others keep their defaults.
+`prepare` runs in setup, so the load can read its outputs `flood`, `probes` and `expected`. `<thresholds>` changes the inclusion and latency limits; exceeding them records a breaking point without stopping the load.
 
 In the tables below, the Default column gives the default value, `required`, or the rule that makes the attribute required. An ID uses ASCII letters, digits, `-` and `_`. A reference is a value from [References](#references).
 
@@ -89,7 +89,7 @@ Children, in any order: `plugins`, `targets`, `credentials`, `preflight`, `setup
 | `mode` | string | `stress` | `stress` or `smoke` | See below |
 | `timeout-ms` | integer | `3600000` | above 0 | The run deadline. See below |
 
-Stress mode records monitor problems and continues unless a stop rule ends the load. Smoke mode stops the load on a monitor problem. In smoke mode, monitor problems and required checks without a result make the run exit `1`, whatever the [verdict flags](cli.md#run).
+Stress mode records monitor problems and continues unless a stop rule ends the load. Smoke mode stops the load on a monitor problem and has [stricter exit rules](cli.md#run).
 
 `timeout-ms` limits plugin startup and the test phases, including load checks and summary generation. Teardown and the final artifact writing run outside that deadline. A run that reaches it ends as `failed` and exits `1`, or `3` if it was still in preflight. See [exit codes](cli.md#exit-codes).
 
@@ -215,7 +215,8 @@ If a node does not have a required metric, the run stops before setup. If no nod
 
 ### thresholds
 
-Changes the stop rules of the load test. Each value replaces its default. The run writes the effective values to `summary.json` under `rules`. [Stop rules and thresholds](results.md#stop-rules-and-thresholds) explains each rule.
+Sets the limits for breaking points, load stops, recovery and finality. Each value replaces its default. The run writes the effective values to `summary.json` under `rules`. [Stop rules and thresholds](results.md#stop-rules-and-thresholds) explains each rule.
+
 | Attribute | Type | Default | Limits | Governs |
 | --- | --- | --- | --- | --- |
 | `min-included-ratio` | number | `0.9` | above 0, at most 1 | Share of a step's transactions that must be included |

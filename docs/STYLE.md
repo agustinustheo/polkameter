@@ -1,45 +1,71 @@
 # Writing the PolkaMeter docs
 
-Write for someone who knows neither JMeter nor load testing. Lead with the result or action. Use US spelling.
-
-Choose one purpose: tutorial, task guide, reference or explanation. Keep one topic per paragraph. Link to background when a task needs it.
+Write for someone who knows neither JMeter nor load testing. Lead with the result or action. Use US spelling. Give each page one purpose: tutorial, task guide, reference or explanation.
 
 ## Voice
 
-Tutorials and explanations should sound like Theo: direct, short and conversational. Address the reader as "you." Use contractions. Use "I" only for an explanation or decision Theo owns.
+Tutorials and explanations sound like Theo: direct, short and conversational. Address the reader as "you" and use contractions. Use "I" only for a decision Theo owns. Reference pages are terse and exact. Avoid marketing claims, decorative bold labels, meta introductions, stacked hedges and recap lists.
 
-"Just," "please" and "let's" are allowed when useful in tutorials. Do not use them to dismiss difficulty. Avoid marketing claims, decorative bold labels, meta introductions, stacked hedges and recap lists.
+For definitions and instructions, give each sentence one topic. Aim for at most 20 words in instructions and 25 in descriptions. Use active voice. Define unfamiliar terms at first use, and use one term for one meaning: load test, rate step, flood transactions, probe transaction, baseline, finality, verdict, breaking point, max sustained rate, recovery.
 
-Reference pages should be terse and exact.
+Keep verdict separate from exit code, and accepted, included and finalized separate. Missing evidence does not establish loss. p95 is inclusion latency. Quote flags, fields and printed labels exactly. Never invent output.
 
-## Hard concepts
+Show small, copyable commands. State the working directory and mark placeholders. Keep warnings beside the action they concern. Do not document the desktop app.
 
-Use Simplified Technical English principles for technical definitions and instructions:
+## One owner per fact
 
-- Give each sentence one topic.
-- Aim for at most 20 words in instructions and 25 in descriptions.
-- Use active voice and imperative instructions.
-- Keep articles. Avoid noun clusters and unnecessary phrasal verbs.
-- Use one term for one meaning. Define unfamiliar terms at first use.
+Each fact has one owner page. Other pages link to it in one sentence.
 
-Use these terms consistently: load test, stress test, rate step, ramp, flood transactions, probe transaction, baseline, finality, verdict, breaking point, max sustained rate and recovery.
+| Concept | Owner |
+| --- | --- |
+| Smoke mode | `cli.md#run` |
+| Redaction | `results.md#redaction` |
+| Loss accounting and the state check | `results.md#loss-accounting` |
+| Verdict | `reading-results.md#did-it-pass` |
+| Reconnects and node sampling | `how-it-works.md#why-a-dropped-connection-is-not-a-chain-failure`, `how-it-works.md#node-cpu-and-memory` |
+| Exit codes | `cli.md#exit-codes` |
+| Credentials | `cli.md#plugin` |
 
-Keep verdict separate from exit code. Keep accepted, included and finalized separate. Preserve loss statuses: `finalized`, `in_pool`, `refused`, `lost`, `unverified`, `unknown`. Missing evidence does not establish loss. Define p95 as inclusion latency, not an average or finality time. Explain the extra failure rules of smoke mode.
+Use `--help` for flags, `action.yml` for action inputs and rustdoc for SDK symbols. Do not copy their tables.
 
-Use credential profile for the environment-variable mapping. State redaction coverage and exclusions. Explain that plugins are trusted executables and exchange one JSON message per line.
+## Troubleshooting
 
-Preserve exact flags, fields and printed labels when quoting output.
+One entry per cause. The heading is the message as the CLI prints it, without the `PolkaMeter:` prefix. Add no entry when the message names its fix or another page owns the cause.
 
-## Keep it small
+## Releases
 
-Each fact has one owner page. Link instead of repeating it. Definitions replace jargon; they do not require new sections.
+Document released behavior. Keep unreleased changes in CHANGELOG. A page has at most one pre-release note, marked `<!-- vX.Y.Z: remove after release -->`. A note about installing the CLI links to `install.md#before-v030-is-released`.
 
-Use `--help` for flags and rustdoc for SDK symbols. Do not duplicate their tables. Use tables only for comparisons or genuine reference data.
+## Page budgets
 
-Show small, copyable commands. State the working directory and mark placeholders. Show real output only where it helps the reader check a result. Never invent output.
+Replace or remove prose before you add more. A page over budget needs a cut elsewhere or a reason in the PR.
 
-Add troubleshooting entries only for problems users encounter whose messages do not already explain the fix. Use the message as the CLI prints it, without the `PolkaMeter:` prefix, as the heading.
-
-Document released behavior. Keep unreleased changes in CHANGELOG. Preserve the currently working install path until release cleanup, and mark each pre-release note with `<!-- vX.Y.Z: remove after release -->`.
-
-Keep warnings beside the relevant action. Do not document the desktop app. Follow the agreed page budgets; replace or remove prose before adding more.
+| Page | Budget (words) |
+| --- | ---: |
+| `docs/README.md` | 190 |
+| `docs/getting-started.md` | 550 |
+| `docs/dev-chain.md` | 1,640 |
+| `docs/writing-a-plugin.md` | 940 |
+| `docs/install.md` | 640 |
+| `docs/load-test.md` | 590 |
+| `docs/reading-results.md` | 1,450 |
+| `docs/ci.md` | 1,490 |
+| `docs/remote-runs.md` | 790 |
+| `docs/ai-assistants.md` | 330 |
+| `docs/troubleshooting.md` | 2,170 |
+| `docs/plans.md` | 3,050 |
+| `docs/cli.md` | 2,050 |
+| `docs/results.md` | 3,310 |
+| `docs/plugins.md` | 1,700 |
+| `docs/substrate-plugin.md` | 1,930 |
+| `docs/how-it-works.md` | 1,160 |
+| `docs/STYLE.md` | 580 |
+| `docs/SUMMARY.md` | 90 |
+| `docs/llms.txt` | 380 |
+| `README.md` | 1,100 |
+| `crates/plugin-sdk/README.md` | 240 |
+| `skills/polkameter/SKILL.md` | 970 |
+| `skills/polkameter/checklist.md` | 490 |
+| `AGENTS.md` | 870 |
+| `CHANGELOG.md` | 730 |
+| `RELEASING.md` | 810 |
