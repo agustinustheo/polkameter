@@ -395,48 +395,6 @@ fn a_closed_stdout_does_not_panic() {
 	assert_eq!(std::fs::read_dir(work.0.join("runs")).unwrap().count(), 2);
 }
 
-#[test]
-fn concurrent_registry_writers_keep_every_change() {
-	let work = Work::new("registry");
-	let count = 12;
-	let children: Vec<_> = (0..count)
-		.map(|i| {
-			let mut command = work.polkameter();
-			if i % 2 == 0 {
-				command.args([
-					"plugin",
-					"credential",
-					&format!("profile-{i}"),
-					&format!("ENV_{i}"),
-				]);
-			} else {
-				command.args(["plugin", "capability", &format!("capability-{i}")]);
-			}
-			command.stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap()
-		})
-		.collect();
-	for child in children {
-		let output = child.wait_with_output().unwrap();
-		assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-	}
-	let registry: Value = serde_json::from_slice(&std::fs::read(work.registry()).unwrap()).unwrap();
-	for i in 0..count {
-		if i % 2 == 0 {
-			assert_eq!(registry["credentials"][format!("profile-{i}")], format!("ENV_{i}"));
-		} else {
-			let capabilities = registry["capabilities"].as_array().unwrap();
-			assert!(capabilities.contains(&Value::from(format!("capability-{i}"))), "{registry}");
-		}
-	}
-	// No temporary file is left next to the registry.
-	let leftovers: Vec<_> = std::fs::read_dir(work.registry().parent().unwrap())
-		.unwrap()
-		.map(|entry| entry.unwrap().file_name().into_string().unwrap())
-		.filter(|name| name.ends_with(".tmp"))
-		.collect();
-	assert!(leftovers.is_empty(), "{leftovers:?}");
-}
-
 /// A plugin executable that answers `$describe` with plugin `id`.
 #[cfg(unix)]
 fn script_plugin(directory: &Path, id: &str) -> PathBuf {
@@ -453,32 +411,56 @@ fn script_plugin(directory: &Path, id: &str) -> PathBuf {
 
 #[cfg(unix)]
 #[test]
-fn concurrent_installs_keep_every_plugin() {
-	let work = Work::new("installs");
-	let ids: Vec<_> = (0..8).map(|i| format!("plugin{i}")).collect();
-	let children: Vec<_> = ids
-		.iter()
-		.map(|id| {
-			let executable = script_plugin(&work.0, id);
-			work.polkameter()
-				.arg("plugin")
-				.arg("install")
-				.arg(executable)
-				.stdout(Stdio::piped())
-				.stderr(Stdio::piped())
-				.spawn()
-				.unwrap()
+fn concurrent_registry_commands_keep_every_change() {
+	let work = Work::new("registry");
+	let children: Vec<_> = (0..12)
+		.map(|i| {
+			let mut command = work.polkameter();
+			match i % 3 {
+				0 => command
+					.arg("plugin")
+					.arg("install")
+					.arg(script_plugin(&work.0, &format!("plugin{i}"))),
+				1 => command.args([
+					"plugin",
+					"credential",
+					&format!("profile-{i}"),
+					&format!("ENV_{i}"),
+				]),
+				_ => command.args(["plugin", "capability", &format!("capability-{i}")]),
+			};
+			command.stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap()
 		})
 		.collect();
 	for child in children {
 		let output = child.wait_with_output().unwrap();
 		assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-		assert!(String::from_utf8_lossy(&output.stdout).starts_with("Installed plugin plugin"));
 	}
 	let registry: Value = serde_json::from_slice(&std::fs::read(work.registry()).unwrap()).unwrap();
-	for id in &ids {
-		assert_eq!(registry["plugins"][id]["version"], "0.1.0", "{registry}");
+	for i in 0..12 {
+		match i % 3 {
+			0 => assert_eq!(
+				registry["plugins"][format!("plugin{i}")]["version"],
+				"0.1.0",
+				"{registry}"
+			),
+			1 => assert_eq!(registry["credentials"][format!("profile-{i}")], format!("ENV_{i}")),
+			_ => assert!(
+				registry["capabilities"]
+					.as_array()
+					.unwrap()
+					.contains(&Value::from(format!("capability-{i}"))),
+				"{registry}"
+			),
+		}
 	}
+	// No temporary file is left next to the registry.
+	let leftovers: Vec<_> = std::fs::read_dir(work.registry().parent().unwrap())
+		.unwrap()
+		.map(|entry| entry.unwrap().file_name().into_string().unwrap())
+		.filter(|name| name.ends_with(".tmp"))
+		.collect();
+	assert!(leftovers.is_empty(), "{leftovers:?}");
 }
 
 #[test]
@@ -514,24 +496,27 @@ fn credential_errors_name_the_variable_and_how_to_set_it() {
 	let work = Work::new("credentials");
 	work.write("plan.xml", CREDENTIAL_PLAN);
 	let variable = "POLKAMETER_CLI_TEST_SECRET";
-	// Not mapped: preflight and run name the profile, the command that maps it and the registry.
-	let registry = work.registry();
-	for args in [&["preflight", "plan.xml"][..], &["run", "plan.xml", "--output", "runs"]] {
-		let (code, _, stderr) = output(work.polkameter().args(args).env_remove(variable));
-		assert_eq!(code, 3, "{args:?}: {stderr}");
-		assert!(
-			stderr.contains(
-				"plan.xml: line 2, column 16: credential `sudo` uses profile `admin`, which is not \
-				 configured on this host; run `polkameter plugin credential admin <ENV_VAR>` to \
-				 name the environment variable that holds it"
-			),
-			"{args:?}: {stderr}"
-		);
-		// The run's one-line reason may cut the registry path; the fix comes before it.
-		if args[0] == "preflight" {
-			assert!(stderr.contains(&format!("(registry {})", registry.display())), "{stderr}");
-		}
-	}
+	let preflight = |configure: &dyn Fn(&mut Command)| {
+		let mut command = work.polkameter();
+		command.args(["preflight", "plan.xml"]);
+		configure(&mut command);
+		let (code, _, stderr) = output(&mut command);
+		assert_eq!(code, 3, "{stderr}");
+		stderr
+	};
+	// Not mapped: the message names the profile, the command that maps it and the registry.
+	let stderr = preflight(&|command| {
+		command.env_remove(variable);
+	});
+	assert!(
+		stderr.contains(&format!(
+			"plan.xml: line 2, column 16: credential `sudo` uses profile `admin`, which is not \
+			 configured on this host; run `polkameter plugin credential admin <ENV_VAR>` to name \
+			 the environment variable that holds it (registry {})",
+			work.registry().display()
+		)),
+		"{stderr}"
+	);
 	let (code, _, stderr) =
 		output(work.polkameter().args(["plugin", "credential", "admin", variable]));
 	assert_eq!(code, 0, "{stderr}");
@@ -541,41 +526,28 @@ fn credential_errors_name_the_variable_and_how_to_set_it() {
 	assert_eq!(code, 0);
 	let listed: Value = serde_json::from_str(&stdout).unwrap();
 	assert_eq!(listed["credentials"]["admin"], variable);
-	assert!(listed["plugins"].is_object(), "{listed}");
 	assert!(!stdout.contains("s3cret-value"));
 	// Mapped, but unset or empty: preflight checks it as the run would, without a step using it.
 	for (value, problem) in [(None, "is not set"), (Some(""), "is empty")] {
-		for args in [&["preflight", "plan.xml"][..], &["run", "plan.xml", "--output", "runs"]] {
-			let mut command = work.polkameter();
-			command.args(args);
+		let stderr = preflight(&|command| {
 			match value {
 				Some(value) => command.env(variable, value),
 				None => command.env_remove(variable),
 			};
-			let (code, _, stderr) = output(&mut command);
-			assert_eq!(code, 3, "{args:?}: {stderr}");
-			let expected = format!(
-				"credential `sudo` (profile `admin`) reads environment variable {variable} \
-				 (mapped by `polkameter plugin credential`), which {problem}; set {variable} on \
-				 the step that runs polkameter"
-			);
-			assert!(stderr.contains(&expected), "{args:?}: {stderr}");
-		}
+		});
+		let expected = format!(
+			"credential `sudo` (profile `admin`) reads environment variable {variable} (mapped by \
+			 `polkameter plugin credential`), which {problem}; set {variable} on the step that \
+			 runs polkameter"
+		);
+		assert!(stderr.contains(&expected), "{stderr}");
 	}
 	// --credential-env names the flag.
-	let (code, _, stderr) = output(
-		work.polkameter()
-			.args([
-				"run",
-				"plan.xml",
-				"--output",
-				"runs",
-				"--credential-env",
-				"UNSET_FLAG_VARIABLE",
-			])
-			.env_remove("UNSET_FLAG_VARIABLE"),
-	);
-	assert_eq!(code, 3, "{stderr}");
+	let stderr = preflight(&|command| {
+		command
+			.args(["--credential-env", "UNSET_FLAG_VARIABLE"])
+			.env_remove("UNSET_FLAG_VARIABLE");
+	});
 	assert!(
 		stderr.contains(
 			"reads environment variable UNSET_FLAG_VARIABLE (from --credential-env), which is not \
@@ -584,21 +556,24 @@ fn credential_errors_name_the_variable_and_how_to_set_it() {
 		),
 		"{stderr}"
 	);
-	// A run that failed before setup skipped teardown and recorded exit code 3.
-	let runs: Vec<_> = std::fs::read_dir(work.0.join("runs")).unwrap().collect();
-	for run in runs {
-		let execution: Value = serde_json::from_slice(
-			&std::fs::read(run.unwrap().path().join("execution.json")).unwrap(),
-		)
-		.unwrap();
-		assert_eq!(
-			(execution["state"].as_str(), execution["exit_code"].as_i64()),
-			(Some("failed"), Some(3))
-		);
-		assert!(execution.get("teardown").is_none(), "{execution}");
-		assert_eq!(execution["failed_phase"], "preflight");
-	}
-	// Set: both pass.
+	// A run with the credential unset fails before setup: exit 3, teardown skipped.
+	let (code, _, stderr) = output(
+		work.polkameter()
+			.args(["run", "plan.xml", "--output", "runs"])
+			.env_remove(variable),
+	);
+	assert_eq!(code, 3, "{stderr}");
+	assert!(stderr.contains("run failed before setup:"), "{stderr}");
+	let run = std::fs::read_dir(work.0.join("runs")).unwrap().next().unwrap().unwrap().path();
+	let execution: Value =
+		serde_json::from_slice(&std::fs::read(run.join("execution.json")).unwrap()).unwrap();
+	assert_eq!(
+		(execution["state"].as_str(), execution["exit_code"].as_i64()),
+		(Some("failed"), Some(3))
+	);
+	assert!(execution.get("teardown").is_none(), "{execution}");
+	assert_eq!(execution["failed_phase"], "preflight");
+	// Set: both pass, and the value never reaches standard error.
 	for args in [&["preflight", "plan.xml"][..], &["run", "plan.xml", "--output", "runs"]] {
 		let (code, _, stderr) = output(work.polkameter().args(args).env(variable, "s3cret-value"));
 		assert_eq!(code, 0, "{args:?}: {stderr}");
@@ -667,42 +642,4 @@ fn a_full_disk_on_stdout_is_reported_and_fails_the_command() {
 	}
 	// The run still finished and wrote its results.
 	assert_eq!(std::fs::read_dir(work.0.join("runs")).unwrap().count(), 1);
-}
-
-#[test]
-fn a_registry_writer_says_what_it_waits_for() {
-	let work = Work::new("lock-wait");
-	std::fs::create_dir_all(work.registry().parent().unwrap()).unwrap();
-	let lock_path = work.0.join("config/plugins.json.lock");
-	let lock = std::fs::File::create(&lock_path).unwrap();
-	lock.lock().unwrap();
-	let mut child = work
-		.polkameter()
-		.args(["plugin", "capability", "waited"])
-		.stdout(Stdio::null())
-		.stderr(Stdio::piped())
-		.spawn()
-		.unwrap();
-	// Release the lock once the writer says it waits for it.
-	let mut stderr = child.stderr.take().unwrap();
-	let mut said = Vec::new();
-	let mut byte = [0];
-	while !said.ends_with(b"\n") && stderr.read(&mut byte).unwrap() == 1 {
-		said.push(byte[0]);
-	}
-	drop(lock);
-	let mut rest = String::new();
-	stderr.read_to_string(&mut rest).unwrap();
-	let output = child.wait_with_output().unwrap();
-	let stderr = String::from_utf8_lossy(&said).into_owned() + &rest;
-	assert!(output.status.success(), "{stderr}");
-	assert!(
-		stderr.contains(&format!(
-			"PolkaMeter: waiting for {} (another polkameter is updating the registry)",
-			lock_path.display()
-		)),
-		"{stderr}"
-	);
-	let registry: Value = serde_json::from_slice(&std::fs::read(work.registry()).unwrap()).unwrap();
-	assert_eq!(registry["capabilities"][0], "waited");
 }

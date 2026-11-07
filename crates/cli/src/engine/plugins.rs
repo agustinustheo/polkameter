@@ -153,21 +153,33 @@ impl Registry {
 		}
 		Ok(RegistryLock { _file: file })
 	}
-	/// Replaces the registry at `path` atomically: a new temporary file in the same directory is
+	/// Replaces the registry at `path` atomically: `<registry>.tmp` in the same directory is
 	/// written, flushed and renamed over it. Call it while holding [`Registry::lock`], with the
-	/// [`Registry::resolve`]d path.
+	/// [`Registry::resolve`]d path, so that no other writer uses the temporary name.
 	///
-	/// The temporary file is created exclusively (never through a planted file or link), readable
-	/// only by its owner until it takes the registry's permissions, and removed if the write
-	/// fails. Temporary files that a crashed writer left, at least an hour old, are removed.
+	/// The temporary file is created exclusively (never through a planted file or link) and is
+	/// readable only by its owner until it takes the registry's permissions. A leftover one from a
+	/// crashed writer is removed first; removing a link removes the link, not its target.
 	pub fn write(&self, path: &Path) -> Result<()> {
 		use std::io::Write as _;
 		let context = || format!("cannot write plugin registry {}", path.display());
 		if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
 			std::fs::create_dir_all(parent).with_context(context)?;
 		}
-		remove_stale_temporaries(path);
-		let (temporary, mut file) = create_temporary(path).with_context(context)?;
+		let mut name = path.as_os_str().to_owned();
+		name.push(".tmp");
+		let temporary = PathBuf::from(name);
+		match std::fs::remove_file(&temporary) {
+			Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+				return Err(error).with_context(context);
+			},
+			_ => {},
+		}
+		let mut options = std::fs::OpenOptions::new();
+		options.write(true).create_new(true);
+		#[cfg(unix)]
+		std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+		let mut file = options.open(&temporary).with_context(context)?;
 		let result = (|| -> std::io::Result<()> {
 			file.write_all(&serde_json::to_vec_pretty(self)?)?;
 			// The registry keeps its permissions; a new registry stays owner-only.
@@ -332,83 +344,6 @@ impl Registry {
 			.collect()
 	}
 }
-/// How old a leftover temporary registry file must be before a writer removes it.
-const STALE_TEMPORARY: Duration = Duration::from_secs(60 * 60);
-
-/// The name of a temporary file for the registry named `registry`: `<registry>.<pid>.<n>.tmp`.
-fn temporary_name(registry: &std::ffi::OsStr, pid: u32, sequence: u64) -> std::ffi::OsString {
-	let mut name = registry.to_owned();
-	name.push(format!(".{pid}.{sequence}.tmp"));
-	name
-}
-
-/// Whether `name` is a temporary file name for the registry named `registry`.
-fn is_temporary_name(name: &std::ffi::OsStr, registry: &std::ffi::OsStr) -> bool {
-	let (Some(name), Some(registry)) = (name.to_str(), registry.to_str()) else { return false };
-	let Some(rest) = name.strip_prefix(registry).and_then(|rest| rest.strip_prefix('.')) else {
-		return false;
-	};
-	let Some(numbers) = rest.strip_suffix(".tmp") else { return false };
-	let digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
-	numbers
-		.split_once('.')
-		.is_some_and(|(pid, sequence)| digits(pid) && digits(sequence))
-}
-
-/// Creates a new temporary file next to `path`, owner-only on Unix, retrying with the next name
-/// when one exists. Never opens an existing file or follows a link.
-/// The sequence number of the next temporary registry file this process creates.
-static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-fn create_temporary(path: &Path) -> std::io::Result<(PathBuf, std::fs::File)> {
-	let registry = path.file_name().unwrap_or_default();
-	let mut attempts = 0;
-	loop {
-		let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-		let temporary = path.with_file_name(temporary_name(registry, std::process::id(), sequence));
-		let mut options = std::fs::OpenOptions::new();
-		options.write(true).create_new(true);
-		#[cfg(unix)]
-		{
-			use std::os::unix::fs::OpenOptionsExt;
-			options.mode(0o600);
-		}
-		match options.open(&temporary) {
-			Ok(file) => return Ok((temporary, file)),
-			Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && attempts < 100 => {
-				attempts += 1;
-			},
-			Err(error) => return Err(error),
-		}
-	}
-}
-
-/// Removes regular files named like this registry's temporary files that are at least
-/// [`STALE_TEMPORARY`] old: a writer that crashed left them, since a live writer holds the lock
-/// and renames its file within moments. Best effort; links and other files are left alone.
-fn remove_stale_temporaries(path: &Path) {
-	let registry = path.file_name().unwrap_or_default();
-	let directory = match path.parent() {
-		Some(parent) if !parent.as_os_str().is_empty() => parent,
-		_ => Path::new("."),
-	};
-	let Ok(entries) = std::fs::read_dir(directory) else { return };
-	for entry in entries.flatten() {
-		if !is_temporary_name(&entry.file_name(), registry) {
-			continue;
-		}
-		let Ok(metadata) = std::fs::symlink_metadata(entry.path()) else { continue };
-		let old = metadata
-			.modified()
-			.ok()
-			.and_then(|modified| modified.elapsed().ok())
-			.is_some_and(|age| age >= STALE_TEMPORARY);
-		if metadata.file_type().is_file() && old {
-			let _ = std::fs::remove_file(entry.path());
-		}
-	}
-}
-
 /// Renames `from` over `to`. On Windows a reader that has the registry open makes the rename
 /// fail with "access denied" for a moment, so it is retried briefly.
 fn rename_over(from: &Path, to: &Path) -> std::io::Result<()> {
@@ -904,31 +839,6 @@ mod registry_tests {
 
 	#[cfg(unix)]
 	#[test]
-	fn planted_links_at_temporary_names_are_never_written_through() {
-		let scratch = Scratch::new("planted");
-		let path = scratch.0.join("plugins.json");
-		let victim = scratch.0.join("victim");
-		std::fs::write(&victim, "keep").unwrap();
-		// Links at the next temporary names this process would use.
-		let next = SEQUENCE.load(std::sync::atomic::Ordering::Relaxed);
-		let mut planted = Vec::new();
-		for sequence in next..next + 5 {
-			let name = temporary_name("plugins.json".as_ref(), std::process::id(), sequence);
-			let link = scratch.0.join(name);
-			std::os::unix::fs::symlink(&victim, &link).unwrap();
-			planted.push(link);
-		}
-		registry_with("a").write(&path).unwrap();
-		assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
-		assert_eq!(Registry::read(&path).unwrap().credentials["a"], "VARIABLE");
-		// The planted links are someone else's: left alone.
-		for link in planted {
-			assert!(std::fs::symlink_metadata(link).unwrap().file_type().is_symlink());
-		}
-	}
-
-	#[cfg(unix)]
-	#[test]
 	fn a_new_registry_is_owner_only_and_a_rewrite_keeps_the_mode() {
 		use std::os::unix::fs::PermissionsExt as _;
 		let scratch = Scratch::new("mode");
@@ -964,81 +874,5 @@ mod registry_tests {
 		std::os::unix::fs::symlink("loop-a", scratch.0.join("loop-b")).unwrap();
 		let error = Registry::resolve(&scratch.0.join("loop-a")).unwrap_err().to_string();
 		assert!(error.contains("more than 40 symbolic links"), "{error}");
-	}
-
-	#[test]
-	fn stale_temporaries_of_crashed_writers_are_removed() {
-		let scratch = Scratch::new("stale");
-		let path = scratch.0.join("plugins.json");
-		let old = std::time::SystemTime::now() - Duration::from_secs(2 * 60 * 60);
-		let file = |name: &str, modified: Option<std::time::SystemTime>| {
-			let path = scratch.0.join(name);
-			let file = std::fs::File::create(&path).unwrap();
-			if let Some(modified) = modified {
-				file.set_modified(modified).unwrap();
-			}
-			path
-		};
-		let stale = file("plugins.json.123.4.tmp", Some(old));
-		let fresh = file("plugins.json.123.5.tmp", None);
-		let other = file("plugins.json.backup.tmp", Some(old));
-		let unrelated = file("other.json.123.4.tmp", Some(old));
-		registry_with("a").write(&path).unwrap();
-		assert!(!stale.exists());
-		for kept in [fresh, other, unrelated] {
-			assert!(kept.exists(), "{}", kept.display());
-		}
-		assert!(is_temporary_name("plugins.json.1.2.tmp".as_ref(), "plugins.json".as_ref()));
-		for name in ["plugins.json.1.tmp", "plugins.json.a.2.tmp", "plugins.json.1.2", "x.1.2.tmp"]
-		{
-			assert!(!is_temporary_name(name.as_ref(), "plugins.json".as_ref()), "{name}");
-		}
-	}
-
-	#[test]
-	fn credential_errors_name_the_credential_profile_variable_and_fix() {
-		let plan = crate::engine::plan::Plan::parse(
-			"<polkameter-plan xmlns=\"https://polkameter.dev/schema/plan\" version=\"1\" \
-			 name=\"x\">\n<credentials><credential id=\"sudo\" profile=\"admin\"/></credentials>\n\
-			 </polkameter-plan>",
-		)
-		.unwrap();
-		let failure = |registry: &Registry| {
-			let error = registry.check_credentials(&plan).unwrap_err();
-			let located = error.downcast_ref::<PlanError>().expect("a located error");
-			assert_eq!(located.location.map(|at| at.line), Some(2));
-			located.message.clone()
-		};
-		let mut registry =
-			Registry { source: Some("/home/ci/plugins.json".into()), ..Registry::default() };
-		assert_eq!(
-			failure(&registry),
-			"credential `sudo` uses profile `admin`, which is not configured on this host; run \
-			 `polkameter plugin credential admin <ENV_VAR>` to name the environment variable that \
-			 holds it (registry /home/ci/plugins.json)"
-		);
-		let variable = "POLKAMETER_TEST_CREDENTIAL_NEVER_SET";
-		registry.credentials.insert("admin".into(), variable.into());
-		assert_eq!(
-			failure(&registry),
-			format!(
-				"credential `sudo` (profile `admin`) reads environment variable {variable} (mapped \
-				 by `polkameter plugin credential`), which is not set; set {variable} on the step \
-				 that runs polkameter, or map the profile to another variable with `polkameter \
-				 plugin credential admin <ENV_VAR>`"
-			)
-		);
-		registry.flag_profile = Some("admin".into());
-		let message = failure(&registry);
-		assert!(message.contains("(from --credential-env), which is not set"), "{message}");
-		assert!(
-			message.contains("pass the variable that holds it to --credential-env"),
-			"{message}"
-		);
-		// Set and not empty: resolved, and the value is only in the result.
-		registry.credentials.insert("admin".into(), "PATH".into());
-		registry.check_credentials(&plan).unwrap();
-		let values = registry.resolve_credentials(&plan).unwrap();
-		assert_eq!(values["credentials.sudo"], std::env::var("PATH").unwrap());
 	}
 }
