@@ -1,63 +1,45 @@
 # Writing the PolkaMeter docs
 
-Rules for anyone editing `docs/`. This file is not part of the book.
+Write for someone who knows neither JMeter nor load testing. Lead with the result or action. Use US spelling.
 
-## Page types
+Choose one purpose: tutorial, task guide, reference or explanation. Keep one topic per paragraph. Link to background when a task needs it.
 
-Every page is one of four kinds. Do not mix them on one page.
+## Voice
 
-| Kind | Reader is… | The page… | Example |
-| --- | --- | --- | --- |
-| Tutorial | learning | walks one path from nothing to a result, with output at every step | Getting started |
-| How-to | working | solves one task, steps only, no background | Run PolkaMeter in CI |
-| Reference | looking something up | lists every element, flag or file in a fixed format | Plan reference |
-| Explanation | trying to understand | explains why and how it works | How a run works |
+Tutorials and explanations should sound like Theo: direct, short and conversational. Address the reader as "you." Use contractions. Use "I" only for an explanation or decision Theo owns.
 
-A tutorial links to the reference for details. A reference page links to the explanation for reasons. Neither repeats the other.
+"Just," "please" and "let's" are allowed when useful in tutorials. Do not use them to dismiss difficulty. Avoid marketing claims, decorative bold labels, meta introductions, stacked hedges and recap lists.
 
-## Rules
+Reference pages should be terse and exact.
 
-1. **Result first, internals later.** Say what the reader gets before how PolkaMeter does it.
-   - Before: "`plugin install` reads the plugin's manifest and records its version and the BLAKE2 hash of its executable. Reinstall after rebuilding the plugin, because the hash changes."
-   - After: "Install the plugin again after you rebuild it. PolkaMeter refuses to run a plugin whose file has changed since it was installed."
+## Hard concepts
 
-2. **Show real output after every command.** Paste it from an actual run. Cut long output with `...`. Never invent output.
+Use Simplified Technical English principles for technical definitions and instructions:
 
-3. **Example before reference.** Start a reference page with a complete, small example, then the tables.
+- Give each sentence one topic.
+- Aim for at most 20 words in instructions and 25 in descriptions.
+- Use active voice and imperative instructions.
+- Keep articles. Avoid noun clusters and unnecessary phrasal verbs.
+- Use one term for one meaning. Define unfamiliar terms at first use.
 
-4. **One idea per paragraph, two to four sentences.** If a sentence has more than one comma-separated list, split it.
+Use these terms consistently: load test, stress test, rate step, ramp, flood transactions, probe transaction, baseline, finality, verdict, breaking point, max sustained rate and recovery.
 
-5. **Define a term the first time you use it, or link to where it is defined.** Do not use internal names (`run.probeBudget`, `QueueSource`) in user pages.
-   - Before: "For a plan without a `<load>`, it holds:"
-   - After: "A plan without a load test (no `<load>` element) writes these files:"
+Keep verdict separate from exit code. Keep accepted, included and finalized separate. Preserve loss statuses: `finalized`, `in_pool`, `refused`, `lost`, `unverified`, `unknown`. Missing evidence does not establish loss. Define p95 as inclusion latency, not an average or finality time. Explain the extra failure rules of smoke mode.
 
-6. **Say it directly.** Prefer "if X, Y" to passive constructions. Address the reader as "you".
-   - Before: "A step that submits a transaction and times out may already have been accepted."
-   - After: "If a submit step times out, the chain may still have accepted the transaction. PolkaMeter does not retry it."
+Use credential profile for the environment-variable mapping. State redaction coverage and exclusions. Explain that plugins are trusted executables and exchange one JSON message per line.
 
-7. **Plain words over notation.**
-   - Before: "The statuses partition `sent`."
-   - After: "Every sent transaction ends with exactly one status."
+Preserve exact flags, fields and printed labels when quoting output.
 
-8. **Cut sentences that announce or summarise.** No "This page explains…", "In summary…", "Note that…", "It is important to…". No "simply", "just", "easy", "please", "let's".
+## Keep it small
 
-9. **Warnings sit next to the step they apply to,** as a blockquote starting with **Warning:**. Use at most one per section. A page that describes an unreleased version may open with one blockquote starting with **Unreleased:**. Put `<!-- vX.Y.Z: remove after release -->` on the line before it, and before every other clause that stops being true at that release.
+Each fact has one owner page. Link instead of repeating it. Definitions replace jargon; they do not require new sections.
 
-10. **Commands are copyable.** Say which directory to run them from. Use `polkameter` as the command name; the tutorial shows once how to put it on `PATH`. Mark placeholders as `<like-this>`.
+Use `--help` for flags and rustdoc for SDK symbols. Do not duplicate their tables. Use tables only for comparisons or genuine reference data.
 
-11. **Same words everywhere:** PolkaMeter (not Polkameter), plan, run, run directory, plugin, step, load test, transaction, verdict. Headings in sentence case.
+Show small, copyable commands. State the working directory and mark placeholders. Show real output only where it helps the reader check a result. Never invent output.
 
-12. **Only document what exists.** Do not document the desktop app. Do not describe planned features. From 0.3.0, two crates are published: the CLI (`polkameter`) and the plugin SDK (`polkameter-plugin-sdk`, with the `chain` and `observers` features). 0.2.0 also published six library crates that 0.3.0 merged into these two; document them only in the migration section of the plugin reference. Install the CLI with `cargo install --locked polkameter`. Do not claim a crate is on crates.io until its release is published there.
+Add troubleshooting entries only for problems users encounter whose messages do not already explain the fix. Use the message as the CLI prints it, without the `PolkaMeter:` prefix, as the heading.
 
-## Troubleshooting entries
+Document released behavior. Keep unreleased changes in CHANGELOG. Preserve the currently working install path until release cleanup, and mark each pre-release note with `<!-- vX.Y.Z: remove after release -->`.
 
-Each heading on the troubleshooting page is a message exactly as the CLI prints it, without the `PolkaMeter:` prefix. Write a placeholder as `\<like-this>` for a name and `…` for text that varies, and escape `<` as `\<` outside backticks. When you change a message in the code, change its heading in the same pull request, and update every link to the heading's anchor. Under the heading, paste the real output, then **Cause:** and **Fix:**.
-
-## Reference entry format
-
-For each element, command or file:
-
-- one line saying what it is for;
-- a table with name, type, required, default, limits;
-- one or two short examples;
-- a link to the explanation, if there is one.
+Keep warnings beside the relevant action. Do not document the desktop app. Follow the agreed page budgets; replace or remove prose before adding more.
