@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/agustinustheo/polkameter/main/assets/logo-dark.svg">
-    <img src="https://raw.githubusercontent.com/agustinustheo/polkameter/main/assets/logo.svg" alt="PolkaMeter: a gauge whose needle points into the red zone" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/agustinustheo/polkameter/main/docs/logo-dark.png">
+    <img src="https://raw.githubusercontent.com/agustinustheo/polkameter/main/docs/logo-light.png" alt="PolkaMeter" width="380">
   </picture>
 </p>
 

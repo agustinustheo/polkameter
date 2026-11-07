@@ -62,7 +62,7 @@ Replace or remove prose before you add more. A page over budget needs a cut else
 | `docs/STYLE.md` | 580 |
 | `docs/SUMMARY.md` | 90 |
 | `docs/llms.txt` | 380 |
-| `README.md` | 1,100 |
+| `README.md` | 1,090 |
 | `crates/plugin-sdk/README.md` | 240 |
 | `skills/polkameter/SKILL.md` | 970 |
 | `skills/polkameter/checklist.md` | 490 |
