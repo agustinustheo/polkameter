@@ -121,7 +121,6 @@ Preflight passed.
 
 ```console
 $ polkameter run plans/load.polkameter.xml --output runs
-PolkaMeter warning: credentials.seed is shorter than 8 bytes: wherever its value appears in the run's files and logs it is redacted, also inside unrelated text
 Phase: preflight
 Phase: setup
 Phase: measurement
