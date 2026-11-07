@@ -1,8 +1,8 @@
 # PolkaMeter
 
-PolkaMeter runs load and stress tests against blockchains built with the Polkadot SDK, the way JMeter runs tests against web services. You describe the work in an XML plan, and PolkaMeter runs it and writes the results to a run directory.
+PolkaMeter sends transactions to a Polkadot SDK chain at rates you choose. It measures how the chain responds and reports where it stops keeping up.
 
-The example plan, trimmed to its core:
+A plan lists the steps and the checks. Here's the example plan, trimmed:
 
 ```xml
 <polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="Plugin data flow">
@@ -19,24 +19,12 @@ The example plan, trimmed to its core:
 </polkameter-plan>
 ```
 
-Run the full example, `examples/plugin-workflow.polkameter.xml`, with:
+Run the full plan, `examples/plugin-workflow.polkameter.xml`, from a checkout of the repository. Each run writes its reports to a new run directory:
 
 ```sh
 polkameter run examples/plugin-workflow.polkameter.xml --output target/runs
 ```
 
-A run needs three things from you:
+Plugins are programs that supply the steps that depend on your runtime, such as building a transaction. The [substrate plugin](substrate-plugin.md#limits) covers compatible runtimes with the standard `System` and `Balances` pallets. For other runtimes, you [write a plugin](writing-a-plugin.md).
 
-- **A plan**: the XML file. It lists the steps, how many users run them and what to check.
-- **Plugins**: programs that supply the steps that depend on the runtime, such as building a transaction. The example plan uses the repository's example plugin. <!-- v0.3.0: remove after release -->From v0.3.0, the [substrate plugin](substrate-plugin.md) loads runtimes with the standard `System` and `Balances` pallets, sr25519-compatible accounts and signatures, and transaction extensions supported by subxt. For other runtimes, you write a plugin; [Writing a plugin](writing-a-plugin.md) shows how.
-- **A chain**: the network under test. The example needs none.
-
-## Where to start
-
-- [Install](install.md): install the CLI with Cargo. <!-- v0.3.0: remove after release -->From v0.3.0, also download it or use the container.
-- [Getting started](getting-started.md): install the CLI, install the example plugin and run the example plan.
-- [Run a load test](load-test.md): run a plan against a chain and read the verdict.
-- [Stress-test a local dev chain](dev-chain.md): start a dev chain, load it with the substrate plugin and find its limit.
-- [Run PolkaMeter in CI](ci.md): run plans in a pipeline and check the exit code.
-- [Plans](plans.md): every element of the plan XML.
-- [Use PolkaMeter with an AI assistant](ai-assistants.md): install the skill and ask for a load test.
+New here? Start with [Getting started](getting-started.md). It needs no chain. Then [stress-test a local dev chain](dev-chain.md) and [run it in CI](ci.md).

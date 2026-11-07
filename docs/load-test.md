@@ -1,14 +1,18 @@
 # Run a load test
 
-A load test sends transactions to a chain at rates you set, then measures how the chain copes. A plugin builds the transactions for your runtime. You need three things:
+A load test sends transactions to a chain at rates you choose. PolkaMeter measures how many reach a block and how long they take.
+
+It uses two kinds of transactions. Flood transactions are the main load, sent at the target rate. Probe transactions are sent before and after the flood to time how long one transaction takes to reach a block.
+
+You need three things:
 
 1. A node that answers on `ws://` or `wss://`.
-2. A plugin that prepares the flood and probe transactions for your runtime. For a chain with the standard `System` and `Balances` pallets, use the [substrate plugin](substrate-plugin.md); [Stress-test a local dev chain](dev-chain.md) runs it end to end. For other calls, [Writing a plugin](writing-a-plugin.md) shows how to write one. The People plugin in [paritytech/polkadot-pop-e2e](https://github.com/paritytech/polkadot-pop-e2e/tree/feat/th-polkameter-stress-flood/stress) is a real example.
+2. A plugin that prepares the flood and probe transactions for your runtime. If your chain has the standard `System` and `Balances` pallets, try the [substrate plugin](substrate-plugin.md). [Stress-test a local dev chain](dev-chain.md) runs it end to end. For other calls, see [Writing a plugin](writing-a-plugin.md).
 3. A plan with a `<targets>` element and a `<load>` element.
 
 ## Write a plan
 
-This skeleton validates, but it cannot run yet. `my-runtime` and its operation names are placeholders. Your plugin defines the real names and outputs.
+Replace `my-runtime` and the operation names with your plugin's names before you run this plan:
 
 ```xml
 <polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="First load" timeout-ms="3600000">
@@ -24,28 +28,20 @@ This skeleton validates, but it cannot run yet. `my-runtime` and its operation n
 </polkameter-plan>
 ```
 
-- `<targets>` names the node. The `<load target>` must refer to a target with a `ws://` or `wss://` endpoint.
-- `source-ref` is the flood, and `probes-ref` is the list reserved for baseline and recovery probes. The two lists must not overlap.
-- `ref="run.probeBudget"` asks the plugin for exactly as many probes as the run needs. With this plan's defaults that is 165. If the plugin prepares fewer, the run fails with `insufficient probe reserve`. [Probe budget](plans.md#load) gives the formula.
-- A probe is a single transaction sent alone, before the load and after it, to time how long one transaction takes to land. Each signed transaction can be submitted only once, so a probe taken from the flood could already be sent or included. Prepare probes as their own transactions, for example from a separate signer.
-- `block-interval-seconds` is the block time you expect. Preflight compares it with the chain.
+- `source-ref` points to the flood. `probes-ref` points to the probes.
+- `ref="run.probeBudget"` asks the plugin for exactly as many probes as the run needs. Here that's 165. The [plan reference](plans.md#load) gives the formula.
+- Use separate prepared transactions for the flood and the probes. Don't take probes from the flood list, for example use a separate signer.
+- `block-interval-seconds` is the block time you expect. Preflight checks it against the chain.
 
-> **Warning:** A load test sends many transactions to its endpoint. Point a plan only at a node you run, or one you have permission to load. Do not point a plan at a public network without permission from its operators.
+Each `<rate>` is a rate step: a fixed target rate, in transactions per second (tx/s), for a set time. You can also use one `<ramp>` instead. `<ramp start="2" step="2" steps="3" seconds="30"/>` runs at 2, 4 and 6 tx/s. Use rate steps for rates you pick, and a ramp to find where the chain starts to struggle. See [rate](plans.md#rate) and [ramp](plans.md#ramp).
 
-Choose one load profile:
-
-| Profile | Element | How the rate changes |
-| --- | --- | --- |
-| Rate steps | One or more `<rate tx-per-second="N" seconds="S"/>` | Each step runs at a fixed rate for `seconds` |
-| Ramp | One `<ramp start="N" step="N" steps="N" seconds="S"/>` | Starts at `start` and adds `step` (or multiplies by `growth`) at each of `steps` steps. `<ramp start="2" step="2" steps="3" seconds="30"/>` runs at 2, 4 and 6 tx/s |
-
-Rate steps and a ramp cannot be combined. Use rate steps for rates you choose, and a ramp to find where the chain starts to struggle. The [plan reference](plans.md#load) lists every attribute and limit.
+> **Warning:** A load test sends many transactions to its endpoint. Point a plan only at a node you run, or one you have permission to load.
 
 ## Run the test
 
 Run these from the directory that holds your plan. Put `polkameter` on your `PATH` first, as [Getting started](getting-started.md) shows.
 
-1. Install your plugin. Install it again after every rebuild, because PolkaMeter refuses a plugin whose file has changed since install.
+1. Install your plugin. Install it again after every rebuild, or PolkaMeter refuses it.
 
    ```sh
    polkameter plugin install <path-to-plugin-executable>
@@ -53,14 +49,14 @@ Run these from the directory that holds your plan. Put `polkameter` on your `PAT
    polkameter plugin credential <profile> <ENV_VAR>            # only if the plan has credentials
    ```
 
-2. Check the plan and the chain.
+2. Check the plan, then the plugins and the chain.
 
    ```sh
    polkameter validate plan.polkameter.xml
    polkameter preflight plan.polkameter.xml
    ```
 
-   `validate` checks the plan's structure without starting plugins or contacting the chain. `preflight` starts the plugins, checks each operation against its manifest and the evidence the plugins need, and runs the plan's read-only preflight steps. For a load plan, it also measures the block interval. If the measured value differs from `block-interval-seconds` by more than 25%, preflight stops before setup and exits with code `3`.
+   `validate` doesn't start plugins or contact the chain. `preflight` does both. It checks each operation against the plugin's manifest, runs the plan's read-only preflight steps and measures the block time. Nothing is sent to the chain yet. See [preflight](cli.md#preflight).
 
 3. Run the plan.
 
@@ -68,47 +64,8 @@ Run these from the directory that holds your plan. Put `polkameter` on your `PAT
    polkameter run plan.polkameter.xml --output runs
    ```
 
-   The run creates one directory inside `runs/`, named `run-<milliseconds>-<pid>-<sequence>`. Ctrl-C stops a local run. The run tears down, writes what it has and exits with code `130` (`143` for SIGTERM).
+   The run creates one directory inside `runs/`, named `run-<milliseconds>-<pid>-<sequence>`. Ctrl-C stops the run cleanly. See [Stop a run](cli.md#stop-a-run).
 
-Open `summary.md` in the run directory first. [Read the results](reading-results.md) explains it. [Run directory](results.md#the-run-directory) lists every file.
+Open `summary.md` in the run directory first. [Read the results](reading-results.md) explains it.
 
-## On a local Zombienet network
-
-`scripts/local-fork-run.sh` runs a plan on a fresh local Zombienet network. It starts the network from a TOML file, waits for blocks, installs your plugins and credentials, registers the plan's topology, runs the plan and stops the network. Run it from the repository root.
-
-Without arguments, the script prints its usage and exits with code `2`:
-
-```sh
-scripts/local-fork-run.sh
-```
-
-```text
-usage: scripts/local-fork-run.sh NETWORK_TOML PLAN [OUTPUT_DIR]
-```
-
-You need:
-
-- `bash` and `python3`. The script polls the nodes with `python3`.
-- A release build of the CLI: `cargo +1.93.0 build --release -p polkameter --bin polkameter`, or set `POLKAMETER` to another binary.
-- Built plugin executables for `POLKAMETER_PLUGINS`.
-- `zombie-cli` on `PATH`, or next to the binary named by `default_command` in the TOML.
-- The node binaries that your Zombienet TOML starts. For a Previewnet fork, `ppn fork toml <bundle> <out>` creates the TOML, as the script's header notes.
-- Free local ports for every `ws://` endpoint in the plan. The script refuses to start if one is in use.
-
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `POLKAMETER_PLUGINS` | none | Plugin executables to install, separated by spaces |
-| `POLKAMETER_CREDENTIALS` | none | Credential profiles as `profile=ENV_VAR`, separated by spaces. The variable must be exported in the shell that runs the script |
-| `POLKAMETER` | `target/release/polkameter` | The CLI to run |
-| `ZOMBIE_CLI` | `zombie-cli` next to the TOML's `default_command` binary, or on `PATH` | The `zombie-cli` binary |
-| `PPN_BIN_DIR` | The directory of the TOML's `default_command` binary | Where the Previewnet omni-node wrapper finds the collator |
-
-Example:
-
-```sh
-POLKAMETER_PLUGINS="target/release/my-runtime-plugin" \
-POLKAMETER_CREDENTIALS="my-profile=MY_SETUP_SURI" \
-scripts/local-fork-run.sh ~/previewnet/zombienet.toml plans/first-load.polkameter.xml target/local-runs/first
-```
-
-The plan's `ws://` ports must match the TOML. The script waits up to 15 minutes per endpoint for blocks. Results go to `<OUTPUT_DIR>/results`, the network's files to `<OUTPUT_DIR>/network`, and its log to `<OUTPUT_DIR>/network.log`. The script stops the network on exit and returns the run's exit code.
+To run a plan on a fresh local Zombienet network, use [`scripts/local-fork-run.sh`](https://github.com/agustinustheo/polkameter/blob/main/scripts/local-fork-run.sh). Its header lists what it needs.

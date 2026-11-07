@@ -1,9 +1,6 @@
-# Plugins and SDK
+# Plugin reference
 
-<!-- v0.3.0: remove after release -->
-> **Unreleased:** This page describes plugin SDK 0.3, which is not on crates.io yet. [The plugin SDK crate](#the-plugin-sdk-crate) shows the dependency line that works today. The protocol is the same in 0.2.0.
-
-A plugin is an executable that PolkaMeter starts for a run. Plans call its operations by name, and it replies over standard input and output. [Writing a plugin](writing-a-plugin.md) builds one.
+A plugin is a separate executable that supplies operations the plan can call. The plan calls the plugin's operations by name. PolkaMeter sends requests through standard input and reads replies from standard output. [Writing a plugin](writing-a-plugin.md) builds one.
 
 ## Example
 
@@ -22,110 +19,83 @@ A setup step calls `hello.greet`:
 
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `id` | string | required | The plugin's name in plans. Not empty or `core`. |
-| `version` | string | required | Must equal the plan's `<plugin>` `version`. |
-| `protocol` | integer | required | `1`. Must match the plan's `protocol`. |
-| `operations` | map of name to operation | required | The operations a plan can call. |
-| `requirements` | list | `[]` | Evidence checked before setup. |
+| `id` | string | required | The plugin's name in plans. Not empty or `core` |
+| `version` | string | required | Must equal the plan's `<plugin>` `version` |
+| `protocol` | integer | required | `1`. Must match the plan's `protocol` |
+| `operations` | map of name to operation | required | The operations a plan can call |
+| `requirements` | list | `[]` | Evidence checked before setup |
 
 Each operation has these fields:
 
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `description` | string | required | Shown by `plugin inspect`. |
-| `inputs` | map of field | required | Inputs the operation accepts. |
-| `outputs` | map of field | required | Outputs the operation must return. |
-| `read_only` | boolean | `false` | `true` if it changes nothing on a chain and submits nothing. Only these run in `<preflight>`. |
+| `description` | string | required | Shown by `plugin inspect` |
+| `inputs` | map of field | required | Inputs the operation accepts |
+| `outputs` | map of field | required | Outputs the operation must return |
+| `read_only` | boolean | `false` | `true` if it changes nothing on a chain and submits nothing. Only these run in `<preflight>` |
 
-Each input and output has a `schema` (required; see [Schemas](#schemas)) and `optional` (boolean, default `false`; `true` lets the field be absent).
+Each input and output has a `schema` and an `optional` flag. `optional` defaults to `false`.
 
 A requirement names evidence the host checks before setup:
 
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `kind` | string | required | `rpc`, `metric` or `capability`. |
-| `target` | string | required | `rpc`: target ID in the plan. `metric`: monitor role. Unused by `capability`. |
-| `name` | string | required | `rpc`: RPC method. `metric`: metric family. `capability`: capability name. |
-| `required` | boolean | required | Optional requirements are not checked. |
+| `kind` | string | required | `rpc`, `metric` or `capability` |
+| `target` | string | required | `rpc`: target ID in the plan. `metric`: monitor role. Unused by `capability` |
+| `name` | string | required | `rpc`: RPC method. `metric`: metric family. `capability`: capability name |
+| `required` | boolean | required | Optional requirements are not checked |
 
-`rpc` passes when the target node lists the method in `rpc_methods`, `metric` when every node of the role exposes the family, and `capability` when [`polkameter plugin capability`](cli.md#plugin) recorded the name. Other kinds fail when `required` is true. The CI script `scripts/verify-previewnet-requirements.py` allows only `metric` and `rpc` requirements, and the metric roles `collator`, `collator-relay` and `validator`.
+An `rpc` requirement passes when the target node lists the method in `rpc_methods`. A `metric` requirement passes when every node of the role exposes the family. A `capability` requirement passes when [`polkameter plugin capability`](cli.md#plugin) recorded the name.
 
 ### Schemas
 
 Each `schema` has a `type` key:
 
-| Type | Rust | Accepts |
-| --- | --- | --- |
-| `string` | `Schema::String` | JSON string. |
-| `number` | `Schema::Number` | JSON number. |
-| `integer` | `Schema::Integer` | JSON integer. |
-| `boolean` | `Schema::Boolean` | JSON boolean. |
-| `array` | `Schema::Array { items }` | Array whose items match `items`. |
-| `object` | `Schema::Object { fields }` | Declared fields. An unknown field fails, and a missing one fails unless `optional`. |
-| `json` | `Schema::Json` | Any value. |
+| Type | Accepts |
+| --- | --- |
+| `string` | JSON string |
+| `number` | JSON number |
+| `integer` | JSON integer |
+| `boolean` | JSON boolean |
+| `array` | Array whose items match `items` |
+| `object` | The declared `fields`. An unknown field fails. A missing field fails unless it is `optional` |
+| `json` | Any value |
 
-Inputs are checked before the call, outputs when the plugin replies. A mismatch becomes an error:
+The host checks inputs before the call and outputs when the plugin replies. A mismatch becomes an error:
 
 ```json
 {"protocol":1,"id":3,"result":null,"error":"value does not match String"}
 ```
 
-A plan passes each input with `value` or `ref="steps.ID.OUTPUT"`. [Plans](plans.md#input) has the rules.
-
-### Values between steps
-
-- `steps.ID.OUTPUT` must name an output the step's operation declares. A forward or unknown reference fails before setup.
-- Setup outputs are copied into every user and iteration. Workflow outputs cannot reach another user, iteration or workflow.
-- The host sets `run.id`, `run.directory` and the [probe budget](plans.md#load). `user.index` and `iteration.index` identify the current user and iteration.
+[References](plans.md#references) lists the values a step can pass between steps.
 
 ## Protocol
 
-PolkaMeter starts one process per plugin per run and keeps it until the run ends. Calls to one plugin are serialized; different plugins and workflows run concurrently. The `Context` (`run_id`, `artifact_dir`, `user`, `iteration`) sets `user` and `iteration` to `null` outside a workflow.
+The plugin protocol exchanges one JSON message per line over standard input and output. A request carries `operation`, `inputs` and `context`. The reply repeats the request `id` and contains exactly one of `result` or `error`.
 
-Messages are one line of JSON each. A request carries `operation`, `inputs` and `context`. The reply repeats `id` and holds exactly one of `result` or `error`.
+PolkaMeter starts one process per plugin per run and keeps it until the run ends. Users in a workflow can run concurrently. Workflows run in plan order, and calls to each plugin are serialized. The `Context` holds `run_id`, `artifact_dir`, `user` and `iteration`. `user` and `iteration` are `null` outside a workflow.
 
-`$describe` returns the manifest within 10 seconds. `$shutdown` returns `{}` and the plugin exits within 1 second, or the host kills it.
+`$describe` must return the manifest within 10 seconds. `$shutdown` returns `{}`. The plugin must then exit within 1 second, or the host kills it.
 
-- Each operation runs under its step's `timeout-ms` (default `60000`). Plugins reject protocol versions other than `1`.
-- A message is capped at 8 MiB, including a line with no newline. A reply over the cap fails, so return large lists as artifacts.
-- The host logs a `step-progress` event every five seconds per running step.
-- An `Artifact` holds a version, a file path and a BLAKE2 hash. The file must stay in the run directory, reads are capped at 256 MiB, and the hash is checked. Give artifacts unique names when an operation runs more than once.
-- Standard output carries replies only. Standard error goes to `plugins/<id>/stderr.log`, owner-only on Unix. The host [redacts](results.md#redaction) the run's credentials and endpoint keys from it as it is written, but not encoded forms of them. Never write credentials to it.
-- The host clears the environment and passes only `PATH`, `TMPDIR`, `TEMP`, `SYSTEMROOT`, `SSL_CERT_FILE` and `SSL_CERT_DIR`.
+- Each operation runs under its step's `timeout-ms`.
+- Keep each message within 8 MiB. Return an artifact reference for larger data.
+- An `Artifact` holds a version, a file path in the run directory and a BLAKE2 hash. The host checks the hash and reads at most 256 MiB. Give artifacts unique names when an operation runs more than once.
+- Standard output carries replies only. Standard error goes to `plugins/<id>/stderr.log`. The host [redacts](results.md#redaction) credentials from it as it is written. Never write credentials to it anyway.
+- The host clears the environment. It passes only `PATH`, `TMPDIR`, `TEMP`, `SYSTEMROOT`, `SSL_CERT_FILE` and `SSL_CERT_DIR`.
 
-An operation error (a reply with `error`) fails the step, but the plugin keeps running and serves later steps and teardown. A crash, a malformed reply, a cancellation or a timeout ends the plugin process, and later steps of that phase fail. Before each teardown step, the host starts an ended plugin again, after checking its installed checksum and manifest, and logs a `plugin-restarted` event. The host never retries an operation. Each plugin runs in its own process group (on Windows, its own process tree), so signals sent to PolkaMeter's group do not reach it, and when the host kills a plugin it also kills every process the plugin started. Deadlines include time waiting for the plugin's lock. Secret input values are kept out of host events and errors.
+An `error` reply fails the step, but the plugin keeps running. A crash, a malformed reply, a cancellation or a timeout ends the plugin process, and later steps of that phase fail. Before each teardown step, the host starts an ended plugin again and logs a `plugin-restarted` event. The host never retries an operation.
 
-> **Warning:** Plugins are trusted code and are not sandboxed, so review them as you would any code that handles your keys.
+When the host kills a plugin, it also kills every process the plugin started.
+
+> **Warning:** Plugins run as trusted code. They are not sandboxed. Review a plugin as you would any code that handles your keys.
 
 ## Registry
 
-The registry is a JSON file, `~/.config/polkameter/plugins.json` by default. Set `POLKAMETER_PLUGIN_REGISTRY` to use another path. It stores plugins, credential profiles, topology aliases and capabilities, and for a credential only the variable name.
+The registry is a JSON file, `~/.config/polkameter/plugins.json` by default. Set `POLKAMETER_PLUGIN_REGISTRY` to use another path. It stores plugins, credential profiles, topology aliases and capabilities. For a credential profile it stores only the variable name. [`polkameter plugin`](cli.md#plugin) manages it.
 
-| Command | Does |
-| --- | --- |
-| `polkameter plugin install EXECUTABLE` | Records the plugin's ID, version and executable hash. |
-| `polkameter plugin list` | Prints the installed plugins, the environment variable each credential profile reads (never its value), the topologies and the capabilities. |
-| `polkameter plugin inspect PLAN` | Checks operations against manifests. Prints manifests, requirements, targets and monitor requirements. |
-| `polkameter plugin credential PROFILE ENV` | Maps a plan's credential profile to a variable on this host. |
-| `polkameter plugin topology NAME PATH` | Registers a Zombienet `zombie.json` under an alias. |
-| `polkameter plugin capability NAME` | Records a capability the network provisioner supplies. |
+`plugin install` records the executable's hash. Install the plugin again after a rebuild.
 
-[CLI reference](cli.md#plugin) lists flags.
-
-A plan names a credential profile, never the secret. The host reads the mapped variable at run start, and fails the run if it is unset or empty. A plugin gets a value only as input `credentials.ID`, and only in steps that reference it.
-
-## Checksums
-
-`plugin install` records the executable's BLAKE2-256 hash. `plugin inspect`, `preflight` and `run` compare the file on disk with it. A mismatch stops the run, and the message says how to fix it:
-
-```text
-$ polkameter preflight hello.polkameter.xml
-PolkaMeter: plugin hello checksum mismatch: /work/hello changed after it was installed (BLAKE2 expected 67118f550d8d7677050bd6c904ec2d5a62f7684bb5c6698c13fc9c9d956ecccd, found 1c8d0e612d9a329e953be19f83a7faf49e39df990932099845f180f1c55d0285). If you rebuilt it, run `polkameter plugin install /work/hello` again
-```
-
-The command exits with code 3. A plan whose `<plugin version="…">` differs from the installed version fails with ``plugin hello version mismatch: the plan expects version 0.2.0, but version 0.1.0 is installed from /work/hello. Set version="0.1.0" in the plan's <plugin>, or install the matching build with `polkameter plugin install <path-to-executable>` ``.
-
-A `run` prints the same error as `PolkaMeter: run failed: <error> (details in …)`, writes it to `execution.json` and exits with `1`. Rebuilding changes the hash, so reinstall after every build. After start, the manifest must match the plan's `id`, `version` and `protocol`, or the run fails with ``plugin <id> answered $describe as <id> <version> (protocol <n>), but the plan expects …; run `polkameter plugin install <path>` again``.
+A plan names a credential profile, never the secret. The host reads the mapped variable at run start. The run fails if the variable is unset or empty. A plugin gets the value only as the input `credentials.ID`, and only in steps that reference it.
 
 ## PreparedTx and the load contract
 
@@ -133,32 +103,29 @@ A `PreparedTx` is one transaction a plugin prepared before the load:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `bytes` | hex string | The encoded transaction. `0x` is optional. |
-| `hash` | hex string | The BLAKE2-256 hash of the bytes. |
-| `metadata` | JSON | Anything the plugin needs later. Defaults to `null`. |
+| `bytes` | hex string | The encoded transaction. `0x` is optional |
+| `hash` | hex string | The BLAKE2-256 hash of the bytes |
+| `metadata` | JSON | Anything the plugin needs later. Defaults to `null` |
 
 `PreparedTx::new(bytes, metadata)` computes the hash. `decode()` refuses empty bytes and a hash that does not match.
 
-A `<load>` takes two `PreparedTx` lists, inline or as an `Artifact`: `source-ref` is the flood, and `probes-ref` holds the probes for baseline and recovery. The lists share no transaction, and each hash is sent at most once. The [probe budget](plans.md#load) sets how many probes to reserve, and exhausting the list is a stop reason. `<rate>` and `<ramp>` set the pace; [Plans](plans.md) covers `<thresholds>`.
+A `<load>` takes two `PreparedTx` lists, inline or as an `Artifact`. `source-ref` holds the flood transactions. `probes-ref` holds the probe transactions. Use separate prepared transactions for the flood and probes. The [probe budget](plans.md#load) sets how many probes to reserve. If the probes run out, the load stops.
 
-With `state-check` and `state-ref`, PolkaMeter calls the named operation on a sample of finalized transactions. The operation receives `target` (the target's WebSocket endpoint, such as `ws://127.0.0.1:9944`), `state`, `hashes` and `at`, where `hashes` and `at` are lowercase hex without `0x`. It returns `checked`, `missing` and `detail`.
+With `state-check` and `state-ref`, PolkaMeter calls the named operation on a sample of finalized flood transactions. The operation gets `target` (the WebSocket endpoint), `state`, `hashes` and `at`. `hashes` and `at` are lowercase hex without `0x`. It returns `checked`, `missing` and `detail`.
 
-`core.submit-prepared` waits for an RPC reply. `core.submit-setup` also waits for finalized inclusion, checks dispatch and Sudo results, and returns transaction hashes and the finalized block hash. After a submit times out, the transaction may still be accepted, so PolkaMeter never retries it.
-
-Each submitted transaction gets exactly one status in `transactions.jsonl`: `finalized`, `in_pool`, `refused`, `lost`, `unverified` or `unknown`. A transaction seen in a best block without verified finality is `unverified`. Missing pool or finality evidence never makes a transaction `lost`.
-
-Preflight measures the block interval before the load. If it differs from `block-interval-seconds` by more than 25%, the run stops before setup.
+[Loss accounting](results.md#loss-accounting) gives each sent flood transaction one final status. Funding transactions and probes are separate.
 
 ## Observers and checks
 
-- **Observer.** A setup step starts it; an evaluate step stops it. It writes `series.jsonl` (same records as `chain.jsonl`) and `metrics.json` to the plugin's directory. `metrics.json` lists `PluginMetric` values, each with `name`, `kind`, `help` and `buckets`. A plugin cannot redefine a built-in metric.
-- **Check.** An evaluate step whose operation declares a `checks` output contributes results. Each is an object with `outcome`, `check`, `status`, `detail`, and optional `numbers` and `optional`. `status` is `pass`, `warn`, `fail`, `info` or `no result`. Pass `run.directory` to the operation, and build `polkameter_plugin_sdk::observers::RunData` from `read_store` and `summary.json`. Smoke mode fails a check with no result unless it is `optional`.
+An observer records extra series during the load. A setup step starts it and an evaluate step stops it. It writes `series.jsonl` and `metrics.json` to the plugin's directory. `metrics.json` lists `PluginMetric` values. A plugin cannot redefine a built-in metric.
 
-Checks read the observer's series, labelled `job="plugin"` and `instance=<plugin id>`. Results go to `plugin-checks.json`. `polkameter report RUN_DIRECTORY` reproduces the summary offline.
+A check adds results to the report. Any evaluate step whose operation declares a `checks` output is a check. Each result has `outcome`, `check`, `status`, `detail`, and optional `numbers` and `optional`. `status` is `pass`, `warn`, `fail`, `info` or `no result`. To read the run's data, pass `run.directory` to the operation and build `RunData` from `read_store` and `summary.json`. In smoke mode, a check with no result fails unless it is `optional`.
+
+Checks read the observer's series with the labels `job="plugin"` and `instance=<plugin id>`. Results go to `plugin-checks.json`. `polkameter report RUN_DIRECTORY` rebuilds the summary offline.
 
 ## The plugin SDK crate
 
-A plugin depends on one crate, `polkameter-plugin-sdk` ([crates.io](https://crates.io/crates/polkameter-plugin-sdk), [API documentation for 0.3](https://docs.rs/polkameter-plugin-sdk/0.3)). Its default features give the protocol only. Turn on `chain` to read and submit to a chain, or `observers` to record series and write checks:
+A plugin depends on one crate, `polkameter-plugin-sdk` ([crates.io](https://crates.io/crates/polkameter-plugin-sdk), [API documentation](https://docs.rs/polkameter-plugin-sdk/0.3)).
 
 ```toml
 [dependencies]
@@ -166,39 +133,21 @@ polkameter-plugin-sdk = { version = "0.3", features = ["observers"] }
 ```
 
 <!-- v0.3.0: remove after release -->
-> **Warning:** Version 0.3 and its `chain` and `observers` features are available from v0.3.0. crates.io and docs.rs have 0.2.0 only. Until the release, depend on a commit of this repository:
->
-> ```toml
-> polkameter-plugin-sdk = { git = "https://github.com/agustinustheo/polkameter", rev = "58921b7d506f9987db68fc8084b2fb8f13649f94", features = ["observers"] }
-> ```
->
-> To read the API documentation, run `cargo doc -p polkameter-plugin-sdk --all-features --open` in a checkout.
+> **Warning:** crates.io has 0.2.0 only. Until v0.3.0 is released, use `polkameter-plugin-sdk = { git = "https://github.com/agustinustheo/polkameter", rev = "259400a67647d9f662506e3b7469a0d565d7c676", features = ["observers"] }`.
 
-`observers` turns on `chain` as well. Without features the crate does not depend on subxt, so a plugin that only prepares data builds faster.
+The default features give the plugin protocol: `Plugin`, `serve`, the manifest types, `Artifact` and `PreparedTx`. The default build does not depend on subxt, so it builds faster.
 
-| Feature | Module | Plugin API |
-| --- | --- | --- |
-| (default) | `polkameter_plugin_sdk` | `Plugin`, `serve`, `Operation`, `Schema`, `Field`, `Requirement`, `Manifest`, `Context`, `Request`, `Response`, `Artifact`, `PreparedTx`, `StateCheckInput`, `read_line`, `PROTOCOL`, `MAX_MESSAGE_BYTES`, `blake2_hex`, `strip_0x`. |
-| `chain` | `polkameter_plugin_sdk::chain` | `Client` (`connect`, `finalized`, `at`, `chain_info`, `check_extensions`, `call_data`, `sudo`, `nonce`, `validate`, `submit`; `LayoutChanged` from the extension check); `fetch(at, pallet, entry, keys)` (`()` keys for a plain entry), `entries`, `has_prefix`, `calls`, `runtime_call`; `events` with `Event` (`pallet`, `name`, `extrinsic`, `fields`), `failed_extrinsics`; `value::{field, nth, variant_name, as_u64, as_u128, as_bytes32}`; `AtBlock`, `ChainError`, `Fault`, `Refusal`; `Keypair`, `Value`, `DecodeAsType`, `ChainInfo`, `tx_hash`, `hex0x`; `scale_value_reexport`, `scale_decode_reexport`. Signing: `Client::tx_builder`, `TxBuilder` (`sign`, `sign_batch`, `mortal` (async: it reads the era's first block), `check_signing_types`, `dispatch_error`, `has_call`, `has_constant`, `call_data`, `block_number`), `Call`, `TxParams`, `Mortality`, `SignError`, `era_birth`, `era_period`, `check_signing_types`; `Client::query_fee`, `Client::recent_block_seconds`. Accounts: `Client::account`, `Client::spendable`, `Client::existential_deposit`, `account_at`, `AccountInfo` (`spendable`); `keypair`, `derive`, `derive_range`, `junctions`, `account_id`, `ss58`, `parse_account`, `KeyError`. |
-| `observers` | `polkameter_plugin_sdk::observers` | Recording: `ChainSeries` (`gauge`, `inc`, `observe`), `chain_series::channel`, `chain_series::run`; `walker::Walk` (`NAME`, `on_block`, optional `on_update` and `finish`), `walker::walk`; `MonitorError`. Files: `registry::Metric::new`, `registry::{Def, Kind, kind}`, `PluginMetric::from(&Def)`, `Problems`, `RunDir`, `read_store`, `summary::Summary`, `now_ms`, `Millis`, `num`, `to_fixed`, `FileError`; `Store`, `Series`, `Point` and `parse_sample_line` (the merged series `read_store` returns); `JsonlWriter` and `SeriesWriter` (raw-file writers). Checks: `RunData` (`new`, `at`, `has`, `times`, `gauge_range`, `buckets`, `phase`, `run`); `Phase`; `Window`, `Label`; `CheckResult`, `Verdict`, `Status`, `CounterReset`, `quantile`, `count_above`. |
+The `chain` feature reads runtime metadata and storage, and signs and submits transactions for supported account types and transaction extensions.
 
-The `observers` items are re-exported at the module root. They also live in three submodules: `observers::files`, `observers::checks` and `observers::monitors`. Items hidden from the API documentation are shared with the `polkameter` CLI and may change in any release. The `polkameter` crate is the CLI, not a library for plugins.
+The `observers` feature records series, reads run data and builds check results. It turns on `chain` too.
+
+Hidden items may change in any release. The `polkameter` crate is the CLI, not a library for plugins.
 
 The chain, monitor, check and file code derives from the stress tool in [paritytech/polkadot-pop-e2e](https://github.com/paritytech/polkadot-pop-e2e), under Apache-2.0.
 
 ### Migrating from 0.2
 
-Version 0.2 published the plugin API as five crates. Version 0.3 merges them into `polkameter-plugin-sdk`. Replace the old dependencies with one line:
-
-```toml
-[dependencies]
-polkameter-plugin-sdk = { version = "0.3", features = ["observers"] }
-```
-
-<!-- v0.3.0: remove after release -->
-Until v0.3.0 is on crates.io, use the Git dependency from [The plugin SDK crate](#the-plugin-sdk-crate).
-
-Use `features = ["chain"]` if the plugin does not use `polkameter-files`, `polkameter-checks` or `polkameter-monitors`. Then change the import paths:
+Version 0.3 merges the old plugin crates into `polkameter-plugin-sdk`. Replace the old dependencies with the line above. Use `features = ["chain"]` if the plugin does not use `polkameter-files`, `polkameter-checks` or `polkameter-monitors`. Then change the import paths:
 
 | 0.2 | 0.3 |
 | --- | --- |
@@ -212,8 +161,6 @@ Use `features = ["chain"]` if the plugin does not use `polkameter-files`, `polka
 | `polkameter_monitors::{ChainSeries, MonitorError}` | `polkameter_plugin_sdk::observers::{ChainSeries, MonitorError}` |
 | `polkameter_monitors::walker::*`, `polkameter_monitors::chain_series::*` | `polkameter_plugin_sdk::observers::walker::*`, `polkameter_plugin_sdk::observers::chain_series::*` |
 
-Two text replacements cover the plugin API in the table above: `polkameter_chain::` becomes `polkameter_plugin_sdk::chain::`, and `polkameter_files::`, `polkameter_checks::` and `polkameter_monitors::` become `polkameter_plugin_sdk::observers::`. Version 0.3 has no replacement for `polkameter-engine` and `polkameter-load`: they are part of the `polkameter` CLI.
+`polkameter-engine` and `polkameter-load` have no replacement. They are part of the `polkameter` CLI.
 
-The 0.2 crates also exported items that this page never listed, because they were internal. They are not part of the 0.3 API. `polkameter_monitors::{scraper, topology, process, relay, preflight}` moved into the `polkameter` CLI. `polkameter_checks::{Check, run, all, smoke_gaps, report, LIMITS}` are hidden in `observers::checks` and may change in any release. `polkameter_files::{BlockStats, NodeMax}` remain only as `observers::files::{BlockStats, NodeMax}`, the types of `summary::Summary` fields, and are not re-exported at `observers`.
-
-`CheckResult` also has a new field since 0.2, `source`. PolkaMeter sets it to the evaluate step's ID, so a plugin that builds a `CheckResult` sets `source: None`.
+`CheckResult` has a new field, `source`. PolkaMeter sets it to the evaluate step's ID, so a plugin that builds a `CheckResult` sets `source: None`.

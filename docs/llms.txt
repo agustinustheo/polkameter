@@ -1,39 +1,39 @@
 # PolkaMeter
 
-> PolkaMeter is a load-testing tool for Polkadot SDK (Substrate) chains, modeled on JMeter. An XML plan lists the steps; plugins prepare chain-specific transactions; the `polkameter` CLI submits them at controlled rates, checks every transaction against the finalized chain and writes a verdict (PASS, WARN, FAIL or INCONCLUSIVE) with JMeter-compatible results. The substrate plugin, shipped with the CLI from v0.3.0, loads any chain with the standard System and Balances pallets without custom code.
+> PolkaMeter is a Rust CLI for load and stress tests on Polkadot SDK chains. XML plans select rates, plugins prepare transactions, and load reports give a verdict (PASS, WARN, FAIL or INCONCLUSIVE). Results include samples in JMeter's CSV format. The substrate plugin loads chains with the standard System and Balances pallets and compatible signing types without custom code.
 
-Install from v0.3.0 with the install script, `curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh | sh`, which installs the CLI and the substrate plugin. <!-- v0.3.0: remove after release -->Until v0.3.0 is released, build both from the repository: `cargo install --locked --git https://github.com/agustinustheo/polkameter --branch main polkameter polkameter-substrate-plugin`. `cargo install --locked polkameter` installs only the CLI, never the plugin. Then register the plugin with `polkameter plugin install "$(command -v polkameter-substrate-plugin)"`. `polkameter init --rpc ws://127.0.0.1:9944` writes a starter plan for a chain. Secrets never go in plans: a plan names a credential profile, and `polkameter plugin credential PROFILE ENV_VAR` maps it to an environment variable.
+Install the CLI and the substrate plugin with `curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh | sh`. <!-- v0.3.0: remove after release -->Until v0.3.0 is released, build both from source as the Install page shows. Register the plugin with `polkameter plugin install "$(command -v polkameter-substrate-plugin)"`. `polkameter init --rpc ws://127.0.0.1:9944` writes a starter plan. Plans never hold secrets: `polkameter plugin credential PROFILE ENV_VAR` maps a credential profile to an environment variable.
 
 ## Start here
 
-- [Getting started](https://agustinustheodorus.com/polkameter/getting-started.html): install the CLI, build and install the example plugin, run a plan, read the run directory
-- [Stress-test a local dev chain](https://agustinustheodorus.com/polkameter/dev-chain.html): start a pinned dev chain, run the substrate plugin's example plans, and the same in GitHub Actions and GitLab CI
-- [Use PolkaMeter with an AI assistant](https://agustinustheodorus.com/polkameter/ai-assistants.html): the Agent Skill, the Claude Code plugin marketplace and this file
+- [Getting started](https://agustinustheodorus.com/polkameter/getting-started.html): run the example plan, no chain needed
+- [Stress-test a local dev chain](https://agustinustheodorus.com/polkameter/dev-chain.html): start a dev chain, load it, then do the same in CI
+- [Use PolkaMeter with an AI assistant](https://agustinustheodorus.com/polkameter/ai-assistants.html): the Agent Skill
+- [Writing a plugin](https://agustinustheodorus.com/polkameter/writing-a-plugin.html): build, install and run a plugin with one operation
 
 ## How-to guides
 
-- [Install](https://agustinustheodorus.com/polkameter/install.html): install script, cargo, binstall, container, source
-- [Run a load test](https://agustinustheodorus.com/polkameter/load-test.html): load plan skeleton, rate steps and ramps, validate, preflight and run
-- [Read the results](https://agustinustheodorus.com/polkameter/reading-results.html): verdict, failure onset, max sustained rate, loss check
-- [Run PolkaMeter in CI](https://agustinustheodorus.com/polkameter/ci.html): the GitHub Action, other CI systems, GitLab
+- [Install](https://agustinustheodorus.com/polkameter/install.html): every install method
+- [Run a load test](https://agustinustheodorus.com/polkameter/load-test.html): write, validate, preflight and run a load plan
+- [Read the results](https://agustinustheodorus.com/polkameter/reading-results.html): verdict, breaking point, max sustained rate, loss check
+- [Run in CI](https://agustinustheodorus.com/polkameter/ci.html): the GitHub Action, GitLab CI, Jenkins
+- [Run on a remote machine](https://agustinustheodorus.com/polkameter/remote-runs.html): the agent, `--remote` and what the agent refuses
 - [Troubleshooting](https://agustinustheodorus.com/polkameter/troubleshooting.html): common errors and fixes
 
 ## Reference
 
-- [The substrate plugin](https://agustinustheodorus.com/polkameter/substrate-plugin.html): operations preflight, fund-accounts, prepare-remarks, prepare-transfers, check-state; their inputs and outputs; `polkameter init`
-- [Plan](https://agustinustheodorus.com/polkameter/plans.html): every plan element and attribute, references, validation rules
-- [CLI](https://agustinustheodorus.com/polkameter/cli.html): commands, flags, exit codes, environment variables
+- [Plan](https://agustinustheodorus.com/polkameter/plans.html): every plan element and attribute
+- [CLI](https://agustinustheodorus.com/polkameter/cli.html): commands, exit codes, environment variables, JSON output
 - [Run directory](https://agustinustheodorus.com/polkameter/results.html): every file a run writes
-- [Plugins and SDK](https://agustinustheodorus.com/polkameter/plugins.html): plugin protocol, manifest, PreparedTx, state checks, the polkameter-plugin-sdk crate
-- [Release assets](https://agustinustheodorus.com/polkameter/release-assets.html): archive names and contents
+- [Plugin reference](https://agustinustheodorus.com/polkameter/plugins.html): plugin protocol, manifest, PreparedTx, the polkameter-plugin-sdk crate
+- [The substrate plugin](https://agustinustheodorus.com/polkameter/substrate-plugin.html): its operations, inputs and outputs
 
-## Writing a plugin
+## Explanation
 
-- [Writing a plugin](https://agustinustheodorus.com/polkameter/writing-a-plugin.html): a plugin crate from scratch, for runtimes the substrate plugin cannot load
-- [How a run works](https://agustinustheodorus.com/polkameter/how-it-works.html): phases of a run, from preflight to the report
+- [How a run works](https://agustinustheodorus.com/polkameter/how-it-works.html): the phases of a run and why it reports what it does
 
 ## Optional
 
-- [Source repository](https://github.com/agustinustheo/polkameter): CLI, SDK, substrate plugin, example plans in `examples/`
-- [Agent Skill](https://github.com/agustinustheo/polkameter/tree/main/skills/polkameter): SKILL.md, plan templates, CI templates and a setup checklist
+- [Source repository](https://github.com/agustinustheo/polkameter): the code and example plans in `examples/`
+- [Agent Skill](https://github.com/agustinustheo/polkameter/tree/main/skills/polkameter): SKILL.md, plan and CI templates, a setup checklist
 - [AGENTS.md](https://github.com/agustinustheo/polkameter/blob/main/AGENTS.md): build and test commands for contributors

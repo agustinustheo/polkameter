@@ -1,10 +1,10 @@
 # Plan reference
 
-A plan is one XML file that describes a test: the plugins it uses, the chain endpoints, the credential profiles, the steps to run, an optional load test, the monitors and the stop thresholds. A plan never contains a secret, an executable path or a topology path. You set those on the host where the plan runs, with [`polkameter plugin`](cli.md#plugin).
+A plan is an XML file that lists the test steps and settings. A plan never contains a secret, an executable path or a topology path. Set those on the run host with [`polkameter plugin`](cli.md#plugin).
 
 ## Example
 
-This plan runs without a chain. It uses the example plugin and the built-in `core` operations, and it is the plan in `examples/plugin-workflow.polkameter.xml`:
+This plan runs without a chain. It is `examples/plugin-workflow.polkameter.xml`:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -23,8 +23,6 @@ This plan runs without a chain. It uses the example plugin and the built-in `cor
 </polkameter-plan>
 ```
 
-Run from the repository root:
-
 ```sh
 polkameter validate examples/plugin-workflow.polkameter.xml
 ```
@@ -33,9 +31,7 @@ polkameter validate examples/plugin-workflow.polkameter.xml
 Plan is structurally valid. Preflight checks the installed plugins.
 ```
 
-- `seed` doubles `21` to `42`.
-- `copied` passes that output to every user and iteration, so `steps.copied.value` is `42` in each one.
-- Each iteration doubles `42` to `84`. `verified` fails the run, with exit code 1, if the result is not `84`.
+[Getting started](getting-started.md) walks through this plan.
 
 The next example adds targets, credentials, a load test, monitors and thresholds. Its plugin, operations and endpoints are placeholders. It passes `validate`, but it cannot run until you replace them:
 
@@ -73,18 +69,9 @@ The next example adds targets, credentials, a load test, monitors and thresholds
 </polkameter-plan>
 ```
 
-- `targets.para` is the endpoint the load submits to. `credentials.admin` names the `sudo` profile, not a secret.
-- `prepare` runs in setup, so the load can read its outputs `flood`, `probes` and `expected`.
-- `<load>` sends the flood at 20, then 40 transactions per second, for 60 seconds each.
-- `<monitors>` needs the `<load>`. It requires every collator to expose `substrate_block_height`.
-- `<thresholds>` changes two stop rules. Every other threshold keeps its default.
+`prepare` runs in setup, so the load can read its outputs `flood`, `probes` and `expected`. `<thresholds>` changes the inclusion and latency limits; exceeding them records a breaking point without stopping the load.
 
-## Table columns
-
-- **Required** is `yes`, `no`, or the rule that applies when the attribute depends on another one. **Default** is the value used when the attribute is absent. "none" means there is no default, so you must set it when it is required.
-- **Children** says how many child elements an element can hold: "zero or more", "one or more", or "optional" (at most one).
-- An `ID` is a name you choose. IDs use ASCII letters, digits, `-` and `_`.
-- The **Type** column uses these words: *integer* is a whole number, *number* is a decimal, *identifier* is an ID, *URI* is a web address, *reference* is a value from the [References](#references) table, and *operation* is `plugin.operation` or `core.NAME`.
+In the tables below, the Default column gives the default value, `required`, or the rule that makes the attribute required. An ID uses ASCII letters, digits, `-` and `_`. A reference is a value from [References](#references).
 
 ## Elements
 
@@ -92,405 +79,222 @@ The next example adds targets, credentials, a load test, monitors and thresholds
 
 The root element. Its `name` appears in the report.
 
-Children, in any order:
+Children, in any order: `plugins`, `targets`, `credentials`, `preflight`, `setup`, `workflow`, `load`, `monitors`, `thresholds`, `evaluate`, `teardown`. Each appears at most once, except `workflow`. The run always uses that phase order, whatever the order in the XML. Steps in a phase run in their written order.
 
-| Element | Occurs | Section |
-| --- | --- | --- |
-| `plugins` | optional | [plugins](#plugins) |
-| `targets` | optional | [targets](#targets) |
-| `credentials` | optional | [credentials](#credentials) |
-| `preflight` | optional | [preflight](#preflight) |
-| `setup` | optional | [setup](#setup) |
-| `workflow` | zero or more | [workflow](#workflow) |
-| `load` | optional | [load](#load) |
-| `monitors` | optional. Needs `load` | [monitors](#monitors) |
-| `thresholds` | optional | [thresholds](#thresholds) |
-| `evaluate` | optional | [evaluate](#evaluate) |
-| `teardown` | optional | [teardown](#teardown) |
+| Attribute | Type | Default | Limits | Meaning |
+| --- | --- | --- | --- | --- |
+| `xmlns` | URI | required | `https://polkameter.dev/schema/plan` | The plan namespace |
+| `name` | string | required | not empty | The test's title in the report |
+| `version` | integer | required | `1` | The plan format version |
+| `mode` | string | `stress` | `stress` or `smoke` | See below |
+| `timeout-ms` | integer | `3600000` | above 0 | The run deadline. See below |
 
-Each element appears at most once, except `workflow`. Execution follows the phases in the table, regardless of where you place their sections in the XML. Steps within a phase run in their written order.
+Stress mode records monitor problems and continues unless a stop rule ends the load. Smoke mode stops the load on a monitor problem and has [stricter exit rules](cli.md#run).
 
-| Attribute | Type | Required | Default | Limits | Meaning |
-| --- | --- | --- | --- | --- | --- |
-| `xmlns` | URI | yes | none | `https://polkameter.dev/schema/plan` | The plan namespace |
-| `name` | string | yes | none | not empty | The scenario's title, used in the report |
-| `version` | integer | yes | none | `1` | The plan format version |
-| `mode` | string | no | `stress` | `stress` or `smoke` | Smoke mode also fails the run on monitor problems and on required checks without a result. See [results](results.md#exit-codes) |
-| `timeout-ms` | integer | no | `3600000` | above 0 | The deadline for the run, from plugin start-up to the report. A run that reaches it ends as `failed`, with exit code 1, or 3 if it was still in its preflight checks |
+`timeout-ms` limits plugin startup and the test phases, including load checks and summary generation. Teardown and the final artifact writing run outside that deadline. A run that reaches it ends as `failed` and exits `1`, or `3` if it was still in preflight. See [exit codes](cli.md#exit-codes).
 
-### plugins
+### plugins, targets, credentials
 
-Lists the plugins the plan uses. Every operation a step calls must belong to a plugin listed here, or be a `core` operation.
-
-Children: `plugin`, zero or more.
+These elements hold zero or more `plugin`, `target` and `credential` elements. A step can call only operations of a declared plugin, or `core` operations.
 
 ### plugin
 
-Declares one plugin. The version and protocol must match the plugin installed on the host.
+Declares one plugin. The version and protocol must match the installed plugin.
 
-| Attribute | Type | Required | Default | Limits | Meaning |
-| --- | --- | --- | --- | --- | --- |
-| `id` | identifier | yes | none | unique; not `core` | The plugin's name. Operations use it as their prefix, such as `example.double` |
-| `version` | string | yes | none | not empty | Must equal the installed plugin's version. `preflight` and the start of a run check it |
-| `protocol` | integer | yes | none | `1` | The plugin protocol the plan expects |
-
-```xml
-<plugin id="example" version="0.1.0" protocol="1"/>
-```
-
-### targets
-
-Lists the chain endpoints the plan uses. A load test and monitors refer to them by ID.
-
-Children: `target`, zero or more.
+| Attribute | Type | Default | Limits | Meaning |
+| --- | --- | --- | --- | --- |
+| `id` | identifier | required | unique; not `core` | The prefix of the plugin's operations, such as `example.double` |
+| `version` | string | required | not empty | The installed plugin's version |
+| `protocol` | integer | required | `1` | The plugin protocol version |
 
 ### target
 
-| Attribute | Type | Required | Default | Limits | Meaning |
-| --- | --- | --- | --- | --- | --- |
-| `id` | identifier | yes | none | unique | Referenced as `targets.ID` |
-| `endpoint` | URI | yes | none | starts with `ws://` or `wss://` | The chain's WebSocket RPC endpoint. Its user information, query and path parameter values and fragment are [redacted](results.md#redaction) from results |
-
-```xml
-<target id="para" endpoint="ws://127.0.0.1:9988"/>
-```
-
-### credentials
-
-Lists the credential profiles the plan uses. The plan names a profile, never the secret.
-
-Children: `credential`, zero or more.
+| Attribute | Type | Default | Limits | Meaning |
+| --- | --- | --- | --- | --- |
+| `id` | identifier | required | unique | Referenced as `targets.ID` |
+| `endpoint` | URI | required | starts with `ws://` or `wss://` | The chain's WebSocket RPC endpoint. Secrets in it are [redacted](results.md#redaction) |
 
 ### credential
 
-| Attribute | Type | Required | Default | Limits | Meaning |
-| --- | --- | --- | --- | --- | --- |
-| `id` | identifier | yes | none | unique | Referenced as `credentials.ID` |
-| `profile` | string | yes | none | not empty | The profile this host maps to an environment variable with [`polkameter plugin credential`](cli.md#plugin) |
+| Attribute | Type | Default | Limits | Meaning |
+| --- | --- | --- | --- | --- |
+| `id` | identifier | required | unique | Referenced as `credentials.ID` |
+| `profile` | string | required | not empty | A [credential profile](cli.md#plugin) on the run host |
 
-PolkaMeter reads the secret on the host when the run starts. It redacts the secret from the files it writes and from its output. See [Redaction](results.md#redaction).
+PolkaMeter reads the secret on the host when the run starts. It [redacts](results.md#redaction) the secret from its output.
 
-```xml
-<credential id="admin" profile="sudo"/>
-```
+### preflight, setup, evaluate, teardown
 
-### preflight
+Each holds zero or more `step` elements.
 
-Steps that check the chain before the run. Preflight steps may use only read-only operations.
-
-Children: `step`, zero or more.
-
-### setup
-
-Steps that run once, before the workflows. Their outputs are copied into every user and iteration of each workflow.
-
-Children: `step`, zero or more.
+- `preflight` steps check the chain before the run. They can use only read-only operations.
+- `setup` steps run once, before the workflows.
+- `evaluate` steps run after the load and before the report. An operation that returns `checks` adds them to the report. See [Observers and checks](plugins.md#observers-and-checks).
+- `teardown` steps clean up at the end, also after a failure or a stop. Every step runs, even if an earlier one fails. After SIGINT or SIGTERM, `--shutdown-grace` also limits teardown. See [Stop a run](cli.md#stop-a-run).
 
 ### workflow
 
-A group of steps that simulated users run. Each user runs the steps once per iteration.
+A workflow repeats its steps for each simulated user. Each user repeats the steps `iterations` times. At most `concurrency` users run at once. A plan can hold any number of workflows. Workflows run one after another, in plan order.
 
-Children: `step`, zero or more. A plan can hold any number of workflows.
+Children: `step`, zero or more.
 
-| Attribute | Type | Required | Default | Limits | Meaning |
-| --- | --- | --- | --- | --- | --- |
-| `id` | identifier | yes | none | unique | The workflow's name in events |
-| `users` | integer | no | `1` | 1 to 100000 | Simulated users |
-| `iterations` | integer | no | `1` | at least 1 | Iterations each user runs |
-| `concurrency` | integer | no | `1` | 1 to 1000 | Users running at the same time |
-
-```xml
-<workflow id="users" users="3" iterations="2" concurrency="2">
-```
+| Attribute | Type | Default | Limits | Meaning |
+| --- | --- | --- | --- | --- |
+| `id` | identifier | required | unique | The workflow's name in events |
+| `users` | integer | `1` | 1 to 100000 | Simulated users |
+| `iterations` | integer | `1` | at least 1 | Repeats per user |
+| `concurrency` | integer | `1` | 1 to 1000 | Users that run at the same time |
 
 ### load
 
-Turns the plan into a load test against one target. The load sends transactions at the rates you give, then measures how the chain responds. [How a run works](how-it-works.md) describes the phases.
+Makes the plan a load test against one target. A load test sends transactions at chosen rates and measures how the chain responds. [How a run works](how-it-works.md) describes the phases.
 
-Children: `rate` (one or more) or `ramp` (exactly one). Give one or the other, not both. A load with neither is rejected.
+The load uses two lists of prepared transactions. Flood transactions supply the main load at the target rate. A probe transaction measures the time from submission to inclusion, before and after the flood. The baseline measures probe latency before the flood starts. The two lists must not share a transaction.
 
-| Attribute | Type | Required | Default | Limits | Meaning |
-| --- | --- | --- | --- | --- | --- |
-| `target` | identifier | yes | none | a declared `targets` ID | The endpoint the load submits to |
-| `source-ref` | reference | yes | none | a reference | The output that holds the flood transactions |
-| `probes-ref` | reference | yes | none | a reference; must hold the probe budget (see below) | The output that holds the reserved probe transactions. No transaction may appear in both the flood and the probes, and each is sent at most once |
-| `state-check` | operation | with `state-ref` | none | a `plugin.operation` | A plugin operation that checks chain state for a sample of included transactions, at a finalized block, after the load |
-| `state-ref` | reference | with `state-check` | none | a reference | The input the state check receives as `state` |
-| `connections` | integer | no | `4` | 1 to 64 | WebSocket connections used for submissions |
-| `baseline-probes` | integer | no | `5` | 1 to 1000 | Probe transactions sent before the load, one per block |
-| `recovery-seconds` | integer | no | `900` | 0 to 86400 | How long recovery may last before the run gives up |
-| `block-interval-seconds` | number | no | `6.0` | at least 0.1 | The block time the plan expects. Preflight compares it with the measured block time |
+Children: `rate` (one or more) or one `ramp`. Give one or the other.
 
-`state-check` and `state-ref` must appear together.
+| Attribute | Type | Default | Limits | Meaning |
+| --- | --- | --- | --- | --- |
+| `target` | identifier | required | a declared target | The endpoint the load submits to |
+| `source-ref` | reference | required | | The output that holds the flood transactions |
+| `probes-ref` | reference | required | at least the probe budget | The output that holds the probe transactions |
+| `state-check` | operation | with `state-ref` | `plugin.operation` | Checks chain state for a sample of included transactions, at a finalized block, after the load |
+| `state-ref` | reference | with `state-check` | | The value the state check gets as `state` |
+| `connections` | integer | `4` | 1 to 64 | WebSocket connections for submissions |
+| `baseline-probes` | integer | `5` | 1 to 1000 | Baseline probes, one per block |
+| `recovery-seconds` | integer | `900` | 0 to 86400 | Maximum recovery time |
+| `block-interval-seconds` | number | `6.0` | at least 0.1 | The expected block time |
 
-The state check receives `target`, `state`, `hashes` and `at`, and returns `checked`, `missing` and `detail`.
+Preflight measures the block time. If it differs from `block-interval-seconds` by more than 25%, the run stops before setup.
 
-If the measured block time differs from `block-interval-seconds` by more than 25%, the run stops before setup. The measurement is written to `calibration.json`.
-
-**Probe budget.** The probe output must hold at least the probe budget. The budget is the baseline probes, plus one probe per block over the recovery window, plus 10 spare. The recovery part rounds up to a whole block. With the defaults, the budget is 5 + 900 / 6 + 10 = 165 probes: 5 baseline probes, 150 for recovery, and 10 spare. If the output holds fewer, the run fails with `insufficient probe reserve`.
-
-```xml
-<load target="para" source-ref="steps.prepare.flood" probes-ref="steps.prepare.probes">
-```
+The probe budget is the baseline probes, plus one probe per block of the recovery window, plus 10 spare. The recovery part rounds up to a whole block. With the defaults, the budget is 5 + 900 / 6 + 10 = 165 probes. With fewer probes, the run fails with `insufficient probe reserve`.
 
 ### rate
 
-One rate step: a fixed rate for a fixed time. A load has one or more rate steps, and a plan holds at most 10000.
+A rate step sends flood transactions at one target rate for a set time. A plan holds at most 10000 rate steps.
 
-Children: none.
-
-| Attribute | Type | Required | Default | Limits | Meaning |
-| --- | --- | --- | --- | --- | --- |
-| `tx-per-second` | number | yes | none | finite; at least 0 | Transactions per second |
-| `seconds` | integer | yes | none | at least 1 | How long the step runs |
-
-```xml
-<rate tx-per-second="4" seconds="30"/>
-```
+| Attribute | Type | Default | Limits | Meaning |
+| --- | --- | --- | --- | --- |
+| `tx-per-second` | number | required | finite; at least 0 | Target rate, in transactions per second |
+| `seconds` | integer | required | at least 1 | Step duration |
 
 ### ramp
 
-A load that changes at each step. It starts at `start` and changes by `step` or `growth` for each of its `steps`.
+A ramp changes the target rate between rate steps. Each step uses a fixed target rate. The first step uses `start`. Each later step adds `step` or multiplies by `growth`.
 
-Children: none.
-
-| Attribute | Type | Required | Default | Limits | Meaning |
-| --- | --- | --- | --- | --- | --- |
-| `start` | number | yes | none | finite; above 0 | The rate of the first step, in transactions per second |
-| `step` | number | one of `step` or `growth` | none | finite | Adds this many transactions per second at each step. No rate may fall below 0 |
-| `growth` | number | one of `step` or `growth` | none | finite; above 0 | Multiplies the rate by this factor at each step |
-| `steps` | integer | yes | none | 1 to 10000 | The number of steps |
-| `seconds` | integer | yes | none | at least 1 | How long each step runs |
-
-Give exactly one of `step` or `growth`.
-
-Every rate in the expanded ramp must be finite and at least 0.
-
-```xml
-<ramp start="2" step="2" steps="3" seconds="30"/>
-```
+| Attribute | Type | Default | Limits | Meaning |
+| --- | --- | --- | --- | --- |
+| `start` | number | required | finite; above 0 | The first target rate |
+| `step` | number | one of `step` or `growth` | finite | Added to the rate at each step. No rate can fall below 0 |
+| `growth` | number | one of `step` or `growth` | finite; above 0 | Multiplies the rate at each step |
+| `steps` | integer | required | 1 to 10000 | Number of rate steps |
+| `seconds` | integer | required | at least 1 | Duration of each step |
 
 ### monitors
 
-Watches the chain during the load test. It records the chain, scrapes the metrics you list, and records the node's CPU and memory.
+Watches the chain during the load. It records the chain, scrapes the listed metrics and records [node CPU and memory](how-it-works.md#node-cpu-and-memory). It needs a `<load>`.
 
-Children: `metric`, zero or more. Needs a `<load>`.
+Children: `metric`, zero or more.
 
-| Attribute | Type | Required | Default | Limits | Meaning |
-| --- | --- | --- | --- | --- | --- |
-| `topology` | string | yes | none | an alias registered with `polkameter plugin topology` | The topology alias on this host |
-| `relay-target` | identifier | yes | none | a declared `targets` ID | The relay chain endpoint that the relay recorder reads |
-| `para-id` | integer | yes | none | 0 to 4294967295 | The parachain whose collators are scraped and whose relay slots are judged |
-
-Plan validation does not check whether `para-id` is registered on your relay chain. See [Plan validation](how-it-works.md#plan-validation) for the accepted range.
-
-```xml
-<monitors topology="test-network" relay-target="relay" para-id="2000">
-```
+| Attribute | Type | Default | Limits | Meaning |
+| --- | --- | --- | --- | --- |
+| `topology` | string | required | an alias from `polkameter plugin topology` | The topology alias on this host |
+| `relay-target` | identifier | required | a declared target | The relay chain endpoint |
+| `para-id` | integer | required | 0 to 4294967295 | The parachain to scrape and check |
 
 ### metric
 
 A metric that every node of one role must expose.
 
-Children: none.
+| Attribute | Type | Default | Limits | Meaning |
+| --- | --- | --- | --- | --- |
+| `role` | string | required | `collator`, `collator-relay` or `validator` | The node role |
+| `name` | string | required | a Prometheus metric family | The metric the role must expose |
 
-| Attribute | Type | Required | Default | Limits | Meaning |
-| --- | --- | --- | --- | --- | --- |
-| `role` | string | yes | none | `collator`, `collator-relay` or `validator` | The node role the metric must exist on. Any other value fails at preflight |
-| `name` | string | yes | none | a Prometheus metric family | The metric family that every node of the role must expose |
-
-If a node lacks a required metric, the run stops before setup. If no node has the role, preflight fails with `required role X has no nodes`. Separately, in a plan with `<monitors>`, a metric that PolkaMeter knows about stops the run if a node exposes it with a different type, whether or not the plan requires it.
-
-```xml
-<metric role="collator" name="substrate_block_height"/>
-```
+If a node does not have a required metric, the run stops before setup. If no node has the role, preflight fails.
 
 ### thresholds
 
-Changes the stop rules of the load test. Each value you set replaces its default. The effective values are written to `summary.json` under `rules`. [Results](results.md#stop-rules-and-thresholds) explains each measure.
-
-Children: none.
+Sets the limits for breaking points, load stops, recovery and finality. Each value replaces its default. The run writes the effective values to `summary.json` under `rules`. [Stop rules and thresholds](results.md#stop-rules-and-thresholds) explains each rule.
 
 | Attribute | Type | Default | Limits | Governs |
 | --- | --- | --- | --- | --- |
 | `min-included-ratio` | number | `0.9` | above 0, at most 1 | Share of a step's transactions that must be included |
-| `max-p95-latency-ms` | integer | `10000` | above 0 | p95 time from send to a best block |
-| `max-refused-ratio` | number | `0.01` | above 0, at most 1 | Share of a step's submissions that are refused |
-| `pool-refuses-ratio` | number | `0.1` | above 0, at most 1 | Refused share that ends the ramp as a graceful failure |
-| `max-submit-reply-ms` | integer | `5000` | above 0 | p95 submission reply time, the pool intake rule |
-| `min-send-ratio` | number | `0.95` | above 0, at most 1 | Share of the target rate the load tool must send |
-| `max-block-gap-factor` | number | `2.0` | above 0 | Mean block gap, as a multiple of the interval at the start |
+| `max-p95-latency-ms` | integer | `10000` | above 0 | p95 time from submission to a best block |
+| `max-refused-ratio` | number | `0.01` | above 0, at most 1 | Share of a step's submissions that the node refuses |
+| `pool-refuses-ratio` | number | `0.1` | above 0, at most 1 | Refused share that ends the ramp gracefully |
+| `max-submit-reply-ms` | integer | `5000` | above 0 | p95 submission reply time |
+| `min-send-ratio` | number | `0.95` | above 0, at most 1 | Share of the target rate PolkaMeter must send |
+| `max-block-gap-factor` | number | `2.0` | above 0 | Mean block gap, as a multiple of the starting interval |
 | `stall-ms` | integer | `30000` | above 0 | Time without a new best block |
 | `finality-stall-ms` | integer | `60000` | above 0 | Time without a new finalized block |
-| `probes-in-a-row` | integer | `3` | above 0 | Recovery probes in a row that must land in time |
-| `recovered-block-gap-factor` | number | `1.5` | above 0 | Mean block gap that counts as recovered, as a multiple of the interval |
-| `finality-wait-ms` | integer | `180000` | above 0 | How long reconciliation waits for the chain to finalize past the last block that holds one of the run's transactions |
-
-### evaluate
-
-Steps that run after the load and before the report. An operation whose outputs include `checks` adds its checks to the report. [Plugins](plugins.md) describes the check format.
-
-Children: `step`, zero or more.
-
-### teardown
-
-Steps that clean up at the end of the run. They run even after a failure or a stop, and every step runs even if an earlier one fails. Each step runs under its own `timeout-ms`. After SIGINT or SIGTERM, teardown is also bounded by `--shutdown-grace` (see [stop a run](cli.md#stop-a-run)).
-
-Children: `step`, zero or more.
+| `probes-in-a-row` | integer | `3` | above 0 | Recovery probes in a row that must meet the latency limit |
+| `recovered-block-gap-factor` | number | `1.5` | above 0 | Mean block gap that counts as recovered |
+| `finality-wait-ms` | integer | `180000` | above 0 | Wait for finality after the last block with a run transaction |
 
 ### step
 
-One call to a plugin operation or a built-in operation. Steps appear in `preflight`, `setup`, `workflow`, `evaluate` and `teardown`.
+One call to a plugin operation or a built-in operation. Children: `input`, zero or more.
 
-Children: `input`, zero or more.
+| Attribute | Type | Default | Limits | Meaning |
+| --- | --- | --- | --- | --- |
+| `id` | identifier | required | unique in the plan | Its outputs are `steps.ID.OUTPUT` |
+| `use` | operation | required | `plugin.operation` of a declared plugin, or a built-in operation | The operation to run |
+| `timeout-ms` | integer | `60000` | above 0 | The step's deadline |
 
-| Attribute | Type | Required | Default | Limits | Meaning |
-| --- | --- | --- | --- | --- | --- |
-| `id` | identifier | yes | none | unique across the whole plan | Its outputs are `steps.ID.OUTPUT` |
-| `use` | operation | yes | none | `plugin.operation` for a declared plugin, or a built-in name from the table below | The operation to run |
-| `timeout-ms` | integer | no | `60000` | above 0 | The step's deadline |
-
-> **Warning:** If a submit step times out, the chain may already have accepted the transaction, and its outcome is unknown. PolkaMeter does not retry it.
-
-```xml
-<step id="computed" use="example.double"><input name="value" ref="steps.copied.value"/></step>
-```
+> **Warning:** If a submit step times out, the chain may already have the transaction. Its outcome is unknown. PolkaMeter does not retry it.
 
 #### Built-in operations
 
 | Operation | Inputs | Outputs | Behavior |
 | --- | --- | --- | --- |
 | `core.echo` | `value` | `value` | Returns its input. Read-only |
-| `core.assert-equal` | `actual`, `expected` | `passed` | Fails the step, and so the run, unless the values are equal. Read-only |
+| `core.assert-equal` | `actual`, `expected` | `passed` | Fails the step, and so the run, if the values differ. Read-only |
 | `core.submit-prepared` | `target`, `transactions` | `hashes`, `at` | Submits prepared transactions and waits for the RPC reply. `at` is empty |
-| `core.submit-setup` | `target`, `transactions` | `hashes`, `at` | As above. It also waits for finalized inclusion, fails if an extrinsic failed, and checks the Sudo result of sudo transactions. `at` is the finalized block hash |
-
-Any other `core.` name fails at preflight.
+| `core.submit-setup` | `target`, `transactions` | `hashes`, `at` | Also waits for finalized inclusion. Fails if an extrinsic or a Sudo call failed. `at` is the finalized block hash |
 
 ### input
 
-Sets one input of a step, from an earlier output or from a literal.
+Sets one input of a step.
 
-Children: none.
+| Attribute | Type | Default | Limits | Meaning |
+| --- | --- | --- | --- | --- |
+| `name` | string | required | unique in the step | The operation input |
+| `ref` | reference | one of `ref` or `value` | | A value from [References](#references) |
+| `value` | literal | one of `ref` or `value` | | Parsed as JSON when it can be, otherwise a string |
 
-| Attribute | Type | Required | Default | Limits | Meaning |
-| --- | --- | --- | --- | --- | --- |
-| `name` | string | yes | none | unique within the step | The operation input this sets |
-| `ref` | reference | one of `ref` or `value` | none | a reference | A value from the [References](#references) table |
-| `value` | literal | one of `ref` or `value` | none | | A literal. It parses as JSON when it can, and is otherwise a string |
-
-Give exactly one of `ref` or `value`.
-
-Literals are not evaluated. For quotes inside a JSON string, use XML escaping, for example `value="[&quot;a&quot;]"`.
-
-```xml
-<input name="expected" value="84"/>
-```
+For quotes inside a JSON literal, use XML escapes, for example `value="[&quot;a&quot;]"`.
 
 ## References
 
-A `ref` names one of the values below. A reference to anything else is rejected when the plan is validated.
-
 | Reference | Value | Available |
 | --- | --- | --- |
-| `steps.ID.OUTPUT` | An output of an earlier step, named as its operation declares it | Later steps |
+| `steps.ID.OUTPUT` | An output of an earlier step | Later steps |
 | `targets.ID` | The endpoint string | After `<targets>` |
-| `credentials.ID` | The secret, read on this host | Wherever the credential is declared. [Redacted](results.md#redaction) from results |
+| `credentials.ID` | The secret, read on this host | Everywhere. [Redacted](results.md#redaction) |
 | `run.id` | The run ID, such as `run-1791091539106-57209-1` | Everywhere |
-| `run.directory` | The absolute path of this run's directory | Everywhere, once the directory exists |
-| `run.probeBudget` | The probe budget of the plan; `0` without a `<load>` | Everywhere |
-| `user.index` | The user's index, from 0 | Inside `workflow` steps |
-| `iteration.index` | The iteration's index, from 0 | Inside `workflow` steps |
+| `run.directory` | The absolute path of the run directory | Once the directory exists |
+| `run.probeBudget` | The probe budget, or `0` without a `<load>` | Everywhere |
+| `user.index` | The user's index, from 0 | Workflow steps |
+| `iteration.index` | The iteration's index, from 0 | Workflow steps |
 
-- A reference must name a value available in its execution phase. Phase order follows the table above, regardless of section order in the XML. Within a phase, forward step references are rejected.
 - Setup outputs are copied into every user and iteration of each workflow.
-- A workflow step's outputs are visible only to later steps in the same iteration. They do not reach another user, iteration or workflow.
-- Evaluate and teardown steps can reference preflight and setup outputs. They cannot reference workflow outputs.
-- `polkameter validate` checks that the step exists. It does not check the output name. `preflight` checks the name against the operation's manifest and fails with ``step `<id>` (<plugin>.<operation>): input `<name>` refers to `steps.ID.OUTPUT`, which is not an output of an earlier step``.
+- A workflow step's outputs reach only later steps in the same iteration. Evaluate and teardown steps cannot use them.
+
+`validate` checks that a referenced step exists. `preflight` checks the output name against the plugin's manifest.
 
 ## Validation rules
 
-The parser and validator run on every command that reads a plan. `polkameter validate` runs the parsing and structure checks, and checks the built-in `core.` operations: their names, inputs, literal values and the outputs other steps reference. `polkameter preflight` also checks the installed plugins and runs the read-only preflight steps. A plan with a load, or with steps that read the chain, needs a reachable chain for preflight to pass.
+`polkameter validate` parses the plan and checks its structure, references and `core` steps. `polkameter preflight` also checks the installed plugins and the chain. The [XSD schema](https://github.com/agustinustheo/polkameter/blob/main/schemas/polkameter-plan.xsd) catches most mistakes in an editor. `polkameter validate` checks the rest.
 
-| Element | Limit |
+The plan file must be a UTF-8 file or pipe of at most 2 MiB. The XML declaration needs `version` 1.x. Its `encoding` can be UTF-8, or US-ASCII or ISO-8859-1 when the whole plan is ASCII. Other declaration attributes are ignored. Also:
+
+| Item | Limit |
 | --- | --- |
-| Plan file | A regular file or a pipe of at most 2 MiB (2097152 bytes), so `validate <(envsubst < plan.tmpl)` and `cat plan | polkameter validate /dev/stdin` work. UTF-8; an XML declaration may also say `US-ASCII` or `ISO-8859-1` while the plan is plain ASCII. A leading byte-order mark is accepted. PolkaMeter stops reading one byte past the limit. A named pipe that nothing writes to reads as empty instead of blocking. A directory, socket or device is refused |
-| `polkameter-plan` | `version` is `1`. `xmlns` is the schema namespace. `name` is not empty. `timeout-ms` is above 0 |
-| `plugin` | `protocol` is `1`. `id` is not `core` |
-| `target` | `endpoint` starts with `ws://` or `wss://` |
-| `credential` | `profile` is not empty |
-| `workflow` | `users` 1 to 100000. `concurrency` 1 to 1000. `iterations` at least 1 |
-| `step` | `timeout-ms` is above 0 |
-| `load` | `connections` 1 to 64. `baseline-probes` 1 to 1000. `recovery-seconds` 0 to 86400. `block-interval-seconds` at least 0.1 |
-| `rate` | `tx-per-second` finite and at least 0. `seconds` at least 1 |
-| `ramp` | `start` above 0. `growth` above 0. `steps` 1 to 10000. `seconds` at least 1. No rate below 0 |
-| Whole plan | At most 10000 rate steps |
-| `monitors` | Needs a `<load>` and a declared `relay-target` |
-| `thresholds` | Ratios above 0 and at most 1. Other values above 0 |
-| Transaction source | At most 100000 transactions. Each prepared transaction's bytes must match its hash |
+| XML | No DOCTYPE, CDATA, processing instructions or text inside elements. At most 16 levels deep |
+| Elements and attributes | No unknown names. Every required attribute is present |
+| IDs | Unique per kind. Step IDs are unique in the whole plan |
+| Rate steps | At most 10000 in the plan |
+| Transaction lists | At most 100000 transactions. Each transaction's bytes match its hash |
 
-**Parsing** rejects:
-
-- a DOCTYPE, CDATA, or any other `<!` declaration except a comment;
-- `--` inside a comment, and a comment that ends with `--->`;
-- processing instructions, except an XML declaration at the very start of the file;
-- an XML declaration other than `<?xml version="1.x"?>`, optionally followed by `encoding="UTF-8"` and then `standalone="yes"` or `"no"`;
-- characters that XML 1.0 does not allow, such as NUL and other control characters except tab, line feed and carriage return, written literally or as a character reference;
-- text inside elements;
-- nesting deeper than 16 levels;
-- `<` in an attribute value, and duplicate attributes;
-- unknown elements and attributes, and missing required attributes.
-
-Numeric attributes may have spaces around the value. Numbers must be finite.
-
-| Integer attribute | Range, unless a smaller limit is listed |
-| --- | --- |
-| Durations in milliseconds | 1 to 18446744073709551615 |
-| Durations in seconds and workflow iterations | 1 to 4294967295 |
-| `probes-in-a-row` | 1 to the host's unsigned integer limit; 18446744073709551615 on a 64-bit host |
-
-Attribute strings are taken exactly as written.
-
-An empty `input` name, metric name, metric role or topology alias passes `validate`. Preflight checks the operation inputs, metrics and topology.
-
-**Structure** checks:
-
-- IDs are unique for plugins, targets, credentials, workflows and steps. Step IDs are unique across the whole plan.
-- Each input has a unique name and exactly one of `ref` or `value`.
-- Every reference names a value declared earlier.
-- An operation is `core.NAME`, or `plugin.operation` where `plugin` is declared in `<plugins>`.
-
-**Plugin contracts** are checked when the plugins start, which is the first thing a run does. `polkameter plugin inspect` runs the same check without a chain.
-
-- Each installed plugin's version equals the plan's version, and its executable still matches the BLAKE2 hash recorded at `plugin install`.
-- Each operation's inputs and outputs match its manifest.
-- Preflight steps use only read-only operations.
-
-**Chain checks** happen during preflight. They need a reachable chain. They check that the manifests' required evidence is present (a provisioner capability, an RPC method or a metric), and that the block interval matches the chain when there is a load.
-
-Run `polkameter validate` alongside the [XSD 1.0 schema](https://github.com/agustinustheo/polkameter/blob/main/schemas/polkameter-plan.xsd). See [Plan validation](how-it-works.md#plan-validation) for schema coverage.
-
-| Rule | CLI requirement beyond the schema |
-| --- | --- |
-| Exclusive attributes | Exactly one of input `ref` or `value`, and ramp `step` or `growth` |
-| Paired attributes | Load `state-check` and `state-ref` appear together |
-| Section counts | Every root child except `workflow` appears at most once |
-| References | References name values available in the current phase and scope |
-| Operation providers | Plugins used by operations are declared |
-| Monitors | A load is present |
-| Expanded ramps | Every generated rate is finite and at least 0 |
-| Host limits | Counters fit the host's unsigned integer type |
-| Parsing | File size, depth, declarations and processing instructions follow the limits above |
-| Namespaces | The root declares the default namespace; element names have no prefix |
-
-### Errors
-
-The CLI prints each error as `PolkaMeter: <file>: line <line>, column <column>: <message>` on standard error and exits with code 2. The position is where the element or attribute starts:
-
-```text
-PolkaMeter: plan.polkameter.xml: line 4, column 46: step `check` (core.assert-equal): input `actual` refers to `steps.later.value`, but nothing in the plan defines it; use targets.<id>, credentials.<id>, run.id, run.directory, run.probeBudget, steps.<earlier step>.<output>, or in a workflow user.index or iteration.index
-```
-
-An error about a step names the step's ID and its operation, and, for an input, the input's name. It says how to fix the plan. Errors about the file itself, such as its size or encoding, have no position. With `--format json`, the same error is also printed as a JSON line with the `file`, `line` and `column` fields; see [output formats](cli.md#output-formats). See [exit codes](cli.md#exit-codes).
-
-For what each phase does, see [How a run works](how-it-works.md).
+A plan error exits `2`. Errors about an element or invalid text can include a line and column. File-access and size errors may have no position.

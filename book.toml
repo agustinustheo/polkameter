@@ -21,3 +21,4 @@ command = "mdbook-mermaid"
 [output.html.redirect]
 "/custom-plugins.html" = "writing-a-plugin.html"
 "/architecture.html" = "how-it-works.html"
+"/release-assets.html" = "install.html#download-release-archives"
