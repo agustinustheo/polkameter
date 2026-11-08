@@ -38,7 +38,7 @@ The plan below funds 16 flood signers and one signer per probe from the seed acc
 
 ## Install
 
-The install script, the release archives and the container install `polkameter-substrate-plugin` next to `polkameter`. `cargo install polkameter` does not. [Install](install.md) covers each method. <!-- v0.3.0: remove after release -->Until v0.3.0 is released, use [the source build](install.md#before-v030-is-released). Then register the plugin:
+The install script, the release archives and the container install `polkameter-substrate-plugin` next to `polkameter`. `cargo install polkameter` does not. [Install](install.md) covers each method. Then register the plugin:
 
 ```sh
 polkameter plugin install "$(command -v polkameter-substrate-plugin)"

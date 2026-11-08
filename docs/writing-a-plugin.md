@@ -31,9 +31,6 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 ```
 
-<!-- v0.3.0: remove after release -->
-> **Warning:** Until v0.3.0 is released, `"0.3"` doesn't resolve on crates.io. Use `polkameter-plugin-sdk = { git = "https://github.com/agustinustheo/polkameter", rev = "259400a67647d9f662506e3b7469a0d565d7c676" }` instead.
-
 ## Write the plugin
 
 Replace `src/main.rs` with this file:

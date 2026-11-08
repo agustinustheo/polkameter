@@ -4,9 +4,6 @@ Find the message you see. Each heading is the message as the CLI prints it, with
 
 ## Building and installing
 
-<!-- v0.3.0: remove after release -->
-Until v0.3.0 is released, `cargo install --locked polkameter` installs v0.2.0, which has no `init` and rejects `--junit`. Install the current code as [Install](install.md#before-v030-is-released) shows.
-
 ### error: rustc 1.92.0 is not supported by the following packages:
 
 The default Rust toolchain is older than 1.93, which PolkaMeter needs.

@@ -2,23 +2,6 @@
 
 Each method below installs the `polkameter` CLI. The install script, the release archives and the container also install the [substrate plugin](substrate-plugin.md), `polkameter-substrate-plugin`. `cargo install` does not.
 
-## Before v0.3.0 is released
-
-<!-- v0.3.0: remove after release -->
-The script, binstall, the container and the archives need the v0.3.0 release. Until then, build the CLI and the substrate plugin from the repository with Rust 1.93 or newer:
-
-```sh
-cargo install --locked --git https://github.com/agustinustheo/polkameter \
-  --rev 259400a67647d9f662506e3b7469a0d565d7c676 polkameter polkameter-substrate-plugin
-polkameter --version
-```
-
-```text
-polkameter 0.3.0
-```
-
-The build can take 10 minutes or more. `cargo install --locked polkameter` installs v0.2.0, which the rest of these docs do not describe.
-
 ## Use the install script
 
 Install the CLI and the substrate plugin on Linux or macOS. You don't need Rust for this method.

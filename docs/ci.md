@@ -26,9 +26,6 @@ jobs:
           POLKAMETER_SETUP_SURI: ${{ secrets.SETUP_SURI }}
 ```
 
-<!-- v0.3.0: remove after release -->
-Until v0.3.0 is released, `@v0` does not exist. Use `@259400a67647d9f662506e3b7469a0d565d7c676` instead, which builds the CLI from source in several minutes. Without the action, use the [source install](install.md#before-v030-is-released).
-
 `@v0` installs the latest 0.x release of the CLI and checks its checksum and build attestation. To fix the version, use a full tag such as `@v0.3.0`. A branch or commit SHA builds the CLI from source. [`action.yml`](https://github.com/agustinustheo/polkameter/blob/main/action.yml) describes the `version`, `install` and `toolchain` inputs.
 
 ## Build plugins in the action

@@ -132,9 +132,6 @@ A plugin depends on one crate, `polkameter-plugin-sdk` ([crates.io](https://crat
 polkameter-plugin-sdk = { version = "0.3", features = ["observers"] }
 ```
 
-<!-- v0.3.0: remove after release -->
-> **Warning:** crates.io has 0.2.0 only. Until v0.3.0 is released, use `polkameter-plugin-sdk = { git = "https://github.com/agustinustheo/polkameter", rev = "259400a67647d9f662506e3b7469a0d565d7c676", features = ["observers"] }`.
-
 The default features give the plugin protocol: `Plugin`, `serve`, the manifest types, `Artifact` and `PreparedTx`. The default build does not depend on subxt, so it builds faster.
 
 The `chain` feature reads runtime metadata and storage, and signs and submits transactions for supported account types and transaction extensions.
