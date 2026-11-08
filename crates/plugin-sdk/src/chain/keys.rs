@@ -59,11 +59,6 @@ pub fn junctions(path: &str) -> Result<Vec<DeriveJunction>, KeyError> {
 	Ok(out)
 }
 
-/// `base` derived along `path`, such as `//polkameter//0`.
-pub fn derive(base: &Keypair, path: &str) -> Result<Keypair, KeyError> {
-	Ok(base.derive(junctions(path)?))
-}
-
 /// One keypair per index in `indices`, each `base` derived along `prefix` followed by the index:
 /// with prefix `//load//` and indices `0..3`, the paths are `//load//0`, `//load//1` and
 /// `//load//2`. The prefix must end with `/` or `//`.

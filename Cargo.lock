@@ -1965,7 +1965,6 @@ dependencies = [
  "scale-info",
  "scale-info-legacy",
  "scale-type-resolver",
- "scale-value",
  "serde_yaml",
  "sp-crypto-hashing",
  "thiserror 2.0.21",
@@ -4189,17 +4188,12 @@ name = "polkameter-plugin-sdk"
 version = "0.3.0"
 dependencies = [
  "anyhow",
- "frame-decode",
- "futures-util",
  "hex",
- "scale-decode",
  "scale-info",
- "scale-value",
  "serde",
  "serde_json",
  "sp-crypto-hashing",
  "subxt",
- "subxt-rpcs",
  "subxt-signer",
  "thiserror 2.0.21",
  "tokio",
@@ -4219,7 +4213,6 @@ dependencies = [
  "sp-crypto-hashing",
  "subxt-rpcs",
  "tokio",
- "tokio-util",
 ]
 
 [[package]]

@@ -70,8 +70,9 @@ pub async fn fetch<K, V>(
 	keys: K,
 ) -> Result<Option<V>, ChainError>
 where
-	K: frame_decode::storage::IntoEncodableValues + frame_decode::storage::IntoDecodableValues,
-	V: scale_decode::DecodeAsType,
+	K: subxt::ext::frame_decode::storage::IntoEncodableValues
+		+ subxt::ext::frame_decode::storage::IntoDecodableValues,
+	V: subxt::ext::scale_decode::DecodeAsType,
 {
 	let value = at
 		.storage()
@@ -89,7 +90,8 @@ pub async fn has_prefix<K, P>(
 	prefix: P,
 ) -> Result<bool, ChainError>
 where
-	K: frame_decode::storage::IntoEncodableValues + frame_decode::storage::IntoDecodableValues,
+	K: subxt::ext::frame_decode::storage::IntoEncodableValues
+		+ subxt::ext::frame_decode::storage::IntoDecodableValues,
 	P: subxt::storage::PrefixOf<K>,
 {
 	let mut entries = at
@@ -117,8 +119,9 @@ pub async fn entries<K, V>(
 	entry: &'static str,
 ) -> Result<Vec<(K, V)>, ChainError>
 where
-	K: frame_decode::storage::IntoEncodableValues + frame_decode::storage::IntoDecodableValues,
-	V: scale_decode::DecodeAsType,
+	K: subxt::ext::frame_decode::storage::IntoEncodableValues
+		+ subxt::ext::frame_decode::storage::IntoDecodableValues,
+	V: subxt::ext::scale_decode::DecodeAsType,
 	(): subxt::storage::PrefixOf<K>,
 {
 	let mut it = at

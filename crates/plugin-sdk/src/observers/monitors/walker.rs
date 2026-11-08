@@ -10,7 +10,7 @@ use std::future::Future;
 
 use crate::chain::{ChainError, Client, Fault};
 use crate::observers::files::Problems;
-use futures_util::FutureExt;
+use subxt::ext::futures::FutureExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::observers::monitors::MonitorError;
@@ -46,27 +46,18 @@ struct Failures {
 }
 
 impl Failures {
-	/// A chain result: counted, told once. Our own error ends the walk.
-	fn block(&mut self, n: u32, e: &ChainError) -> Result<(), MonitorError> {
+	/// A chain result: counted, told once. Our own error ends the walk. `update` marks a state
+	/// read rather than a block read.
+	fn fail(&mut self, update: bool, n: u32, e: &ChainError) -> Result<(), MonitorError> {
+		let what = if update { "state at block" } else { "block" };
 		if e.fault() == Fault::Tool {
-			return Err(MonitorError::Tool(format!("{}: block {n}: {e}", self.name)));
+			return Err(MonitorError::Tool(format!("{}: {what} {n}: {e}", self.name)));
 		}
-		self.blocks += 1;
-		if self.blocks == 1 {
+		let count = if update { &mut self.updates } else { &mut self.blocks };
+		*count += 1;
+		if *count == 1 {
 			self.problems
-				.record(format!("{}: block {n} could not be read ({e})", self.name));
-		}
-		Ok(())
-	}
-
-	fn update(&mut self, n: u32, e: &ChainError) -> Result<(), MonitorError> {
-		if e.fault() == Fault::Tool {
-			return Err(MonitorError::Tool(format!("{}: state at block {n}: {e}", self.name)));
-		}
-		self.updates += 1;
-		if self.updates == 1 {
-			self.problems
-				.record(format!("{}: state at block {n} could not be read ({e})", self.name));
+				.record(format!("{}: {what} {n} could not be read ({e})", self.name));
 		}
 		Ok(())
 	}
@@ -124,7 +115,8 @@ pub async fn walk<W: Walk>(
 		let (number, hash) = match newest {
 			Ok(b) => (b.number() as u32, b.hash().0),
 			Err(e) => {
-				failures.block(
+				failures.fail(
+					false,
 					last_done.map_or(0, |n| n + 1),
 					&ChainError::Read { what: "finalized block", detail: e.to_string() },
 				)?;
@@ -139,11 +131,11 @@ pub async fn walk<W: Walk>(
 				Err(e) => Err(e),
 			};
 			if let Err(e) = r {
-				failures.block(n, &e)?;
+				failures.fail(false, n, &e)?;
 			}
 		}
 		if let Err(e) = w.on_update(number, hash).await {
-			failures.update(number, &e)?;
+			failures.fail(true, number, &e)?;
 		}
 		last_done = Some(number);
 	}
