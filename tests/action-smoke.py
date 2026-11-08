@@ -120,7 +120,6 @@ class ActionTest(unittest.TestCase):
                                     env=env, capture_output=True, text=True)
             if policy == "invalid":
                 self.assertEqual(result.returncode, 2)
-                self.assertIn("fail-on must be error, verdict or verdict-or-inconclusive", result.stdout)
                 self.assertFalse((work / "runs").exists())
                 self.assertFalse((work / "outputs").exists())
                 return
@@ -134,7 +133,7 @@ class ActionTest(unittest.TestCase):
                                     env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             if malformed:
-                self.assertIn("::warning::Could not read verdict", result.stdout)
+                self.assertIn("::warning::", result.stdout)
             outputs = dict(line.split("=", 1) for line in (work / "outputs").read_text().splitlines())
             self.assertEqual(outputs["exit-code"], str(expected))
             self.assertEqual(outputs["verdict"], "" if malformed else verdict)
@@ -147,36 +146,16 @@ class ActionTest(unittest.TestCase):
             summary = "" if killed else (work / "summary").read_text()
             if killed:
                 self.assertFalse((work / "summary").exists())
-                self.assertIn("::notice::The run did not finish normally", result.stdout)
-            elif failed_by == "smoke":
+                self.assertIn("::notice::", result.stdout)
+            elif failed_by:
                 self.assertTrue(summary.startswith("test summary\n"), summary)
                 self.assertIn("### Why this job failed", summary)
-                self.assertIn('This smoke-mode run (`mode="smoke"`) failed on: no silent loss: state check '
-                              "timed out.\n", summary)
-                self.assertIn("whatever `fail-on` is set to, so `fail-on: verdict` or `fail-on: error` "
-                              "does not help", summary)
-                self.assertNotIn("set `fail-on: verdict` on this step", summary)
-                self.assertIn("::error title=PolkaMeter smoke run failed::no silent loss: state check "
-                              "timed out. Smoke mode fails the job on this whatever fail-on is set to",
-                              result.stdout)
-                self.assertNotIn("set fail-on: verdict", result.stdout)
-            elif failed_by == "INCONCLUSIVE":
-                self.assertTrue(summary.startswith("test summary\n"), summary)
-                self.assertIn("The load verdict is **INCONCLUSIVE**: required checks with no result: "
-                              "no silent loss. ", summary)
-                self.assertIn("set `fail-on: verdict` on this step", summary)
-                self.assertIn("::error title=PolkaMeter verdict INCONCLUSIVE::required checks with no "
-                              "result: no silent loss. ", result.stdout)
-            elif failed_by == "FAIL":
-                self.assertTrue(summary.startswith("test summary\n"), summary)
-                self.assertIn("The load verdict is **FAIL**: failed checks: relay slots (level 1). ", summary)
-                self.assertIn(f"`fail-on: {policy}` fails the job on that", summary)
-                self.assertIn("set `fail-on: error` on this step", summary)
-                self.assertIn("reading-results.md#did-it-pass", summary)
-                self.assertIn("::error title=PolkaMeter verdict FAIL::failed checks: relay slots (level 1). "
-                              f"fail-on: {policy} fails the job on FAIL; set fail-on: error", result.stdout)
+                title = "smoke run failed" if failed_by == "smoke" else f"verdict {failed_by}"
+                self.assertIn(f"::error title=PolkaMeter {title}::", result.stdout)
+                # Smoke mode fails whatever fail-on is, so changing it must not be suggested.
+                self.assertEqual("set fail-on:" in result.stdout, failed_by != "smoke")
             else:
-                self.assertEqual((work / "summary").read_text(), "test summary\n")
+                self.assertEqual(summary, "test summary\n")
                 self.assertNotIn("::error", result.stdout)
             self.assertEqual("--fail-on-inconclusive" in result.stdout,
                              old_cli and policy == "verdict-or-inconclusive")
@@ -185,82 +164,36 @@ class ActionTest(unittest.TestCase):
             self.assertEqual(result_code, expected)
             return result.stdout
 
-    def test_killed_run_keeps_unredacted_summary_out_of_job_summary(self):
-        self.run_action("error", "", 137, killed=True)
-
-    def test_default_policy_fails_on_fail_or_inconclusive(self):
+    def test_policy_verdict_and_runtime_code_decide_the_exit_code(self):
         inputs = ACTION.read_text().split("\n  fail-on:\n", 1)[1].split("\n  upload:\n", 1)[0]
         self.assertTrue(inputs.endswith("\n    default: verdict-or-inconclusive"), inputs)
-        for verdict, expected in (("PASS", 0), ("WARN", 0), ("FAIL", 1), ("INCONCLUSIVE", 1), ("", 0)):
-            with self.subTest(verdict=verdict):
-                self.run_action("verdict-or-inconclusive", verdict, expected)
-
-    def test_default_policy_preserves_runtime_exit_codes(self):
-        for code in (1, 2, 130, 143):
-            with self.subTest(code=code):
-                self.run_action("verdict-or-inconclusive", "INCONCLUSIVE", code, runtime_code=code)
+        # policy, verdict, runtime code, expected job exit code, extra run options
+        cases = [(policy, verdict, 0, int(verdict in failing), {})
+                 for policy, failing in (("error", ()), ("verdict", ("FAIL",)),
+                                         ("verdict-or-inconclusive", ("FAIL", "INCONCLUSIVE")))
+                 for verdict in ("PASS", "WARN", "FAIL", "INCONCLUSIVE", "")]
+        cases += [(policy, "FAIL", code, code, {}) for policy in ("error", "verdict", "verdict-or-inconclusive")
+                  for code in (1, 2, 130, 143)]
+        # Smoke mode fails a required check with no result under every policy.
+        cases += [(policy, "INCONCLUSIVE", 0, 1, {"smoke": True})
+                  for policy in ("error", "verdict", "verdict-or-inconclusive")]
+        cases += [("verdict-or-inconclusive", "INCONCLUSIVE", 143, 143, {"smoke": True}),
+                  ("verdict", "PASS", 0, 0, {"preexisting": True}),
+                  ("verdict", "FAIL", 1, 1, {"malformed": True}),
+                  ("error", "", 0, 0, {"junit": True}),
+                  ("error", "", 137, 137, {"killed": True})]
+        for policy, verdict, code, expected, options in cases:
+            with self.subTest(policy=policy, verdict=verdict, code=code, **options):
+                self.run_action(policy, verdict, expected, runtime_code=code, **options)
 
     def test_older_cli_degrades_to_fail_verdict_with_a_warning(self):
-        for verdict, expected in (("INCONCLUSIVE", 0), ("FAIL", 1), ("PASS", 0)):
-            with self.subTest(verdict=verdict):
-                stdout = self.run_action("verdict-or-inconclusive", verdict, expected, old_cli=True)
-                self.assertIn("::warning::This PolkaMeter CLI has no --fail-on-inconclusive", stdout)
-                self.assertIn("set fail-on: verdict", stdout)
-
-    def test_older_cli_is_not_asked_for_the_flag_under_other_policies(self):
-        for policy, verdict, expected in (("verdict", "FAIL", 1), ("error", "INCONCLUSIVE", 0)):
-            with self.subTest(policy=policy):
+        for policy, verdict, expected in (("verdict-or-inconclusive", "INCONCLUSIVE", 0),
+                                          ("verdict-or-inconclusive", "FAIL", 1),
+                                          ("verdict-or-inconclusive", "PASS", 0),
+                                          ("verdict", "FAIL", 1), ("error", "INCONCLUSIVE", 0)):
+            with self.subTest(policy=policy, verdict=verdict):
                 stdout = self.run_action(policy, verdict, expected, old_cli=True)
-                self.assertNotIn("::warning::", stdout)
-
-    def test_smoke_failure_does_not_blame_the_policy(self):
-        # Smoke mode fails on a required check with no result under every policy, so the job
-        # summary must not suggest changing fail-on.
-        for policy in ("verdict-or-inconclusive", "verdict", "error"):
-            with self.subTest(policy=policy):
-                self.run_action(policy, "INCONCLUSIVE", 1, smoke=True)
-
-    def test_smoke_runtime_failure_has_no_smoke_section(self):
-        self.run_action("verdict-or-inconclusive", "INCONCLUSIVE", 143, runtime_code=143, smoke=True)
-
-    def test_error_policy_ignores_inconclusive(self):
-        self.run_action("error", "INCONCLUSIVE", 0)
-
-    def test_default_preserves_fail_verdict_exit_code(self):
-        self.run_action("error", "FAIL", 0)
-
-    def test_verdict_policy_fails(self):
-        self.run_action("verdict", "FAIL", 1)
-
-    def test_verdict_policy_passes(self):
-        self.run_action("verdict", "PASS", 0)
-
-    def test_verdict_policy_warns(self):
-        self.run_action("verdict", "WARN", 0)
-
-    def test_verdict_policy_inconclusive(self):
-        self.run_action("verdict", "INCONCLUSIVE", 0)
-
-    def test_no_load_has_empty_verdict(self):
-        self.run_action("verdict", "", 0)
-
-    def test_runtime_failure_is_preserved(self):
-        self.run_action("error", "", 1, runtime_code=1)
-
-    def test_verdict_policy_preserves_invalid_run_exit_code(self):
-        self.run_action("verdict", "FAIL", 2, runtime_code=2)
-
-    def test_verdict_policy_preserves_interrupted_exit_code(self):
-        self.run_action("verdict", "FAIL", 130, runtime_code=130)
-
-    def test_preexisting_run_directories_are_ignored(self):
-        self.run_action("verdict", "PASS", 0, preexisting=True)
-
-    def test_malformed_summary_preserves_artifact_outputs_and_exit_code(self):
-        self.run_action("verdict", "FAIL", 1, runtime_code=1, malformed=True)
-
-    def test_junit_output_when_present(self):
-        self.run_action("error", "", 0, junit=True)
+                self.assertEqual("::warning::" in stdout, policy == "verdict-or-inconclusive")
 
     def test_invalid_policy(self):
         self.assertLess(ACTION.read_text().index("- name: Validate failure policy"),

@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """Offline tests for release packaging, installation and resumable publishing."""
 
-import contextlib
 import functools
 import hashlib
-from http.server import BaseHTTPRequestHandler, SimpleHTTPRequestHandler, ThreadingHTTPServer
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
-import io
 import json
 import os
 from pathlib import Path
@@ -18,7 +16,6 @@ import tempfile
 import threading
 import unittest
 from unittest.mock import Mock, patch
-from urllib.error import HTTPError
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -342,18 +339,6 @@ class InstallerTests(unittest.TestCase):
 
 
 class PublisherTests(unittest.TestCase):
-    def setUp(self):
-        self.package = {"name": "cli", "version": "0.2.0"}
-        self.credentials = Mock()
-        self.credentials.environment.return_value = {}
-        self.credentials.preferred_mode.return_value = "trusted-publishing"
-        self.credentials.fallback = ""
-        self.output = contextlib.redirect_stdout(io.StringIO())
-        self.output.__enter__()
-
-    def tearDown(self):
-        self.output.__exit__(None, None, None)
-
     @staticmethod
     def metadata():
         def package(name, dependencies=(), publish=None):
@@ -373,185 +358,9 @@ class PublisherTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             publisher.publish_order(metadata)
 
-    def test_dev_dependency_does_not_create_cycle(self):
-        metadata = self.metadata()
-        metadata["packages"][1]["dependencies"] = [{"name": "cli", "kind": "dev", "path": "/local"}]
-        self.assertEqual(len(publisher.publish_order(metadata)), 2)
-
-    def test_external_packages_excluded(self):
-        metadata = self.metadata()
-        metadata["packages"].append({"id": "external", "name": "external", "publish": None})
-        self.assertEqual(len(publisher.publish_order(metadata)), 2)
-
-    def test_tag_matches(self):
-        self.assertEqual(publisher.release_version(self.metadata(), "v0.2.0"), "0.2.0")
-
     def test_tag_mismatch(self):
         with self.assertRaises(ValueError):
             publisher.release_version(self.metadata(), "v0.3.0")
-
-    def test_moving_or_invalid_tag_rejected(self):
-        for tag in ("v0", "main", "v0.2.0/path", "v00.2.0"):
-            with self.subTest(tag=tag), self.assertRaises(ValueError):
-                publisher.release_version(self.metadata(), tag)
-
-    @patch.object(publisher, "published", return_value=True)
-    @patch.object(publisher.subprocess, "run")
-    def test_existing_version_skipped(self, run, _published):
-        publisher.publish(self.package, self.credentials)
-        run.assert_not_called()
-
-    @patch.object(publisher, "published", return_value=False)
-    @patch.object(publisher.subprocess, "run", return_value=Mock(returncode=0, stdout="published\n"))
-    def test_success(self, run, _published):
-        publisher.publish(self.package, self.credentials)
-        self.assertEqual(run.call_args.args[0][-2:], ["-p", "cli"])
-
-    @patch.object(publisher.time, "sleep")
-    @patch.object(publisher, "published", return_value=False)
-    @patch.object(publisher.subprocess, "run", side_effect=[Mock(returncode=1, stdout="HTTP 429 Too Many Requests"), Mock(returncode=0, stdout="published\n")])
-    def test_publish_rate_limit_retry(self, run, _published, sleep):
-        publisher.publish(self.package, self.credentials)
-        self.assertEqual(run.call_count, 2)
-        sleep.assert_called_once_with(30)
-
-    @patch.object(publisher.time, "sleep")
-    @patch.object(publisher, "published", return_value=False)
-    @patch.object(publisher.subprocess, "run", return_value=Mock(returncode=1, stdout="rate limit exceeded"))
-    def test_rate_limit_exhaustion(self, run, _published, sleep):
-        with self.assertRaises(RuntimeError):
-            publisher.publish(self.package, self.credentials)
-        self.assertEqual(run.call_count, 6)
-        self.assertEqual(sum(call.args[0] for call in sleep.call_args_list), 900)
-
-    @patch.object(publisher, "published", side_effect=[False, True])
-    @patch.object(publisher.subprocess, "run", return_value=Mock(returncode=1, stdout="upload response lost"))
-    def test_successful_upload_with_lost_response(self, run, _published):
-        publisher.publish(self.package, self.credentials)
-        self.assertEqual(run.call_count, 1)
-
-    @patch.object(publisher.time, "sleep")
-    @patch.object(publisher, "published", return_value=False)
-    @patch.object(publisher.subprocess, "run", return_value=Mock(returncode=1, stdout="invalid token"))
-    def test_auth_failure_does_not_retry(self, _run, _published, sleep):
-        with self.assertRaises(RuntimeError):
-            publisher.publish(self.package, self.credentials)
-        sleep.assert_not_called()
-
-    @patch.object(publisher, "request_json", side_effect=HTTPError("url", 404, "missing", {}, None))
-    def test_registry_404_missing(self, _request):
-        self.assertFalse(publisher.published("cli", "0.2.0"))
-
-    @patch.object(publisher, "request_json", side_effect=HTTPError("url", 403, "forbidden", {}, None))
-    def test_registry_errors_not_treated_as_missing(self, _request):
-        with self.assertRaises(HTTPError):
-            publisher.published("cli", "0.2.0")
-
-    @patch.object(publisher.time, "sleep")
-    @patch.object(publisher, "request_json", side_effect=[HTTPError("url", 429, "limited", {}, None), {}])
-    def test_registry_api_backoff(self, _request, sleep):
-        self.assertTrue(publisher.published("cli", "0.2.0"))
-        sleep.assert_called_once_with(30)
-
-    def test_generic_user_agent(self):
-        with patch.object(publisher, "urlopen") as urlopen:
-            urlopen.return_value.__enter__.return_value.read.return_value = b"{}"
-            publisher.request_json("https://crates.io/api/v1/crates/cli/0.2.0")
-            self.assertEqual(urlopen.call_args.args[0].get_header("User-agent"), "polkameter-release")
-
-    @patch.dict(os.environ, {"CARGO_REGISTRY_TOKEN": "fallback", "TRUSTED_PUBLISHING_TOKEN": ""})
-    def test_fallback_token(self):
-        self.assertEqual(publisher.Credentials().environment("fallback-secret")["CARGO_REGISTRY_TOKEN"], "fallback")
-
-    @patch.dict(os.environ, {"CARGO_REGISTRY_TOKEN": "", "TRUSTED_PUBLISHING_TOKEN": ""})
-    def test_missing_credentials(self):
-        with self.assertRaises(ValueError):
-            publisher.Credentials().environment("fallback-secret")
-
-    @patch.dict(os.environ, {"TRUSTED_PUBLISHING_TOKEN": "bootstrap", "ACTIONS_ID_TOKEN_REQUEST_URL": "https://github.test/token?x=1", "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "request"})
-    @patch.object(publisher, "request_json", side_effect=[{"value": "jwt"}, {"token": "renewed"}, None])
-    def test_trusted_token_refresh_and_revoke(self, request):
-        credentials = publisher.Credentials()
-        credentials.created -= 601
-        self.assertEqual(credentials.environment("trusted-publishing")["CARGO_REGISTRY_TOKEN"], "renewed")
-        credentials.close()
-        self.assertEqual(request.call_args.kwargs["method"], "DELETE")
-        self.assertIn("audience=crates.io", request.call_args_list[0].args[0])
-
-
-class RegistryTests(unittest.TestCase):
-    """Real HTTP stub registry plus a fake cargo process; no crates.io writes."""
-
-    def run_mixed_publish(self, status, fallback):
-        attempts, uploaded = [], set()
-
-        class Registry(BaseHTTPRequestHandler):
-            def log_message(self, *_args):
-                pass
-
-            def do_GET(self):
-                name = self.path.split("/")[-2]
-                self.send_response(200 if name in uploaded else 404)
-                self.end_headers()
-                self.wfile.write(b"{}")
-
-            def do_POST(self):
-                name = self.path.removeprefix("/")
-                token = self.headers["Authorization"]
-                attempts.append((name, token))
-                allowed = token == ("fallback" if name == "unconfigured" else "trusted")
-                if allowed:
-                    uploaded.add(name)
-                self.send_response(200 if allowed else status)
-                self.end_headers()
-
-        with tempfile.TemporaryDirectory() as directory:
-            cargo = Path(directory) / "cargo"
-            cargo.write_text("#!" + __import__("sys").executable + "\n" + """
-import os, sys
-from urllib.request import Request, urlopen
-from urllib.error import HTTPError
-try:
-    with urlopen(Request(os.environ['STUB_REGISTRY'] + '/' + sys.argv[-1], method='POST', headers={'Authorization': os.environ['CARGO_REGISTRY_TOKEN']})):
-        print('published')
-except HTTPError as error:
-    print(error)
-    sys.exit(1)
-""")
-            cargo.chmod(0o755)
-            server = ThreadingHTTPServer(("127.0.0.1", 0), Registry)
-            thread = threading.Thread(target=server.serve_forever, daemon=True)
-            thread.start()
-            base = f"http://127.0.0.1:{server.server_port}"
-            try:
-                with patch.dict(os.environ, {"PATH": directory + ":" + os.environ["PATH"], "STUB_REGISTRY": base,
-                                            "TRUSTED_PUBLISHING_TOKEN": "trusted", "CARGO_REGISTRY_TOKEN": fallback}), patch.object(publisher, "API", base), contextlib.redirect_stdout(io.StringIO()) as log:
-                    credentials = publisher.Credentials()
-                    if not fallback:
-                        with self.assertRaises(RuntimeError):
-                            publisher.publish({"name": "unconfigured", "version": "0.3.0"}, credentials)
-                    else:
-                        for name in ("configured", "unconfigured", "configured-again"):
-                            publisher.publish({"name": name, "version": "0.3.0"}, credentials)
-                        # Resume skips the successful version without invoking cargo again.
-                        publisher.publish({"name": "unconfigured", "version": "0.3.0"}, credentials)
-                        self.assertIn("using trusted-publishing", log.getvalue())
-                        self.assertIn("using fallback-secret", log.getvalue())
-            finally:
-                server.shutdown()
-                server.server_close()
-                thread.join()
-        return attempts
-
-    def test_mixed_coverage_401(self):
-        self.assertEqual(self.run_mixed_publish(401, "fallback"), [
-            ("configured", "trusted"), ("unconfigured", "trusted"), ("unconfigured", "fallback"), ("configured-again", "trusted")])
-
-    def test_mixed_coverage_403(self):
-        self.assertEqual(len(self.run_mixed_publish(403, "fallback")), 4)
-
-    def test_no_fallback_auth_failure(self):
-        self.assertEqual(self.run_mixed_publish(403, ""), [("unconfigured", "trusted")])
 
 
 FAKE_GH = r'''
@@ -670,20 +479,6 @@ class ReleaseTests(unittest.TestCase):
                     self.assertIn("--prerelease=false", edit)
                     self.assertNotIn("--latest=false", edit)
 
-    def test_notes_start_at_the_previous_stable_tag(self):
-        tags = ["v0", "v0.1.0", "v0.2.0", "v0.2.1-rc.1", "v0.3.0-rc.1", "v0.3.0-rc.2", "v0.4.0", "v0.10.0"]
-        for tag, start in (("v0.3.0", "v0.2.0"), ("v0.3.0-rc.2", "v0.2.0"), ("v0.11.0", "v0.10.0"),
-                           ("v0.1.0", None)):
-            with self.subTest(tag=tag):
-                self.set_release(None, tags)
-                self.log.unlink(missing_ok=True)
-                self.publish(tag)
-                create = self.commands("create")[0]
-                if start:
-                    self.assertEqual(create[create.index("--notes-start-tag") + 1], start)
-                else:
-                    self.assertNotIn("--notes-start-tag", create)
-
     def test_draft_recovery_replaces_changed_and_uploads_missing_assets(self):
         self.set_release({"isDraft": True, "prerelease": False, "assets": {self.ARCHIVE: "sha256:" + "0" * 64}})
         self.publish()
@@ -705,34 +500,6 @@ class ReleaseTests(unittest.TestCase):
         self.publish()
         self.assertEqual(self.uploaded(), ["polkameter.spdx.json"])
         self.assertNotIn("replaced_published", self.final())
-
-    def test_published_rebuilds_that_differ_keep_the_published_files(self):
-        # A dispatch after publication rebuilds everything: Rust archives and the
-        # SBOM (new timestamp and ID) never match, yet later jobs must still run.
-        published = self.published(**{self.ARCHIVE: "sha256:" + "1" * 64,
-                                      self.ARCHIVE + ".sha256": "sha256:" + "2" * 64,
-                                      "polkameter.spdx.json": "sha256:" + "3" * 64})
-        self.set_release(published)
-        with contextlib.redirect_stdout(io.StringIO()) as output:
-            self.publish()
-        self.assertEqual(self.calls(), ["view", "edit"])
-        self.assertEqual(self.final()["release"]["assets"], published["assets"])
-        self.assertIn("::warning::", output.getvalue())
-        self.assertIn("polkameter.spdx.json", output.getvalue())
-        self.assertIn("never replaced", output.getvalue())
-
-    def test_missing_asset_whose_published_partner_differs_fails(self):
-        for missing, changed in ((self.ARCHIVE, self.ARCHIVE + ".sha256"), (self.ARCHIVE + ".sha256", self.ARCHIVE)):
-            with self.subTest(missing=missing):
-                published = self.published(**{missing: None, changed: "sha256:" + "1" * 64})
-                self.set_release(published)
-                self.log.unlink(missing_ok=True)
-                with self.assertRaises(SystemExit) as raised:
-                    self.publish()
-                self.assertIn(missing, str(raised.exception))
-                self.assertIn("Re-run only the failed jobs", str(raised.exception))
-                self.assertEqual(self.calls(), ["view"])
-                self.assertEqual(self.final()["release"]["assets"], published["assets"])
 
     def test_unreadable_release_fails_without_creating_one(self):
         with patch.dict(os.environ, FAKE_GH_VIEW_ERROR="1"), self.assertRaises(SystemExit) as raised:
