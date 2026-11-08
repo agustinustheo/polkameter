@@ -4134,7 +4134,7 @@ dependencies = [
 
 [[package]]
 name = "polkameter"
-version = "0.3.0"
+version = "0.3.0-rc.1"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -4163,7 +4163,7 @@ dependencies = [
 
 [[package]]
 name = "polkameter-desktop"
-version = "0.3.0"
+version = "0.3.0-rc.1"
 dependencies = [
  "polkameter",
  "rfd",
@@ -4174,7 +4174,7 @@ dependencies = [
 
 [[package]]
 name = "polkameter-example-plugin"
-version = "0.3.0"
+version = "0.3.0-rc.1"
 dependencies = [
  "anyhow",
  "polkameter",
@@ -4186,7 +4186,7 @@ dependencies = [
 
 [[package]]
 name = "polkameter-plugin-sdk"
-version = "0.3.0"
+version = "0.3.0-rc.1"
 dependencies = [
  "anyhow",
  "frame-decode",
@@ -4208,7 +4208,7 @@ dependencies = [
 
 [[package]]
 name = "polkameter-substrate-plugin"
-version = "0.3.0"
+version = "0.3.0-rc.1"
 dependencies = [
  "anyhow",
  "hex",
