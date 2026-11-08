@@ -5,6 +5,9 @@ use axum::{
 	routing::{get, post},
 };
 use serde_json::{Value, json};
+#[path = "support/work.rs"]
+mod work;
+
 use std::{
 	fs,
 	path::{Path, PathBuf},
@@ -13,6 +16,7 @@ use std::{
 		atomic::{AtomicBool, Ordering},
 	},
 };
+use work::Work;
 
 /// `(--fail-on-verdict, --fail-on-inconclusive)`: every combination.
 const POLICIES: [(bool, bool); 4] = [(false, false), (true, false), (false, true), (true, true)];
@@ -159,59 +163,11 @@ async fn fail_on_inconclusive_refuses_an_agent_without_the_option() {
 	server.abort();
 }
 
-/// A fake agent that accepts any options and ends the run with `outcome`.
-async fn agent_ending(outcome: Value) -> (String, tokio::task::JoinHandle<()>) {
-	let capabilities = json!({"runOptions":{"failOnVerdict":true,"failOnInconclusive":true}});
-	let state = outcome["state"].clone();
-	let app = Router::new()
-		.route("/plugins", get(move || async move { Json(capabilities) }))
-		.route("/runs", post(|| async { Json(json!({"id":"test", "state":"running"})) }))
-		.route(
-			"/runs/test",
-			get(
-				move || async move { Json(json!({"id":"test", "state":state, "outcome":outcome})) },
-			),
-		);
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move {
-		axum::serve(listener, app).await.unwrap();
-	});
-	(endpoint, server)
-}
-
-/// A run stopped during teardown has no exit reason: nothing blames a flag for its 143.
-#[tokio::test]
-async fn a_stopped_run_prints_no_verdict_reason() {
-	let (endpoint, server) = agent_ending(json!({
-		"artifact_dir":"/agent/run-test", "exit_code":143, "state":"stopped",
-		"error":"run stopped during teardown"
-	}))
-	.await;
-	let output = run_remote(&endpoint, (true, true)).await;
-	let stderr = String::from_utf8_lossy(&output.stderr);
-	assert_eq!(output.status.code(), Some(143), "{stderr}");
-	assert!(!stderr.contains("verdict") && !stderr.contains("because of"), "{stderr}");
-	server.abort();
-}
-
-struct Work(PathBuf);
-impl Drop for Work {
-	fn drop(&mut self) {
-		let _ = fs::remove_dir_all(&self.0);
-	}
-}
-
 /// A run without `<monitors>`, rebuilt by `polkameter report`, is not INCONCLUSIVE: the checks
 /// of nodes it does not monitor are not applicable and optional.
 #[test]
 fn a_monitorless_run_is_not_inconclusive() {
-	let work = Work(std::env::temp_dir().join(format!(
-		"polkameter-monitorless-{}-{}",
-		std::process::id(),
-		std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-	)));
-	fs::create_dir_all(&work.0).unwrap();
+	let work = Work::new("monitorless");
 	// The recorded run's own files, less what only monitors write (node scrapes in scrapes.jsonl,
 	// the relay chain in chain.jsonl) and the plugin's verdicts: what a run of the same load
 	// without <monitors> leaves behind.

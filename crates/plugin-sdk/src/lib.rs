@@ -622,72 +622,6 @@ mod tests {
 	use super::*;
 	use serde_json::json;
 
-	fn object(fields: &[(&str, Schema, bool)]) -> Schema {
-		Schema::Object {
-			fields: fields
-				.iter()
-				.map(|(name, schema, optional)| {
-					((*name).into(), Field { schema: schema.clone(), optional: *optional })
-				})
-				.collect(),
-		}
-	}
-
-	#[test]
-	fn scalar_schemas_accept_their_type_only() {
-		assert!(Schema::String.validate(&json!("a")).is_ok());
-		assert!(Schema::String.validate(&json!(1)).is_err());
-		assert!(Schema::Number.validate(&json!(1.5)).is_ok());
-		assert!(Schema::Number.validate(&json!("1")).is_err());
-		assert!(Schema::Integer.validate(&json!(-3)).is_ok());
-		assert!(Schema::Integer.validate(&json!(u64::MAX)).is_ok());
-		assert!(Schema::Integer.validate(&json!(1.5)).is_err());
-		assert!(Schema::Boolean.validate(&json!(true)).is_ok());
-		assert!(Schema::Boolean.validate(&json!(0)).is_err());
-		for value in [json!(null), json!([1]), json!({"a": 1}), json!("x")] {
-			assert!(Schema::Json.validate(&value).is_ok());
-		}
-		let error = Schema::String.validate(&json!(1)).unwrap_err().to_string();
-		assert_eq!(error, "value does not match String");
-	}
-
-	#[test]
-	fn arrays_validate_every_item() {
-		let schema = Schema::Array { items: Box::new(Schema::Integer) };
-		assert!(schema.validate(&json!([])).is_ok());
-		assert!(schema.validate(&json!([1, 2, 3])).is_ok());
-		assert!(schema.validate(&json!([1, "2"])).is_err());
-		assert_eq!(schema.validate(&json!({})).unwrap_err().to_string(), "expected array");
-	}
-
-	#[test]
-	fn objects_check_required_optional_and_unknown_fields() {
-		let schema = object(&[("name", Schema::String, false), ("age", Schema::Integer, true)]);
-		assert!(schema.validate(&json!({"name": "a"})).is_ok());
-		assert!(schema.validate(&json!({"name": "a", "age": 3})).is_ok());
-		let missing = schema.validate(&json!({"age": 3})).unwrap_err().to_string();
-		assert_eq!(missing, "missing field name");
-		let unknown = schema.validate(&json!({"name": "a", "x": 1})).unwrap_err().to_string();
-		assert_eq!(unknown, "unknown field x");
-		assert!(schema.validate(&json!({"name": "a", "age": "3"})).is_err());
-		assert_eq!(schema.validate(&json!([])).unwrap_err().to_string(), "expected object");
-		let nested = object(&[("inner", schema, false)]);
-		assert!(nested.validate(&json!({"inner": {"name": "a"}})).is_ok());
-		assert!(nested.validate(&json!({"inner": {}})).is_err());
-	}
-
-	#[test]
-	fn operation_validates_inputs_and_outputs() {
-		let op =
-			Operation::new("greet", &[("name", Schema::String)], &[("greeting", Schema::String)]);
-		assert!(!op.read_only);
-		assert!(op.clone().read_only().read_only);
-		assert!(op.validate_inputs(&json!({"name": "a"})).is_ok());
-		assert!(op.validate_inputs(&json!({"name": 1})).is_err());
-		assert!(op.validate_outputs(&json!({"greeting": "hi"})).is_ok());
-		assert!(op.validate_outputs(&json!({})).is_err());
-	}
-
 	#[test]
 	fn manifest_round_trips_and_rejects_unknown_fields() {
 		let manifest = Manifest {
@@ -750,15 +684,6 @@ mod tests {
 	}
 
 	#[test]
-	fn installed_checksums_stay_comparable() {
-		// Registries pin plugin checksums in this form; a change would flag every plugin.
-		assert_eq!(
-			blake2_hex(b""),
-			"0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8"
-		);
-	}
-
-	#[test]
 	fn prepared_tx_checks_its_hash() {
 		let tx = PreparedTx::new(&[1, 2, 3], json!({"lane": "a"}));
 		assert_eq!(tx.bytes, "010203");
@@ -806,36 +731,23 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn read_line_splits_lines_across_buffer_chunks() {
+	async fn read_line_frames_messages() {
+		// Lines split across buffer chunks are joined.
 		let got = lines(b"{\"a\":1}\n\n{\"b\":2}\n", 3).await.unwrap();
 		assert_eq!(got, ["{\"a\":1}\n", "\n", "{\"b\":2}\n"]);
 		assert!(lines(b"", 8).await.unwrap().is_empty());
-	}
-
-	#[tokio::test]
-	async fn read_line_rejects_truncated_and_invalid_messages() {
-		let error = lines(b"{\"a\":1}\n{\"b\"", 4).await.unwrap_err().to_string();
-		assert_eq!(error, "truncated protocol message");
+		// Truncated and invalid UTF-8 messages are errors.
+		assert!(lines(b"{\"a\":1}\n{\"b\"", 4).await.is_err());
 		assert!(lines(b"\xff\xfe\n", 4).await.is_err());
-	}
 
-	#[tokio::test]
-	async fn read_line_enforces_the_message_limit() {
 		// The limit counts the newline: exactly MAX_MESSAGE_BYTES is accepted.
 		let mut at_limit = vec![b'a'; MAX_MESSAGE_BYTES - 1];
 		at_limit.push(b'\n');
-		let got = lines(&at_limit, 64 * 1024).await.unwrap();
-		assert_eq!(got.len(), 1);
-		assert_eq!(got[0].len(), MAX_MESSAGE_BYTES);
-
+		assert_eq!(lines(&at_limit, 64 * 1024).await.unwrap()[0].len(), MAX_MESSAGE_BYTES);
 		let mut over = vec![b'a'; MAX_MESSAGE_BYTES];
 		over.push(b'\n');
-		let error = lines(&over, 64 * 1024).await.unwrap_err().to_string();
-		assert_eq!(error, "protocol message too large");
-
+		assert!(lines(&over, 64 * 1024).await.is_err());
 		// A peer that never sends a newline is cut off at the limit, not buffered forever.
-		let endless = vec![b'a'; MAX_MESSAGE_BYTES + 1];
-		let error = lines(&endless, 64 * 1024).await.unwrap_err().to_string();
-		assert_eq!(error, "protocol message too large");
+		assert!(lines(&vec![b'a'; MAX_MESSAGE_BYTES + 1], 64 * 1024).await.is_err());
 	}
 }

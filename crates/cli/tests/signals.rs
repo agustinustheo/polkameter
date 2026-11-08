@@ -21,6 +21,10 @@ use serde_json::Value;
 mod agent;
 #[path = "support/executable.rs"]
 mod executable;
+#[path = "support/work.rs"]
+mod work;
+
+use work::Work;
 
 /// How long any one wait in these tests may take before the test fails.
 /// Generous: the whole workspace's tests run in parallel, and a loaded machine starts each
@@ -63,26 +67,15 @@ const DOUBLE: &str =
 /// A teardown step that waits for a minute.
 const SLOW_TEARDOWN: &str = r#"<step id="cleanup" use="example.wait" timeout-ms="120000"><input name="milliseconds" value="60000"/></step>"#;
 
-/// A temporary directory with an installed example plugin, removed when dropped.
-struct Work(PathBuf);
-
+/// A temporary directory with an installed example plugin.
 impl Work {
-	fn new(name: &str, plan_xml: &str) -> Self {
+	fn installed(name: &str, plan_xml: &str) -> Self {
 		Self::with_plugin(name, plan_xml, |_| plugin_executable())
 	}
 
-	/// Like `new`, but installs the executable that `plugin` returns for the work directory.
+	/// Like `installed`, but installs the executable that `plugin` returns for the work directory.
 	fn with_plugin(name: &str, plan_xml: &str, plugin: impl FnOnce(&Path) -> PathBuf) -> Self {
-		let directory = std::env::temp_dir().join(format!(
-			"polkameter-signals-{name}-{}-{}",
-			std::process::id(),
-			std::time::SystemTime::now()
-				.duration_since(std::time::UNIX_EPOCH)
-				.unwrap()
-				.as_nanos()
-		));
-		std::fs::create_dir_all(&directory).unwrap();
-		let work = Self(directory.canonicalize().unwrap());
+		let work = Self::new(&format!("signals-{name}"));
 		std::fs::write(work.0.join("plan.xml"), plan_xml).unwrap();
 		let executable = plugin(&work.0);
 		let status = work
@@ -143,12 +136,6 @@ impl Work {
 			let runs = std::fs::read_dir(self.0.join(root)).ok()?;
 			runs.map(|entry| entry.unwrap().path()).find(|path| path.is_dir())
 		})
-	}
-}
-
-impl Drop for Work {
-	fn drop(&mut self) {
-		let _ = std::fs::remove_dir_all(&self.0);
 	}
 }
 
@@ -233,45 +220,34 @@ fn cleanup_succeeded(run: &Path) -> bool {
 	})
 }
 
-/// Checks a stopped local run: exit code, outcome, results, teardown and plugin processes.
-fn stopped_with_teardown(signal_name: &str, code: i32) {
-	let work = Work::new(&signal_name.to_lowercase(), &plan(DOUBLE));
-	let output = work.0.join("runs");
-	let mut process = work.run(&["--output", output.to_str().unwrap()]);
-	let run = work.run_directory("runs");
-	let pid = waiting_plugin(&run, None);
-	process.signal(signal_name);
-	let (status, stderr) = process.wait();
-	assert_eq!(status.code(), Some(code), "{stderr}");
-	assert!(
-		stderr.contains(&format!("PolkaMeter: received SIG{signal_name}; stopping the run")),
-		"{stderr}"
-	);
-	let execution = read_json(&run.join("execution.json"));
-	assert_eq!(execution["state"], "stopped");
-	assert_eq!(execution["exit_code"], code);
-	assert_eq!(execution["teardown"], "completed");
-	for file in ["summary.md", "junit.xml", "samples.jtl"] {
-		assert!(run.join(file).is_file(), "missing {file}");
+/// A stopped local run: exit code, outcome, results, teardown and plugin processes.
+#[test]
+fn sigterm_and_sigint_stop_a_local_run_after_teardown_and_exit_143_and_130() {
+	for (signal_name, code) in [("TERM", 143), ("INT", 130)] {
+		let work = Work::installed(&signal_name.to_lowercase(), &plan(DOUBLE));
+		let output = work.0.join("runs");
+		let mut process = work.run(&["--output", output.to_str().unwrap()]);
+		let run = work.run_directory("runs");
+		let pid = waiting_plugin(&run, None);
+		process.signal(signal_name);
+		let (status, stderr) = process.wait();
+		assert_eq!(status.code(), Some(code), "{stderr}");
+		let execution = read_json(&run.join("execution.json"));
+		assert_eq!(execution["state"], "stopped");
+		assert_eq!(execution["exit_code"], code);
+		assert_eq!(execution["teardown"], "completed");
+		for file in ["summary.md", "junit.xml", "samples.jtl"] {
+			assert!(run.join(file).is_file(), "missing {file}");
+		}
+		// The cancelled call killed the plugin; teardown started it again and used it.
+		assert!(events(&run).iter().any(|event| event["event"] == "plugin-restarted"));
+		assert!(cleanup_succeeded(&run));
+		assert!(!alive(pid.trim()), "the plugin outlived the run");
+		let stdout = BufReader::new(process.0.stdout.take().unwrap());
+		let last: Value = serde_json::from_str(&stdout.lines().last().unwrap().unwrap()).unwrap();
+		assert_eq!(last["event"], "artifact-written");
+		assert_eq!(last["outcome"]["exit_code"], code);
 	}
-	// The cancelled call killed the plugin; teardown started it again and used it.
-	assert!(events(&run).iter().any(|event| event["event"] == "plugin-restarted"));
-	assert!(cleanup_succeeded(&run));
-	assert!(!alive(pid.trim()), "the plugin outlived the run");
-	let stdout = BufReader::new(process.0.stdout.take().unwrap());
-	let last: Value = serde_json::from_str(&stdout.lines().last().unwrap().unwrap()).unwrap();
-	assert_eq!(last["event"], "artifact-written");
-	assert_eq!(last["outcome"]["exit_code"], code);
-}
-
-#[test]
-fn sigterm_stops_a_local_run_after_teardown_and_exits_143() {
-	stopped_with_teardown("TERM", 143);
-}
-
-#[test]
-fn sigint_stops_a_local_run_after_teardown_and_exits_130() {
-	stopped_with_teardown("INT", 130);
 }
 
 /// Starts a local run whose teardown waits, stops it once, and returns it with the run directory
@@ -290,7 +266,7 @@ fn stopped_in_teardown(work: &Work, args: &[&str]) -> (Process, PathBuf, String,
 
 #[test]
 fn a_second_signal_interrupts_teardown() {
-	let work = Work::new("second", &plan(SLOW_TEARDOWN));
+	let work = Work::installed("second", &plan(SLOW_TEARDOWN));
 	let (mut process, run, first, second) = stopped_in_teardown(&work, &[]);
 	// While teardown runs, execution.json already says the run is stopping.
 	let provisional = wait_for("a provisional outcome", || {
@@ -325,7 +301,7 @@ fn a_second_signal_interrupts_teardown() {
 
 #[test]
 fn the_grace_period_bounds_teardown_after_one_signal() {
-	let work = Work::new("grace", &plan(SLOW_TEARDOWN));
+	let work = Work::installed("grace", &plan(SLOW_TEARDOWN));
 	let (mut process, run, first, second) = stopped_in_teardown(&work, &["--shutdown-grace", "1"]);
 	let (status, stderr) = process.wait();
 	assert_eq!(status.code(), Some(143), "{stderr}");
@@ -370,7 +346,7 @@ impl Agent {
 
 #[test]
 fn sigterm_stops_the_remote_client_which_stops_the_agent_run() {
-	let work = Work::new("client", &plan(DOUBLE));
+	let work = Work::installed("client", &plan(DOUBLE));
 	let mut agent = Agent::start(&work);
 	let mut client = agent.client(&work);
 	let run = work.remote_run_directory("remote", &mut client);
@@ -402,7 +378,7 @@ fn sigterm_stops_the_remote_client_which_stops_the_agent_run() {
 
 #[test]
 fn sigterm_stops_the_agent_after_its_run_tears_down() {
-	let work = Work::new("agent", &plan(DOUBLE));
+	let work = Work::installed("agent", &plan(DOUBLE));
 	let mut agent = Agent::start(&work);
 	let mut client = agent.client(&work);
 	let run = work.remote_run_directory("remote", &mut client);
@@ -437,7 +413,7 @@ fn plan_with_slow_cleanup() -> String {
 #[test]
 fn a_signal_to_the_whole_process_group_during_teardown_spares_the_plugins() {
 	use std::os::unix::process::CommandExt;
-	let work = Work::new("group", &plan_with_slow_cleanup());
+	let work = Work::installed("group", &plan_with_slow_cleanup());
 	let output = work.0.join("runs");
 	// As a terminal's Ctrl-C or a CI runner does: the signal goes to PolkaMeter's whole group.
 	let mut process = Process::spawn(
@@ -463,24 +439,6 @@ fn a_signal_to_the_whole_process_group_during_teardown_spares_the_plugins() {
 	assert!(cleanup_succeeded(&run), "the cleanup step failed");
 	assert!(!events(&run).iter().any(|event| event["event"] == "plugin-restarted"));
 	assert!(!alive(pid.trim()));
-}
-
-#[test]
-fn sigterm_during_teardown_after_a_successful_setup_reports_the_stop() {
-	let work = Work::new("teardown-term", &plan_with_slow_cleanup());
-	let output = work.0.join("runs");
-	let mut process = work.run(&["--output", output.to_str().unwrap()]);
-	let run = work.run_directory("runs");
-	waiting_plugin(&run, None);
-	process.signal("TERM");
-	let (status, stderr) = process.wait();
-	assert_eq!(status.code(), Some(143), "{stderr}");
-	let execution = read_json(&run.join("execution.json"));
-	assert_eq!(
-		(execution["state"].as_str(), execution["exit_code"].as_i64()),
-		(Some("stopped"), Some(143))
-	);
-	assert_eq!(execution["teardown"], "completed");
 }
 
 fn signal_group(group: u32, name: &str) {

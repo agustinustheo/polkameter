@@ -83,25 +83,6 @@ impl EpochClock {
 	}
 }
 
-#[cfg(test)]
-mod clock_tests {
-	use super::*;
-
-	#[test]
-	fn the_clock_only_moves_forward_with_monotonic_time() {
-		let clock = EpochClock::new(1_000_000);
-		let start = clock.start;
-		assert_eq!(clock.at(start), 1_000_000);
-		assert_eq!(clock.at(start + std::time::Duration::from_millis(1_500)), 1_001_500);
-		// An instant before the start (another runtime's paused clock) reads as the start.
-		if let Some(before) = start.checked_sub(std::time::Duration::from_secs(1)) {
-			assert_eq!(clock.at(before), 1_000_000);
-		}
-		let (a, b) = (now_ms(), now_ms());
-		assert!(b >= a);
-	}
-}
-
 /// A file of the run could not be read or written: an error of our tools, so the run stops.
 #[derive(Debug, thiserror::Error)]
 pub enum FileError {

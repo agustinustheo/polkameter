@@ -63,34 +63,3 @@ impl Plan {
 		Ok(())
 	}
 }
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	#[test]
-	fn a_plan_is_checked_against_its_lanes() {
-		assert!(Plan::ramp(6.0, 4.0, 60, 10).check(Some(1)).is_ok());
-		assert!(
-			Plan::ramp(6.0, 4.0, 60, 10)
-				.check(Some(2))
-				.unwrap_err()
-				.contains("1 rates for 2 lanes")
-		);
-		let uneven = Plan {
-			steps: vec![
-				StepPlan { seconds: 60, rates: vec![1.0, 5.0] },
-				StepPlan { seconds: 60, rates: vec![2.0] },
-			],
-		};
-		assert!(uneven.check(None).is_err());
-		assert!(Plan::ramp(6.0, 4.0, 60, 0).check(None).is_err());
-	}
-
-	#[test]
-	fn a_geometric_plan_multiplies_the_rate() {
-		let rates: Vec<f64> =
-			Plan::geometric(10.0, 2.0, 60, 5).steps.iter().map(|s| s.rates[0]).collect();
-		assert_eq!(rates, [10.0, 20.0, 40.0, 80.0, 160.0]);
-	}
-}

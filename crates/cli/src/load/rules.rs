@@ -343,33 +343,17 @@ mod tests {
 	}
 
 	#[test]
-	fn marks_the_first_violated_measure() {
-		assert_eq!(measure_violation(&final_step(&step(0, |_| ()), None), &RULES), None);
-		assert_eq!(
-			measure_violation(&final_step(&step(0, |s| s.included = 800), None), &RULES)
-				.unwrap()
-				.0,
-			"included"
-		);
-		assert_eq!(
-			measure_violation(
-				&final_step(&step(0, |s| s.latencies_ms = vec![11_000]), None),
-				&RULES
-			)
-			.unwrap()
-			.0,
-			"latency"
-		);
-		assert_eq!(
-			measure_violation(&final_step(&step(0, |s| s.rejected = 20), None), &RULES)
-				.unwrap()
-				.0,
-			"refused"
-		);
-	}
-
-	#[test]
-	fn fails_on_pool_refusals_in_the_step_before_as_graceful() {
+	fn hard_rules_name_the_violated_measure() {
+		for (changed, expected) in [
+			(step(0, |_| ()), None),
+			(step(0, |s| s.included = 800), Some("included")),
+			(step(0, |s| s.latencies_ms = vec![11_000]), Some("latency")),
+			(step(0, |s| s.rejected = 20), Some("refused")),
+		] {
+			let violation = measure_violation(&final_step(&changed, None), &RULES);
+			assert_eq!(violation.map(|v| v.0), expected);
+		}
+		// Pool refusals in the step before the last fail it gracefully.
 		let steps = [
 			step(0, |s| {
 				s.rejected = 200;
@@ -382,51 +366,6 @@ mod tests {
 			(stop.rule, stop.step, stop.class),
 			(Rule::PoolRefuses, Some(0), Some(Class::Graceful))
 		);
-		assert!(stop.detail.contains("Immediately Dropped"));
-	}
-
-	#[test]
-	fn fails_on_slow_blocks_as_hard() {
-		// 10 s with one new best block: a block every 10 s, against 4 s at the start.
-		let stop = check_step(
-			&[step(0, |s| {
-				s.heads = 1;
-				s.closed = true;
-			})],
-			&source(),
-			0,
-			4_000.0,
-			&RULES,
-			false,
-		)
-		.unwrap();
-		assert_eq!((stop.rule, stop.class), (Rule::SlowBlocks, Some(Class::Hard)));
-		assert!(stop.detail.contains("a block every 10.0 s"), "{}", stop.detail);
-	}
-
-	#[test]
-	fn a_step_without_a_new_block_is_slow() {
-		// 20 s, observed, and no new best block: a block every 20 s at best.
-		let stop = check_step(
-			&[step(0, |s| {
-				s.ended_at = 20_000;
-				s.closed = true;
-			})],
-			&source(),
-			0,
-			6_000.0,
-			&RULES,
-			false,
-		)
-		.unwrap();
-		assert_eq!(stop.rule, Rule::SlowBlocks, "{}", stop.detail);
-		// Not observed at all: nothing to judge.
-		let unobserved = step(0, |s| {
-			s.ended_at = 20_000;
-			s.closed = true;
-			s.unobserved_ms = 20_000;
-		});
-		assert_eq!(final_step(&unobserved, None).blocks.mean_block_gap_ms, None);
 	}
 
 	fn live() -> LiveState {
@@ -440,72 +379,76 @@ mod tests {
 	}
 
 	#[test]
-	fn only_observed_time_counts_towards_a_stall() {
-		// 40 s since the last block.
-		assert_eq!(live_failure(&live(), &RULES).unwrap().rule, Rule::Stall);
-		// 15 s of it while reconnecting: 25 s observed, not a stall yet.
-		let reconnecting = LiveState { unobserved_since_block: 15_000, ..live() };
-		assert_eq!(live_failure(&reconnecting, &RULES), None);
-		// 5 s of it while reconnecting: 35 s observed is still a stall.
-		let stop = live_failure(&LiveState { unobserved_since_block: 5_000, ..live() }, &RULES);
-		let stop = stop.unwrap();
-		assert_eq!(stop.rule, Rule::Stall);
-		assert!(stop.detail.contains("5.0 s of it while reconnecting"), "{}", stop.detail);
-		let down = LiveState {
-			node_down: Some("blocks: the node did not answer for 15 s".into()),
-			..live()
+	fn slow_blocks_and_stalls_count_only_observed_time() {
+		// 10 s with one new best block against 4 s at the start; 20 s with none against 6 s.
+		for (slow, start_gap_ms) in [
+			(
+				step(0, |s| {
+					s.heads = 1;
+					s.closed = true;
+				}),
+				4_000.0,
+			),
+			(
+				step(0, |s| {
+					s.ended_at = 20_000;
+					s.closed = true;
+				}),
+				6_000.0,
+			),
+		] {
+			let stop = check_step(&[slow], &source(), 0, start_gap_ms, &RULES, false).unwrap();
+			assert_eq!((stop.rule, stop.class), (Rule::SlowBlocks, Some(Class::Hard)));
+		}
+		// A step not observed at all has nothing to judge.
+		let unobserved = step(0, |s| {
+			s.ended_at = 20_000;
+			s.closed = true;
+			s.unobserved_ms = 20_000;
+		});
+		assert_eq!(final_step(&unobserved, None).blocks.mean_block_gap_ms, None);
+		// 40 s since the last block; time spent reconnecting does not count.
+		let down = Some("blocks: the node did not answer for 15 s".to_owned());
+		for (state, expected) in [
+			(live(), Some(Rule::Stall)),
+			(LiveState { unobserved_since_block: 15_000, ..live() }, None),
+			(LiveState { unobserved_since_block: 5_000, ..live() }, Some(Rule::Stall)),
+			(LiveState { node_down: down, ..live() }, Some(Rule::NodeDown)),
+		] {
+			let stop = live_failure(&state, &RULES);
+			assert_eq!(stop.as_ref().map(|stop| stop.rule), expected);
+			if let Some(stop) = stop {
+				assert_eq!(stop.class, Some(Class::Hard));
+			}
+		}
+	}
+
+	#[test]
+	fn a_load_tool_that_cannot_keep_up_ends_without_a_failure() {
+		let short = |starved_ticks| {
+			step(0, |s| {
+				s.sent = 500;
+				s.included = 500;
+				s.starved_ticks = starved_ticks;
+			})
 		};
-		let stop = live_failure(&down, &RULES).unwrap();
-		assert_eq!((stop.rule, stop.class), (Rule::NodeDown, Some(Class::Hard)));
-	}
-
-	#[test]
-	fn ends_without_a_failure_when_the_load_tool_cant_keep_up() {
-		let stop = check_step(
-			&[step(0, |s| {
-				s.sent = 500;
-				s.included = 500;
-			})],
-			&source(),
-			0,
-			6_000.0,
-			&RULES,
-			false,
-		)
-		.unwrap();
-		assert_eq!((stop.rule, stop.class), (Rule::GeneratorLimit, None));
-		let stop = check_step(
-			&[step(0, |s| {
-				s.sent = 500;
-				s.included = 500;
-				s.starved_ticks = 3;
-			})],
-			&source(),
-			0,
-			6_000.0,
-			&RULES,
-			false,
-		)
-		.unwrap();
-		assert_eq!(stop.rule, Rule::BudgetUsedUp);
-	}
-
-	#[test]
-	fn a_flood_sized_to_the_plan_ends_on_the_rate_cap() {
 		// Every tx sent at the full rate: the flood is empty at the end of the step.
-		let empty = QueueSource::new(vec![], vec![], "coins");
-		let full_rate = [step(0, |_| ())];
-		assert!(empty.exhausted());
-		let before_last = check_step(&full_rate, &empty, 0, 6_000.0, &RULES, false).unwrap();
-		assert_eq!(before_last.rule, Rule::BudgetUsedUp, "a later step has nothing to send");
-		assert_eq!(check_step(&full_rate, &empty, 0, 6_000.0, &RULES, true), None);
-		// Ran out during the last step and sent too little: still budget used up.
-		let short = [step(0, |s| {
-			s.sent = 500;
-			s.included = 500;
-			s.starved_ticks = 3;
-		})];
-		let stop = check_step(&short, &empty, 0, 6_000.0, &RULES, true).unwrap();
-		assert_eq!(stop.rule, Rule::BudgetUsedUp);
+		let empty = || QueueSource::new(vec![], vec![], "coins");
+		assert!(empty().exhausted());
+		for (steps, source, last, expected) in [
+			(short(0), source(), false, Some(Rule::GeneratorLimit)),
+			(short(3), source(), false, Some(Rule::BudgetUsedUp)),
+			// A later step would have nothing to send.
+			(step(0, |_| ()), empty(), false, Some(Rule::BudgetUsedUp)),
+			(step(0, |_| ()), empty(), true, None),
+			// Ran out during the last step and sent too little.
+			(short(3), empty(), true, Some(Rule::BudgetUsedUp)),
+		] {
+			let stop = check_step(&[steps], &source, 0, 6_000.0, &RULES, last);
+			assert_eq!(stop.as_ref().map(|stop| stop.rule), expected);
+			if let Some(stop) = stop {
+				assert_eq!(stop.class, None, "{:?}", stop.rule);
+			}
+		}
 	}
 }

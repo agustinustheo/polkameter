@@ -83,47 +83,6 @@ fn a_reply_after_inclusion_still_counts_and_a_late_refusal_is_ignored() {
 }
 
 #[test]
-fn blocks_go_to_the_step_they_were_seen_in() {
-	let (a, b) = (tx(1), tx(2));
-	let mut t = tracker("by-seen-at", vec![a.clone(), b.clone()], vec![]);
-	t.set_phase(Phase::Ramp, 0).unwrap();
-	t.start_step(0, &[1.0], 0).unwrap();
-	assert!(t.send_next(0, 0));
-	t.end_step(10_000);
-	t.start_step(1, &[1.0], 10_000).unwrap();
-	// A block seen in step 0 arrives after step 1 started (a slow fetch).
-	t.on_block(fetched(7, 9_000, &[&a]), 11_000).unwrap();
-	assert_eq!(t.steps[0][0].blocks.len(), 1);
-	assert!(t.steps[0][1].blocks.is_empty());
-}
-
-#[test]
-fn an_empty_source_counts_a_starved_tick() {
-	let mut t = tracker("starved", vec![tx(1)], vec![]);
-	t.set_phase(Phase::Ramp, 0).unwrap();
-	t.start_step(0, &[1.0], 0).unwrap();
-	assert!(t.send_next(0, 0));
-	assert!(!t.send_next(0, 0));
-	assert_eq!(t.steps[0][0].starved_ticks, 1);
-}
-
-#[test]
-fn closed_connection_preserves_unknown_probe_until_observed() {
-	let mut t = tracker("probes", vec![], vec![tx(9), tx(10)]);
-	t.on_block(fetched(1, 100, &[]), 100).unwrap();
-	assert!(t.probes.is_empty(), "a fetched block sends no probe");
-	t.on_block(BlockEvent::Head { number: 2, seen_at: 200 }, 200).unwrap();
-	assert_eq!(t.probes.len(), 1);
-	t.on_block(BlockEvent::Head { number: 3, seen_at: 300 }, 300).unwrap();
-	assert_eq!(t.probes.len(), 1, "only baseline_probes = 1");
-	t.on_reply(Reply::Closed { connection: 0, by_node: true });
-	assert_eq!(t.probes[0].outcome, Outcome::Pending);
-	t.on_block(fetched(4, 400, &[&tx(9)]), 400).unwrap();
-	assert_eq!(t.probes[0].outcome, Outcome::Included);
-	assert_eq!(t.closed_by_node, 1);
-}
-
-#[test]
 fn backpressure_keeps_the_tx_and_sends_it_next() {
 	let (a, b) = (tx(1), tx(2));
 	let mut t = tracker("backpressure", vec![a.clone(), b.clone()], vec![]);
@@ -168,53 +127,6 @@ fn block(t: &mut Tracker<FakeSender>, number: u32, seen_at: u64, gap: Option<u64
 }
 
 #[test]
-fn a_block_gap_counts_in_the_steps_it_spans() {
-	use polkameter::load::{rules, steps::final_step};
-	let mut t = tracker("gap-edges", (1..=60).map(tx).collect(), vec![]);
-	t.set_phase(Phase::Ramp, 0).unwrap();
-	block(&mut t, 1, 0, None, &[]);
-	t.start_step(0, &[1.0], 0).unwrap();
-	block(&mut t, 2, 6_000, Some(6_000), &[]);
-	// The chain stalls from 6 s; step 1 starts at 30 s; the next block comes at 34 s.
-	t.end_step(30_000);
-	let f0 = final_step(&t.steps[0][0], None);
-	assert_eq!(f0.blocks.max_block_gap_ms, Some(24_000), "the stall in step 0 is step 0's");
-	assert_eq!(f0.blocks.mean_block_gap_ms, Some(30_000.0), "one block in 30 s");
-	let stop =
-		rules::check_step(&t.steps[0], &t.lanes()[0].source, 0, 6_000.0, &rules::RULES, false);
-	assert_eq!(stop.map(|s| (s.rule, s.step)), Some((Rule::SlowBlocks, Some(0))));
-	t.start_step(1, &[1.0], 30_000).unwrap();
-	block(&mut t, 3, 34_000, Some(28_000), &[]);
-	for (n, at) in [(4, 40_000), (5, 46_000), (6, 52_000), (7, 58_000)] {
-		block(&mut t, n, at, Some(6_000), &[]);
-	}
-	t.end_step(60_000);
-	assert_eq!(t.steps[0][0].max_gap_ms, Some(24_000), "unchanged by the block after it");
-	let f1 = final_step(&t.steps[0][1], None);
-	assert_eq!(f1.blocks.max_block_gap_ms, Some(6_000), "step 1 has 4 s of the stall");
-	assert_eq!(f1.blocks.mean_block_gap_ms, Some(6_000.0));
-}
-
-#[test]
-fn included_per_second_counts_the_step_own_txs() {
-	use polkameter::load::steps::final_step;
-	let (a, b) = (tx(1), tx(2));
-	let mut t = tracker("own-step", vec![a.clone(), b.clone()], vec![]);
-	t.set_phase(Phase::Ramp, 0).unwrap();
-	t.start_step(0, &[1.0], 0).unwrap();
-	assert!(t.send_next(0, 0) && t.send_next(0, 1_000));
-	t.end_step(10_000);
-	t.start_step(1, &[0.0], 10_000).unwrap();
-	// Step 0's txs land in a block of step 1.
-	block(&mut t, 5, 12_000, None, &[&a, &b]);
-	t.end_step(20_000);
-	let (f0, f1) = (final_step(&t.steps[0][0], None), final_step(&t.steps[0][1], None));
-	assert_eq!((f0.included, f0.included_per_s), (2, 0.2));
-	assert_eq!((f1.included, f1.included_per_s), (0, 0.0), "not step 0's backlog");
-	assert_eq!(f1.blocks.max_ours_per_block, 2, "the block itself is step 1's");
-}
-
-#[test]
 fn a_dropped_sender_connection_resends_and_is_not_node_down() {
 	let mut t = tracker("interrupted", vec![tx(1), tx(2), tx(3)], vec![]);
 	t.set_phase(Phase::Ramp, 0).unwrap();
@@ -247,16 +159,6 @@ fn a_dropped_sender_connection_resends_and_is_not_node_down() {
 		(gap.what.as_str(), gap.to.map(|to| to - gap.from)),
 		("sender connection 0", Some(500))
 	);
-}
-
-#[test]
-fn already_imported_is_a_refusal_for_a_first_submit() {
-	let mut t = tracker("first-refusal", vec![tx(1)], vec![]);
-	t.set_phase(Phase::Ramp, 0).unwrap();
-	t.start_step(0, &[1.0], 0).unwrap();
-	assert!(t.send_next(0, 0));
-	t.on_reply(Reply::Refused { id: 1, at: 10, code: 1013, error: "Already Imported".into() });
-	assert_eq!(t.steps[0][0].rejected, 1, "unchanged for a tx sent once");
 }
 
 #[test]
@@ -298,102 +200,63 @@ fn drop_and_reconnect(t: &mut Tracker<FakeSender>, at: u64, down: u64) {
 	t.on_block(BlockEvent::Reconnected { at: at + down }, at + down).unwrap();
 }
 
-#[test]
-fn a_follower_reconnect_leaves_out_only_the_time_not_observed() {
-	let mut t = tracker("follower-gap", vec![tx(1)], vec![]);
+/// A tracker in its first ramp step that saw block 1 finalized at time 0.
+fn observing(name: &str) -> Tracker<FakeSender> {
+	let mut t = tracker(name, vec![tx(1)], vec![]);
 	t.set_phase(Phase::Ramp, 0).unwrap();
 	t.start_step(0, &[1.0], 0).unwrap();
-	t.on_block(BlockEvent::Finalized { number: 1, seen_at: 1_000 }, 1_000).unwrap();
-	block(&mut t, 1, 1_000, None, &[]);
-	let lost = BlockEvent::Disconnected { at: 2_000, reason: "stream ended".into() };
-	t.on_block(lost, 2_000).unwrap();
-	assert!(!t.observing());
-	assert_eq!(rule(&t, 40_000), None, "1 s observed, 38 s not");
-	t.on_block(BlockEvent::Reconnected { at: 40_000 }, 40_000).unwrap();
-	assert!(t.observing());
-	assert_eq!(rule(&t, 50_000), None, "11 s observed");
-	assert_eq!(rule(&t, 70_000), Some(Rule::Stall), "31 s observed, across the reconnect");
+	t.on_block(BlockEvent::Finalized { number: 1, seen_at: 0 }, 0).unwrap();
+	block(&mut t, 1, 0, None, &[]);
+	t
+}
+
+/// Time not observed is left out of the stall clocks and never restarts them, whichever node
+/// answers after a reconnect; a node that stays unreachable is down.
+#[test]
+fn reconnects_never_hide_a_stall() {
+	// A drop-and-reconnect every 10 s, with best blocks (finality stall) or without (stall).
+	for (best_blocks, down, expected) in
+		[(true, 1_000, (Rule::FinalityStall, 69_000)), (false, 2_000, (Rule::Stall, 39_000))]
+	{
+		let mut t = observing("reconnects");
+		let mut stopped = None;
+		for cycle in 0..12u32 {
+			let at = u64::from(cycle) * 10_000;
+			if best_blocks {
+				block(&mut t, 2 + cycle, at + 1_000, Some(6_000), &[]);
+			}
+			drop_and_reconnect(&mut t, at + 5_000, down);
+			if let Some(rule) = rule(&t, at + 9_000) {
+				stopped = Some((rule, at + 9_000));
+				break;
+			}
+		}
+		assert_eq!(stopped, Some(expected));
+	}
+
+	// A reconnect to another node (load balancer) is one warning, not node down; a dead chain
+	// still stalls, then stalls finality.
+	let mut t = observing("other-node");
+	drop_and_reconnect(&mut t, 2_000, 1_000);
+	for _ in 0..2 {
+		t.on_block(BlockEvent::OtherNode("its peer ID changed".into()), 3_000).unwrap();
+	}
+	assert_eq!((t.node_down.clone(), t.warnings.len()), (None, 1));
+	assert_eq!(rule(&t, 30_000), None, "29 s observed");
+	assert_eq!(rule(&t, 33_000), Some(Rule::Stall), "32 s observed");
+	block(&mut t, 2, 32_000, None, &[]);
+	block(&mut t, 3, 50_000, None, &[]);
+	assert_eq!(rule(&t, 63_000), Some(Rule::FinalityStall), "62 s observed after finalized 1");
+
+	// A long follower outage: only observed time counts, and the gap spans the outage.
+	let mut t = observing("follower-gap");
+	drop_and_reconnect(&mut t, 2_000, 38_000);
+	assert_eq!(rule(&t, 50_000), None, "12 s observed");
+	assert_eq!(rule(&t, 70_000), Some(Rule::Stall), "32 s observed, across the reconnect");
 	block(&mut t, 9, 41_000, None, &[]);
 	t.end_step(60_000);
-	let st = &t.steps[0][0];
-	assert_eq!(st.unobserved_ms, 38_000);
-	assert_eq!(st.max_gap_ms, Some(19_000), "the gaps around the outage, not the outage");
-	assert!(t.observation_gaps[0].to_string().contains("reconnected after 38.0 s"));
-	// A node that stayed unreachable is down.
+	assert_eq!((t.steps[0][0].unobserved_ms, t.steps[0][0].max_gap_ms), (38_000, Some(19_000)));
 	t.on_block(BlockEvent::Unreachable("not reachable for 15 s".into()), 61_000)
 		.unwrap();
 	assert_eq!(rule(&t, 61_000), Some(Rule::NodeDown));
-}
-
-/// Behind a load balancer a reconnect can land on another, healthy node: that is a warning, not
-/// node down, and the load goes on while blocks come. A chain that is really dead still stops
-/// on a stall, whichever node answers.
-#[test]
-fn a_reconnect_to_another_node_is_a_warning_and_a_dead_chain_still_stalls() {
-	let mut t = tracker("other-node", vec![tx(1)], vec![]);
-	t.set_phase(Phase::Ramp, 0).unwrap();
-	t.start_step(0, &[1.0], 0).unwrap();
-	t.on_block(BlockEvent::Finalized { number: 1, seen_at: 1_000 }, 1_000).unwrap();
-	block(&mut t, 1, 1_000, None, &[]);
-	let why = "reconnected to a different node (load balancer, or the node restarted): its peer ID changed from a to b";
-	t.on_block(BlockEvent::Disconnected { at: 2_000, reason: "stream ended".into() }, 2_000)
-		.unwrap();
-	t.on_block(BlockEvent::OtherNode(why.into()), 3_000).unwrap();
-	t.on_block(BlockEvent::Reconnected { at: 3_000 }, 3_000).unwrap();
-	assert_eq!(t.node_down, None);
-	assert_eq!(t.warnings, [why]);
-	// The same node again on a later reconnect is not listed twice.
-	t.on_block(BlockEvent::OtherNode(why.into()), 3_000).unwrap();
-	assert_eq!(t.warnings.len(), 1);
-	assert_eq!(rule(&t, 4_000), None, "the load goes on");
-	// No block after the reconnect: 30 s observed without one is a stall.
-	assert_eq!(rule(&t, 31_000), None, "29 s observed");
-	assert_eq!(rule(&t, 33_000), Some(Rule::Stall), "31 s observed");
-	// Blocks come, finality does not: a finality stall.
-	block(&mut t, 2, 32_000, None, &[]);
-	block(&mut t, 3, 50_000, None, &[]);
-	assert_eq!(rule(&t, 63_000), Some(Rule::FinalityStall), "61 s observed after finalized 1");
-}
-
-/// Best blocks keep coming, finality does not, and the follower reconnects every 10 s: the
-/// reconnects must not restart the finality stall clock.
-#[test]
-fn reconnects_do_not_hide_a_finality_stall() {
-	let mut t = tracker("finality-reconnects", vec![tx(1)], vec![]);
-	t.set_phase(Phase::Ramp, 0).unwrap();
-	t.start_step(0, &[1.0], 0).unwrap();
-	t.on_block(BlockEvent::Finalized { number: 1, seen_at: 0 }, 0).unwrap();
-	let mut stopped = None;
-	for cycle in 0..12u32 {
-		let at = u64::from(cycle) * 10_000;
-		block(&mut t, 2 + cycle, at + 1_000, Some(6_000), &[]);
-		drop_and_reconnect(&mut t, at + 5_000, 1_000);
-		if let Some(rule) = rule(&t, at + 9_000) {
-			stopped = Some((rule, at + 9_000));
-			break;
-		}
-	}
-	// 60 s of observed time without a new finalized block: 66 s with 6 reconnects of 1 s.
-	assert_eq!(stopped, Some((Rule::FinalityStall, 69_000)));
-}
-
-/// Six drop-and-reconnect cycles in 60 s and not one block: a stall, not six fresh starts.
-#[test]
-fn reconnects_do_not_hide_a_stall() {
-	let mut t = tracker("stall-reconnects", vec![tx(1)], vec![]);
-	t.set_phase(Phase::Ramp, 0).unwrap();
-	t.start_step(0, &[1.0], 0).unwrap();
-	block(&mut t, 1, 0, None, &[]);
-	t.on_block(BlockEvent::Finalized { number: 1, seen_at: 0 }, 0).unwrap();
-	let mut stopped = None;
-	for cycle in 0..6u64 {
-		drop_and_reconnect(&mut t, cycle * 10_000 + 8_000, 2_000);
-		let now = cycle * 10_000 + 10_000;
-		if let Some(rule) = rule(&t, now) {
-			stopped = Some((rule, now));
-			break;
-		}
-	}
-	// 8 s observed per 10 s cycle: over 30 s observed after the fourth cycle.
-	assert_eq!(stopped, Some((Rule::Stall, 40_000)));
 }

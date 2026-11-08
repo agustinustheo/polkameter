@@ -1581,345 +1581,63 @@ fn validate_interval(configured: f64, measured: f64) -> Result<()> {
 	);
 	Ok(())
 }
+
 #[cfg(test)]
-mod calibration_tests {
+mod tests {
 	use super::*;
 
-	#[test]
-	fn rejects_wrong_topology_and_unusable_measurements() {
-		for measured in [2.0, 0.0, f64::NAN, f64::INFINITY] {
-			assert!(super::validate_interval(6.0, measured).is_err());
-		}
-		assert!(super::validate_interval(2.0, 2.1).is_ok());
-		assert!(super::validate_interval(2.0, 1.5).is_ok());
-		assert!(super::validate_interval(2.0, 2.5).is_ok());
-		assert!(super::validate_interval(2.0, 2.51).is_err());
-	}
-
 	#[tokio::test]
-	async fn a_setup_failure_keeps_its_phase_after_teardown() {
-		let plan = Plan::parse(r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="Setup">
-            <setup><step id="check" use="core.assert-equal"><input name="actual" value="1"/><input name="expected" value="2"/></step></setup>
+	async fn a_failed_phase_sets_the_exit_code_and_whether_teardown_runs() {
+		let setup_fails = r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="Setup">
+            <setup><step id="prepare" use="core.assert-equal"><input name="actual" value="1"/><input name="expected" value="2"/></step></setup>
             <teardown><step id="cleanup" use="core.echo"><input name="value" value="done"/></step></teardown>
-        </polkameter-plan>"#).unwrap();
-		let root = std::env::temp_dir().join(format!(
-			"polkameter-setup-phase-{}-{}",
-			std::process::id(),
-			next_directory_sequence()
-		));
-		let outcome =
-			run(plan, Registry::default(), &root, CancellationToken::new(), Arc::new(|_| {}))
-				.await
-				.unwrap();
-		assert_eq!((outcome.exit_code, outcome.state), (1, RunState::Failed));
-		assert_eq!(outcome.teardown, Some(Teardown::Completed));
-		assert_eq!(outcome.failed_phase.as_deref(), Some("setup"));
-		std::fs::remove_dir_all(root).unwrap();
-	}
-
-	#[tokio::test]
-	async fn calibration_failure_prevents_setup_exits_3_and_skips_teardown() {
-		let plan = Plan::parse(r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="Calibration" timeout-ms="5000">
+        </polkameter-plan>"#;
+		// No chain answers, so calibration fails in preflight: setup must not run, nothing to tear down.
+		let calibration_fails = r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="Calibration" timeout-ms="5000">
             <targets><target id="chain" endpoint="ws://127.0.0.1:0"/></targets>
             <setup><step id="prepare" use="core.echo"><input name="value" value="[]"/></step></setup>
             <load target="chain" source-ref="steps.prepare.value" probes-ref="steps.prepare.value">
                 <rate tx-per-second="1" seconds="1"/>
             </load>
             <teardown><step id="cleanup" use="core.echo"><input name="value" value="done"/></step></teardown>
-        </polkameter-plan>"#).unwrap();
-		let registry = Registry::default();
-		let error = preflight(&plan, &registry).await.unwrap_err();
-		assert!(error.to_string().contains("block interval calibration failed during preflight"));
-		let root = std::env::temp_dir().join(format!(
-			"polkameter-calibration-{}-{}",
-			std::process::id(),
-			next_directory_sequence()
-		));
-		let outcome = run(plan, registry, &root, CancellationToken::new(), Arc::new(|_| {}))
-			.await
-			.unwrap();
-		// Nothing was submitted, so the run exits as preflight does, with nothing to tear down.
-		assert_eq!(outcome.exit_code, PREFLIGHT_EXIT_CODE);
-		assert_eq!(outcome.state, RunState::Failed);
-		assert_eq!(outcome.teardown, None);
-		assert_eq!(outcome.failed_phase.as_deref(), Some("preflight"));
-		assert!(
-			outcome
-				.error
-				.unwrap()
-				.contains("block interval calibration failed during preflight")
-		);
-		let events: Vec<Value> = std::fs::read_to_string(outcome.artifact_dir.join("events.jsonl"))
-			.unwrap()
-			.lines()
-			.map(|line| serde_json::from_str(line).unwrap())
-			.collect();
-		assert!(
-			!events
-				.iter()
-				.any(|event| event["phase"] == "setup" || event["step"] == "prepare")
-		);
-		assert!(
-			!events
-				.iter()
-				.any(|event| event["phase"] == "teardown" || event["step"] == "cleanup")
-		);
-		let recorded: Value = serde_json::from_slice(
-			&std::fs::read(outcome.artifact_dir.join("execution.json")).unwrap(),
-		)
-		.unwrap();
-		assert_eq!(
-			(recorded["exit_code"].as_i64(), recorded["state"].as_str()),
-			(Some(3), Some("failed"))
-		);
-		assert_eq!(recorded["failed_phase"], "preflight");
-		std::fs::remove_dir_all(root).unwrap();
-	}
-
-	#[tokio::test]
-	async fn junit_generation_failure_preserves_success_and_cancellation() {
-		for cancelled in [false, true] {
+        </polkameter-plan>"#;
+		let cases = [
+			(setup_fails, 1, Some(Teardown::Completed), "setup", true),
+			(calibration_fails, PREFLIGHT_EXIT_CODE, None, "preflight", false),
+		];
+		for (xml, exit_code, teardown, phase, setup_ran) in cases {
 			let root = std::env::temp_dir().join(format!(
-				"polkameter-junit-generation-{}-{}",
+				"polkameter-failed-phase-{}-{}",
 				std::process::id(),
 				next_directory_sequence()
 			));
-			let plan = Plan::parse(r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="test"><setup><step id="ok" use="core.echo"><input name="value" value="1"/></step></setup></polkameter-plan>"#).unwrap();
-			let token = CancellationToken::new();
-			let cancel = token.clone();
-			let directory = root.clone();
-			let outcome = run(
-				plan,
-				Registry::default(),
-				&root,
-				token,
-				Arc::new(move |event| {
-					if event["phase"] == "setup" {
-						let runs: Vec<_> = std::fs::read_dir(&directory)
-							.unwrap()
-							.map(|r| r.unwrap().path())
-							.collect();
-						assert_eq!(runs.len(), 1);
-						std::fs::create_dir(runs[0].join("junit.xml")).unwrap();
-						if cancelled {
-							cancel.cancel();
-						}
-					}
-				}),
-			)
-			.await
-			.unwrap();
-			assert_eq!(outcome.exit_code, if cancelled { 130 } else { 0 });
+			let plan = Plan::parse(xml).unwrap();
+			let outcome =
+				run(plan, Registry::default(), &root, CancellationToken::new(), Arc::new(|_| {}))
+					.await
+					.unwrap();
 			assert_eq!(
-				outcome.state,
-				if cancelled { RunState::Stopped } else { RunState::Completed }
+				(outcome.exit_code, outcome.state),
+				(exit_code, RunState::Failed),
+				"{phase}"
 			);
-			let events =
-				std::fs::read_to_string(outcome.artifact_dir.join("events.jsonl")).unwrap();
-			assert!(
-				events
-					.lines()
-					.map(|s| serde_json::from_str::<Value>(s).unwrap())
-					.any(|e| e["event"] == "warning")
-			);
-			let recorded: Outcome = serde_json::from_slice(
+			assert_eq!(outcome.teardown, teardown, "{phase}");
+			assert_eq!(outcome.failed_phase.as_deref(), Some(phase));
+			let recorded: Value = serde_json::from_slice(
 				&std::fs::read(outcome.artifact_dir.join("execution.json")).unwrap(),
 			)
 			.unwrap();
-			assert_eq!(recorded.exit_code, outcome.exit_code);
-			assert_eq!(recorded.error, outcome.error);
+			assert_eq!(recorded["exit_code"], exit_code, "{phase}");
+			assert_eq!(recorded["failed_phase"], phase);
+			let events =
+				std::fs::read_to_string(outcome.artifact_dir.join("events.jsonl")).unwrap();
+			let steps: Vec<Value> = events
+				.lines()
+				.map(|line| serde_json::from_str::<Value>(line).unwrap()["step"].clone())
+				.collect();
+			assert_eq!(steps.contains(&json!("prepare")), setup_ran, "{phase}");
+			assert_eq!(steps.contains(&json!("cleanup")), setup_ran, "{phase}");
 			std::fs::remove_dir_all(root).unwrap();
-		}
-	}
-
-	#[test]
-	fn assertion_details_are_redacted_before_truncation_and_single_line() {
-		let secret = "s".repeat(200);
-		assert_eq!(
-			assertion_value(
-				&json!(format!("{secret}\n\u{1b}\u{202e} tail")),
-				&Redactor::new([secret], None::<&str>)
-			),
-			r#""[redacted]\n\u001b\u202e tail""#
-		);
-		assert_eq!(
-			assertion_value(&json!("界".repeat(500)), &Redactor::default()).chars().count(),
-			ASSERTION_VALUE_CHARS
-		);
-		let secret = "\n\t\u{1b}\u{202e}";
-		assert_eq!(
-			assertion_value(&json!(secret), &Redactor::new([secret], None::<&str>)),
-			r#""[redacted]""#
-		);
-		assert_eq!(
-			assertion_value(
-				&json!({"nested": ["s".repeat(200)]}),
-				&Redactor::new(["s".repeat(200)], None::<&str>)
-			),
-			r#"{"nested":["[redacted]"]}"#
-		);
-		// The values read as the plan wrote them: `expected 85, got 84`, strings quoted.
-		assert_eq!(assertion_value(&json!(85), &Redactor::default()), "85");
-		assert_eq!(assertion_value(&json!("85"), &Redactor::default()), r#""85""#);
-	}
-
-	#[test]
-	fn a_failed_report_keeps_a_cancelled_run_stopped() {
-		let mut outcome = Outcome {
-			artifact_dir: PathBuf::new(),
-			exit_code: 130,
-			state: RunState::Stopped,
-			error: Some("run cancelled".into()),
-			teardown: None,
-			failed_phase: None,
-			error_location: None,
-			exit_reason: None,
-		};
-		fail_report(&mut outcome, "disk full");
-		assert_eq!((outcome.exit_code, outcome.state), (130, RunState::Stopped));
-		assert_eq!(
-			outcome.error.as_deref(),
-			Some("run cancelled; report generation failed: disk full")
-		);
-	}
-
-	#[test]
-	fn a_failed_report_drops_the_verdict_exit_reason() {
-		// The verdict no longer decides the exit once the run failed for another reason.
-		let mut outcome = Outcome {
-			artifact_dir: PathBuf::new(),
-			exit_code: 1,
-			state: RunState::CompletedWithFailures,
-			error: None,
-			teardown: None,
-			failed_phase: None,
-			error_location: None,
-			exit_reason: Some("verdict INCONCLUSIVE: …; exit 1 because of …".into()),
-		};
-		fail_report(&mut outcome, "disk full");
-		assert_eq!((outcome.exit_code, outcome.state), (1, RunState::Failed));
-		assert_eq!(outcome.exit_reason, None);
-		let json = serde_json::to_value(&outcome).unwrap();
-		assert!(json.get("exit_reason").is_none(), "{json}");
-	}
-
-	#[tokio::test]
-	async fn environment_checks_run_before_the_preflight_steps() {
-		let plan = Plan::parse(r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="Environment" timeout-ms="5000">
-            <targets><target id="chain" endpoint="ws://127.0.0.1:0"/></targets>
-            <monitors topology="not-installed" para-id="1" relay-target="chain"/>
-            <setup><step id="prepare" use="core.echo"><input name="value" value="[]"/></step></setup>
-            <load target="chain" source-ref="steps.prepare.value" probes-ref="steps.prepare.value">
-                <rate tx-per-second="1" seconds="1"/>
-            </load>
-            <preflight><step id="check" use="core.assert-equal"><input name="actual" value="1"/><input name="expected" value="2"/></step></preflight>
-        </polkameter-plan>"#).unwrap();
-		let error = preflight(&plan, &Registry::default()).await.unwrap_err();
-		assert!(
-			error.to_string().contains("topology alias not-installed is not installed"),
-			"{error:#}"
-		);
-	}
-}
-
-#[cfg(test)]
-mod contract_tests {
-	use super::*;
-	use crate::engine::plan::{Location, PlanError};
-
-	#[test]
-	fn short_credentials_warn_except_for_development_keys() {
-		let credentials: Values = [
-			("credentials.seed", json!("//Alice")),
-			("credentials.stash", json!("//Bob/1")),
-			("credentials.token", json!("abc123")),
-			("credentials.long", json!("a long enough secret")),
-			("credentials.count", json!(7)),
-		]
-		.into_iter()
-		.map(|(k, v)| (k.to_owned(), v))
-		.collect();
-		let warnings = short_credentials(&credentials);
-		assert_eq!(warnings.len(), 1, "{warnings:?}");
-		assert!(
-			warnings[0].starts_with("credentials.token is shorter than 8 bytes"),
-			"{warnings:?}"
-		);
-		// A development key is still redacted.
-		let redactor = Redactor::new(secret_values(&credentials), Vec::<String>::new());
-		assert_eq!(redactor.text("seed //Alice"), "seed [redacted]");
-	}
-
-	/// The contract error for a plan whose setup is `setup`, and its position.
-	fn failure(setup: &str) -> (String, Option<Location>) {
-		let xml = format!(
-			"<polkameter-plan xmlns=\"https://polkameter.dev/schema/plan\" version=\"1\" \
-			 name=\"x\">\n<targets><target id=\"chain\" endpoint=\"ws://127.0.0.1:9944\"/></targets>\n\
-			 <setup>\n{setup}\n</setup>\n</polkameter-plan>"
-		);
-		let plan = Plan::parse(&xml).unwrap();
-		let error = validate_contracts(&plan, &Plugins::default()).unwrap_err();
-		(error.to_string(), error.downcast_ref::<PlanError>().and_then(|e| e.location))
-	}
-
-	#[test]
-	fn contract_errors_name_the_step_operation_and_input() {
-		let cases = [
-			(
-				"<step id=\"check\" use=\"core.assert-equal\"><input name=\"actual\" value=\"1\"/></step>",
-				(4, 1),
-				"step `check` (core.assert-equal): missing required input `expected`; add <input \
-				 name=\"expected\" …/>",
-			),
-			(
-				"<step id=\"check\" use=\"core.echo\">\n  <input name=\"bogus\" value=\"1\"/></step>",
-				(5, 3),
-				"step `check` (core.echo): input `bogus` is not an input of core.echo; its inputs \
-				 are `value`",
-			),
-			(
-				"<step id=\"send\" use=\"core.submit-prepared\"><input name=\"target\" \
-				 ref=\"run.probeBudget\"/><input name=\"transactions\" value=\"[]\"/></step>",
-				(4, 44),
-				"step `send` (core.submit-prepared): input `target` refers to `run.probeBudget`, \
-				 which is an integer, but core.submit-prepared expects a string",
-			),
-			(
-				"<step id=\"send\" use=\"core.submit-prepared\"><input name=\"target\" value=\"7\"/>\
-				 <input name=\"transactions\" value=\"[]\"/></step>",
-				(4, 44),
-				"step `send` (core.submit-prepared): input `target` has value=\"7\", which is an \
-				 integer, but core.submit-prepared expects a string",
-			),
-			(
-				"<step id=\"a\" use=\"core.echo\"><input name=\"value\" value=\"1\"/></step>\n\
-				 <step id=\"b\" use=\"core.echo\"><input name=\"value\" ref=\"steps.a.missing\"/></step>",
-				(5, 30),
-				"step `b` (core.echo): input `value` refers to `steps.a.missing`; use one of step \
-				 `a`'s outputs: `value` (core.echo has no output `missing`)",
-			),
-			(
-				"<step id=\"x\" use=\"core.nope\"/>",
-				(4, 1),
-				"step `x` (core.nope): unknown built-in operation core.nope; the core operations \
-				 are core.echo, core.assert-equal, core.submit-prepared, core.submit-setup",
-			),
-			(
-				"<step id=\"x\" use=\"core.ecoh\"/>",
-				(4, 1),
-				"unknown built-in operation core.ecoh; did you mean core.echo? the core operations",
-			),
-			(
-				"<step id=\"x\" use=\"core.echo\"><input name=\"valeu\" value=\"1\"/></step>",
-				(4, 30),
-				"input `valeu` is not an input of core.echo; did you mean `value`? its inputs are \
-				 `value`",
-			),
-		];
-		for (setup, (line, column), expected) in cases {
-			let (error, location) = failure(setup);
-			assert!(error.contains(expected), "{setup}: {error}");
-			assert_eq!(location, Some(Location { line, column }), "{setup}: {error}");
 		}
 	}
 

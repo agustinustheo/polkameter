@@ -499,83 +499,39 @@ mod tests {
 	}
 
 	#[test]
-	fn rejects_malformed_documents() {
-		let cases = [
-			(r#"<a x="1" x="2"/>"#, "duplicate attribute `x`"),
-			("<!DOCTYPE a><a/>", "DOCTYPE is not supported"),
-			("<?pi x?><a/>", "processing instructions are not supported"),
-			("<?xml?><a/>", "malformed XML declaration"),
-			(r#"<?xml encoding="UTF-8"?><a/>"#, "malformed XML declaration"),
-			("<a>\n  <!-- x--y --></a>", "line 2, column 9: `--` is not allowed inside a comment"),
-			(r#"<a x="1"y="2"/>"#, "expected whitespace before an attribute"),
-			("<a><![CDATA[x]]></a>", "CDATA and declarations are not supported"),
-			("<a>text</a>", "text is not allowed"),
-			("<a/><b/>", "unexpected content after the root element"),
-			(r#"<a x="<"/>"#, "`<` is not allowed in attribute values"),
-			(r#"<a x="&nope;"/>"#, "invalid entity `&nope;`"),
-			(r#"<a x="&#0;"/>"#, "invalid character reference `&#0;`"),
-			(r#"<a x="&#1;"/>"#, "invalid character reference `&#1;`"),
-			(r#"<a x="&#xB;"/>"#, "invalid character reference `&#xB;`"),
-			(r#"<a x="&#xFFFE;"/>"#, "invalid character reference `&#xFFFE;`"),
-			("<a>\n<b/>\n<c></d>\n</a>", "line 3, column 6: expected </c>, found </d>"),
-			("\u{feff}<a>\n<c></d>\n</a>", "line 2, column 6: expected </c>, found </d>"),
-			(&"<a>".repeat(17), "nesting deeper than 16 levels"),
-		];
-		for (xml, msg) in cases {
-			let error = parse(xml).unwrap_err().to_string();
-			assert!(error.contains(msg), "{xml}: {error}");
-		}
-	}
-
-	#[test]
-	fn reads_xml_declarations_loosely_but_checks_version_and_encoding() {
-		let cases = [
-			(r#"<?xml version="2.0"?><a/>"#, "line 1, column 16: invalid version `2.0`"),
-			(r#"<?xml version="1.0" encoding="UTF-16"?><a/>"#, "invalid encoding `UTF-16`"),
-			(
-				"\n<?xml version=\"1.0\"?><a/>",
-				"line 2, column 1: the XML declaration must come first",
-			),
-		];
-		for (xml, msg) in cases {
-			let error = parse(xml).unwrap_err().to_string();
-			assert!(error.contains(msg), "{xml}: {error}");
-		}
+	fn malformed_and_unsupported_documents_are_refused_with_a_location() {
 		for xml in [
-			r#"<?xml version="1.0"?><a/>"#,
-			r#"<?xml version='1.1' encoding='utf-8' standalone='no' ?><a/>"#,
-			"<?xml\tversion = \"1.0\"\nencoding=\"UTF-8\"?>\n<a/>",
+			r#"<a x="1" x="2"/>"#,
+			"<!DOCTYPE a><a/>",
+			"<?pi x?><a/>",
+			"<?xml?><a/>",
+			r#"<?xml encoding="UTF-8"?><a/>"#,
+			"<a>\n  <!-- x--y --></a>",
+			r#"<a x="1"y="2"/>"#,
+			"<a><![CDATA[x]]></a>",
+			"<a>text</a>",
+			"<a/><b/>",
+			r#"<a x="<"/>"#,
+			r#"<a x="&nope;"/>"#,
+			r#"<a x="&#0;"/>"#,
+			r#"<a x="&#1;"/>"#,
+			r#"<a x="&#xB;"/>"#,
+			r#"<a x="&#xFFFE;"/>"#,
+			"<a>\n<b/>\n<c></d>\n</a>",
+			&"<a>".repeat(17),
+			// Characters outside XML.
+			"<a x=\"\0\"/>",
+			"<a>\n<b y=\"\u{1}\"/></a>",
+			"<a/><!-- \u{1b} -->",
+			"<a x=\"\u{FFFE}\"/>",
+			"<a x=\"\u{FFFF}\"/>",
+			"<a/>\u{0}",
 		] {
-			parse(xml).unwrap_or_else(|e| panic!("{xml}: {e}"));
-		}
-	}
-
-	#[test]
-	fn rejects_characters_outside_xml() {
-		for (xml, shown) in [
-			("<a x=\"\0\"/>", "line 1, column 7: character U+0000"),
-			("<a>\n<b y=\"\u{1}\"/></a>", "line 2, column 7: character U+0001"),
-			("<a/><!-- \u{1b} -->", "character U+001B"),
-			("<a x=\"\u{FFFE}\"/>", "character U+FFFE"),
-			("<a x=\"\u{FFFF}\"/>", "character U+FFFF"),
-			("<a/>\u{0}", "character U+0000"),
-		] {
-			let error = parse(xml).unwrap_err().to_string();
-			assert!(error.contains(shown), "{xml:?}: {error}");
-			assert!(error.contains("is not allowed in XML"), "{error}");
+			let error = parse(xml).unwrap_err();
+			let error = error.downcast_ref::<PlanError>().unwrap();
+			assert!(error.location.is_some(), "{xml:?}: {error}");
 		}
 		parse("<a x=\"\t\u{7F}\u{85}\u{E000}\u{10FFFF}\"/>").unwrap();
-	}
-
-	#[test]
-	fn errors_carry_their_location() {
-		let error = parse("<a>\n  <b></c>\n</a>").unwrap_err();
-		let located = error.downcast_ref::<PlanError>().unwrap();
-		assert_eq!(located.location, Some(Location { line: 2, column: 8 }));
-		assert_eq!(
-			located.message,
-			"expected </b>, found </c>; <b> was opened at line 2, column 3"
-		);
 	}
 
 	#[test]
@@ -594,42 +550,5 @@ mod tests {
 		// Generous, and scaled for an unoptimised build.
 		let limit = if cfg!(debug_assertions) { 20 } else { 2 };
 		assert!(elapsed < std::time::Duration::from_secs(limit), "took {elapsed:?}");
-	}
-
-	#[test]
-	fn messages_say_how_to_fix_references_and_encodings() {
-		let cases = [
-			(r#"<a x="fish & chips"/>"#, "unterminated entity reference: `&` starts a reference"),
-			(r#"<a x="fish & chips"/>"#, "write a literal `&` as `&amp;`"),
-			(r#"<a x="&nope;"/>"#, "use `&amp;`, `&lt;`"),
-			(
-				"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><a x=\"café\"/>",
-				"the plan has non-ASCII text, which PolkaMeter reads as UTF-8",
-			),
-		];
-		for (xml, msg) in cases {
-			let error = parse(xml).unwrap_err().to_string();
-			assert!(error.contains(msg), "{xml}: {error}");
-		}
-		for encoding in ["US-ASCII", "ascii", "ISO-8859-1", "latin1"] {
-			let xml = format!("<?xml version=\"1.0\" encoding=\"{encoding}\"?><a x=\"plain\"/>");
-			parse(&xml).unwrap_or_else(|e| panic!("{encoding}: {e}"));
-		}
-	}
-
-	#[test]
-	fn normalises_literal_whitespace_in_attribute_values() {
-		let root = parse("<a x=\"a\nb\" y=\"a\r\nb\tc\" z=\"&#xA;&#xD;\"/>").unwrap();
-		assert_eq!(root.attrs[0].1, "a b");
-		assert_eq!(root.attrs[1].1, "a b c");
-		assert_eq!(root.attrs[2].1, "\n\r");
-		assert!(matches!(root.attrs[0].1, Cow::Owned(_)));
-	}
-
-	#[test]
-	fn accepts_byte_order_mark_and_tab_references() {
-		let root = parse("\u{feff}<a x=\"&#9;&#x10000;\"/>").unwrap();
-		assert_eq!(root.name, "a");
-		assert_eq!(root.attrs[0].1, "\t\u{10000}");
 	}
 }

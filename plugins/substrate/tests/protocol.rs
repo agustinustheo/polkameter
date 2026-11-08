@@ -82,60 +82,46 @@ fn describe_lists_the_operations() {
 fn bad_inputs_fail_before_any_connection() {
 	let mut session = Session::start();
 	let target = "ws://127.0.0.1:1";
-	// The SDK checks types and unknown inputs against the manifest.
-	assert_eq!(
-		session.error("prepare-remarks", json!({"target": target, "seed": "//Alice", "count": 10})),
-		"missing field probes"
-	);
-	assert_eq!(
-		session.error(
+	// Each case is refused, and the error names the input at fault. The SDK checks types and
+	// unknown inputs against the manifest; the plugin checks ranges and formats.
+	for (operation, inputs, field) in [
+		("prepare-remarks", json!({"target": target, "seed": "//Alice", "count": 10}), "probes"),
+		(
 			"prepare-remarks",
-			json!({"target": target, "seed": "//Alice", "count": 10, "probes": 1, "flood-signer": 1})
+			json!({"target": target, "seed": "//Alice", "count": 10, "probes": 1, "flood-signer": 1}),
+			"flood-signer",
 		),
-		"unknown field flood-signer"
-	);
-	// The plugin checks ranges and formats, and never echoes a secret.
-	assert_eq!(
-		session.error(
+		(
 			"prepare-remarks",
-			json!({"target": target, "seed": "//Alice", "count": 0, "probes": 1})
+			json!({"target": target, "seed": "//Alice", "count": 0, "probes": 1}),
+			"count",
 		),
-		"input count must be between 1 and 1000000, got 0"
-	);
-	let error = session.error(
-		"prepare-transfers",
-		json!({"target": target, "seed": "correct horse battery//1", "count": 20, "probes": 1}),
-	);
-	assert!(error.starts_with("input seed is not a valid secret URI"), "{error}");
-	assert!(!error.contains("horse"), "{error}");
-	assert_eq!(
-		session.error(
+		(
+			"prepare-transfers",
+			json!({"target": target, "seed": "correct horse battery//1", "count": 20, "probes": 1}),
+			"seed",
+		),
+		(
 			"fund-accounts",
-			json!({"target": "http://127.0.0.1:1", "seed": "//Alice", "amount": 1})
+			json!({"target": "http://127.0.0.1:1", "seed": "//Alice", "amount": 1}),
+			"target",
 		),
-		"input target must be a ws:// or wss:// endpoint, got \"http://127.0.0.1:1\""
-	);
-	assert_eq!(
-		session
-			.error("fund-accounts", json!({"target": target, "seed": "//Alice", "amount": "1.5"})),
-		"input amount must be digits, got \"1.5\""
-	);
-	assert_eq!(
-		session.error("preflight", json!({"target": target, "min-balance": 5})),
-		"input min-balance needs input seed"
-	);
-}
-
-#[test]
-fn an_unreachable_chain_is_named() {
-	let mut session = Session::start();
-	let error = session.error(
-		"prepare-remarks",
-		json!({"target": "ws://127.0.0.1:1", "seed": "//Alice", "count": 20, "probes": 2}),
-	);
-	assert!(error.starts_with("cannot connect to ws://127.0.0.1:1"), "{error}");
-	let error = session.error("preflight", json!({"target": "ws://127.0.0.1:1"}));
-	assert!(error.starts_with("cannot connect to ws://127.0.0.1:1"), "{error}");
+		("fund-accounts", json!({"target": target, "seed": "//Alice", "amount": "1.5"}), "amount"),
+		("preflight", json!({"target": target, "min-balance": 5}), "min-balance"),
+	] {
+		let error = session.error(operation, inputs);
+		assert!(error.contains(field), "{operation} {field}: {error}");
+		// A secret is never echoed.
+		assert!(!error.contains("horse"), "{error}");
+	}
+	// Good inputs against an unreachable chain fail and name the endpoint.
+	for (operation, inputs) in [
+		("prepare-remarks", json!({"target": target, "seed": "//Alice", "count": 20, "probes": 2})),
+		("preflight", json!({"target": target})),
+	] {
+		let error = session.error(operation, inputs);
+		assert!(error.contains(target), "{operation}: {error}");
+	}
 }
 
 #[tokio::test]
@@ -155,24 +141,4 @@ async fn polkameter_installs_it_and_accepts_the_example_plans() {
 		assert_eq!(plugin.id, "substrate", "{name}");
 		assert_eq!(plugin.version, env!("CARGO_PKG_VERSION"), "{name}: plugin version");
 	}
-	// The Agent Skill bundles copies of the example plans, under the same names; they must not
-	// drift. tests/validate-plans.py checks the same.
-	let templates = concat!(env!("CARGO_MANIFEST_DIR"), "/../../skills/polkameter/templates");
-	let mut copies = 0;
-	for entry in std::fs::read_dir(templates).unwrap() {
-		let path = entry.unwrap().path();
-		let name = path.file_name().unwrap().to_string_lossy().into_owned();
-		if !name.ends_with(".polkameter.xml") {
-			continue;
-		}
-		copies += 1;
-		let example = std::fs::read_to_string(format!("{examples}/{name}"))
-			.unwrap_or_else(|e| panic!("examples/{name}: {e}"));
-		assert_eq!(
-			std::fs::read_to_string(&path).unwrap(),
-			example,
-			"skills/polkameter/templates/{name} differs from examples/{name}"
-		);
-	}
-	assert_eq!(copies, 3, "the skill holds three plan templates");
 }

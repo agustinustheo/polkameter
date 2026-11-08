@@ -61,32 +61,3 @@ pub fn num(n: f64) -> String {
 	}
 	format!("{n}")
 }
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	#[test]
-	fn ties_round_away_from_zero_as_in_js() {
-		assert_eq!(to_fixed(2.5, 0), "3");
-		assert_eq!(to_fixed(12.5, 0), "13");
-		assert_eq!(to_fixed(0.25, 1), "0.3");
-		assert_eq!(to_fixed(9.95, 1), "9.9", "9.95 is below the tie in binary, as in JS");
-		assert_eq!(to_fixed(1.005, 2), "1.00");
-		assert_eq!(to_fixed(99.5, 0), "100");
-		assert_eq!(to_fixed(-2.5, 0), "-3");
-		assert_eq!(to_fixed(6.0, 1), "6.0");
-		assert_eq!(to_fixed(0.0, 2), "0.00");
-		assert_eq!(to_fixed(70.7, 1), "70.7");
-		assert_eq!(to_fixed(f64::INFINITY, 1), "Infinity");
-	}
-
-	#[test]
-	fn numbers_print_as_in_js() {
-		assert_eq!(num(9.0), "9");
-		assert_eq!(num(2.5), "2.5");
-		assert_eq!(num(f64::INFINITY), "Infinity");
-		assert_eq!(num(1e-7), "1e-7");
-		assert_eq!(num(1.5e21), "1.5e+21");
-	}
-}

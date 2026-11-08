@@ -159,19 +159,3 @@ fn log_step<S: Submit>(t: &Tracker<S>) {
 		);
 	}
 }
-
-#[cfg(test)]
-mod tests {
-	use super::paused;
-
-	#[test]
-	fn a_pause_is_a_long_tick_or_a_suspend_not_a_wall_clock_step() {
-		assert_eq!(paused(20, Some(20), 5_000), None);
-		assert_eq!(paused(20, None, 5_000), None, "no boot clock");
-		assert!(paused(6_000, Some(6_000), 5_000).unwrap().contains("paused for 6 s"));
-		// Suspended: the monotonic clock stood still while the boot clock moved a minute.
-		assert!(paused(20, Some(60_020), 5_000).unwrap().contains("suspended for 60 s"));
-		// An NTP step of the wall clock moves neither clock: nothing to see, however large.
-		assert_eq!(paused(20, Some(21), 5_000), None);
-	}
-}

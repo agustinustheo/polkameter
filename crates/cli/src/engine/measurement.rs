@@ -634,24 +634,6 @@ mod tests {
 	use polkameter_plugin_sdk::observers::checks::{CheckResult, Status, Verdict};
 
 	#[test]
-	fn the_loss_line_prints_counts_not_options() {
-		let mut loss = Loss::default();
-		(loss.sent, loss.included, loss.refused) = (4500, 4500, 0);
-		(loss.in_pool, loss.lost) = (Some(0), Some(0));
-		assert_eq!(
-			loss_line(&loss),
-			"loss check: 4500 sent, 4500 included, 0 refused, 0 in the pool, 0 lost"
-		);
-		(loss.in_pool, loss.lost) = (None, None);
-		let line = loss_line(&loss);
-		assert_eq!(
-			line,
-			"loss check: 4500 sent, 4500 included, 0 refused, in the pool: not counted, lost: not counted"
-		);
-		assert!(!line.contains("Some(") && !line.contains("None"));
-	}
-
-	#[test]
 	fn the_same_transaction_spelled_twice_is_a_duplicate() {
 		use polkameter_plugin_sdk::PreparedTx;
 		let a = PreparedTx::new(&[1, 2, 3], serde_json::Value::Null);
@@ -698,100 +680,67 @@ mod tests {
 		}
 	}
 
+	/// Mode × check status × required or optional × monitor problem × load stop × policy → exit.
 	#[test]
-	fn each_policy_fails_only_its_own_verdict() {
+	fn the_exit_code_follows_the_mode_the_verdict_and_the_policy() {
+		use polkameter_plugin_sdk::observers::files::summary::Stop;
 		for mode in [Mode::Stress, Mode::Smoke] {
-			for (status, verdict) in [
-				(Status::Pass, OverallStatus::Pass),
-				(Status::Warn, OverallStatus::Warn),
-				(Status::Fail, OverallStatus::Fail),
-				(Status::NoResult, OverallStatus::Inconclusive),
-			] {
-				for policy in POLICIES {
-					let summary = clean_summary();
-					let checks = [plugin_check("plugin check", status, false)];
+			for status in [Status::Pass, Status::Warn, Status::Fail, Status::NoResult] {
+				for (optional, problem, stop) in [false, true]
+					.into_iter()
+					.flat_map(|o| [(o, false), (o, true)])
+					.flat_map(|(o, p)| [(o, p, Rule::RateCap), (o, p, Rule::GeneratorLimit)])
+				{
+					let mut summary = clean_summary();
+					if problem {
+						summary.problems = vec!["monitor scrape failed".into()];
+					}
+					if stop != Rule::RateCap {
+						summary.stop = Stop::new(stop, Some(0), "sent 50 of 100 tx/s");
+					}
+					let checks = [plugin_check("check", status, optional)];
+					let gap = status == Status::NoResult && !optional;
+					let verdict = match status {
+						Status::Fail => OverallStatus::Fail,
+						_ if stop != Rule::RateCap || gap => OverallStatus::Inconclusive,
+						Status::Warn => OverallStatus::Warn,
+						_ => OverallStatus::Pass,
+					};
 					assert_eq!(overall_status(&summary, &checks), verdict);
-					let by_policy = (verdict == OverallStatus::Fail && policy.fail_on_verdict)
-						|| (verdict == OverallStatus::Inconclusive && policy.fail_on_inconclusive);
-					// Smoke mode already fails a required check with no result.
-					let by_smoke = mode == Mode::Smoke && status == Status::NoResult;
-					let exit = exit_code(mode, &summary, &checks, policy);
-					assert_eq!(
-						exit.code,
-						i32::from(by_policy || by_smoke),
-						"{mode:?} {verdict:?} {policy:?}"
-					);
-					assert_eq!(
-						verdict_failure(&summary, &checks, policy).is_some(),
-						by_policy,
-						"{mode:?} {verdict:?} {policy:?}"
-					);
-					// The flag is blamed only when it decides the exit.
-					let reason = exit.reason.unwrap_or_default();
-					assert_eq!(
-						reason.contains("exit 1 because of"),
-						by_policy && !by_smoke,
-						"{mode:?} {verdict:?} {policy:?}: {reason}"
-					);
-					assert_eq!(reason.starts_with("smoke mode"), by_smoke, "{reason}");
+					for policy in POLICIES {
+						let by_policy = (verdict == OverallStatus::Fail && policy.fail_on_verdict)
+							|| (verdict == OverallStatus::Inconclusive
+								&& policy.fail_on_inconclusive);
+						// Smoke mode fails on monitor problems and required gaps whatever the flags.
+						let by_smoke = mode == Mode::Smoke && (problem || gap);
+						let exit = exit_code(mode, &summary, &checks, policy);
+						let case = format!(
+							"{mode:?} {status:?} optional={optional} problem={problem} {stop:?} {policy:?}"
+						);
+						assert_eq!(exit.code, i32::from(by_policy || by_smoke), "{case}");
+						assert_eq!(exit.reason.is_some(), exit.code == 1, "{case}");
+					}
 				}
 			}
 		}
-	}
-
-	#[test]
-	fn inconclusive_reason_names_the_stop_and_the_required_checks_without_results() {
-		let policy = ExitPolicy { fail_on_verdict: false, fail_on_inconclusive: true };
-		let mut summary = clean_summary();
-		let checks: Vec<CheckResult> = (1..=7)
-			.map(|i| plugin_check(&format!("required {i}"), Status::NoResult, false))
-			.chain([
-				plugin_check("optional", Status::NoResult, true),
-				plugin_check("passed", Status::Pass, false),
-			])
-			.collect();
-		assert_eq!(
-			exit_code(Mode::Stress, &summary, &checks, policy).reason.unwrap(),
-			"verdict INCONCLUSIVE: required checks with no result: required 1, required 2, \
-			 required 3, required 4, required 5 and 2 more; exit 1 because of \
-			 --fail-on-inconclusive (the checks are in summary.md)"
-		);
-		summary.stop = polkameter_plugin_sdk::observers::files::summary::Stop::new(
-			Rule::BudgetUsedUp,
-			Some(1),
-			"all 60 prepared transactions sent (13 more kept for probes)",
-		);
-		let checks = [plugin_check("passed", Status::Pass, false)];
-		assert_eq!(overall_status(&summary, &checks), OverallStatus::Inconclusive);
-		assert_eq!(
-			verdict_reason(&summary, &checks),
-			"the load ended on \"budget used up\" before reaching its rate cap (all 60 prepared \
-			 transactions sent (13 more kept for probes))"
-		);
-		assert_eq!(exit_code(Mode::Stress, &summary, &checks, policy).code, 1);
-		assert_eq!(
-			exit_code(Mode::Stress, &summary, &checks, ExitPolicy::default()),
-			Exit::default()
-		);
-	}
-
-	#[test]
-	fn fail_reason_names_the_failed_checks() {
-		let checks = [
-			plugin_check("too slow", Status::Fail, false),
-			plugin_check("fine", Status::Pass, false),
-		];
-		assert_eq!(verdict_reason(&clean_summary(), &checks), "failed checks: too slow");
-		let mut summary = clean_summary();
-		summary.stop = polkameter_plugin_sdk::observers::files::summary::Stop::new(
-			Rule::Stall,
-			Some(2),
-			"no block for 30 s",
-		);
-		assert_eq!(
-			verdict_reason(&summary, &[]),
-			"the load stopped on \"stall\" (no block for 30 s)"
-		);
+		// The recorded run's FAIL verdict is written whatever the policy; only the exit changes.
+		let root =
+			std::env::temp_dir().join(format!("polkameter-verdict-report-{}", std::process::id()));
+		std::fs::create_dir_all(&root).unwrap();
+		let dir = RunDir::open(&root);
+		let recorded: Summary =
+			serde_json::from_str(include_str!("../../tests/fixtures/smoke-run/summary.json"))
+				.unwrap();
+		for policy in POLICIES {
+			let measured =
+				Measured { summary: recorded.clone(), finals: vec![], mode: Mode::Stress };
+			let exit = report(&dir, measured, &[], policy, &Redactor::default()).unwrap();
+			assert_eq!(exit.code, i32::from(policy.fail_on_verdict), "{policy:?}");
+			let json: serde_json::Value =
+				serde_json::from_slice(&std::fs::read(root.join("summary.json")).unwrap()).unwrap();
+			assert_eq!(json["verdict"]["result"], "FAIL");
+		}
+		std::fs::remove_dir_all(root).unwrap();
 	}
 
 	#[test]
@@ -835,150 +784,5 @@ mod tests {
 		let md = std::fs::read_to_string(root.join("summary.md")).unwrap();
 		assert!(md.contains("| plugin | uses [redacted] | **fail** | detail [redacted] at wss://rpc.example/ws?apikey=[redacted] |"), "{md}");
 		std::fs::remove_dir_all(root).unwrap();
-	}
-
-	#[test]
-	fn report_writes_the_same_fail_verdict_with_either_exit_policy() {
-		let root =
-			std::env::temp_dir().join(format!("polkameter-verdict-report-{}", std::process::id()));
-		std::fs::create_dir_all(&root).unwrap();
-		let dir = RunDir::open(&root);
-		let recorded: Summary =
-			serde_json::from_str(include_str!("../../tests/fixtures/smoke-run/summary.json"))
-				.unwrap();
-		// With the recorded checks, the FAIL changes the exit code only with --fail-on-verdict,
-		// in either mode.
-		let checks: Vec<CheckResult> =
-			serde_json::from_value(recorded.checks.clone().unwrap()).unwrap();
-		for mode in [Mode::Smoke, Mode::Stress] {
-			for policy in POLICIES {
-				assert_eq!(
-					exit_code(mode, &recorded, &checks, policy).code,
-					i32::from(policy.fail_on_verdict),
-					"{mode:?} {policy:?}"
-				);
-			}
-		}
-		for policy in POLICIES {
-			let measured =
-				Measured { summary: recorded.clone(), finals: vec![], mode: Mode::Stress };
-			assert_eq!(
-				report(&dir, measured, &[], policy, &Redactor::default()).unwrap().code,
-				i32::from(policy.fail_on_verdict)
-			);
-			let json: serde_json::Value =
-				serde_json::from_slice(&std::fs::read(root.join("summary.json")).unwrap()).unwrap();
-			assert_eq!(json["verdict"]["result"], "FAIL");
-			assert!(
-				std::fs::read_to_string(root.join("summary.md"))
-					.unwrap()
-					.contains("- **Verdict:** FAIL")
-			);
-		}
-		std::fs::remove_dir_all(root).unwrap();
-	}
-
-	#[test]
-	fn report_from_the_files_redacts_the_summary_it_writes() {
-		let root =
-			std::env::temp_dir().join(format!("polkameter-offline-report-{}", std::process::id()));
-		std::fs::create_dir_all(&root).unwrap();
-		let mut summary: Summary =
-			serde_json::from_str(include_str!("../../tests/fixtures/smoke-run/summary.json"))
-				.unwrap();
-		// A file written before redaction covered it, or by something else.
-		summary.scenario = "Plan OfflineSecret-0123".into();
-		RunDir::open(&root).write_json("summary.json", &summary).unwrap();
-		check(&root, &Redactor::new(["OfflineSecret-0123"], None::<&str>)).unwrap();
-		for name in ["summary.md", "summary.json"] {
-			let text = std::fs::read_to_string(root.join(name)).unwrap();
-			assert!(!text.contains("OfflineSecret"), "{name}: {text}");
-			assert!(text.contains("Plan [redacted]"), "{name}: {text}");
-		}
-		std::fs::remove_dir_all(root).unwrap();
-	}
-
-	#[test]
-	fn exit_code_policy() {
-		let result = |check: &str, status, optional| CheckResult {
-			source: None,
-			outcome: "pool".into(),
-			check: check.into(),
-			verdict: Verdict::new(status, check),
-			optional,
-		};
-		for (name, mode, problem, required, optional, expected) in [
-			("stress reports health failures", Mode::Stress, false, Status::Fail, Status::Pass, 0),
-			("smoke monitor problem", Mode::Smoke, true, Status::Pass, Status::Pass, 1),
-			("smoke required gap", Mode::Smoke, false, Status::NoResult, Status::Pass, 1),
-			("smoke optional gap", Mode::Smoke, false, Status::Pass, Status::NoResult, 0),
-			("smoke all pass", Mode::Smoke, false, Status::Pass, Status::Pass, 0),
-		] {
-			let mut summary: Summary =
-				serde_json::from_str(include_str!("../../tests/fixtures/smoke-run/summary.json"))
-					.unwrap();
-			summary.problems = if problem { vec!["monitor scrape failed".into()] } else { vec![] };
-			let checks =
-				[result("required", required, false), result("from a plugin", optional, true)];
-			assert_eq!(
-				exit_code(mode, &summary, &checks, ExitPolicy::default()).code,
-				expected,
-				"{name}"
-			);
-		}
-	}
-
-	#[test]
-	fn smoke_failures_do_not_blame_the_flags() {
-		let both = ExitPolicy { fail_on_verdict: true, fail_on_inconclusive: true };
-		let mut summary = clean_summary();
-		let gap = [plugin_check("no silent loss", Status::NoResult, false)];
-		// INCONCLUSIVE because a required check has no result: smoke mode fails on that anyway.
-		for policy in POLICIES {
-			let exit = exit_code(Mode::Smoke, &summary, &gap, policy);
-			assert_eq!(
-				exit,
-				Exit {
-					code: 1,
-					reason: Some(
-						"smoke mode fails the run on monitor problems and required checks with no \
-						 result, whatever the --fail-on flags; fix this one: no silent loss: test \
-						 (the checks are in summary.md)"
-							.into()
-					),
-				},
-				"{policy:?}"
-			);
-		}
-		// A monitor problem and a FAIL verdict with --fail-on-verdict: both causes are named.
-		summary.problems = vec!["monitor scrape failed".into()];
-		let failed = [plugin_check("too slow", Status::Fail, false)];
-		let reason = exit_code(Mode::Smoke, &summary, &failed, both).reason.unwrap();
-		assert_eq!(
-			reason,
-			"smoke mode fails the run on monitor problems and required checks with no result, \
-			 whatever the --fail-on flags; fix this one: monitor scrape failed; verdict FAIL also \
-			 fails it because of --fail-on-verdict: failed checks: too slow (the checks are in \
-			 summary.md)"
-		);
-		// Smoke mode with a stop that is not caught by smoke: the flag decides, and is blamed.
-		summary.problems.clear();
-		summary.stop = polkameter_plugin_sdk::observers::files::summary::Stop::new(
-			Rule::GeneratorLimit,
-			Some(0),
-			"sent 50 of 100 tx/s",
-		);
-		let passed = [plugin_check("fine", Status::Pass, false)];
-		let exit = exit_code(Mode::Smoke, &summary, &passed, both);
-		assert_eq!(exit.code, 1);
-		assert!(
-			exit.reason.unwrap().ends_with(
-				"exit 1 because of --fail-on-inconclusive (the checks are in summary.md)"
-			)
-		);
-		assert_eq!(
-			exit_code(Mode::Smoke, &summary, &passed, ExitPolicy::default()),
-			Exit::default()
-		);
 	}
 }

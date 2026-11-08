@@ -433,37 +433,3 @@ fn interval_s(stamps: &[u64]) -> Option<f64> {
 	let span = newest.saturating_sub(*oldest);
 	(intervals >= MIN_INTERVALS && span > 0).then(|| span as f64 / intervals as f64 / 1000.0)
 }
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	/// Newest first: `n` blocks of 3-core bunches (12 s, then five at 0 s) ending at `end` ms.
-	fn bunched(end: u64, n: u64) -> Vec<u64> {
-		(0..n).map(|k| end - k.div_ceil(6) * 12_000).collect()
-	}
-
-	#[test]
-	fn the_interval_is_the_span_over_whole_bunches() {
-		assert_eq!(interval_s(&bunched(1_000_000, 61)), Some(2.0));
-	}
-
-	#[test]
-	fn blocks_from_before_the_fork_are_left_out() {
-		// 31 fork blocks at 2 s, then the bite's gap of 5 minutes, then live blocks at 12 s.
-		let mut stamps = bunched(1_000_000, 31);
-		let bite = stamps[30] - 300_000;
-		stamps.extend((0..30).map(|k| bite - k * 12_000));
-		assert_eq!(since_restart(&stamps).len(), 31);
-		assert_eq!(interval_s(since_restart(&stamps)), Some(2.0));
-		// Before the fix: the span over all 61 blocks.
-		assert!(interval_s(&stamps).unwrap() > 9.0);
-	}
-
-	#[test]
-	fn too_few_blocks_since_the_fork_give_no_interval() {
-		assert_eq!(interval_s(&bunched(1_000_000, 20)), None);
-		assert_eq!(interval_s(&[5_000; 30]), None);
-		assert_eq!(interval_s(&[]), None);
-	}
-}

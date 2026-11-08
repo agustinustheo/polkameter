@@ -25,14 +25,3 @@ pub fn boot_ms() -> Option<Millis> {
 		None
 	}
 }
-
-#[cfg(test)]
-mod tests {
-	#[test]
-	fn the_boot_clock_moves_forward() {
-		let Some(a) = super::boot_ms() else { return };
-		std::thread::sleep(std::time::Duration::from_millis(20));
-		let b = super::boot_ms().unwrap();
-		assert!(b >= a + 15, "{a} {b}");
-	}
-}

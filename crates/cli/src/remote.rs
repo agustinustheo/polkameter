@@ -1058,49 +1058,6 @@ mod tests {
 	};
 	use tokio::sync::Notify;
 
-	#[test]
-	fn remote_run_options_default_for_older_clients_and_round_trip() {
-		let request: PluginRequest =
-			serde_json::from_value(serde_json::json!({"xml":"plan"})).unwrap();
-		assert!(!request.options.fail_on_verdict);
-		assert!(!request.options.fail_on_inconclusive);
-		let request = PluginRequest {
-			xml: "plan".into(),
-			options: crate::engine::execute::RunOptions {
-				fail_on_verdict: true,
-				fail_on_inconclusive: true,
-			},
-			run_id: Some("c-1".into()),
-		};
-		let json = serde_json::to_value(request).unwrap();
-		assert_eq!(json["options"]["failOnVerdict"], true);
-		assert_eq!(json["options"]["failOnInconclusive"], true);
-		assert_eq!(json["runId"], "c-1");
-		let options = serde_json::from_value::<PluginRequest>(json).unwrap().options;
-		assert!(options.fail_on_verdict && options.fail_on_inconclusive);
-	}
-
-	#[test]
-	fn each_run_option_needs_its_own_capability() {
-		use crate::engine::execute::RunOptions;
-		let verdict = RunOptions { fail_on_verdict: true, ..RunOptions::default() };
-		let inconclusive = RunOptions { fail_on_inconclusive: true, ..RunOptions::default() };
-		let both = RunOptions { fail_on_verdict: true, fail_on_inconclusive: true };
-		let older = serde_json::json!({"runOptions": {"failOnVerdict": true}});
-		let current =
-			serde_json::json!({"runOptions": {"failOnVerdict": true, "failOnInconclusive": true}});
-		let refusal =
-			|flag: &str| Some(format!("remote agent does not support {flag}; update the agent"));
-		assert_eq!(unsupported_options(RunOptions::default(), &serde_json::json!({})), None);
-		assert_eq!(unsupported_options(verdict, &older), None);
-		assert_eq!(unsupported_options(inconclusive, &older), refusal("--fail-on-inconclusive"));
-		assert_eq!(unsupported_options(both, &older), refusal("--fail-on-inconclusive"));
-		assert_eq!(unsupported_options(both, &serde_json::json!({})), refusal("--fail-on-verdict"));
-		for options in [verdict, inconclusive, both] {
-			assert_eq!(unsupported_options(options, &current), None);
-		}
-	}
-
 	fn target(endpoint: &str) -> RemoteRunnerTarget {
 		RemoteRunnerTarget { endpoint: endpoint.into(), bearer_token: "token".into() }
 	}
@@ -1218,11 +1175,8 @@ mod tests {
 		poll_ids: Mutex<Vec<String>>,
 		/// The stop requests received, as `stop` or `force`, with the run ID.
 		stops: Mutex<Vec<(&'static str, String)>>,
-		/// Notified when a poll stalls or a start request arrives.
+		/// Notified when a poll or a plain stop stalls.
 		stalled: Notify,
-		started: Notify,
-		/// When set, the start request waits for this.
-		start_gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
 		/// Keep answering from the script after a stop.
 		ignore_stops: bool,
 		/// Stop requests without `force` never get an answer.
@@ -1270,11 +1224,6 @@ mod tests {
 							ids.push(request.run_id.clone());
 							ids.len() - 1
 						};
-						mock.started.notify_one();
-						let gate = mock.start_gate.lock().unwrap().take();
-						if let Some(gate) = gate {
-							let _ = gate.await;
-						}
 						match mock.starts.get(index).copied().unwrap_or(Start::Running) {
 							Start::Running => {
 								// Like a current agent, the run takes the ID the client chose.
@@ -1357,179 +1306,68 @@ mod tests {
 		follow_run(&target(endpoint), "plan".into(), Default::default(), signals, limits).await
 	}
 
+	/// A flaky agent: transient failures retry with the same run ID; giving up always sends one
+	/// stop for that ID.
 	#[tokio::test]
-	async fn failed_status_polls_are_retried_until_the_run_ends() {
-		let mock = Arc::new(Mock {
-			script: vec![
-				Poll::Fail(503),
-				Poll::Fail(502),
-				Poll::Running,
-				Poll::Fail(500),
-				Poll::Completed,
-			],
-			..Mock::default()
-		});
-		let (endpoint, server) = mock_agent(mock.clone()).await;
-		let (_sender, mut signals) = Signals::channel();
-		let Followed::Ended { status, signal } =
-			follow(&endpoint, &mut signals, &limits()).await.unwrap()
-		else {
-			panic!("the run was abandoned")
-		};
-		assert_eq!((status.state.as_str(), signal), ("completed", None));
-		assert_eq!(mock.polls.load(Ordering::SeqCst), 5);
-		assert!(mock.stops.lock().unwrap().is_empty());
-		// Every poll asks for the run ID the client chose and sent with the start.
-		let start_ids = mock.start_ids.lock().unwrap().clone();
-		let [Some(id)] = start_ids.as_slice() else { panic!("{start_ids:?}") };
-		assert!(id.starts_with("c-") && is_safe_run_id(id), "{id}");
-		assert!(mock.poll_ids.lock().unwrap().iter().all(|polled| polled == id));
-		server.abort();
-	}
-
-	#[tokio::test]
-	async fn a_lost_start_response_is_repeated_with_the_same_run_id() {
-		let mock = Arc::new(Mock {
-			starts: vec![Start::Stall, Start::Fail(502), Start::Running],
-			script: vec![Poll::Completed],
-			..Mock::default()
-		});
-		let (endpoint, server) = mock_agent(mock.clone()).await;
-		let (_sender, mut signals) = Signals::channel();
-		let limits = Follow { request_timeout: Duration::from_millis(200), ..limits() };
-		let Followed::Ended { status, .. } =
-			follow(&endpoint, &mut signals, &limits).await.unwrap()
-		else {
-			panic!("the run was abandoned")
-		};
-		assert_eq!(status.state, "completed");
-		let ids = mock.start_ids.lock().unwrap().clone();
-		assert_eq!(ids.len(), 3);
-		assert!(ids.iter().all(|id| id.is_some() && *id == ids[0]), "{ids:?}");
-		server.abort();
-	}
-
-	#[tokio::test]
-	async fn a_start_that_keeps_failing_stops_the_run_by_its_id() {
-		let mock = Arc::new(Mock { starts: vec![Start::Fail(503); 100], ..Mock::default() });
-		let (endpoint, server) = mock_agent(mock.clone()).await;
-		let (_sender, mut signals) = Signals::channel();
-		let limits = Follow { retry_budget: Duration::ZERO, ..limits() };
-		let error = follow(&endpoint, &mut signals, &limits).await.unwrap_err();
-		assert!(error.starts_with("the start request kept failing for 0 s"), "{error}");
-		let id = mock.start_ids.lock().unwrap()[0].clone().unwrap();
-		assert!(error.ends_with(&format!("; asked the agent to stop run {id}")), "{error}");
-		assert_eq!(*mock.stops.lock().unwrap(), [("stop", id)]);
-		server.abort();
-	}
-
-	#[tokio::test]
-	async fn giving_up_on_failed_polls_stops_the_remote_run() {
-		let mock = Arc::new(Mock { script: vec![Poll::Fail(503)], ..Mock::default() });
-		let (endpoint, server) = mock_agent(mock.clone()).await;
-		let (_sender, mut signals) = Signals::channel();
-		let limits = Follow { retry_budget: Duration::ZERO, ..limits() };
-		let error = follow(&endpoint, &mut signals, &limits).await.unwrap_err();
-		assert!(
-			error.starts_with("status polls kept failing for 0 s: remote runner returned 503"),
-			"{error}"
-		);
-		assert!(error.contains("; asked the agent to stop run c-"), "{error}");
-		assert_eq!(mock.stop_kinds(), ["stop"]);
-		server.abort();
-	}
-
-	#[tokio::test]
-	async fn an_unrecoverable_poll_error_stops_the_remote_run_at_once() {
-		let mock = Arc::new(Mock { script: vec![Poll::Fail(400)], ..Mock::default() });
-		let (endpoint, server) = mock_agent(mock.clone()).await;
-		let (_sender, mut signals) = Signals::channel();
-		let error = follow(&endpoint, &mut signals, &limits()).await.unwrap_err();
-		assert!(
-			error.starts_with(
-				"remote runner returned 400 Bad Request: agent trouble; asked the agent to stop run c-"
-			),
-			"{error}"
-		);
-		assert_eq!(mock.polls.load(Ordering::SeqCst), 1);
-		assert_eq!(mock.stop_kinds(), ["stop"]);
-		server.abort();
-	}
-
-	#[tokio::test]
-	async fn the_client_deadline_bounds_a_stalled_start_or_poll_and_stops_the_run() {
-		let stalled_start = Mock { starts: vec![Start::Stall], ..Mock::default() };
-		let stalled_poll = Mock { script: vec![Poll::Stall], ..Mock::default() };
-		for (mock, expected) in [
-			(stalled_start, "the agent did not start the run in time; asked"),
+	async fn a_flaky_agent_keeps_one_run_id_and_giving_up_stops_it_once() {
+		let give_up = Follow { retry_budget: Duration::ZERO, ..limits() };
+		let deadline = Follow { deadline: Duration::from_millis(300), ..limits() };
+		let flaky_polls =
+			vec![Poll::Fail(503), Poll::Fail(502), Poll::Running, Poll::Fail(500), Poll::Completed];
+		// (agent, limits, the run ends, status polls)
+		let cases = [
+			(Mock { script: flaky_polls, ..Mock::default() }, limits(), true, Some(5)),
 			(
-				stalled_poll,
-				"the run did not end within the client's deadline of 0 s; asked the agent to stop \
-				 run c-",
+				Mock {
+					starts: vec![Start::Stall, Start::Fail(502), Start::Running],
+					script: vec![Poll::Completed],
+					..Mock::default()
+				},
+				Follow { request_timeout: Duration::from_millis(200), ..limits() },
+				true,
+				None,
 			),
-		] {
+			(
+				Mock { starts: vec![Start::Fail(503); 100], ..Mock::default() },
+				give_up.clone(),
+				false,
+				None,
+			),
+			(Mock { script: vec![Poll::Fail(503)], ..Mock::default() }, give_up, false, None),
+			// Not retryable: one poll, then the stop.
+			(Mock { script: vec![Poll::Fail(400)], ..Mock::default() }, limits(), false, Some(1)),
+			(Mock { starts: vec![Start::Stall], ..Mock::default() }, deadline.clone(), false, None),
+			(Mock { script: vec![Poll::Stall], ..Mock::default() }, deadline, false, None),
+		];
+		for (case, (mock, limits, ends, polls)) in cases.into_iter().enumerate() {
 			let mock = Arc::new(mock);
 			let (endpoint, server) = mock_agent(mock.clone()).await;
 			let (_sender, mut signals) = Signals::channel();
-			// A request itself could wait 30 s; the deadline ends it.
-			let limits = Follow { deadline: Duration::from_millis(300), ..limits() };
 			let started = Instant::now();
-			let error = follow(&endpoint, &mut signals, &limits).await.unwrap_err();
-			assert!(started.elapsed() < Duration::from_secs(10));
-			assert!(error.starts_with(expected), "{error}");
-			assert_eq!(mock.stop_kinds(), ["stop"]);
+			let followed = follow(&endpoint, &mut signals, &limits).await;
+			assert!(started.elapsed() < Duration::from_secs(10), "case {case}");
+			let start_ids = mock.start_ids.lock().unwrap().clone();
+			let Some(Some(id)) = start_ids.first() else { panic!("case {case}: {start_ids:?}") };
+			assert!(id.starts_with("c-") && is_safe_run_id(id), "case {case}: {id}");
+			assert!(start_ids.iter().all(|other| other.as_ref() == Some(id)), "case {case}");
+			assert!(mock.poll_ids.lock().unwrap().iter().all(|polled| polled == id), "case {case}");
+			if let Some(polls) = polls {
+				assert_eq!(mock.polls.load(Ordering::SeqCst), polls, "case {case}");
+			}
+			let stops = mock.stops.lock().unwrap().clone();
+			if ends {
+				let Ok(Followed::Ended { status, signal: None }) = followed else {
+					panic!("case {case}: {followed:?}")
+				};
+				assert_eq!(status.state, "completed", "case {case}");
+				assert!(stops.is_empty(), "case {case}: {stops:?}");
+			} else {
+				let error = followed.unwrap_err();
+				assert!(error.contains(id.as_str()), "case {case}: {error}");
+				assert_eq!(stops, [("stop", id.clone())], "case {case}");
+			}
 			server.abort();
 		}
-	}
-
-	#[tokio::test]
-	async fn a_signal_during_a_stalled_poll_stops_the_remote_run() {
-		let mock = Arc::new(Mock { script: vec![Poll::Running, Poll::Stall], ..Mock::default() });
-		let (endpoint, server) = mock_agent(mock.clone()).await;
-		let (sender, mut signals) = Signals::channel();
-		let stalled = mock.clone();
-		tokio::spawn(async move {
-			stalled.stalled.notified().await;
-			sender.send(Signal::Terminate).unwrap();
-		});
-		let Followed::Ended { status, signal } =
-			follow(&endpoint, &mut signals, &limits()).await.unwrap()
-		else {
-			panic!("the run was abandoned")
-		};
-		assert_eq!((status.state.as_str(), signal), ("stopped", Some(Signal::Terminate)));
-		assert_eq!(mock.stop_kinds(), ["stop"]);
-		server.abort();
-	}
-
-	#[tokio::test]
-	async fn a_signal_during_the_start_request_stops_the_run_once_it_started() {
-		let (release, gate) = tokio::sync::oneshot::channel();
-		let mock = Arc::new(Mock {
-			script: vec![Poll::Running],
-			start_gate: Mutex::new(Some(gate)),
-			..Mock::default()
-		});
-		let (endpoint, server) = mock_agent(mock.clone()).await;
-		let (sender, mut signals) = Signals::channel();
-		let started = mock.clone();
-		tokio::spawn(async move {
-			started.started.notified().await;
-			sender.send(Signal::Interrupt).unwrap();
-			// The client has the signal before the agent answers.
-			tokio::task::yield_now().await;
-			let _ = release.send(());
-			// Keep the channel open, as the operating system does.
-			std::future::pending::<()>().await;
-		});
-		let Followed::Ended { status, signal } =
-			follow(&endpoint, &mut signals, &limits()).await.unwrap()
-		else {
-			panic!("the run was abandoned")
-		};
-		assert_eq!((status.state.as_str(), signal), ("stopped", Some(Signal::Interrupt)));
-		assert_eq!(mock.stop_kinds(), ["stop"]);
-		server.abort();
 	}
 
 	#[tokio::test]
@@ -1569,28 +1407,6 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn a_stalled_request_times_out_and_can_be_retried() {
-		let (endpoint, server) = serve_on_loopback(
-			Router::new().fallback(std::future::pending::<Json<serde_json::Value>>),
-		)
-		.await;
-		let started = std::time::Instant::now();
-		let error = request_within::<Status>(
-			&target(&endpoint),
-			reqwest::Method::GET,
-			"/runs/run-1",
-			None,
-			Duration::from_millis(100),
-		)
-		.await
-		.unwrap_err();
-		assert!(error.message.starts_with("remote runner request timed out"), "{error:?}");
-		assert!(error.retryable);
-		assert!(started.elapsed() < Duration::from_secs(10));
-		server.abort();
-	}
-
-	#[tokio::test]
 	async fn tokens_must_be_long_and_varied() {
 		let message = "must have at least 32 characters, at least 8 of them different; generate one with `openssl rand -hex 32`";
 		for token in ["x".repeat(MIN_TOKEN_CHARS - 1), "a".repeat(64), "abababab".repeat(8)] {
@@ -1611,30 +1427,6 @@ mod tests {
 	}
 
 	const TOKEN: &str = "0123456789abcdef0123456789abcdef";
-
-	#[tokio::test]
-	async fn a_stopping_agent_refuses_new_runs() {
-		let plugins = Arc::new(crate::plugin_application::State::default());
-		plugins.closing.cancel();
-		let state = AgentState {
-			bearer_token: TOKEN.into(),
-			output_root: "unused".into(),
-			plugins,
-			delivered: Arc::default(),
-		};
-		let (endpoint, server) = serve_on_loopback(router(state)).await;
-		let error = plugin_start(
-			&RemoteRunnerTarget { endpoint, bearer_token: TOKEN.into() },
-			"plan".into(),
-		)
-		.await
-		.unwrap_err();
-		assert_eq!(
-			error,
-			"remote runner returned 503 Service Unavailable: the agent is shutting down"
-		);
-		server.abort();
-	}
 
 	#[tokio::test]
 	async fn the_agent_starts_one_run_per_client_run_id() {

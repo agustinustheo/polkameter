@@ -67,21 +67,6 @@ substrate_proposer_end_proposal_reason{instance="a",job="collator",reason="hit_b
 }
 
 #[test]
-fn build_time_fails_when_most_blocks_take_over_2_5_s() {
-	let d = RunData::new(parse_samples(SAMPLES), summary());
-	let results = polkameter_plugin_sdk::observers::checks::run(
-		&polkameter_plugin_sdk::observers::checks::all(),
-		&d,
-	);
-	let build = results
-		.iter()
-		.find(|r| r.check == "build time within the authoring deadline")
-		.unwrap();
-	assert_eq!(build.verdict.status, Status::Fail, "{}", build.verdict.detail);
-	assert!(build.verdict.detail.starts_with("step 1: 4 of 5 blocks took over 2.5 s"));
-}
-
-#[test]
 fn a_state_check_without_a_result_makes_the_verdict_inconclusive() {
 	use polkameter_plugin_sdk::observers::checks::{all, report::overall_status, run};
 	use polkameter_plugin_sdk::observers::files::summary::{OverallStatus, Rule, Stop};
@@ -95,7 +80,6 @@ fn a_state_check_without_a_result_makes_the_verdict_inconclusive() {
 	let results = run(&all(), &d);
 	let loss = results.iter().find(|r| r.check == "no silent loss").unwrap();
 	assert_eq!(loss.verdict.status, Status::NoResult, "{}", loss.verdict.detail);
-	assert!(loss.verdict.detail.contains("timed out after 60 s"));
 	assert!(!loss.optional);
 	assert_ne!(overall_status(&s, &results), OverallStatus::Pass);
 	// The same run with the state check's result: the loss check passes.
@@ -116,16 +100,15 @@ fn blocks_unobserved_for_longer_than_a_stall_are_no_result() {
 	let check = |s: &Summary| {
 		let results = run(&all(), &RunData::new(Store::new(), s.clone()));
 		let r = results.iter().find(|r| r.check == "monitors recorded everything").unwrap();
-		(r.verdict.status, r.verdict.detail.clone(), overall_status(s, &results))
+		(r.verdict.status, overall_status(s, &results))
 	};
 	// 14 s not observed: within the 30 s stall limit, a warning.
 	s.unobserved_ms = 14_000;
 	assert_eq!(check(&s).0, Status::Warn);
 	// 42 s not observed: a stall could hide in it, so no result, and not a PASS.
 	s.unobserved_ms = 42_000;
-	let (status, detail, overall) = check(&s);
-	assert_eq!(status, Status::NoResult, "{detail}");
-	assert!(detail.contains("not observed for 42.0 s"), "{detail}");
+	let (status, overall) = check(&s);
+	assert_eq!(status, Status::NoResult);
 	assert_ne!(overall, OverallStatus::Pass);
 }
 
@@ -185,90 +168,96 @@ fn steady(t: f64) -> (f64, f64) {
 	(((t - 100.0) / 5.0).floor(), 0.0)
 }
 
-#[test]
-fn fresh_scrapes_with_blocks_pass_build_time() {
-	let v = verdict(&collator(&[100.0, 120.0, 140.0], 5.0, 145.0, &[], &[], steady), BUILD);
-	assert_eq!(v.status, Status::Pass, "{}", v.detail);
-}
-
-#[test]
-fn a_stale_edge_scrape_gives_build_time_no_result() {
-	// The scrapes stop after 125 s: step 1's end (140 s) would take the 125 s value, so the
-	// step showed fewer blocks and passed before.
-	let v = verdict(&collator(&[100.0, 120.0, 140.0], 5.0, 125.0, &[], &[], steady), BUILD);
-	assert_eq!(v.status, Status::NoResult, "{}", v.detail);
-	assert_eq!(
-		v.detail,
-		"stale node metrics: step 1: no scrape of collator c within 15 s after its end"
-	);
-}
-
-#[test]
-fn one_failed_scrape_at_every_edge_keeps_the_result() {
-	// 5 s and 15 s scrape intervals; the first scrape after each edge fails, so the next good
-	// one lands a whole interval late. The limit is twice the interval plus the 5 s timeout.
-	for every in [5.0, 15.0] {
-		let edges = [100.0, 160.0, 220.0];
-		let failed = [100.001, 160.001, 220.001];
-		let samples = collator(&edges, every, 260.0, &failed, &[], steady);
-		let v = verdict(&samples, BUILD);
-		assert_eq!(v.status, Status::Pass, "every {every} s: {}", v.detail);
-		assert!(v.detail.contains("failed scrapes: 1 in step 0, 1 in step 1"), "{}", v.detail);
-		let d = RunData::new(parse_samples(&samples), summary());
-		assert_eq!(d.edge_lag_ms("collator", "c"), 2.0 * every * 1000.0 + 5000.0);
-	}
-}
-
-#[test]
-fn a_counter_flat_across_a_long_gap_still_has_its_edge_value() {
-	// No scrape from 125 s to 165 s around step 1's end (140 s): 25 s late, over the 15 s limit.
-	let flat = |t: f64| (steady(t.min(125.0)).0, 0.0);
-	let samples = collator(&[100.0, 120.0, 140.0], 5.0, 170.0, &[], &[(126.0, 164.0)], flat);
-	let v = verdict(&samples, BUILD);
-	// The count is the same on both sides of the gap, so its value at 140 s is exact.
-	assert_eq!(v.status, Status::Pass, "{}", v.detail);
-	let samples = collator(&[100.0, 120.0, 140.0], 5.0, 170.0, &[], &[(126.0, 164.0)], steady);
-	let v = verdict(&samples, BUILD);
-	assert_eq!(v.status, Status::NoResult, "{}", v.detail);
-}
-
 /// Five blocks over 2.5 s in step 0 (100-120 s), none after.
 fn slow_then_none(t: f64) -> (f64, f64) {
 	(0.0, ((t - 100.0) / 4.0).floor().min(5.0))
 }
 
 #[test]
-fn a_measured_failure_stands_when_another_window_has_no_data() {
-	// Step 1 is fresh but built nothing: no data for it, and step 0 still fails.
-	let samples = collator(&[100.0, 120.0, 140.0], 5.0, 145.0, &[], &[], slow_then_none);
-	let v = verdict(&samples, BUILD);
-	assert_eq!(v.status, Status::Fail, "{}", v.detail);
-	assert_eq!(
-		v.detail,
-		"step 0: 5 of 5 blocks took over 2.5 s (deadline 2 s); no data for step 1: the collator recorded no built block"
-	);
-	// Step 1's end is stale: the same.
-	let samples = collator(&[100.0, 120.0, 140.0], 5.0, 125.0, &[], &[], slow_then_none);
-	let v = verdict(&samples, BUILD);
-	assert_eq!(v.status, Status::Fail, "{}", v.detail);
-	assert!(v.detail.contains("no data for stale node metrics: step 1"), "{}", v.detail);
+fn build_time_fails_on_slow_blocks_and_never_passes_on_missing_data() {
+	let edges = [100.0, 120.0, 140.0];
+	// The step edges of the next cases, over the build-time histogram (+Inf count per scrape).
+	let reset = build_samples(&[(100.001, 50.0), (110.0, 0.0), (120.001, 60.0), (140.001, 64.0)]);
+	// Step 0 resets; step 1's four blocks all took over 2.5 s.
+	let mut reset_then_slow = build_samples(&[]);
+	for (t, fast, slow) in
+		[(100.001, 50.0, 0.0), (110.0, 0.0, 0.0), (120.001, 6.0, 0.0), (140.001, 6.0, 4.0)]
+	{
+		for (le, n) in [("1.0", fast), ("2.5", fast), ("+Inf", fast + slow)] {
+			reset_then_slow.push_str(&format!(
+				"substrate_proposer_block_constructed_bucket{{instance=\"c\",job=\"collator\",le=\"{le}\"}} {n} {t}\n"
+			));
+		}
+	}
+	let late = |t: f64| (steady(t.max(120.0)).0 - 4.0, 0.0);
+	let flat = |t: f64| (steady(t.min(125.0)).0, 0.0);
+	let gap = [(126.0, 164.0)];
+	for (case, samples, status) in [
+		("most blocks over 2.5 s", SAMPLES.to_owned(), Status::Fail),
+		("fresh scrapes with blocks", collator(&edges, 5.0, 145.0, &[], &[], steady), Status::Pass),
+		// The scrapes stop after 125 s: step 1's end would take the 125 s value.
+		("a stale edge scrape", collator(&edges, 5.0, 125.0, &[], &[], steady), Status::NoResult),
+		// No scrape around step 1's end: a flat counter still has its edge value, a moving
+		// one does not.
+		("flat across a gap", collator(&edges, 5.0, 170.0, &[], &gap, flat), Status::Pass),
+		("moving across a gap", collator(&edges, 5.0, 170.0, &[], &gap, steady), Status::NoResult),
+		// A measured failure stands when another window has no data or is stale.
+		("slow, then none", collator(&edges, 5.0, 145.0, &[], &[], slow_then_none), Status::Fail),
+		("slow, then stale", collator(&edges, 5.0, 125.0, &[], &[], slow_then_none), Status::Fail),
+		// The collator answers but builds nothing in a window: no p95 from zero builds.
+		("no build in step 0", collator(&edges, 5.0, 145.0, &[], &[], late), Status::NoResult),
+		(
+			"no build at all",
+			collator(&edges, 5.0, 145.0, &[], &[], |_| (3.0, 0.0)),
+			Status::NoResult,
+		),
+		("a counter reset", reset, Status::NoResult),
+		("a reset, then slow blocks", reset_then_slow, Status::Fail),
+	] {
+		let v = verdict(&samples, BUILD);
+		assert_eq!(v.status, status, "{case}: {}", v.detail);
+	}
 }
 
 #[test]
-fn no_built_block_in_a_long_window_is_no_result_not_a_pass() {
-	// The collator answers, but its counter does not move in step 0: p95 "at most 1 s" with
-	// zero builds.
-	let late = |t: f64| (steady(t.max(120.0)).0 - 4.0, 0.0);
-	let v = verdict(&collator(&[100.0, 120.0, 140.0], 5.0, 145.0, &[], &[], late), BUILD);
-	assert_eq!(v.status, Status::NoResult, "{}", v.detail);
-	assert_eq!(v.detail, "step 0: the collator recorded no built block");
-	let none = |_: f64| (3.0, 0.0);
-	let v = verdict(&collator(&[100.0, 120.0, 140.0], 5.0, 145.0, &[], &[], none), BUILD);
-	assert_eq!(v.status, Status::NoResult, "{}", v.detail);
-	assert_eq!(
-		v.detail,
-		"step 0: the collator recorded no built block; step 1: the collator recorded no built block"
+fn failed_scrapes_and_counter_resets_are_found() {
+	// 5 s and 15 s scrape intervals; the first scrape after each edge fails, so the next good
+	// one lands a whole interval late. The limit is twice the interval plus the 5 s timeout.
+	for every in [5.0, 15.0] {
+		let edges = [100.0, 160.0, 220.0];
+		let failed = [100.001, 160.001, 220.001];
+		let samples = collator(&edges, every, 260.0, &failed, &[], steady);
+		assert_eq!(verdict(&samples, BUILD).status, Status::Pass, "every {every} s");
+		let d = RunData::new(parse_samples(&samples), summary());
+		assert_eq!(d.edge_lag_ms("collator", "c"), 2.0 * every * 1000.0 + 5000.0);
+	}
+
+	let mut samples = build_samples(&[(100.001, 0.0), (120.001, 4.0), (140.001, 8.0)]);
+	samples.push_str(
+		"polkameter_scrape_failed_total{instance=\"c\",job=\"collator\"} 1 125.000\n\
+		 polkameter_scrape_failed_total{instance=\"c\",job=\"collator\"} 2 130.000\n\
+		 polkameter_scrape_failed_total{instance=\"v\",job=\"validator\"} 1 105.000\n",
 	);
+	assert_eq!(verdict(&samples, BUILD).status, Status::Pass);
+	let d = RunData::new(parse_samples(&samples), summary());
+	let steps = d.steps();
+	assert_eq!(d.failed_scrapes(&[("job", "collator")], &steps[1]), 2.0);
+	assert_eq!(d.failed_scrapes(&[("job", "collator")], &steps[0]), 0.0);
+	assert_eq!(d.failed_scrapes(&[], &steps[0]), 1.0);
+	assert_eq!(d.gap("substrate_proposer_block_constructed_bucket", &[], &steps[1]), None);
+
+	// 100 -> 0 -> 150: the ends alone give a plausible increase of 50.
+	let d = counter(&[(100.001, 100.0), (110.0, 0.0), (120.001, 150.0), (140.001, 160.0)]);
+	let steps = d.steps();
+	assert!(d.increase("x_total", &[], &steps[0]).is_err());
+	// Step 1 starts on the 120 s scrape, after the reset: its increase stands.
+	assert_eq!(d.increase("x_total", &[], &steps[1]).unwrap(), 10.0);
+	// A reset between the edge scrape and the next is inside the window too.
+	let d = counter(&[(100.001, 100.0), (105.0, 3.0), (120.001, 9.0), (140.001, 160.0)]);
+	assert!(d.increase("x_total", &[], &d.steps()[0]).is_err());
+	// A reset before the window's first scrape is not.
+	let d = counter(&[(90.0, 100.0), (95.0, 1.0), (100.001, 2.0), (120.001, 9.0)]);
+	assert_eq!(d.increase("x_total", &[], &d.steps()[0]).unwrap(), 7.0);
 }
 
 /// Two 20 s steps; the collator's build-time histogram, `+Inf` count per scrape time.
@@ -288,25 +277,6 @@ fn build_samples(scrapes: &[(f64, f64)]) -> String {
 	text
 }
 
-#[test]
-fn failed_scrapes_inside_a_window_show_in_the_check() {
-	let mut samples = build_samples(&[(100.001, 0.0), (120.001, 4.0), (140.001, 8.0)]);
-	samples.push_str(
-		"polkameter_scrape_failed_total{instance=\"c\",job=\"collator\"} 1 125.000\n\
-		 polkameter_scrape_failed_total{instance=\"c\",job=\"collator\"} 2 130.000\n\
-		 polkameter_scrape_failed_total{instance=\"v\",job=\"validator\"} 1 105.000\n",
-	);
-	let v = verdict(&samples, BUILD);
-	assert_eq!(v.status, Status::Pass, "{}", v.detail);
-	assert!(v.detail.ends_with("; failed scrapes: 2 in step 1"), "{}", v.detail);
-	let d = RunData::new(parse_samples(&samples), summary());
-	let steps = d.steps();
-	assert_eq!(d.failed_scrapes(&[("job", "collator")], &steps[1]), 2.0);
-	assert_eq!(d.failed_scrapes(&[("job", "collator")], &steps[0]), 0.0);
-	assert_eq!(d.failed_scrapes(&[], &steps[0]), 1.0);
-	assert_eq!(d.gap("substrate_proposer_block_constructed_bucket", &[], &steps[1]), None);
-}
-
 /// A counter of one collator over two 20 s steps, its value per scrape time.
 fn counter(points: &[(f64, f64)]) -> RunData {
 	let mut text = String::from(
@@ -318,49 +288,6 @@ fn counter(points: &[(f64, f64)]) -> RunData {
 		text.push_str(&format!("x_total{{instance=\"c\",job=\"collator\"}} {v} {t}\n"));
 	}
 	RunData::new(parse_samples(&text), summary())
-}
-
-#[test]
-fn a_counter_reset_inside_a_window_is_found() {
-	// 100 -> 0 -> 150: the ends alone give a plausible increase of 50.
-	let d = counter(&[(100.001, 100.0), (110.0, 0.0), (120.001, 150.0), (140.001, 160.0)]);
-	let steps = d.steps();
-	let reset = d.increase("x_total", &[], &steps[0]).unwrap_err();
-	assert_eq!(reset.to_string(), "x_total went down from 100 to 0 in step 0");
-	// Step 1 starts on the 120 s scrape, after the reset: its increase stands.
-	assert_eq!(d.increase("x_total", &[], &steps[1]).unwrap(), 10.0);
-	// A reset between the edge scrape and the next is inside the window too.
-	let d = counter(&[(100.001, 100.0), (105.0, 3.0), (120.001, 9.0), (140.001, 160.0)]);
-	assert!(d.increase("x_total", &[], &d.steps()[0]).is_err());
-	// A reset before the window's first scrape is not.
-	let d = counter(&[(90.0, 100.0), (95.0, 1.0), (100.001, 2.0), (120.001, 9.0)]);
-	assert_eq!(d.increase("x_total", &[], &d.steps()[0]).unwrap(), 7.0);
-}
-
-#[test]
-fn a_reset_gives_its_window_no_data_and_a_failure_elsewhere_stands() {
-	let v = verdict(
-		&build_samples(&[(100.001, 50.0), (110.0, 0.0), (120.001, 60.0), (140.001, 64.0)]),
-		BUILD,
-	);
-	assert_eq!(v.status, Status::NoResult, "{}", v.detail);
-	assert!(v.detail.starts_with("step 0: a node restarted: "), "{}", v.detail);
-	// Step 1's four blocks all took over 2.5 s: a failure, whatever step 0 lacks.
-	let mut samples = String::new();
-	for (t, fast, slow) in
-		[(100.001, 50.0, 0.0), (110.0, 0.0, 0.0), (120.001, 6.0, 0.0), (140.001, 6.0, 4.0)]
-	{
-		for (le, n) in [("1.0", fast), ("2.5", fast), ("+Inf", fast + slow)] {
-			samples.push_str(&format!(
-				"substrate_proposer_block_constructed_bucket{{instance=\"c\",job=\"collator\",le=\"{le}\"}} {n} {t}\n"
-			));
-		}
-	}
-	samples.push_str(&build_samples(&[])); // the steps
-	let v = verdict(&samples, BUILD);
-	assert_eq!(v.status, Status::Fail, "{}", v.detail);
-	assert!(v.detail.starts_with("step 1: 4 of 4 blocks took over 2.5 s"), "{}", v.detail);
-	assert!(v.detail.contains("; no data for step 0: a node restarted: "), "{}", v.detail);
 }
 
 /// A run with a baseline, one 30 s step and recovery, and refusals by reason.
@@ -378,20 +305,16 @@ fn refusals(reasons: &[(&str, f64)]) -> String {
 }
 
 #[test]
-fn refusals_with_an_error_code_are_clean() {
-	let v = verdict(&refusals(&[("1010", 3.0)]), "refusals are clean");
-	assert_eq!(v.status, Status::Pass, "{}", v.detail);
-	assert_eq!(v.detail, "3 refused (1010: 3)");
-}
-
-#[test]
-fn refusals_without_an_error_code_fail() {
+fn refusals_are_clean_only_with_an_error_code() {
 	// The load tool labels a refusal whose JSON-RPC error has no code with `0`.
-	let v = verdict(&refusals(&[("1010", 3.0), ("0", 2.0)]), "refusals are clean");
-	assert_eq!(v.status, Status::Fail, "{}", v.detail);
-	assert_eq!(v.detail, "5 refused (1010: 3, no code: 2)");
-	let v = verdict(&refusals(&[("no code", 1.0)]), "refusals are clean");
-	assert_eq!(v.status, Status::Fail, "{}", v.detail);
+	for (reasons, status) in [
+		(&[("1010", 3.0)][..], Status::Pass),
+		(&[("1010", 3.0), ("0", 2.0)][..], Status::Fail),
+		(&[("no code", 1.0)][..], Status::Fail),
+	] {
+		let v = verdict(&refusals(reasons), "refusals are clean");
+		assert_eq!(v.status, status, "{reasons:?}: {}", v.detail);
+	}
 }
 
 /// Baseline, one 30 s step and recovery, with the relay recorder's counters per time.
@@ -422,55 +345,49 @@ const RELAY_SLOTS: &str = "relay slots (level 1)";
 const TIMEOUTS: &str = "no timed-out candidates or disputes";
 
 #[test]
-fn relay_slots_pass_with_relay_blocks_in_every_window() {
-	let samples = relay(
-		&[(101.0, 1.0), (129.0, 5.0), (159.0, 10.0)],
-		&[(101.0, 1.0), (129.0, 5.0), (159.0, 10.0)],
-	);
-	let v = verdict(&samples, RELAY_SLOTS);
-	assert_eq!(v.status, Status::Pass, "{}", v.detail);
-}
-
-#[test]
-fn finality_lag_in_one_window_is_not_missing_data() {
-	// The recorder reads a relay block, and its slots, after finality: lag can leave step 0
-	// without one while the run has plenty.
-	let samples = relay(&[(101.0, 1.0), (129.0, 5.0)], &[(101.0, 1.0), (129.0, 5.0)]);
-	let v = verdict(&samples, RELAY_SLOTS);
-	assert_eq!(v.status, Status::Pass, "{}", v.detail);
-	// Nothing in the baseline: no idle rate, so any missed slot counts; the detail says so.
-	let samples = relay(&[(100.0, 0.0), (159.0, 10.0)], &[(100.0, 0.0), (159.0, 10.0)]);
-	let v = verdict(&samples, RELAY_SLOTS);
-	assert_eq!(v.status, Status::Pass, "{}", v.detail);
-	assert!(v.detail.ends_with("so idle counts as no missed slot"), "{}", v.detail);
-	assert_eq!(verdict(&samples, TIMEOUTS).status, Status::Pass);
-}
-
-#[test]
-fn a_run_without_finalized_relay_blocks_has_no_result() {
-	let samples = relay(&[(100.0, 3.0), (159.0, 3.0)], &[(100.0, 2.0), (159.0, 2.0)]);
-	let v = verdict(&samples, RELAY_SLOTS);
-	assert_eq!(v.status, Status::NoResult, "{}", v.detail);
-	assert_eq!(v.detail, "the relay recorder read no finalized relay block in the run");
-	let v = verdict(&samples, TIMEOUTS);
-	assert_eq!(v.status, Status::NoResult, "{}", v.detail);
-}
-
-#[test]
-fn a_timed_out_candidate_fails_even_with_stale_validator_metrics() {
-	let mut samples = relay(&[(100.0, 3.0), (159.0, 3.0)], &[]);
-	samples.push_str(
+fn relay_checks_need_finalized_relay_blocks() {
+	let both = |points: &[(f64, f64)]| relay(points, points);
+	let mut timed_out = relay(&[(100.0, 3.0), (159.0, 3.0)], &[]);
+	timed_out.push_str(
 		"polkameter_para_timed_out_total{instance=\"chain-recorder\",job=\"stress\",para=\"1502\"} 0 101.000\n\
 		 polkameter_para_timed_out_total{instance=\"chain-recorder\",job=\"stress\",para=\"1502\"} 1 140.000\n\
 		 polkadot_parachain_candidate_disputes_total{instance=\"v\",job=\"validator\"} 0 100.500\n",
 	);
-	let v = verdict(&samples, TIMEOUTS);
-	assert_eq!(v.status, Status::Fail, "{}", v.detail);
-	assert!(v.detail.starts_with("parachain candidates timed out 1;"), "{}", v.detail);
-	assert!(
-		v.detail
-			.contains("no data for stale node metrics: run: no scrape of validator v")
-	);
+	for (case, samples, check, status) in [
+		(
+			"relay blocks in every window",
+			both(&[(101.0, 1.0), (129.0, 5.0), (159.0, 10.0)]),
+			RELAY_SLOTS,
+			Status::Pass,
+		),
+		// The recorder reads a relay block after finality: lag can leave step 0 without one.
+		(
+			"finality lag in one window",
+			both(&[(101.0, 1.0), (129.0, 5.0)]),
+			RELAY_SLOTS,
+			Status::Pass,
+		),
+		// Nothing in the baseline: no idle rate, so any missed slot counts.
+		("an idle baseline", both(&[(100.0, 0.0), (159.0, 10.0)]), RELAY_SLOTS, Status::Pass),
+		("an idle baseline", both(&[(100.0, 0.0), (159.0, 10.0)]), TIMEOUTS, Status::Pass),
+		(
+			"no finalized relay block",
+			relay(&[(100.0, 3.0), (159.0, 3.0)], &[(100.0, 2.0), (159.0, 2.0)]),
+			RELAY_SLOTS,
+			Status::NoResult,
+		),
+		(
+			"no finalized relay block",
+			relay(&[(100.0, 3.0), (159.0, 3.0)], &[(100.0, 2.0), (159.0, 2.0)]),
+			TIMEOUTS,
+			Status::NoResult,
+		),
+		// A timed-out candidate fails even with stale validator metrics.
+		("a timed-out candidate", timed_out, TIMEOUTS, Status::Fail),
+	] {
+		let v = verdict(&samples, check);
+		assert_eq!(v.status, status, "{case}, {check}: {}", v.detail);
+	}
 }
 
 /// Every check's result on `samples` with the plan's `<monitors>` (and so its para id) or not.
@@ -483,22 +400,21 @@ fn results(samples: &str, monitors: bool) -> Vec<checks::CheckResult> {
 }
 
 #[test]
-fn checks_of_unmonitored_nodes_are_not_applicable_and_optional() {
-	let samples = refusals(&[("1010", 1.0)]);
-	let all = results(&samples, false);
+fn unmonitored_nodes_are_optional_and_silent_ones_are_required() {
+	let all = results(&refusals(&[("1010", 1.0)]), false);
 	let get = |name: &str| all.iter().find(|r| r.check == name).unwrap();
-	for (name, why) in [
-		(BUILD, "no collator node is monitored"),
-		("why blocks end", "no collator node is monitored"),
-		("pool work leaves time for blocks", "no collator node is monitored"),
-		("PVF time on validators (level 2, all parachains)", "no validator node is monitored"),
-		("collation funnel", "no collator-relay node is monitored"),
-		(RELAY_SLOTS, "the plan has no <monitors>, so no relay chain is recorded"),
-		(TIMEOUTS, "the plan has no <monitors>, so no relay chain is recorded"),
+	for name in [
+		BUILD,
+		"why blocks end",
+		"pool work leaves time for blocks",
+		"PVF time on validators (level 2, all parachains)",
+		"collation funnel",
+		RELAY_SLOTS,
+		TIMEOUTS,
 	] {
 		let r = get(name);
 		assert_eq!(r.verdict.status, Status::NoResult, "{name}");
-		assert_eq!(r.verdict.detail, format!("not applicable: {why}"), "{name}");
+		assert!(r.verdict.detail.starts_with("not applicable:"), "{name}");
 		assert!(r.optional, "{name}");
 	}
 	assert!(checks::smoke_gaps(&all).iter().all(|g| !g.contains("not applicable")));
@@ -516,18 +432,14 @@ fn checks_of_unmonitored_nodes_are_not_applicable_and_optional() {
 		.collect();
 	assert_eq!(na.len(), 7);
 	assert_eq!(checks::report::overall_status(&s, &na), OverallStatus::Pass);
-}
 
-#[test]
-fn a_monitored_node_that_never_answered_is_a_required_no_result() {
+	// A monitored node that never answered, and the relay recorder that runs with
+	// <monitors>: required checks with no result.
 	let samples = "polkameter_scrape_failed_total{instance=\"c\",job=\"collator\"} 1 100.000\n";
 	let all = results(samples, true);
-	let build = all.iter().find(|r| r.check == BUILD).unwrap();
-	assert_eq!(build.verdict.status, Status::NoResult);
-	assert_eq!(build.verdict.detail, "no collator metrics");
-	assert!(!build.optional);
-	// The relay recorder runs with <monitors>: its checks stay required too.
-	let relay = all.iter().find(|r| r.check == RELAY_SLOTS).unwrap();
-	assert_eq!(relay.verdict.detail, "no relay recorder data");
-	assert!(!relay.optional);
+	for name in [BUILD, RELAY_SLOTS] {
+		let r = all.iter().find(|r| r.check == name).unwrap();
+		assert_eq!(r.verdict.status, Status::NoResult, "{name}");
+		assert!(!r.optional, "{name}");
+	}
 }

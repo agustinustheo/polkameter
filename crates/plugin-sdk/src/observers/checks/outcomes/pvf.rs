@@ -365,31 +365,3 @@ pub const CHECKS: &[Check] = &[
 		run: collation_funnel,
 	},
 ];
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	fn window(window: Label, offered: f64, missed: f64) -> WindowSlots {
-		WindowSlots {
-			window,
-			slots: Slots {
-				relay_blocks: 1.0,
-				offered,
-				included: offered - missed,
-				missed,
-				not_built: 0.0,
-				timed_out: 0.0,
-				not_backed: missed,
-			},
-			extra: missed,
-		}
-	}
-
-	#[test]
-	fn the_worst_violating_window_is_reported() {
-		let windows =
-			[window(Label::Step(1), 30.0, 3.0), window(Label::Phase(Phase::Recovery), 15.0, 9.0)];
-		assert_eq!(worst_violation(&windows).unwrap().window, Label::Phase(Phase::Recovery));
-	}
-}

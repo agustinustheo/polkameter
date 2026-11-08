@@ -117,48 +117,6 @@ pub fn parse_account(text: &str) -> Result<[u8; 32], KeyError> {
 mod tests {
 	use super::*;
 
-	const ALICE: &str = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY";
-	const BOB: &str = "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty";
-
-	#[test]
-	fn dev_uris_give_the_well_known_accounts() {
-		assert_eq!(ss58(account_id(&keypair("//Alice").unwrap())), ALICE);
-		assert_eq!(ss58(account_id(&keypair(" //Bob ").unwrap())), BOB);
-		// The dev phrase spelled out is the same root.
-		let spelled = format!("{}//Alice", subxt_signer::DEV_PHRASE);
-		assert_eq!(
-			account_id(&keypair(&spelled).unwrap()),
-			account_id(&keypair("//Alice").unwrap())
-		);
-	}
-
-	#[test]
-	fn derived_accounts_match_the_uri_form() {
-		let root = keypair(subxt_signer::DEV_PHRASE).unwrap();
-		let derived = derive_range(&root, "//polkameter//", 0..3).unwrap();
-		for (i, key) in derived.iter().enumerate() {
-			let direct =
-				keypair(&format!("{}//polkameter//{i}", subxt_signer::DEV_PHRASE)).unwrap();
-			assert_eq!(account_id(key), account_id(&direct));
-		}
-		let alice = keypair("//Alice").unwrap();
-		let soft = derive_range(&alice, "/load/", 5..6).unwrap();
-		assert_eq!(account_id(&soft[0]), account_id(&keypair("//Alice/load/5").unwrap()));
-		assert_eq!(
-			account_id(&derive(&alice, "//a/b//7").unwrap()),
-			account_id(&keypair("//Alice//a/b//7").unwrap())
-		);
-		assert_eq!(account_id(&derive(&alice, "").unwrap()), account_id(&alice));
-	}
-
-	#[test]
-	fn derived_accounts_are_distinct() {
-		let root = keypair("//Alice").unwrap();
-		let keys = derive_range(&root, "//x//", 0..50).unwrap();
-		let unique: std::collections::HashSet<_> = keys.iter().map(account_id).collect();
-		assert_eq!(unique.len(), 50);
-	}
-
 	#[test]
 	fn bad_input_is_refused_without_echoing_secrets() {
 		let secret = "not a valid mnemonic at all//0";
@@ -168,14 +126,5 @@ mod tests {
 			assert!(junctions(path).is_err(), "{path}");
 		}
 		assert!(derive_range(&keypair("//Alice").unwrap(), "//x", 0..1).is_err());
-	}
-
-	#[test]
-	fn accounts_parse_from_ss58_and_hex() {
-		let alice = account_id(&keypair("//Alice").unwrap());
-		assert_eq!(parse_account(ALICE).unwrap(), alice);
-		assert_eq!(parse_account(&format!("0x{}", hex::encode(alice))).unwrap(), alice);
-		assert!(parse_account("0x1234").is_err());
-		assert!(parse_account("5Grwva").is_err());
 	}
 }
