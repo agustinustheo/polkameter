@@ -162,17 +162,16 @@ load-test:
     - polkameter plugin install target/release/<plugin-binary>
     - polkameter plugin credential <profile> POLKAMETER_SETUP_SURI
     - polkameter validate <plan>
-    - polkameter run <plan> --output polkameter-runs --junit test-results/polkameter.xml --fail-on-verdict
+    - polkameter run <plan> --output polkameter-runs --fail-on-verdict
   artifacts:
     when: always
     reports:
-      junit: test-results/polkameter.xml
+      junit: polkameter-runs/*/junit.xml
     paths:
       - polkameter-runs/
-      - test-results/polkameter.xml
 ```
 
-Set `POLKAMETER_SETUP_SURI` as a masked CI/CD variable. The container runs as UID `10001`, so give that user write access to the checkout. `--junit` copies the JUnit report to a fixed path for `reports: junit:`.
+Set `POLKAMETER_SETUP_SURI` as a masked CI/CD variable. The container runs as UID `10001`, so give that user write access to the checkout.
 
 A cancelled job can kill the run before teardown ends. To stop it cleanly before the job's time limit, wrap the run in `timeout --signal=INT --kill-after=45s 50m`. The run still writes its results, and `timeout` exits `124`, which fails the job. [Stop a run](cli.md#stop-a-run) explains the signals.
 
