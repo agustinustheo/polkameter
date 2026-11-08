@@ -22,8 +22,6 @@ const EVERY: Duration = Duration::from_secs(5);
 /// One good scrape of one node: series (name plus labels, as served) to value.
 #[derive(Debug, Clone, Default)]
 pub struct Sample {
-	/// When it arrived.
-	pub t: u64,
 	/// Series to value.
 	pub metrics: HashMap<String, f64>,
 }
@@ -160,7 +158,7 @@ impl Scraper {
 						text: Some(text),
 						error: None,
 					})?;
-					let sample = Sample { t, metrics };
+					let sample = Sample { metrics };
 					if self.collator_instance.as_deref() == Some(instance.as_str()) {
 						let _ = self.collator.send(Some(sample.clone()));
 					}
@@ -213,10 +211,6 @@ pub(crate) async fn get(
 
 /// A node's `/metrics` body, or why it could not be read.
 async fn fetch(http: &reqwest::Client, target: &Target) -> Result<String, String> {
-	// The URL may carry credentials, so errors leave it out.
-	let res = http.get(&target.url).send().await.map_err(|e| e.without_url().to_string())?;
-	if !res.status().is_success() {
-		return Err(format!("HTTP {}", res.status().as_u16()));
-	}
+	let res = get(http, &target.url).await.map_err(|e| e.to_string())?;
 	res.text().await.map_err(|e| e.without_url().to_string())
 }

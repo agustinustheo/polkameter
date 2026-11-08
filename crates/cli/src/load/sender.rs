@@ -102,14 +102,6 @@ pub struct Sender {
 	closing: CancellationToken,
 }
 
-/// A connection could not be opened: a wrong URL or a node that is down before the run.
-#[derive(Debug, thiserror::Error)]
-#[error("sender: cannot connect to {url}: {why}")]
-pub struct ConnectError {
-	url: String,
-	why: String,
-}
-
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// Opens a WebSocket within `limit`: a server that accepts TCP and never answers the handshake
@@ -123,12 +115,13 @@ async fn connect(url: &str, limit: Duration) -> Result<Socket, String> {
 }
 
 impl Sender {
-	/// Opens `connections` WebSockets to `url`; replies go to `replies`.
+	/// Opens `connections` WebSockets to `url`; replies go to `replies`. A connection that
+	/// cannot be opened, from a wrong URL or a node that is down before the run, is the error.
 	pub async fn open(
 		url: &str,
 		connections: usize,
 		replies: mpsc::UnboundedSender<Reply>,
-	) -> Result<Self, ConnectError> {
+	) -> anyhow::Result<Self> {
 		Self::open_with(url, connections, replies, &Backoff::default()).await
 	}
 
@@ -138,13 +131,13 @@ impl Sender {
 		connections: usize,
 		replies: mpsc::UnboundedSender<Reply>,
 		backoff: &Backoff,
-	) -> Result<Self, ConnectError> {
+	) -> anyhow::Result<Self> {
 		let closing = CancellationToken::new();
 		let mut out = Vec::with_capacity(connections);
 		for connection in 0..connections {
-			let ws = connect(url, backoff.attempt)
-				.await
-				.map_err(|why| ConnectError { url: crate::redact::endpoint(url), why })?;
+			let ws = connect(url, backoff.attempt).await.map_err(|why| {
+				anyhow::anyhow!("sender: cannot connect to {}: {why}", crate::redact::endpoint(url))
+			})?;
 
 			let (queue, rx) = mpsc::unbounded_channel();
 			let queued = Arc::new(AtomicU64::new(0));

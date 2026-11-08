@@ -19,9 +19,10 @@ const XML_CHAR_BYTES: usize = 6;
 const SUITE_RESERVE: usize = MESSAGE_CHARS * XML_CHAR_BYTES * 6 + 4096;
 
 /// Best-effort JUnit warning. Never changes an execution outcome, even if event recording fails.
-/// Remote clients emit the returned event in their own event stream (no local run directory).
-pub fn warning(directory: Option<&Path>, message: &str, secrets: &[String]) -> Value {
-	let message = Redactor::new(secrets, None::<&str>).text(&format!("JUnit report: {message}"));
+/// With `directory`, the event is appended to its `events.jsonl`; a run logs the returned event
+/// itself.
+pub fn warning(directory: Option<&Path>, message: &str, redactor: &Redactor) -> Value {
+	let message = redactor.text(&format!("JUnit report: {message}"));
 	eprintln!("{} warning: {}", crate::PRODUCT_NAME, single_line(&message));
 	let event = serde_json::json!({"event":"warning", "message":message,
 		"timestamp":polkameter_plugin_sdk::observers::files::now_ms(), "version":2});
@@ -311,8 +312,10 @@ fn mapped_case(name: String, status: &str, detail: &str) -> Case {
 	}
 }
 
-// Terminal-safe, one line and bounded before any format-specific escaping.
-fn single_line(text: &str) -> String {
+/// `text` made safe for one terminal line, before any format-specific escaping: whitespace and
+/// unsafe characters (see [`crate::redact::is_unsafe_char`]) become spaces, and it is cut to
+/// [`MESSAGE_CHARS`] characters, followed by `…`.
+pub(crate) fn single_line(text: &str) -> String {
 	let mut out = String::new();
 	for (i, c) in text.chars().enumerate() {
 		if i == MESSAGE_CHARS {

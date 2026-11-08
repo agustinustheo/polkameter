@@ -12,7 +12,7 @@ use crate::load::runner::{Io, Mode, RunOptions, baseline, drain, load as apply_l
 use crate::load::sender::Sender;
 use crate::load::steps::final_step;
 use crate::load::tracker::{Phase, Tracker};
-use crate::load::{Lane, QueueSource, StateCheck, Tx, TxHash, follower, now_ms, rules};
+use crate::load::{Lane, QueueSource, Tx, TxHash, follower, now_ms, rules};
 use crate::redact::{Redactor, diag, records};
 use anyhow::{Context as _, Result, bail};
 use polkameter_plugin_sdk::chain::{ChainError, Client};
@@ -92,7 +92,7 @@ pub async fn run(
 			),
 		"insufficient probe reserve"
 	);
-	let lanes = vec![Lane { call: "prepared", source: prepared_source(&flood, &probes)? }];
+	let lane = Lane { call: "prepared", source: prepared_source(&flood, &probes)? };
 	let state_check = load
 		.state
 		.as_ref()
@@ -138,7 +138,7 @@ pub async fn run(
 		follow.clone(),
 	);
 	let mut tracker = Tracker::new(
-		lanes,
+		lane,
 		sender,
 		jsonl("load.jsonl")?,
 		jsonl("blocks.jsonl")?,
@@ -213,7 +213,7 @@ pub async fn run(
 		&mut tracker,
 		dir,
 		configured_rules.finality_wait_ms,
-		state_check.as_ref().map(|s| s as &dyn crate::load::StateCheck),
+		state_check.as_ref(),
 		redactor,
 	)
 	.await;
@@ -349,7 +349,7 @@ async fn loss_check<S: crate::load::submit::Submit>(
 	tracker: &mut Tracker<S>,
 	dir: &RunDir,
 	finality_wait_ms: u64,
-	state: Option<&dyn crate::load::StateCheck>,
+	state: Option<&PluginState>,
 	redactor: &Redactor,
 ) -> (Loss, Vec<LostTx>) {
 	let scraper = monitors.scraper.clone();
@@ -423,9 +423,8 @@ fn write_steps<S: crate::load::submit::Submit>(
 	let finals: Vec<FinalStep> = tracker
 		.steps
 		.iter()
-		.flatten()
 		.map(|s| {
-			let mut f = final_step(s, None);
+			let mut f = final_step(s);
 			f.node = NodeMax::over(samples, s.started_at, s.ended_at);
 			f
 		})
@@ -589,42 +588,37 @@ pub fn check(dir: &Path, redactor: &Redactor) -> anyhow::Result<()> {
 	Ok(())
 }
 
-struct PluginState {
+/// The plan's `<load state-check>`: the plugin operation that checks chain state at the
+/// finalized block `at` for a sample of included txs.
+pub struct PluginState {
 	plugins: Plugins,
 	operation: String,
 	target: String,
 	state: serde_json::Value,
 	context: Context,
 }
-impl StateCheck for PluginState {
-	fn check<'a>(
-		&'a self,
-		_client: &'a Client,
-		included: &'a [TxHash],
+impl PluginState {
+	/// Reads state for `included` at `at`.
+	pub async fn check(
+		&self,
+		included: &[TxHash],
 		at: [u8; 32],
-	) -> crate::load::scenario::BoxFuture<
-		'a,
-		Result<polkameter_plugin_sdk::observers::files::summary::StateSample, ChainError>,
-	> {
-		Box::pin(async move {
-			let read = |detail: String| ChainError::Read { what: "plugin state check", detail };
-			let input = StateCheckInput {
-				target: self.target.clone(),
-				state: self.state.clone(),
-				hashes: included.iter().map(hex::encode).collect(),
-				at: hex::encode(at),
-			};
-			let inputs = serde_json::to_value(input).map_err(|e| read(e.to_string()))?;
-			let result = self
-				.plugins
-				.invoke(&self.operation, inputs, &self.context, 60_000, &CancellationToken::new())
-				.await
-				.map_err(|e| read(e.to_string()))?;
-			serde_json::from_value(result).map_err(|e| ChainError::Read {
-				what: "plugin state response",
-				detail: e.to_string(),
-			})
-		})
+	) -> Result<polkameter_plugin_sdk::observers::files::summary::StateSample, ChainError> {
+		let read = |detail: String| ChainError::Read { what: "plugin state check", detail };
+		let input = StateCheckInput {
+			target: self.target.clone(),
+			state: self.state.clone(),
+			hashes: included.iter().map(hex::encode).collect(),
+			at: hex::encode(at),
+		};
+		let inputs = serde_json::to_value(input).map_err(|e| read(e.to_string()))?;
+		let result = self
+			.plugins
+			.invoke(&self.operation, inputs, &self.context, 60_000, &CancellationToken::new())
+			.await
+			.map_err(|e| read(e.to_string()))?;
+		serde_json::from_value(result)
+			.map_err(|e| ChainError::Read { what: "plugin state response", detail: e.to_string() })
 	}
 }
 

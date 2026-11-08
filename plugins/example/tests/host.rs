@@ -1,5 +1,5 @@
 use polkameter::engine::{
-	execute::{self, Outcome, RunState},
+	execute::{self, EventSink, Outcome, RunOptions, RunState, Stop},
 	plan::Plan,
 	plugins::Registry,
 };
@@ -8,7 +8,6 @@ use std::{
 	path::{Path, PathBuf},
 	sync::Arc,
 };
-use tokio_util::sync::CancellationToken;
 
 #[path = "../../../crates/cli/tests/support/executable.rs"]
 mod executable;
@@ -53,23 +52,20 @@ fn scratch(name: &str) -> Scratch {
 	Scratch(path)
 }
 async fn registry() -> Registry {
+	let executable = Path::new(env!("CARGO_BIN_EXE_polkameter-example-plugin"));
+	let (manifest, installation) = Registry::describe(executable).await.unwrap();
 	let mut registry = Registry::default();
-	registry
-		.install(Path::new(env!("CARGO_BIN_EXE_polkameter-example-plugin")))
-		.await
-		.unwrap();
+	registry.plugins.insert(manifest.id, installation);
 	registry
 }
+/// Runs `plan` to its outcome, sending its events to `sink`.
+async fn run_plan(plan: Plan, registry: Registry, root: &Path, sink: EventSink) -> Outcome {
+	execute::run_stoppable(plan, registry, root, Stop::default(), sink, RunOptions::default())
+		.await
+		.unwrap()
+}
 async fn run(xml: &str, registry: Registry, root: &Path) -> Outcome {
-	execute::run(
-		Plan::parse(xml).unwrap(),
-		registry,
-		root,
-		CancellationToken::new(),
-		Arc::new(|_| {}),
-	)
-	.await
-	.unwrap()
+	run_plan(Plan::parse(xml).unwrap(), registry, root, Arc::new(|_| {})).await
 }
 /// The parsed events.jsonl of a run.
 fn read_events(directory: &Path) -> Vec<Value> {
@@ -263,9 +259,7 @@ async fn credentials_and_endpoint_keys_reach_no_file_and_no_event() {
 	});
 	let output = root.0.clone();
 	let plan = Plan::parse(&xml).unwrap();
-	let run = tokio::spawn(async move {
-		execute::run(plan, registry, &output, CancellationToken::new(), sink).await
-	});
+	let run = tokio::spawn(async move { run_plan(plan, registry, &output, sink).await });
 	// While the plugin waits, before any end-of-run pass: the streamed log is already redacted.
 	paused.notified().await;
 	let run_dir = std::fs::read_dir(&root.0).unwrap().next().unwrap().unwrap().path();
@@ -278,7 +272,7 @@ async fn credentials_and_endpoint_keys_reach_no_file_and_no_event() {
 		"{log}"
 	);
 	assert!(leaks(&log).is_empty(), "{log}");
-	let outcome = run.await.unwrap().unwrap();
+	let outcome = run.await.unwrap();
 	assert_eq!(outcome.exit_code, 1);
 	let error = outcome.error.unwrap();
 	assert!(error.contains("[redacted]") && leaks(&error).is_empty(), "{error}");
@@ -331,9 +325,7 @@ async fn teardown_does_not_restart_a_plugin_whose_file_changed() {
 			std::fs::write(&tamper, b"#!/bin/sh\nexit 1\n").unwrap();
 		}
 	});
-	let outcome = execute::run(plan, registry, &root, CancellationToken::new(), sink)
-		.await
-		.unwrap();
+	let outcome = run_plan(plan, registry, &root, sink).await;
 	assert_eq!(outcome.exit_code, 1);
 	let events = read_events(&outcome.artifact_dir);
 	assert!(events.iter().any(|e| {

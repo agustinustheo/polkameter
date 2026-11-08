@@ -14,7 +14,8 @@ use polkameter_plugin_sdk::observers::files::summary::{
 };
 use serde::Serialize;
 
-use crate::load::{scenario::StateCheck, source::TxHash, tracker::FloodTx};
+use crate::engine::measurement::PluginState;
+use crate::load::{source::TxHash, tracker::FloodTx};
 
 const STATE_SAMPLE: usize = 100;
 /// Lost txs checked one by one for lost.jsonl; the rest are only counted.
@@ -41,7 +42,7 @@ pub async fn loss_check(
 	client: &Client,
 	run: Settled<'_>,
 	node_pool: impl std::future::Future<Output = Option<NodePool>>,
-	state: Option<&dyn StateCheck>,
+	state: Option<&PluginState>,
 	finality_wait_ms: u64,
 ) -> (Loss, Vec<LostTx>, Vec<serde_json::Value>) {
 	let mut notes = Vec::new();
@@ -128,12 +129,7 @@ pub async fn loss_check(
 	if let Some(check) = state {
 		let ok = state_candidates(run.flood, found, &finalized_failed);
 		let result =
-			state_check(
-				&ok,
-				at,
-				|sample, at| async move { check.check(client, &sample, at).await },
-			)
-			.await;
+			state_check(&ok, at, |sample, at| async move { check.check(&sample, at).await }).await;
 		if let Err(e) = &result {
 			notes.push(format!("state check: {e}"));
 		}
@@ -153,7 +149,7 @@ pub async fn loss_check(
 	for row in lost_rows.iter().take(LOST_DETAILED) {
 		let state_landed = match (state, at) {
 			(Some(check), Some(at)) => {
-				check.check(client, &[row.hash], at).await.ok().map(|s| s.missing == 0)
+				check.check(&[row.hash], at).await.ok().map(|s| s.missing == 0)
 			},
 			_ => None,
 		};

@@ -44,7 +44,7 @@ fn tracker(name: &str, flood: Vec<Tx>, probes: Vec<Tx>) -> Tracker<FakeSender> {
 	let dir = RunDir::create(std::path::Path::new(env!("CARGO_TARGET_TMPDIR")), name).unwrap();
 	let lane = Lane { call: "Test.call", source: QueueSource::new(flood, probes, "txs") };
 	Tracker::new(
-		vec![lane],
+		lane,
 		FakeSender::default(),
 		dir.jsonl("load.jsonl").unwrap(),
 		dir.jsonl("blocks.jsonl").unwrap(),
@@ -63,8 +63,8 @@ fn a_reply_after_inclusion_still_counts_and_a_late_refusal_is_ignored() {
 	let (a, b) = (tx(1), tx(2));
 	let mut t = tracker("late-reply", vec![a.clone(), b.clone()], vec![]);
 	t.set_phase(Phase::Ramp, 1_000).unwrap();
-	t.start_step(0, &[10.0], 1_000).unwrap();
-	assert!(t.send_next(0, 1_000) && t.send_next(0, 1_000));
+	t.start_step(0, 10.0, 1_000).unwrap();
+	assert!(t.send_next(1_000) && t.send_next(1_000));
 	t.on_block(fetched(5, 1_500, &[&a, &b]), 1_500).unwrap();
 	t.on_reply(Reply::Accepted { id: 1, at: 1_600 });
 	t.on_reply(Reply::Refused {
@@ -73,7 +73,7 @@ fn a_reply_after_inclusion_still_counts_and_a_late_refusal_is_ignored() {
 		code: 1014,
 		error: "Priority is too low".into(),
 	});
-	let st = &t.steps[0][0];
+	let st = &t.steps[0];
 	assert_eq!((st.included, st.rejected), (2, 0), "included twice, the late refusal ignored");
 	assert!(!t.flood[&b.hash].refused, "a late refusal does not flag an included tx");
 	assert!(t.flood[&a.hash].accepted, "the accepted reply counts");
@@ -87,17 +87,17 @@ fn backpressure_keeps_the_tx_and_sends_it_next() {
 	let (a, b) = (tx(1), tx(2));
 	let mut t = tracker("backpressure", vec![a.clone(), b.clone()], vec![]);
 	t.set_phase(Phase::Ramp, 0).unwrap();
-	t.start_step(0, &[10.0], 0).unwrap();
+	t.start_step(0, 10.0, 0).unwrap();
 	// One transiently full queue: the first tx must not be lost (a nonce gap would strand every
 	// later tx and blame the chain).
 	t.sender_mut().full = 1;
-	assert!(!t.send_next(0, 0), "backed up");
-	assert!(t.send_next(0, 20) && t.send_next(0, 40));
-	assert!(!t.send_next(0, 60), "both sent, nothing left");
+	assert!(!t.send_next(0), "backed up");
+	assert!(t.send_next(20) && t.send_next(40));
+	assert!(!t.send_next(60), "both sent, nothing left");
 	let queued: Vec<Vec<u8>> = t.sender().bytes.clone();
 	assert_eq!(queued, vec![a.bytes.to_vec(), b.bytes.to_vec()], "sent in order, none dropped");
 	assert!(t.flood.contains_key(&a.hash) && t.flood.contains_key(&b.hash));
-	let st = &t.steps[0][0];
+	let st = &t.steps[0];
 	assert_eq!((st.sent, st.backpressure_ticks, st.starved_ticks), (2, 1, 1));
 }
 
@@ -130,8 +130,8 @@ fn block(t: &mut Tracker<FakeSender>, number: u32, seen_at: u64, gap: Option<u64
 fn a_dropped_sender_connection_resends_and_is_not_node_down() {
 	let mut t = tracker("interrupted", vec![tx(1), tx(2), tx(3)], vec![]);
 	t.set_phase(Phase::Ramp, 0).unwrap();
-	t.start_step(0, &[1.0], 0).unwrap();
-	assert!(t.send_next(0, 0) && t.send_next(0, 0) && t.send_next(0, 0));
+	t.start_step(0, 1.0, 0).unwrap();
+	assert!(t.send_next(0) && t.send_next(0) && t.send_next(0));
 	assert_eq!(t.inflight(), 3);
 	// Requests 1 and 2 were written and not answered; 3 still waits in the queue.
 	t.on_reply(Reply::Interrupted { connection: 0, ids: vec![1, 2], reason: "reset".into() });
@@ -152,8 +152,8 @@ fn a_dropped_sender_connection_resends_and_is_not_node_down() {
 	t.on_reply(Reply::Accepted { id: 2, at: from + 700 });
 	t.on_reply(Reply::Accepted { id: 3, at: from + 700 });
 	assert!(t.flood[&tx(1).hash].accepted && !t.flood[&tx(1).hash].refused);
-	assert_eq!(t.steps[0][0].rejected, 0);
-	assert_eq!(t.steps[0][0].reply_ms, vec![100, 200, 200], "from the reconnect");
+	assert_eq!(t.steps[0].rejected, 0);
+	assert_eq!(t.steps[0].reply_ms, vec![100, 200, 200], "from the reconnect");
 	let gap = &t.observation_gaps[0];
 	assert_eq!(
 		(gap.what.as_str(), gap.to.map(|to| to - gap.from)),
@@ -166,12 +166,12 @@ fn a_refusal_is_redacted_whole_before_it_is_cut_to_its_error_key() {
 	let mut t = tracker("redacted-refusal", vec![tx(1)], vec![]);
 	t.redact_with(polkameter::redact::Redactor::new(["SeedPhraseSensitive"], None::<&str>));
 	t.set_phase(Phase::Ramp, 0).unwrap();
-	t.start_step(0, &[1.0], 0).unwrap();
-	assert!(t.send_next(0, 0));
+	t.start_step(0, 1.0, 0).unwrap();
+	assert!(t.send_next(0));
 	// Cut first, the key would end in `SeedPhraseSen`, which no later pass recognizes.
 	let error = format!("{} SeedPhraseSensitive", "z".repeat(145));
 	t.on_reply(Reply::Refused { id: 1, at: 10, code: 1010, error });
-	let keys: Vec<&String> = t.steps[0][0].errors.keys().collect();
+	let keys: Vec<&String> = t.steps[0].errors.keys().collect();
 	// The cut falls inside `[redacted]`, which is dropped rather than shown in part.
 	assert_eq!(keys, [&format!("1010 {}", "z".repeat(145))]);
 }
@@ -204,7 +204,7 @@ fn drop_and_reconnect(t: &mut Tracker<FakeSender>, at: u64, down: u64) {
 fn observing(name: &str) -> Tracker<FakeSender> {
 	let mut t = tracker(name, vec![tx(1)], vec![]);
 	t.set_phase(Phase::Ramp, 0).unwrap();
-	t.start_step(0, &[1.0], 0).unwrap();
+	t.start_step(0, 1.0, 0).unwrap();
 	t.on_block(BlockEvent::Finalized { number: 1, seen_at: 0 }, 0).unwrap();
 	block(&mut t, 1, 0, None, &[]);
 	t
@@ -255,7 +255,7 @@ fn reconnects_never_hide_a_stall() {
 	assert_eq!(rule(&t, 70_000), Some(Rule::Stall), "32 s observed, across the reconnect");
 	block(&mut t, 9, 41_000, None, &[]);
 	t.end_step(60_000);
-	assert_eq!((t.steps[0][0].unobserved_ms, t.steps[0][0].max_gap_ms), (38_000, Some(19_000)));
+	assert_eq!((t.steps[0].unobserved_ms, t.steps[0].max_gap_ms), (38_000, Some(19_000)));
 	t.on_block(BlockEvent::Unreachable("not reachable for 15 s".into()), 61_000)
 		.unwrap();
 	assert_eq!(rule(&t, 61_000), Some(Rule::NodeDown));

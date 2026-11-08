@@ -644,14 +644,11 @@ impl Load {
 				steps: self
 					.rates
 					.iter()
-					.map(|r| crate::load::plan::StepPlan {
-						seconds: r.seconds,
-						rates: vec![r.rate],
-					})
+					.map(|r| crate::load::plan::StepPlan { seconds: r.seconds, rate: r.rate })
 					.collect(),
 			}
 		};
-		plan.check(Some(1)).map_err(|e| {
+		plan.check().map_err(|e| {
 			anyhow::anyhow!(
 				"<load> rate schedule: {e}; each step needs seconds of at least 1 and a finite rate \
 				 of 0 or more transactions per second"
@@ -710,7 +707,7 @@ impl Plan {
 		plan.validate()?;
 		Ok(plan)
 	}
-	pub fn validate(&self) -> Result<()> {
+	fn validate(&self) -> Result<()> {
 		let root = self.location;
 		self.thresholds
 			.rules()

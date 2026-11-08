@@ -468,9 +468,6 @@ fn write_artifact_written(plan: &Path, outcome: &Outcome) {
 	}
 }
 
-/// Longest reason, in characters, that the failure line prints. `execution.json` keeps it all.
-const MAX_REASON_CHARS: usize = 1_000;
-
 /// The one-line reason for a failed run, naming the file that holds the details; for a run that
 /// completed with failures, its recorded exit reason (smoke problems, or the verdict and flag).
 /// A reason that points into the plan starts with the plan file, as plan errors do:
@@ -478,7 +475,7 @@ const MAX_REASON_CHARS: usize = 1_000;
 /// nothing.
 fn failure_reason(plan: &Path, outcome: &Outcome) -> Option<String> {
 	if outcome.state == RunState::CompletedWithFailures {
-		return Some(one_line(outcome.exit_reason.as_deref()?));
+		return Some(crate::engine::junit::single_line(outcome.exit_reason.as_deref()?));
 	}
 	if outcome.state != RunState::Failed {
 		return None;
@@ -487,7 +484,7 @@ fn failure_reason(plan: &Path, outcome: &Outcome) -> Option<String> {
 	if outcome.error_location.is_some() {
 		error = format!("{}: {error}", plan.display());
 	}
-	let error = one_line(&error);
+	let error = crate::engine::junit::single_line(&error);
 	let failed = if outcome.exit_code == crate::engine::execute::PREFLIGHT_EXIT_CODE {
 		"failed before setup"
 	} else {
@@ -495,47 +492,6 @@ fn failure_reason(plan: &Path, outcome: &Outcome) -> Option<String> {
 	};
 	let execution = outcome.artifact_dir.join("execution.json");
 	Some(format!("run {failed}: {error} (details in {})", execution.display()))
-}
-
-/// `text` made safe for one terminal line. CSI escape sequences (colours, cursor movement) are
-/// removed, line breaks become ` ⏎ `, and other unsafe characters (see
-/// [`crate::redact::is_unsafe_char`]), including the ESC of any other escape sequence, are escaped
-/// as `\u{…}`. The rendered line is cut to at most [`MAX_REASON_CHARS`] characters, never inside
-/// an escape, followed by `…`.
-fn one_line(text: &str) -> String {
-	let mut line = String::new();
-	let mut length = 0;
-	let mut chars = text.trim().chars().peekable();
-	while let Some(c) = chars.next() {
-		let piece = match c {
-			// CSI sequence: ESC [ parameters final-byte.
-			'\u{1b}' if chars.peek() == Some(&'[') => {
-				chars.next();
-				for c in chars.by_ref() {
-					if ('\u{40}'..='\u{7e}').contains(&c) {
-						break;
-					}
-				}
-				continue;
-			},
-			'\r' | '\n' => {
-				if c == '\r' && chars.peek() == Some(&'\n') {
-					chars.next();
-				}
-				" ⏎ ".to_owned()
-			},
-			c if crate::redact::is_unsafe_char(c) => c.escape_unicode().to_string(),
-			c => c.to_string(),
-		};
-		let piece_length = piece.chars().count();
-		if length + piece_length > MAX_REASON_CHARS {
-			line.push('…');
-			break;
-		}
-		line.push_str(&piece);
-		length += piece_length;
-	}
-	line
 }
 
 /// Refuses a `summary.json` this version cannot rewrite: one without a `schemaVersion`, or with
@@ -583,7 +539,7 @@ fn report(path: PathBuf) -> Result<i32, CliError> {
 	}
 	let redactor = crate::redact::Redactor::new(&secrets, None::<&str>);
 	if let Err(error) = crate::engine::junit::write(&path, &redactor) {
-		crate::engine::junit::warning(Some(&path), &error.to_string(), &secrets);
+		crate::engine::junit::warning(Some(&path), &error.to_string(), &redactor);
 	}
 	let execution = path.join("execution.json");
 	serde_json::from_slice::<Outcome>(

@@ -1,4 +1,4 @@
-//! 2. The load: the plan's steps, every lane at its own token bucket, and when a stop ends it.
+//! 2. The load: the plan's steps through a token bucket, and when a stop ends it.
 
 use std::time::Duration;
 
@@ -28,17 +28,18 @@ pub async fn load<S: Submit>(
 	let mut breaking = false;
 	for (k, plan) in opts.plan.steps.iter().enumerate() {
 		let k = k as u32;
-		t.start_step(k, &plan.rates, now_ms())?;
+		t.start_step(k, plan.rate, now_ms())?;
 		let _ = io.events.send(RunEvent::StepEdge(k));
-		let ended = send_step(t, io, opts, &plan.rates, plan.seconds).await?;
+		let ended = send_step(t, io, opts, plan.rate, plan.seconds).await?;
 		t.end_step(now_ms());
 		let _ = io.events.send(RunEvent::StepEdge(k));
 		log_step(t);
 		if !breaking
-			&& let Some((_, detail)) = t.steps[0]
+			&& let Some((_, detail)) = t
+				.steps
 				.len()
 				.checked_sub(2)
-				.and_then(|i| measure_violation(&final_step(&t.steps[0][i], None), &opts.rules))
+				.and_then(|i| measure_violation(&final_step(&t.steps[i]), &opts.rules))
 		{
 			breaking = true;
 			crate::redact::diag!(
@@ -51,24 +52,22 @@ pub async fn load<S: Submit>(
 		}
 		// After the last step an empty flood only means it was sized to the plan.
 		let last = k as usize + 1 == opts.plan.steps.len();
-		for (lane, steps) in t.steps.iter().enumerate() {
-			let source = &t.lanes()[lane].source;
-			let unsent_kib = t.sender().queued_bytes() / 1024;
-			if let Some(stop) = check_step(steps, source, unsent_kib, block_ms, &opts.rules, last) {
-				return Ok(stop);
-			}
+		let unsent_kib = t.sender().queued_bytes() / 1024;
+		let source = &t.lane().source;
+		if let Some(stop) = check_step(&t.steps, source, unsent_kib, block_ms, &opts.rules, last) {
+			return Ok(stop);
 		}
 	}
 	let last = opts.plan.steps.len().saturating_sub(1) as u32;
 	Ok(Stop::new(Rule::RateCap, Some(last), format!("all {} steps ran", opts.plan.steps.len())))
 }
 
-/// Sends at the step's rates until it ends; a failure during the step ends it and the load.
+/// Sends at the step's rate until it ends; a failure during the step ends it and the load.
 async fn send_step<S: Submit>(
 	t: &mut Tracker<S>,
 	io: &mut Io,
 	opts: &RunOptions,
-	rates: &[f64],
+	rate: f64,
 	seconds: u32,
 ) -> Result<Option<Stop>, RunError> {
 	// Monotonic time for the step's end and the token bucket: a wall-clock step neither ends the
@@ -76,9 +75,9 @@ async fn send_step<S: Submit>(
 	let start = Instant::now();
 	let end = start + Duration::from_secs(u64::from(seconds));
 	let mut tick = interval(20);
-	let mut tokens = vec![0.0_f64; rates.len()];
+	let mut tokens = 0.0_f64;
 	let (mut last, mut last_boot) = (start, (io.boot)());
-	let step = t.steps[0].last().expect("started").step;
+	let step = t.steps.last().expect("started").step;
 	while Instant::now() < end {
 		if !next(t, io, &mut tick).await? {
 			continue;
@@ -93,14 +92,12 @@ async fn send_step<S: Submit>(
 		) {
 			return Ok(Some(Stop::new(Rule::GeneratorLimit, Some(step), detail)));
 		}
-		for (lane, rate) in rates.iter().enumerate() {
-			tokens[lane] = (tokens[lane] + rate * elapsed.as_secs_f64()).min(rate.max(1.0)); // at most 1 s of catch-up
-			while tokens[lane] >= 1.0 && t.send_next(lane, now) {
-				tokens[lane] -= 1.0;
-			}
-			if tokens[lane] >= 1.0 {
-				tokens[lane] = 0.0; // nothing ready, or backed up
-			}
+		tokens = (tokens + rate * elapsed.as_secs_f64()).min(rate.max(1.0)); // at most 1 s of catch-up
+		while tokens >= 1.0 && t.send_next(now) {
+			tokens -= 1.0;
+		}
+		if tokens >= 1.0 {
+			tokens = 0.0; // nothing ready, or backed up
 		}
 		(last, last_boot) = (at, boot);
 		t.tick(now)?;
@@ -143,19 +140,17 @@ fn paused(elapsed: Millis, boot: Option<Millis>, max_gap: Millis) -> Option<Stri
 }
 
 fn log_step<S: Submit>(t: &Tracker<S>) {
-	for (lane, steps) in t.steps.iter().enumerate() {
-		let f = final_step(steps.last().expect("started"), None);
-		crate::redact::diag!(
-			"step {} {}: target {} tx/s, sent {:.0} tx/s, {} blocks, {:.1} tx/s included, reply p95 {} s, {} replies pending, backlog {}",
-			f.step,
-			t.lanes()[lane].call,
-			f.target_rate,
-			f.sent_per_s,
-			f.blocks.blocks,
-			f.included_per_s,
-			secs(f.p95_reply_ms as f64),
-			t.inflight(),
-			t.outstanding().len()
-		);
-	}
+	let f = final_step(t.steps.last().expect("started"));
+	crate::redact::diag!(
+		"step {} {}: target {} tx/s, sent {:.0} tx/s, {} blocks, {:.1} tx/s included, reply p95 {} s, {} replies pending, backlog {}",
+		f.step,
+		t.lane().call,
+		f.target_rate,
+		f.sent_per_s,
+		f.blocks.blocks,
+		f.included_per_s,
+		secs(f.p95_reply_ms as f64),
+		t.inflight(),
+		t.outstanding().len()
+	);
 }

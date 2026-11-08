@@ -25,7 +25,7 @@ PolkaMeter is a load-testing tool for Polkadot SDK chains. The `polkameter` CLI 
 
 ## How a run flows through the code
 
-1. `engine::execute::run` validates the plan, creates the run directory and writes events to `events.jsonl`.
+1. `engine::execute::run_stoppable` creates the run directory and writes events to `events.jsonl`.
 2. `engine::plugins` starts one process per plugin. Each step sends an operation over the SDK protocol.
 3. For a load test, `engine::measurement::run` starts the monitors (`engine/monitors`) and the load runner (`load`).
 4. After the finality wait, `load::loss` gives each flood transaction its status.

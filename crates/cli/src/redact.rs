@@ -317,11 +317,6 @@ impl Redactor {
 		self.0.is_none()
 	}
 
-	/// The length in bytes of the longest pattern, 0 when there is none.
-	pub fn longest(&self) -> usize {
-		self.0.as_ref().map_or(0, |p| p.all.longest)
-	}
-
 	/// `text` with every secret redacted.
 	pub fn text(&self, text: &str) -> String {
 		match &self.0 {
@@ -1291,7 +1286,7 @@ mod tests {
 	fn over_long_lines_hold_back_at_most_the_longest_secret_minus_one() {
 		let secret = "0123456789-secret"; // gitleaks:allow (made-up test credential)
 		let redactor = secrets(&[secret]);
-		let longest = redactor.longest();
+		let longest = secret.len();
 		let line = format!("{}{secret}{}", "x".repeat(10_000), "y".repeat(10_000)).repeat(20);
 		let chunks: Vec<&[u8]> = line.as_bytes().chunks(4096).collect();
 		let (out, held) = stream(&redactor, 1024, &chunks);

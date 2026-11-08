@@ -199,8 +199,8 @@ pub fn check_step(
 	rules: &Rules,
 	last: bool,
 ) -> Option<Stop> {
-	let cur = final_step(steps.last()?, None);
-	let prev = steps.len().checked_sub(2).map(|i| final_step(&steps[i], None));
+	let cur = final_step(steps.last()?);
+	let prev = steps.len().checked_sub(2).map(|i| final_step(&steps[i]));
 	for f in prev.iter().chain([&cur]) {
 		if f.sent > 0 && f.rejected_ratio > rules.pool_refuses_ratio {
 			let top = f.errors.iter().max_by_key(|(_, n)| **n).map_or("?", |(k, _)| k.as_str());
@@ -350,7 +350,7 @@ mod tests {
 			(step(0, |s| s.latencies_ms = vec![11_000]), Some("latency")),
 			(step(0, |s| s.rejected = 20), Some("refused")),
 		] {
-			let violation = measure_violation(&final_step(&changed, None), &RULES);
+			let violation = measure_violation(&final_step(&changed), &RULES);
 			assert_eq!(violation.map(|v| v.0), expected);
 		}
 		// Pool refusals in the step before the last fail it gracefully.
@@ -406,7 +406,7 @@ mod tests {
 			s.closed = true;
 			s.unobserved_ms = 20_000;
 		});
-		assert_eq!(final_step(&unobserved, None).blocks.mean_block_gap_ms, None);
+		assert_eq!(final_step(&unobserved).blocks.mean_block_gap_ms, None);
 		// 40 s since the last block; time spent reconnecting does not count.
 		let down = Some("blocks: the node did not answer for 15 s".to_owned());
 		for (state, expected) in [

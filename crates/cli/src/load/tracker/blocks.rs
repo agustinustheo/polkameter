@@ -40,7 +40,7 @@ impl<S: Submit> Tracker<S> {
 			BlockEvent::Reconnected { at } => {
 				let Some(from) = self.unobserved_since() else { return Ok(()) };
 				// A step that ended meanwhile counted its part when it ended.
-				for st in self.steps.iter_mut().flatten().filter(|st| !st.closed) {
+				for st in self.steps.iter_mut().filter(|st| !st.closed) {
 					st.unobserved_ms += at.saturating_sub(from.max(st.started_at));
 				}
 				if let Some(gap) = self
@@ -82,10 +82,8 @@ impl<S: Submit> Tracker<S> {
 		txs: &[(TxHash, bool)],
 	) -> Result<(), FileError> {
 		self.first_fetched.get_or_insert(record.number);
-		let mut per_lane = vec![0u32; self.lanes.len()];
 		for (tx, failed) in txs {
-			if let Some(lane) = self.on_tx(tx, record.number, record.seen_at, *failed) {
-				per_lane[lane] += 1;
+			if self.on_tx(tx, record.number, record.seen_at, *failed) {
 				record.ours += 1;
 				record.ours_failed += u32::from(*failed);
 			}
@@ -95,12 +93,10 @@ impl<S: Submit> Tracker<S> {
 		self.last_fetched = self.last_fetched.max(record.number);
 		match self.phase_at(record.seen_at) {
 			Phase::Ramp => {
-				for (lane, ours) in per_lane.iter().enumerate() {
-					if let Some(st) =
-						self.steps[lane].iter_mut().rev().find(|s| s.started_at <= record.seen_at)
-					{
-						st.blocks.push(BlockRecord { ours: *ours, ..record.clone() });
-					}
+				if let Some(st) =
+					self.steps.iter_mut().rev().find(|s| s.started_at <= record.seen_at)
+				{
+					st.blocks.push(record);
 				}
 			},
 			Phase::Recovery => self.recovery_blocks.push(record),
@@ -116,29 +112,26 @@ impl<S: Submit> Tracker<S> {
 			self.gap_until(prev, at);
 		}
 		self.prev_head_at = Some(at);
-		for lane in &mut self.steps {
-			if let Some(st) = lane.iter_mut().rev().find(|s| s.started_at <= at)
-				&& (!st.closed || at < st.ended_at)
-			{
-				st.heads += 1;
-			}
+		if let Some(st) = self.steps.iter_mut().rev().find(|s| s.started_at <= at)
+			&& (!st.closed || at < st.ended_at)
+		{
+			st.heads += 1;
 		}
 	}
 
 	/// No new best block from `from` to `to`: each step gets the part of it inside its time.
 	fn gap_until(&mut self, from: Millis, to: Millis) {
-		for lane in &mut self.steps {
-			for st in lane.iter_mut().rev() {
-				if st.closed && st.ended_at <= from {
-					break;
-				}
-				st.gap_portion(from, to);
+		for st in self.steps.iter_mut().rev() {
+			if st.closed && st.ended_at <= from {
+				break;
 			}
+			st.gap_portion(from, to);
 		}
 	}
 
-	fn on_tx(&mut self, hash: &TxHash, block: u32, seen_at: Millis, failed: bool) -> Option<usize> {
-		let tx = self.sent.remove(hash)?;
+	/// Whether `hash` is one of ours.
+	fn on_tx(&mut self, hash: &TxHash, block: u32, seen_at: Millis, failed: bool) -> bool {
+		let Some(tx) = self.sent.remove(hash) else { return false };
 		self.last_ours_block = self.last_ours_block.max(block);
 		let latency = seen_at.saturating_sub(tx.sent_at);
 		let step = match tx.kind {
@@ -146,17 +139,17 @@ impl<S: Submit> Tracker<S> {
 				self.probes[index].outcome =
 					if failed { Outcome::Failed } else { Outcome::Included };
 				self.probes[index].latency_ms = Some(latency);
-				return Some(tx.lane);
+				return true;
 			},
 			Kind::Flood { step } => step,
 		};
-		let call = self.lanes[tx.lane].call;
+		let call = self.lane.call;
 		self.included_in.insert(*hash, block);
 		if let Some(flood) = self.flood.get_mut(hash) {
 			flood.inclusion_ms = Some(latency);
 			flood.failed_in_block = failed;
 		}
-		let st = &mut self.steps[tx.lane][step];
+		let st = &mut self.steps[step];
 		st.included += 1;
 		st.latencies_ms.push(latency);
 		self.load.inc(&TX_INCLUDED, [call], 1.0, seen_at);
@@ -164,13 +157,11 @@ impl<S: Submit> Tracker<S> {
 		if failed {
 			st.failed_in_block += 1;
 			self.load.inc(&TX_FAILED, [call], 1.0, seen_at);
-		} else {
-			self.included_ok[tx.lane].push(*hash);
 		}
 		if self.phase() == Phase::Recovery {
 			self.drained += 1;
 		}
-		Some(tx.lane)
+		true
 	}
 
 	fn send_probe(&mut self, now: Millis) {
@@ -179,7 +170,7 @@ impl<S: Submit> Tracker<S> {
 			Phase::Recovery => ProbePhase::Recovery,
 			_ => return,
 		};
-		let Some(tx) = self.lanes[0].source.probe() else { return };
+		let Some(tx) = self.lane.source.probe() else { return };
 		let from = self.phases.last().expect("phase").0;
 		self.probes.push(Probe {
 			phase,
@@ -189,11 +180,11 @@ impl<S: Submit> Tracker<S> {
 			sent_at: now,
 		});
 		let index = self.probes.len() - 1;
-		if !self.submit(0, tx.hash, &tx.bytes, Kind::Probe { index }, now) {
+		if !self.submit(tx.hash, &tx.bytes, Kind::Probe { index }, now) {
 			// Every connection is backed up: our side, not the node's answer. The probe was not
 			// sent; its tx is kept for the next block.
 			self.probes.pop();
-			self.lanes[0].source.put_back_probe(tx);
+			self.lane.source.put_back_probe(tx);
 		}
 	}
 }

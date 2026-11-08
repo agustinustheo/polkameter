@@ -84,17 +84,10 @@ struct Zombie {
 	parachains: std::collections::HashMap<String, serde_json::Value>,
 }
 
-/// zombie.json could not be read: an error of our setup, so the run stops.
-#[derive(Debug, thiserror::Error)]
-#[error("{path}: {detail}")]
-pub struct TopologyError {
-	path: String,
-	detail: String,
-}
-
-/// Every node to scrape: the collators of `para_id` and every relay validator.
-pub fn load_targets(path: &Path, para_id: u32) -> Result<Vec<Target>, TopologyError> {
-	let err = |detail: String| TopologyError { path: path.display().to_string(), detail };
+/// Every node to scrape: the collators of `para_id` and every relay validator. A zombie.json
+/// that cannot be read is an error of our setup, so the run stops.
+pub fn load_targets(path: &Path, para_id: u32) -> anyhow::Result<Vec<Target>> {
+	let err = |detail: String| anyhow::anyhow!("{}: {detail}", path.display());
 	let text = std::fs::read_to_string(path).map_err(|e| err(e.to_string()))?;
 	let z: Zombie = serde_json::from_str(&text).map_err(|e| err(e.to_string()))?;
 	let paras = z

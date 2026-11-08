@@ -94,23 +94,16 @@ impl std::fmt::Display for RunState {
 struct Log {
 	file: Arc<Mutex<File>>,
 	sink: EventSink,
-	/// The credential values, for the JUnit report, which builds its own redactor.
-	secrets: Arc<Vec<String>>,
 	/// The run's credentials and endpoint secrets.
 	redactor: Redactor,
 }
 impl Log {
-	fn open(
-		directory: &Path,
-		sink: EventSink,
-		secrets: Vec<String>,
-		redactor: Redactor,
-	) -> Result<Self> {
+	fn open(directory: &Path, sink: EventSink, redactor: Redactor) -> Result<Self> {
 		let file = OpenOptions::new()
 			.create_new(true)
 			.write(true)
 			.open(directory.join("events.jsonl"))?;
-		Ok(Self { file: Arc::new(Mutex::new(file)), sink, secrets: Arc::new(secrets), redactor })
+		Ok(Self { file: Arc::new(Mutex::new(file)), sink, redactor })
 	}
 	fn emit(&self, mut value: Value) -> Result<()> {
 		value["timestamp"] = json!(polkameter_plugin_sdk::observers::files::now_ms());
@@ -161,10 +154,6 @@ fn endpoints(plan: &Plan, registry: &Registry) -> Vec<String> {
 /// The redactor of `plan` with the given credential values.
 fn redactor(plan: &Plan, registry: &Registry, secrets: &[String]) -> Redactor {
 	Redactor::new(secrets, endpoints(plan, registry))
-}
-fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
-	std::fs::write(path, serde_json::to_vec_pretty(value)?)?;
-	Ok(())
 }
 
 /// Scratch directory removed when dropped, so early returns clean up too.
@@ -508,7 +497,6 @@ async fn with_scratch_plugins<T>(
 	result
 }
 pub async fn inspect(plan: &Plan, registry: &Registry) -> Result<Value> {
-	plan.validate()?;
 	let mut inspected = inspect_plugins(plan, registry).await?;
 	// The targets' endpoints may hold API keys.
 	redactor(plan, registry, &[]).value(&mut inspected["targets"]);
@@ -601,7 +589,7 @@ async fn calibrate(plan: &Plan, directory: &Path) -> Result<()> {
 		"relativeTolerance": 0.25
 	});
 	// Preserve the evidence even when the mismatch prevents setup.
-	write_json(&directory.join("calibration.json"), &calibration)?;
+	RunDir::open(directory).write_json("calibration.json", &calibration)?;
 	validate_interval(load.block_interval_seconds, measured)
 }
 
@@ -635,18 +623,14 @@ pub struct Stop {
 }
 impl Default for Stop {
 	fn default() -> Self {
-		Self::from_cancel(CancellationToken::new())
-	}
-}
-impl Stop {
-	/// A stop whose first stage is `cancel`, for callers that only cancel.
-	pub fn from_cancel(cancel: CancellationToken) -> Self {
 		Self {
-			cancel,
+			cancel: CancellationToken::new(),
 			force: CancellationToken::new(),
 			exit_code: Arc::new(STOPPED_EXIT_CODE.into()),
 		}
 	}
+}
+impl Stop {
 	/// Ends the running phases; teardown still runs. The first request's `exit_code` is kept
 	/// as the stopped run's exit code.
 	pub fn request(&self, exit_code: i32) {
@@ -667,31 +651,8 @@ impl Stop {
 
 /// Runs a plan in a new directory under `root`. Phases: preflight, setup, measurement,
 /// evaluate, then teardown, which runs whenever the plugins started. The outcome is written to the
-/// run directory and returned; its exit code is 130 when the run was cancelled.
-pub async fn run(
-	plan: Plan,
-	registry: Registry,
-	root: &Path,
-	cancel: CancellationToken,
-	sink: EventSink,
-) -> Result<Outcome> {
-	run_with_options(plan, registry, root, cancel, sink, RunOptions::default()).await
-}
-
-/// Runs a plan with explicit exit policies, persisted in the outcome after teardown.
-pub async fn run_with_options(
-	plan: Plan,
-	registry: Registry,
-	root: &Path,
-	cancel: CancellationToken,
-	sink: EventSink,
-	options: RunOptions,
-) -> Result<Outcome> {
-	run_stoppable(plan, registry, root, Stop::from_cancel(cancel), sink, options).await
-}
-
-/// Runs a plan that can be stopped in two stages; see [`Stop`]. A stopped run's exit code is the
-/// one passed to the first [`Stop::request`].
+/// run directory and returned. The run can be stopped in two stages; see [`Stop`]. A stopped
+/// run's exit code is the one passed to the first [`Stop::request`].
 pub async fn run_stoppable(
 	plan: Plan,
 	registry: Registry,
@@ -700,7 +661,6 @@ pub async fn run_stoppable(
 	sink: EventSink,
 	options: RunOptions,
 ) -> Result<Outcome> {
-	plan.validate()?;
 	// A new `run-…` directory under `root`: a run never reuses one.
 	std::fs::create_dir_all(root)?;
 	let run_id = format!(
@@ -716,7 +676,7 @@ pub async fn run_stoppable(
 	let redactor = redactor(&plan, &registry, &secrets);
 	// What the run prints on standard error is redacted too, until it ends.
 	let _diagnostics = crate::redact::activate(&redactor);
-	let log = Log::open(&directory, sink, secrets, redactor)?;
+	let log = Log::open(&directory, sink, redactor)?;
 	if let Ok(credentials) = &credentials {
 		for warning in short_credentials(credentials) {
 			crate::redact::diag!("{} warning: {warning}", crate::PRODUCT_NAME);
@@ -724,7 +684,7 @@ pub async fn run_stoppable(
 		}
 	}
 	let recorded_plan = log.redactor.json(&plan)?;
-	write_json(&directory.join("plan.json"), &recorded_plan)?;
+	RunDir::open(&directory).write_json("plan.json", &recorded_plan)?;
 	let context = Context::host(run_id, directory.canonicalize()?);
 	let run = Run {
 		plan: &plan,
@@ -795,7 +755,7 @@ impl Run<'_> {
 			"error": format!("stopped by {reason}; teardown was still running"),
 			"stop_requested_at": polkameter_plugin_sdk::observers::files::now_ms(),
 		});
-		let _ = write_json(&self.directory.join("execution.json"), &provisional);
+		let _ = RunDir::open(&self.directory).write_json("execution.json", &provisional);
 		let _ = redact_plugin_logs(&self.directory, &self.log.redactor);
 	}
 
@@ -952,10 +912,8 @@ impl Run<'_> {
 				"blake2": checksum(&std::env::current_exe()?)?,
 			},
 		});
-		write_json(
-			&self.directory.join("resolved-plan.json"),
-			&self.log.redactor.json(&resolved)?,
-		)?;
+		RunDir::open(&self.directory)
+			.write_json("resolved-plan.json", &self.log.redactor.json(&resolved)?)?;
 		if let (Some(monitors), Some(targets)) =
 			(&self.plan.monitors, wiring::monitor_targets(self.plan, self.registry)?)
 		{
@@ -978,10 +936,8 @@ impl Run<'_> {
 				"topologyHash": checksum(topology)?,
 				"targets": target_records,
 			});
-			write_json(
-				&self.directory.join("resolved-targets.json"),
-				&self.log.redactor.json(&resolved)?,
-			)?;
+			RunDir::open(&self.directory)
+				.write_json("resolved-targets.json", &self.log.redactor.json(&resolved)?)?;
 		}
 		Ok(())
 	}
@@ -1120,7 +1076,7 @@ impl Run<'_> {
 		{
 			fail_report(&mut outcome, error);
 		}
-		write_json(&self.directory.join("execution.json"), &outcome)?;
+		RunDir::open(&self.directory).write_json("execution.json", &outcome)?;
 		let summary = self.directory.join("summary.md");
 		if summary.exists() {
 			// The report redacted it as it was written; this is a second pass.
@@ -1144,11 +1100,11 @@ impl Run<'_> {
 			if path.exists() {
 				let mut value: Value = serde_json::from_slice(&std::fs::read(&path)?)?;
 				self.log.redactor.value(&mut value);
-				write_json(&path, &value)?;
+				RunDir::open(&self.directory).write_json(name, &value)?;
 			}
 		}
 		if let Err(error) = crate::engine::junit::write(&self.directory, &self.log.redactor) {
-			let event = crate::engine::junit::warning(None, &error.to_string(), &self.log.secrets);
+			let event = crate::engine::junit::warning(None, &error.to_string(), &self.log.redactor);
 			let _ = self.log.emit(event);
 		}
 		self.log.emit(json!({"event": "completed", "outcome": outcome}))?;
@@ -1492,10 +1448,16 @@ mod tests {
 				next_directory_sequence()
 			));
 			let plan = Plan::parse(xml).unwrap();
-			let outcome =
-				run(plan, Registry::default(), &root, CancellationToken::new(), Arc::new(|_| {}))
-					.await
-					.unwrap();
+			let outcome = run_stoppable(
+				plan,
+				Registry::default(),
+				&root,
+				Stop::default(),
+				Arc::new(|_| {}),
+				RunOptions::default(),
+			)
+			.await
+			.unwrap();
 			assert_eq!(
 				(outcome.exit_code, outcome.state),
 				(exit_code, RunState::Failed),

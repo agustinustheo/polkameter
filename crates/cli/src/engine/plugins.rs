@@ -226,11 +226,6 @@ impl Registry {
 		};
 		Ok((manifest, installation))
 	}
-	pub async fn install(&mut self, executable: &Path) -> Result<Manifest> {
-		let (manifest, installation) = Self::describe(executable).await?;
-		self.plugins.insert(manifest.id.clone(), installation);
-		Ok(manifest)
-	}
 	/// Checks that plugin `id` is installed as `version` and that its executable has not changed
 	/// since `polkameter plugin install`. Each message says how to fix it before the evidence.
 	pub fn verify(&self, id: &str, version: &str) -> Result<&Installation> {
