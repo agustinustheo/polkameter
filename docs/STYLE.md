@@ -34,7 +34,7 @@ One entry per cause. The heading is the message as the CLI prints it, without th
 
 ## Releases
 
-Document released behavior. Keep unreleased changes in CHANGELOG. A page has at most one pre-release note, marked `<!-- vX.Y.Z: remove after release -->`. A note about installing the CLI links to `install.md#before-v030-is-released`.
+Document released behavior. Keep unreleased changes in CHANGELOG. A page has at most one pre-release note, marked `<!-- vX.Y.Z: remove after release -->`.
 
 ## Page budgets
 
