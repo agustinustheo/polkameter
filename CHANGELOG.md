@@ -2,7 +2,7 @@
 
 User-visible changes in each release. The GitHub release notes list every merged pull request.
 
-## Unreleased (0.3.0)
+## 0.3.0 (2026-11-08)
 
 ### Highlights
 
