@@ -1,11 +1,11 @@
 # Releasing PolkaMeter
 
-Every crate shares `[workspace.package].version` in the root `Cargo.toml`. Internal path dependencies carry the same version in `[workspace.dependencies]`. Two crates are published: `polkameter-plugin-sdk`, then `polkameter`. The desktop app, the example plugin and the substrate plugin have `publish = false`. The substrate plugin ships as an executable in the CLI archives and the container instead.
+Every crate shares `[workspace.package].version` in the root `Cargo.toml`. Internal path dependencies carry the same version in `[workspace.dependencies]`. Two crates are published: `polkameter-plugin-sdk`, then `polkameter`. The example plugin and the substrate plugin have `publish = false`. The substrate plugin ships as an executable in the CLI archives and the container instead.
 
 ## Cut a release
 
 1. Update the workspace version, every internal dependency version and the `version` in `.claude-plugin/plugin.json`. Run `cargo +1.93.0 check --workspace` so `Cargo.lock` follows. Retitle the `Unreleased` section of `CHANGELOG.md` with the version. Copy its notes into the GitHub release after publication.
-2. Run the checks in [`AGENTS.md`](AGENTS.md#build-and-test), `python3 tests/distribution.py`, `shellcheck install.sh`, `actionlint`, and `cargo +1.93.0 publish --workspace --exclude polkameter-desktop --exclude polkameter-example-plugin --exclude polkameter-substrate-plugin --dry-run --locked`.
+2. Run the checks in [`AGENTS.md`](AGENTS.md#build-and-test), `python3 tests/distribution.py`, `shellcheck install.sh`, `actionlint`, and `cargo +1.93.0 publish --workspace --exclude polkameter-example-plugin --exclude polkameter-substrate-plugin --dry-run --locked`.
 3. Commit, merge to `main`, then tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`.
 4. After the release is published, clean up the docs in one pull request. Remove each `vX.Y.Z: remove after release` marker with the text it marks (`grep -rn 'vX.Y.Z: remove after release' .`). Where a marker says so, replace `main` with the release tag. Then check `grep -rnE 'from v0\.3\.0|v0\.2\.0' docs skills README.md` for version notes the markers missed.
 

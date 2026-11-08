@@ -1,4 +1,4 @@
-//! Shared XML plugin orchestration for CLI, desktop and remote execution.
+//! XML plan orchestration for the CLI.
 pub mod execute;
 pub mod plan;
 pub mod plugins;

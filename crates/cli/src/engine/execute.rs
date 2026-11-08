@@ -732,9 +732,6 @@ pub async fn run_stoppable(
 	);
 	let directory = root.join(&run_id);
 	std::fs::create_dir(&directory).context("run directory must be new")?;
-	// Held until the run ends: an agent pruning old run directories skips locked ones.
-	let lock = File::create(directory.join(RUN_LOCK))?;
-	lock.lock()?;
 	let credentials = registry.resolve_credentials(&plan);
 	let secrets = credentials.as_ref().map(secret_values).unwrap_or_default();
 	let redactor = redactor(&plan, &registry, &secrets);
@@ -775,17 +772,12 @@ pub async fn run_stoppable(
 			execute.await
 		},
 	};
-	let outcome = run.outcome(result);
-	drop(lock);
-	outcome
+	run.outcome(result)
 }
 
 /// The phase of a run before setup: credential, plugin, contract, environment and requirement
 /// checks, `<preflight>` steps and calibration.
 const PREFLIGHT: &str = "preflight";
-
-/// The lock file of a run directory, locked while the run is in progress.
-pub const RUN_LOCK: &str = "run.lock";
 
 /// One run in progress: its plan and host, its directory and event log, and its deadline.
 struct Run<'a> {

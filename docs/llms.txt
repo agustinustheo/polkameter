@@ -17,7 +17,6 @@ Install the CLI and the substrate plugin with `curl -fsSL https://raw.githubuser
 - [Run a load test](https://agustinustheodorus.com/polkameter/load-test.html): write, validate, preflight and run a load plan
 - [Read the results](https://agustinustheodorus.com/polkameter/reading-results.html): verdict, breaking point, max sustained rate, loss check
 - [Run in CI](https://agustinustheodorus.com/polkameter/ci.html): the GitHub Action, GitLab CI, Jenkins
-- [Run on a remote machine](https://agustinustheodorus.com/polkameter/remote-runs.html): the agent, `--remote` and what the agent refuses
 - [Troubleshooting](https://agustinustheodorus.com/polkameter/troubleshooting.html): common errors and fixes
 
 ## Reference

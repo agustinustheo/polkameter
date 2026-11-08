@@ -1,11 +1,11 @@
-//! SIGINT and SIGTERM stop `run`, the remote client and `agent serve` cleanly: teardown runs,
+//! SIGINT and SIGTERM stop `run` cleanly: teardown runs,
 //! the results are written, plugin processes are killed and reaped, and the exit code names the
 //! signal. A second signal interrupts teardown.
 //!
 //! These tests drive the real binaries. They need the example plugin, built next to the CLI by
 //! `cargo test --workspace` or `cargo build -p polkameter-example-plugin`; set
 //! `POLKAMETER_EXAMPLE_PLUGIN` to use another build. Every wait is for an observable event (a
-//! file the plugin writes, a process exit, an open port), never a fixed sleep.
+//! file the plugin writes, a process exit), never a fixed sleep.
 #![cfg(unix)]
 
 use std::{
@@ -17,8 +17,6 @@ use std::{
 
 use serde_json::Value;
 
-#[path = "support/agent.rs"]
-mod agent;
 #[path = "support/executable.rs"]
 mod executable;
 #[path = "support/work.rs"]
@@ -30,8 +28,6 @@ use work::Work;
 /// Generous: the whole workspace's tests run in parallel, and a loaded machine starts each
 /// process slowly. Only a failing test waits this long.
 const PATIENCE: Duration = Duration::from_secs(180);
-
-const TOKEN: &str = "signals-test-token-0123456789abcdef";
 
 fn plugin_executable() -> PathBuf {
 	if let Some(path) = std::env::var_os("POLKAMETER_EXAMPLE_PLUGIN") {
@@ -92,16 +88,8 @@ impl Work {
 
 	fn polkameter(&self) -> Command {
 		let mut command = Command::new(env!("CARGO_BIN_EXE_polkameter"));
+		command.env("POLKAMETER_PLUGIN_REGISTRY", self.0.join("plugins.json"));
 		command
-			.env("POLKAMETER_PLUGIN_REGISTRY", self.0.join("plugins.json"))
-			.env("POLKAMETER_AGENT_TOKEN", self.token());
-		command
-	}
-
-	/// The agent token of this test only: a client that reached another test's agent, on a
-	/// port that agent took first, is refused instead of starting a run there.
-	fn token(&self) -> String {
-		format!("{TOKEN}-{}", self.0.file_name().unwrap().to_string_lossy())
 	}
 
 	/// Starts `polkameter run` on the plan, with JSON output.
@@ -118,21 +106,6 @@ impl Work {
 	/// The only run directory under `root`, once it exists.
 	fn run_directory(&self, root: &str) -> PathBuf {
 		wait_for("a run directory", || {
-			let runs = std::fs::read_dir(self.0.join(root)).ok()?;
-			runs.map(|entry| entry.unwrap().path()).find(|path| path.is_dir())
-		})
-	}
-
-	/// The run directory the remote `client` started under `root`. A client that exits before
-	/// the run exists fails the test with its own error instead of a timeout.
-	fn remote_run_directory(&self, root: &str, client: &mut Process) -> PathBuf {
-		wait_for("a run directory", || {
-			if let Some(status) = client.0.try_wait().unwrap() {
-				let mut stderr = String::new();
-				std::io::Read::read_to_string(client.0.stderr.as_mut().unwrap(), &mut stderr)
-					.unwrap();
-				panic!("the client exited ({status}) before its run started: {stderr}");
-			}
 			let runs = std::fs::read_dir(self.0.join(root)).ok()?;
 			runs.map(|entry| entry.unwrap().path()).find(|path| path.is_dir())
 		})
@@ -312,91 +285,6 @@ fn the_grace_period_bounds_teardown_after_one_signal() {
 		(Some("stopped"), Some(143))
 	);
 	assert!(!alive(first.trim()) && !alive(second.trim()), "a plugin outlived the run");
-}
-
-/// A running `polkameter agent serve` on a free loopback port.
-struct Agent {
-	process: Process,
-	endpoint: String,
-	stderr: agent::Stderr,
-}
-
-impl Agent {
-	fn start(work: &Work) -> Self {
-		let (child, address, stderr) = agent::start(
-			work.polkameter()
-				.args(["agent", "serve", "--output-root"])
-				.arg(work.0.join("remote"))
-				.stdout(Stdio::piped()),
-			PATIENCE,
-		);
-		Self { process: Process(child), endpoint: format!("http://{address}"), stderr }
-	}
-
-	/// Waits for the agent to exit and returns its status and the rest of its standard error.
-	fn wait(&mut self) -> (ExitStatus, String) {
-		let status = wait_for("the agent to exit", || self.process.0.try_wait().unwrap());
-		(status, self.stderr.read(PATIENCE))
-	}
-
-	fn client(&self, work: &Work) -> Process {
-		work.run(&["--remote", &self.endpoint, "--remote-token-env", "POLKAMETER_AGENT_TOKEN"])
-	}
-}
-
-#[test]
-fn sigterm_stops_the_remote_client_which_stops_the_agent_run() {
-	let work = Work::installed("client", &plan(DOUBLE));
-	let mut agent = Agent::start(&work);
-	let mut client = agent.client(&work);
-	let run = work.remote_run_directory("remote", &mut client);
-	let pid = waiting_plugin(&run, None);
-	client.signal("TERM");
-	let (status, stderr) = client.wait();
-	assert_eq!(status.code(), Some(143), "{stderr}");
-	assert!(stderr.contains("received SIGTERM; asking the agent to stop the run"), "{stderr}");
-	// The agent stopped the run on request and is free for the next one.
-	let execution = read_json(&run.join("execution.json"));
-	assert_eq!(
-		(execution["state"].as_str(), execution["exit_code"].as_i64()),
-		(Some("stopped"), Some(130))
-	);
-	assert!(cleanup_succeeded(&run));
-	assert!(!alive(pid.trim()));
-	assert!(agent.process.0.try_wait().unwrap().is_none(), "the agent exited");
-	let mut next = agent.client(&work);
-	let second = wait_for("a second run directory", || {
-		std::fs::read_dir(work.0.join("remote"))
-			.unwrap()
-			.map(|e| e.unwrap().path())
-			.find(|p| p != &run)
-	});
-	waiting_plugin(&second, None);
-	next.signal("INT");
-	assert_eq!(next.wait().0.code(), Some(130));
-}
-
-#[test]
-fn sigterm_stops_the_agent_after_its_run_tears_down() {
-	let work = Work::installed("agent", &plan(DOUBLE));
-	let mut agent = Agent::start(&work);
-	let mut client = agent.client(&work);
-	let run = work.remote_run_directory("remote", &mut client);
-	let pid = waiting_plugin(&run, None);
-	agent.process.signal("TERM");
-	let (status, stderr) = agent.wait();
-	assert_eq!(status.code(), Some(143), "{stderr}");
-	assert!(stderr.contains("received SIGTERM; stopping the active run"), "{stderr}");
-	let execution = read_json(&run.join("execution.json"));
-	assert_eq!(
-		(execution["state"].as_str(), execution["exit_code"].as_i64()),
-		(Some("stopped"), Some(143))
-	);
-	assert!(cleanup_succeeded(&run));
-	assert!(!alive(pid.trim()), "the plugin outlived the agent");
-	// The client read the outcome before the agent closed, and reports the agent's stop.
-	let (status, stderr) = client.wait();
-	assert_eq!(status.code(), Some(143), "{stderr}");
 }
 
 /// A plan whose setup succeeds at once and whose teardown waits three seconds.

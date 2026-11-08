@@ -14,7 +14,6 @@
 - [Run a load test](load-test.md)
 - [Read the results](reading-results.md)
 - [Run in CI](ci.md)
-- [Run on a remote machine](remote-runs.md)
 - [Use PolkaMeter with an AI assistant](ai-assistants.md)
 - [Troubleshooting](troubleshooting.md)
 

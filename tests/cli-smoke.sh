@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Exercises the CLI end to end without a chain: install the example plugin, validate and run its
-# plan locally and through a loopback remote agent, regenerate the report, and check that a
-# failed assertion exits nonzero. Also replay a recorded load report and check the action's
-# verdict extraction. Build first: cargo build -p polkameter --bin polkameter
+# plan, regenerate the report, and check that a failed assertion exits nonzero. Also replay a
+# recorded load report and check the action's verdict extraction. Build first: cargo build -p polkameter --bin polkameter
 # and cargo build -p polkameter-example-plugin.
 set -euo pipefail
 
@@ -11,8 +10,7 @@ plugin=${POLKAMETER_EXAMPLE_PLUGIN:-target/debug/polkameter-example-plugin}
 plan=examples/plugin-workflow.polkameter.xml
 work=$(mktemp -d)
 export POLKAMETER_PLUGIN_REGISTRY="$work/plugins.json"
-agent=""
-trap '[ -n "$agent" ] && kill "$agent" 2>/dev/null; rm -rf "$work"' EXIT
+trap 'rm -rf "$work"' EXIT
 
 "$cli" plugin install "$plugin" > /dev/null
 "$cli" validate "$plan" --format json | grep -q '"valid":true'
@@ -78,16 +76,4 @@ gzip -dc crates/cli/tests/fixtures/smoke-run/scrapes.jsonl.gz > "$work/recorded/
 xmllint --nonet --noout --schema tests/schemas/junit.xsd "$work/recorded/junit.xml"
 [ "$(jq -r '.verdict.result // empty' "$work/recorded/summary.json")" = FAIL ]
 
-port=$((20000 + RANDOM % 20000))
-export POLKAMETER_AGENT_TOKEN=smoke-token-0123456789abcdef0123456789
-"$cli" agent serve --bind "127.0.0.1:$port" --output-root "$work/remote" > "$work/agent.log" 2>&1 &
-agent=$!
-for _ in $(seq 1 50); do
-	curl --silent --fail "http://127.0.0.1:$port/health" > /dev/null && break
-	sleep 0.2
-done
-"$cli" run "$plan" --remote "http://127.0.0.1:$port" --remote-token-env POLKAMETER_AGENT_TOKEN \
-	--junit "$work/reports/remote.xml" --fail-on-verdict --fail-on-inconclusive --format json | grep -q '"exit_code":0'
-xmllint --nonet --noout --schema tests/schemas/junit.xsd "$work/reports/remote.xml"
-cmp "$work/reports/remote.xml" "$work"/remote/run-*/junit.xml
 echo "CLI smoke passed"

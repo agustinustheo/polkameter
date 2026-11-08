@@ -1,9 +1,5 @@
 [advisories]
 ignore = [
-    # glib 0.18 via tauri/gtk on Linux: VariantStrIter is never used; no fixed glib 0.18 release.
-    "RUSTSEC-2024-0429",
-    # proc-macro-error 1.x via gtk macros: build-time only, unmaintained, no fix upstream.
-    "RUSTSEC-2024-0370",
     # proc-macro-error2 via subxt-macro: build-time only, unmaintained, no fix upstream.
     "RUSTSEC-2026-0173",
     # smallstr via scale-info-legacy (subxt): unmaintained, no replacement in the dependency tree.

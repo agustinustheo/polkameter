@@ -1,6 +1,6 @@
 [package]
 name = "polkameter"
-description = "Headless CLI for JMeter-style Polkadot SDK load tests: validate, preflight, run and report XML plans, and serve a remote agent"
+description = "Headless CLI for JMeter-style Polkadot SDK load tests: validate, preflight, run and report XML plans"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -20,14 +20,12 @@ polkameter-plugin-sdk = { workspace = true, features = ["chain", "observers"] }
 
 aho-corasick = "1.1"
 anyhow.workspace = true
-axum = "0.8"
 clap = { version = "4", features = ["derive"] }
 csv.workspace = true
-getrandom = "0.3"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 hex.workspace = true
 parity-scale-codec.workspace = true
-reqwest = { version = "0.13", features = ["json"] }
+reqwest = "0.13"
 serde.workspace = true
 serde_json.workspace = true
 sp-crypto-hashing.workspace = true

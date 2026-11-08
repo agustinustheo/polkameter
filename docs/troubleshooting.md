@@ -180,31 +180,3 @@ To see why, open `summary.md` in the run directory. The `refusals are clean` che
 | `1016` | Immediately dropped. | The pool is full. |
 
 For `1010` and `1014`, rebuild the transactions against the current chain: fresh nonces, funded signers and the current runtime version. For `1016`, lower the rate or raise the node's pool limits. For other codes, read the node's log at the time of the refusals.
-
-## Remote runs
-
-### status polls kept failing for 60 s: …
-
-```text
-PolkaMeter: status polls kept failing for 60 s: …; asked the agent to stop run <id>
-```
-
-The client lost the agent for a minute. The SSH tunnel closed, the agent restarted, or the agent host is overloaded. The client asked the agent to stop the run and exited `1`. A `the start request kept failing for 60 s` message has the same causes.
-
-Restore the tunnel or the agent, then run the plan again. If the message ends with `could not ask the agent to stop run <id>`, wait for that run to end first.
-
-### the run did not end within the client's deadline of … s
-
-The remote run passed the [client's deadline](remote-runs.md#get-the-results). The client asked the agent to stop it and exited `1`.
-
-Read the run's `events.jsonl` on the agent to find the step that hung. Fix that step or raise its `timeout-ms`.
-
-### agent token in POLKAMETER_AGENT_TOKEN must have at least 32 characters, at least 8 of them different; …
-
-The agent's token is too short or repeats a few characters, as in `aaaa…`. Such a token can be guessed.
-
-Set one random token on the agent and the client:
-
-```sh
-export POLKAMETER_AGENT_TOKEN=$(openssl rand -hex 32)
-```

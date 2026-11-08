@@ -1,5 +1,4 @@
-//! The headless CLI: validate, preflight, run and report XML plans, manage installed plugins,
-//! and serve or use a remote agent.
+//! The headless CLI: validate, preflight, run and report XML plans, and manage installed plugins.
 
 use std::{
 	io::Write,
@@ -21,10 +20,7 @@ use anyhow::Context as _;
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::{Value, json};
 
-use crate::{
-	PRODUCT_NAME,
-	remote::{self, RemoteRunnerTarget},
-};
+use crate::PRODUCT_NAME;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -100,25 +96,21 @@ enum Command {
 		#[arg(long, value_enum, default_value_t = OutputFormat::Human, help = FORMAT_HELP)]
 		format: OutputFormat,
 	},
-	/// Run a plan locally or through an authenticated remote agent.
+	/// Run a plan.
 	///
-	/// A local run writes a run-* directory under --output with events, results, summary.md and
-	/// junit.xml. A remote run sends the plan to an agent, which keeps the run directory. Exits 3
-	/// when the run fails before its setup phase, so before it submits anything, as preflight
-	/// does; teardown is then skipped.
-	#[command(after_long_help = "Examples:\n  polkameter run plan.polkameter.xml --output runs \
-	                             --junit reports/polkameter.xml\n  polkameter run \
-	                             plan.polkameter.xml --remote https://agent.example:9901 \
-	                             --remote-token-env POLKAMETER_AGENT_TOKEN")]
+	/// Writes a run-* directory under --output with events, results, summary.md and junit.xml.
+	/// Exits 3 when the run fails before its setup phase, so before it submits anything, as
+	/// preflight does; teardown is then skipped.
+	#[command(after_long_help = "Example:\n  polkameter run plan.polkameter.xml --output runs \
+	                             --junit reports/polkameter.xml")]
 	Run {
 		/// The plan file (`*.polkameter.xml`, at most 2 MiB), or a pipe such as /dev/stdin.
 		plan: PathBuf,
-		/// Local artifact root. Required unless --remote is used because remote agents own their
-		/// artifact root.
-		#[arg(long, value_name = "DIR", required_unless_present = "remote")]
-		output: Option<PathBuf>,
+		/// The directory that receives the run-* directory.
+		#[arg(long, value_name = "DIR")]
+		output: PathBuf,
 		/// Environment variable for the plan's only credential, instead of its configured profile.
-		#[arg(long, value_name = "ENV_VAR", conflicts_with = "remote")]
+		#[arg(long, value_name = "ENV_VAR")]
 		credential_env: Option<String>,
 		/// Exit 1 when a load test's verdict is FAIL. By default, verdicts do not affect the exit
 		/// code; runtime and smoke-mode failures still exit 1. Plans without a load test are unaffected.
@@ -131,12 +123,6 @@ enum Command {
 		/// Write an additional copy of junit.xml to this local path.
 		#[arg(long, value_name = "PATH")]
 		junit: Option<PathBuf>,
-		/// Remote runner endpoint. It must use HTTPS or be a loopback HTTP tunnel.
-		#[arg(long, value_name = "URL")]
-		remote: Option<String>,
-		/// Environment variable holding the remote-agent bearer token.
-		#[arg(long, value_name = "ENV_VAR", requires = "remote")]
-		remote_token_env: Option<String>,
 		/// Seconds a run gets after SIGINT or SIGTERM to finish its teardown and write its
 		/// results. A second signal, or the end of this period, interrupts teardown.
 		#[arg(long, value_name = "SECONDS", default_value_t = shutdown::DEFAULT_GRACE.as_secs())]
@@ -154,11 +140,6 @@ enum Command {
 		junit: Option<PathBuf>,
 		#[arg(long, value_enum, default_value_t = OutputFormat::Human, help = FORMAT_HELP)]
 		format: OutputFormat,
-	},
-	/// Start an authenticated remote runner agent.
-	Agent {
-		#[command(subcommand)]
-		command: AgentCommand,
 	},
 }
 
@@ -211,35 +192,6 @@ enum PluginCommand {
 		name: String,
 		/// The Zombienet zombie.json file; stored as an absolute path.
 		path: PathBuf,
-	},
-}
-
-#[derive(Debug, Subcommand)]
-enum AgentCommand {
-	/// Serve remote run requests through the versioned PolkaMeter agent protocol.
-	///
-	/// The agent serves plain HTTP on a loopback address; reach it through an SSH tunnel or a TLS
-	/// proxy.
-	#[command(after_long_help = "Example:\n  POLKAMETER_AGENT_TOKEN=$(openssl rand -hex 32) \
-	                             polkameter agent serve --bind 127.0.0.1:9901")]
-	Serve {
-		/// Loopback address and port to listen on.
-		#[arg(long, value_name = "ADDR", default_value = "127.0.0.1:9901")]
-		bind: String,
-		/// Environment variable that holds the bearer token (at least 32 characters).
-		#[arg(long, value_name = "ENV_VAR", default_value = "POLKAMETER_AGENT_TOKEN")]
-		token_env: String,
-		/// Directory for run directories; relative paths start from the working directory.
-		#[arg(long, value_name = "DIR", default_value = "target/polkameter-agent-runs")]
-		output_root: String,
-		/// Keep only the newest N run directories under --output-root, deleting older ones
-		/// when a run starts. By default every run directory is kept.
-		#[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
-		keep_runs: Option<u64>,
-		/// Seconds the active run gets after SIGINT or SIGTERM to finish its teardown. A second
-		/// signal, or the end of this period, interrupts teardown.
-		#[arg(long, value_name = "SECONDS", default_value_t = shutdown::DEFAULT_GRACE.as_secs())]
-		shutdown_grace: u64,
 	},
 }
 
@@ -391,7 +343,7 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 			init(&rpc, kind, &profile, output, force).await
 		},
 		Command::Validate { plan: path, format } => {
-			let (_, plan) = load(&path)?;
+			let plan = load(&path)?;
 			// Built-in operations are checked here too; plugin operations need preflight.
 			crate::engine::execute::validate_core_contracts(&plan)
 				.map_err(|e| CliError::in_plan(ErrorKind::Invalid, &path, &e))?;
@@ -403,7 +355,7 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 			Ok(0)
 		},
 		Command::Preflight { plan: path, credential_env, format } => {
-			let (_, plan) = load(&path)?;
+			let plan = load(&path)?;
 			let registry = registry(&plan, credential_env)?;
 			let mut result =
 				crate::engine::execute::preflight(&plan, &registry).await.map_err(|e| {
@@ -422,8 +374,6 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 			plan: path,
 			output,
 			credential_env,
-			remote,
-			remote_token_env,
 			fail_on_verdict,
 			fail_on_inconclusive,
 			junit,
@@ -433,56 +383,28 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 			// Before any work, so that no signal can end the process without cleanup.
 			let mut signals = install_signals()?;
 			let grace = Duration::from_secs(shutdown_grace);
-			let (xml, plan) = load(&path)?;
+			let plan = load(&path)?;
 			let options = RunOptions { fail_on_verdict, fail_on_inconclusive };
-			match remote {
-				Some(endpoint) => {
-					let limits = remote::Follow::for_plan(
-						Duration::from_millis(plan.timeout_ms),
-						teardown_budget(&plan),
-						grace,
-					);
-					let target = remote_target(endpoint, remote_token_env)?;
-					let remote = RemoteRun { target, xml, options, junit, limits, path };
-					run_plugin_remote(remote, format, &mut signals).await
-				},
-				None => {
-					let output = output.ok_or_else(|| {
-						CliError::invalid("--output is required without --remote".into())
-					})?;
-					if output.to_str().is_none() {
-						return Err(CliError::invalid(format!(
-							"--output {} is not a UTF-8 path; plugins receive the run directory \
-							 as text, so choose a directory whose path is UTF-8",
-							output.display()
-						)));
-					}
-					let registry = registry(&plan, credential_env)?;
-					let local = LocalRun { plan, registry, output, options, junit, grace, path };
-					run_local(local, format, &mut signals).await
-				},
+			if output.to_str().is_none() {
+				return Err(CliError::invalid(format!(
+					"--output {} is not a UTF-8 path; plugins receive the run directory as text, so \
+					 choose a directory whose path is UTF-8",
+					output.display()
+				)));
 			}
+			let registry = registry(&plan, credential_env)?;
+			let local = LocalRun { plan, registry, output, options, junit, grace, path };
+			run_local(local, format, &mut signals).await
 		},
 		Command::Report { artifact_directory, format, junit } => {
 			report(artifact_directory, format, junit)
 		},
-		Command::Agent { command } => agent(command).await,
 	}
 }
 
 fn install_signals() -> Result<Signals, CliError> {
 	Signals::install()
 		.map_err(|e| CliError::runtime(format!("cannot install signal handlers: {e}")))
-}
-
-/// The longest a plan's teardown can take: each step's `timeout-ms`, plus a plugin restart
-/// (`$describe`, up to 10 s) for each step.
-fn teardown_budget(plan: &Plan) -> Duration {
-	plan.teardown
-		.entries
-		.iter()
-		.map(|step| Duration::from_millis(step.timeout_ms) + Duration::from_secs(10))
-		.sum()
 }
 
 /// `polkameter init`: inspects the chain, renders the plan, checks that it parses and writes it.
@@ -549,8 +471,8 @@ fn init_output(path: &std::path::Path, force: bool) -> Result<(), CliError> {
 	Ok(())
 }
 
-/// The plan's XML, which remote runs send as-is, and its parsed form.
-fn load(path: &Path) -> Result<(String, Plan), CliError> {
+/// The parsed plan.
+fn load(path: &Path) -> Result<Plan, CliError> {
 	let xml = read_plan(path).map_err(|e| {
 		// Text that is not UTF-8 has a position; the other read errors already name the file.
 		if e.downcast_ref::<PlanError>().is_some() {
@@ -559,8 +481,7 @@ fn load(path: &Path) -> Result<(String, Plan), CliError> {
 			CliError { file: Some(path.to_owned()), ..CliError::invalid(format!("{e:#}")) }
 		}
 	})?;
-	let plan = Plan::parse(&xml).map_err(|e| CliError::in_plan(ErrorKind::Invalid, path, &e))?;
-	Ok((xml, plan))
+	Plan::parse(&xml).map_err(|e| CliError::in_plan(ErrorKind::Invalid, path, &e))
 }
 
 /// This host's registry; `credential_env` replaces the profile of the plan's only credential.
@@ -614,7 +535,6 @@ async fn run_local(
 		work,
 		signals,
 		grace,
-		None,
 		|signal| {
 			eprintln!(
 				"{PRODUCT_NAME}: received {}; stopping the run (teardown has up to {} s; send the signal again to stop now)",
@@ -641,31 +561,15 @@ async fn run_local(
 	if let Err(error) = copy_junit(&outcome.artifact_dir, junit.as_deref()) {
 		junit_warning(format, Some(&outcome.artifact_dir), &error.to_string(), &secrets);
 	}
-	write_artifact_written(format, RunLocation::Local, &path, &outcome);
+	write_artifact_written(format, &path, &outcome);
 	Ok(outcome.exit_code)
-}
-
-/// Where a run executed, which decides how its result lines are worded.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RunLocation {
-	Local,
-	Remote,
 }
 
 /// Reports a finished run's artifacts. A failed run, or one that completed with failures, also
 /// prints its reason to standard error in both formats. When a failed run's reason points into
 /// the plan, the JSON line also has the plan's `file`, `line` and `column`, as an `error` line
 /// does.
-fn write_artifact_written(
-	format: OutputFormat,
-	location: RunLocation,
-	plan: &Path,
-	outcome: &Outcome,
-) {
-	let label = match location {
-		RunLocation::Local => "Run",
-		RunLocation::Remote => "Remote run",
-	};
+fn write_artifact_written(format: OutputFormat, plan: &Path, outcome: &Outcome) {
 	let mut line = json!({"event":"artifact-written","outcome":outcome});
 	if let Some(at) = outcome.error_location.filter(|_| outcome.state == RunState::Failed) {
 		line["file"] = json!(plan.to_string_lossy());
@@ -675,9 +579,9 @@ fn write_artifact_written(
 	write_result(
 		format,
 		&line,
-		format!("{label} {}. Artifacts: {}", outcome.state, outcome.artifact_dir.display()),
+		format!("Run {}. Artifacts: {}", outcome.state, outcome.artifact_dir.display()),
 	);
-	if let Some(reason) = failure_reason(location, plan, outcome) {
+	if let Some(reason) = failure_reason(plan, outcome) {
 		eprintln!("{PRODUCT_NAME}: {reason}");
 	}
 }
@@ -690,13 +594,9 @@ const MAX_REASON_CHARS: usize = 1_000;
 /// A reason that points into the plan starts with the plan file, as plan errors do:
 /// `plan.xml: line 4, …`. A run that failed before setup says so: it exits 3 and submitted
 /// nothing.
-fn failure_reason(location: RunLocation, plan: &Path, outcome: &Outcome) -> Option<String> {
+fn failure_reason(plan: &Path, outcome: &Outcome) -> Option<String> {
 	if outcome.state == RunState::CompletedWithFailures {
-		let reason = one_line(outcome.exit_reason.as_deref()?);
-		return Some(match location {
-			RunLocation::Local => reason,
-			RunLocation::Remote => format!("remote run: {reason}"),
-		});
+		return Some(one_line(outcome.exit_reason.as_deref()?));
 	}
 	if outcome.state != RunState::Failed {
 		return None;
@@ -712,15 +612,7 @@ fn failure_reason(location: RunLocation, plan: &Path, outcome: &Outcome) -> Opti
 		"failed"
 	};
 	let execution = outcome.artifact_dir.join("execution.json");
-	Some(match location {
-		RunLocation::Local => {
-			format!("run {failed}: {error} (details in {})", execution.display())
-		},
-		RunLocation::Remote => format!(
-			"remote run {failed}: {error} (details in {} on the agent)",
-			execution.display()
-		),
-	})
+	Some(format!("run {failed}: {error} (details in {})", execution.display()))
 }
 
 /// `text` made safe for one terminal line. CSI escape sequences (colours, cursor movement) are
@@ -872,45 +764,6 @@ fn write_junit_copy(destination: &std::path::Path, xml: &str) -> Result<(), CliE
 	})
 }
 
-async fn agent(command: AgentCommand) -> Result<i32, CliError> {
-	match command {
-		AgentCommand::Serve { bind, token_env, output_root, keep_runs, shutdown_grace } => {
-			let mut signals = install_signals()?;
-			let token = std::env::var(&token_env).map_err(|_| {
-				CliError::invalid(format!(
-					"agent token environment variable {token_env} is not set"
-				))
-			})?;
-			remote::check_token(&token).map_err(|error| {
-				CliError::invalid(format!("agent token in {token_env} {error}"))
-			})?;
-			let settings = remote::AgentSettings {
-				output_root,
-				keep_runs: keep_runs.map(|keep| usize::try_from(keep).unwrap_or(usize::MAX)),
-				grace: Duration::from_secs(shutdown_grace),
-			};
-			let signal = remote::serve(&bind, token, settings, &mut signals)
-				.await
-				.map_err(CliError::runtime)?;
-			Ok(signal.exit_code())
-		},
-	}
-}
-
-fn remote_target(
-	endpoint: String,
-	token_env: Option<String>,
-) -> Result<RemoteRunnerTarget, CliError> {
-	let token_env = token_env
-		.ok_or_else(|| CliError::invalid("--remote-token-env is required with --remote".into()))?;
-	let bearer_token = std::env::var(&token_env).map_err(|_| {
-		CliError::invalid(format!("remote token environment variable {token_env} is not set"))
-	})?;
-	let target = RemoteRunnerTarget { endpoint, bearer_token };
-	target.validate().map_err(CliError::invalid)?;
-	Ok(target)
-}
-
 /// A JSON line in JSON mode, else the human text on stdout.
 fn write_result(format: OutputFormat, json_value: &Value, human: String) {
 	if format == OutputFormat::Json {
@@ -1002,7 +855,7 @@ async fn plugin_command(command: PluginCommand) -> Result<i32, CliError> {
 			})
 		},
 		PluginCommand::Inspect { scenario } => {
-			let (_, plan) = load(&scenario)?;
+			let plan = load(&scenario)?;
 			let registry = Registry::read(&path).map_err(invalid)?;
 			crate::engine::execute::inspect(&plan, &registry).await.map_err(|e| {
 				if e.downcast_ref::<PlanError>().is_some_and(|e| e.location.is_some()) {
@@ -1068,60 +921,4 @@ fn update_registry(path: &Path, change: impl FnOnce(&mut Registry)) -> Result<()
 	let mut registry = Registry::read(path).map_err(invalid)?;
 	change(&mut registry);
 	registry.write(path).map_err(invalid)
-}
-
-/// A remote run: the agent, the plan, and where a JUnit copy goes.
-struct RemoteRun {
-	/// The plan file, for messages that point into it.
-	path: PathBuf,
-	target: RemoteRunnerTarget,
-	xml: String,
-	options: RunOptions,
-	junit: Option<PathBuf>,
-	limits: remote::Follow,
-}
-
-async fn run_plugin_remote(
-	run: RemoteRun,
-	format: OutputFormat,
-	signals: &mut Signals,
-) -> Result<i32, CliError> {
-	let RemoteRun { path, target, xml, options, junit, limits } = run;
-	let followed = remote::follow_run(&target, xml, options, signals, &limits)
-		.await
-		.map_err(CliError::runtime)?;
-	let (status, signal) = match followed {
-		remote::Followed::Ended { status, signal } => (status, signal),
-		remote::Followed::Abandoned { id, signal } => {
-			eprintln!(
-				"{PRODUCT_NAME}: stopped waiting for remote run {id}; the agent keeps its run directory"
-			);
-			return Ok(signal.exit_code());
-		},
-	};
-	let Some(mut outcome) = status.outcome else {
-		return Err(CliError::runtime(
-			status.error.unwrap_or_else(|| "remote run produced no outcome".into()),
-		));
-	};
-	if let Some(path) = junit.as_deref() {
-		let result = match remote::plugin_junit(&status.id, &target).await {
-			Ok(xml) => write_junit_copy(path, &xml),
-			Err(error) => Err(CliError::runtime(format!("cannot fetch junit.xml: {error}"))),
-		};
-		if let Err(error) = result {
-			junit_warning(
-				format,
-				None,
-				&error.to_string(),
-				std::slice::from_ref(&target.bearer_token),
-			);
-		}
-	}
-	// The agent records 130 for any stop; this process reports the signal it received.
-	if let (Some(signal), RunState::Stopped) = (signal, outcome.state) {
-		outcome.exit_code = signal.exit_code();
-	}
-	write_artifact_written(format, RunLocation::Remote, &path, &outcome);
-	Ok(outcome.exit_code)
 }

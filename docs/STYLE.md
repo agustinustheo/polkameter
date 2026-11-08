@@ -10,7 +10,7 @@ For definitions and instructions, give each sentence one topic. Aim for at most 
 
 Keep verdict separate from exit code, and accepted, included and finalized separate. Missing evidence does not establish loss. p95 is inclusion latency. Quote flags, fields and printed labels exactly. Never invent output.
 
-Show small, copyable commands. State the working directory and mark placeholders. Keep warnings beside the action they concern. Do not document the desktop app.
+Show small, copyable commands. State the working directory and mark placeholders. Keep warnings beside the action they concern.
 
 ## One owner per fact
 
@@ -50,7 +50,6 @@ Replace or remove prose before you add more. A page over budget needs a cut else
 | `docs/load-test.md` | 590 |
 | `docs/reading-results.md` | 1,450 |
 | `docs/ci.md` | 1,490 |
-| `docs/remote-runs.md` | 790 |
 | `docs/ai-assistants.md` | 330 |
 | `docs/troubleshooting.md` | 2,170 |
 | `docs/plans.md` | 3,050 |

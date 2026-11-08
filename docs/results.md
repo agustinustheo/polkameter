@@ -19,7 +19,7 @@ run-1792253315025-76883-1/
   summary.md
 ```
 
-The name is `run-<milliseconds>-<pid>-<sequence>`. The directory is created in `--output`, or in `--output-root` on a remote agent. A run never reuses a directory.
+The name is `run-<milliseconds>-<pid>-<sequence>`. The directory is created in `--output`. A run never reuses a directory.
 
 ## Files in every run
 
@@ -34,7 +34,6 @@ The name is `run-<milliseconds>-<pid>-<sequence>`. The directory is created in `
 | `samples.jtl` | One CSV row per step, and per transaction in a load test. See [samples.jtl](#samplesjtl). |
 | `plots/*.svg` | Throughput, latency percentiles, and failures by status. |
 | `plugins/<id>/stderr.log` | Standard error of each plugin that started. |
-| `run.lock` | Locked while the run is in progress. |
 
 ## Redaction
 
@@ -92,7 +91,7 @@ PolkaMeter writes `execution.json` after teardown. When you stop a run, it write
 | --- | --- |
 | `completed` | `0` |
 | `completed_with_failures` | `1` |
-| `stopped` | `130` after SIGINT or a remote stop, `143` after SIGTERM |
+| `stopped` | `130` after SIGINT, `143` after SIGTERM |
 | `stopping` | `130` or `143`. Provisional. If it remains after the process ended, the process was killed. |
 | `failed` | `3` before setup, `1` in setup or later |
 

@@ -1,4 +1,4 @@
-//! Signal handling shared by `run`, the remote client and `agent serve`.
+//! Signal handling for `run`.
 //!
 //! The first SIGINT or SIGTERM asks the work to stop and starts the grace period. The second
 //! signal, or the end of the grace period, forces the stop. The process then exits with
@@ -45,8 +45,6 @@ impl Signal {
 /// Stop signals, in the order they arrived.
 pub struct Signals {
 	receiver: mpsc::UnboundedReceiver<Signal>,
-	// Keeps a test channel open so `recv` waits instead of ending.
-	_sender: Option<mpsc::UnboundedSender<Signal>>,
 }
 
 impl Signals {
@@ -93,13 +91,7 @@ impl Signals {
 				}
 			});
 		}
-		Ok(Self { receiver, _sender: None })
-	}
-
-	/// Signals fed by hand, for tests.
-	pub fn channel() -> (mpsc::UnboundedSender<Signal>, Self) {
-		let (sender, receiver) = mpsc::unbounded_channel();
-		(sender.clone(), Self { receiver, _sender: Some(sender) })
+		Ok(Self { receiver })
 	}
 
 	/// The next signal. Waits forever if no more can arrive.
@@ -122,21 +114,18 @@ pub struct Supervised<T> {
 
 /// Drives `work` to completion while handling stop signals.
 ///
-/// `first` is a signal that already arrived. On the first signal, `request` is called once. On a
-/// second signal, or when `grace` has passed since the first, `force` is called once. After a
-/// forced stop the work gets [`FORCE_LIMIT`] to finish, then it is dropped.
+/// On the first signal, `request` is called once. On a second signal, or when `grace` has passed
+/// since the first, `force` is called once. After a forced stop the work gets [`FORCE_LIMIT`] to
+/// finish, then it is dropped.
 pub async fn supervise<T>(
 	work: impl Future<Output = T>,
 	signals: &mut Signals,
 	grace: Duration,
-	mut first: Option<Signal>,
 	mut request: impl FnMut(Signal),
 	mut force: impl FnMut(Signal),
 ) -> Supervised<T> {
 	tokio::pin!(work);
-	if let Some(signal) = first {
-		request(signal);
-	}
+	let mut first = None;
 	let mut forced = false;
 	let grace_end = tokio::time::sleep(grace);
 	tokio::pin!(grace_end);

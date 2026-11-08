@@ -1,6 +1,6 @@
 # CLI reference
 
-`polkameter` checks and runs plans, rebuilds reports, manages plugins and serves a remote agent. Use `polkameter COMMAND --help` for a command's options and examples. `polkameter --version` prints the installed version. For error messages, see [Troubleshooting](troubleshooting.md).
+`polkameter` checks and runs plans, rebuilds reports and manages plugins. Use `polkameter COMMAND --help` for a command's options and examples. `polkameter --version` prints the installed version. For error messages, see [Troubleshooting](troubleshooting.md).
 
 ## init
 
@@ -38,7 +38,7 @@ Preflight passed.
 
 ## run
 
-Runs a plan. A local run writes one `run-*` directory under `--output`. A remote run sends the plan to an agent, which keeps the run directory. See [Run on a remote machine](remote-runs.md).
+Runs a plan. It writes one `run-*` directory under `--output`.
 
 ```sh
 polkameter run examples/plugin-workflow.polkameter.xml --output runs
@@ -50,7 +50,7 @@ Phase: preflight
 Run completed. Artifacts: ~/polkameter/runs/run-1792255021142-12303-1
 ```
 
-Phase lines go to standard error. The last line goes to standard output and names the run directory. `--junit PATH` writes an extra copy of `junit.xml`, also for a remote run.
+Phase lines go to standard error. The last line goes to standard output and names the run directory. `--junit PATH` writes an extra copy of `junit.xml`.
 
 If the run fails, PolkaMeter prints the reason on standard error and keeps the run directory. `execution.json` holds the full text. Here, a plugin process exited during a step:
 
@@ -76,7 +76,7 @@ By default, the [verdict](reading-results.md#did-it-pass) of a stress-mode load 
 PolkaMeter: verdict INCONCLUSIVE: required checks with no result: no silent loss; exit 1 because of --fail-on-inconclusive (the checks are in summary.md)
 ```
 
-In smoke mode, a monitor problem or a required check with no result exits `1`, whatever these flags say. Other verdict failures still follow the flags. `execution.json` keeps the reason line as [`exit_reason`](results.md#executionjson). With `--remote`, the agent applies both flags.
+In smoke mode, a monitor problem or a required check with no result exits `1`, whatever these flags say. Other verdict failures still follow the flags. `execution.json` keeps the reason line as [`exit_reason`](results.md#executionjson).
 
 ### Stop a run
 
@@ -162,13 +162,6 @@ polkameter plugin list
       ...
 ```
 
-## agent serve
-
-Starts the remote agent on this host. The agent runs plans that clients send with `polkameter run --remote`. It uses its own plugins, credentials and topologies. It listens only on a loopback address and does not serve TLS. [Run on a remote machine](remote-runs.md) shows the setup.
-
-```sh
-POLKAMETER_AGENT_TOKEN=$(openssl rand -hex 32) polkameter agent serve --bind 127.0.0.1:9901
-```
 
 ## Exit codes
 
@@ -177,13 +170,13 @@ The exit code tells the calling process how the command ended. Code `0` alone do
 | Code | Meaning |
 | --- | --- |
 | `0` | The command succeeded, or the run ended `completed`. |
-| `1` | The run failed in setup or later, or ended `completed_with_failures`. A selected verdict flag, a smoke-mode check, `report`, a remote request or writing the output also failed. |
+| `1` | The run failed in setup or later, or ended `completed_with_failures`. A selected verdict flag, a smoke-mode check, `report` or writing the output also failed. |
 | `2` | Invalid input or usage: an invalid plan, a bad flag, a corrupt registry, a failed `plugin` subcommand, or a `summary.json` that `report` cannot rewrite. |
 | `3` | Preflight checks failed, or `init` could not prepare the plan. A `run` that exits `3` submitted nothing and skipped teardown. |
 | `130` | Stopped by SIGINT. |
 | `143` | Stopped by SIGTERM. |
 
-`agent serve` also exits `130` or `143` after a signal. A stopped run usually ran its teardown, but check [`teardown`](#stop-a-run) in `execution.json`. Run `polkameter preflight <plan>` to find exit-`3` problems without a run directory.
+A stopped run usually ran its teardown, but check [`teardown`](#stop-a-run) in `execution.json`. Run `polkameter preflight <plan>` to find exit-`3` problems without a run directory.
 
 ## Environment variables
 
@@ -191,7 +184,6 @@ The exit code tells the calling process how the command ended. Code `0` alone do
 | --- | --- |
 | `POLKAMETER_PLUGIN_REGISTRY` | Path of the plugin registry. Default: `~/.config/polkameter/plugins.json`. `USERPROFILE` replaces `HOME` when `HOME` is not set. |
 | `POLKAMETER_NODE_PID` | The node's process ID, for CPU and memory in a load test. See [Node CPU and memory](how-it-works.md#node-cpu-and-memory). |
-| `POLKAMETER_AGENT_TOKEN` | The agent's bearer token when `agent serve` has no `--token-env`. |
 
 Plugins start with a cleared environment. Only `PATH`, `TMPDIR`, `TEMP`, `SYSTEMROOT`, `SSL_CERT_FILE` and `SSL_CERT_DIR` pass through. A plugin gets credential values only as step inputs.
 
@@ -228,4 +220,4 @@ Every line has `event` and `schemaVersion`. `schemaVersion` is `1`. It changes o
 
 Keys that PolkaMeter adds are camelCase. `outcome` keeps the snake_case keys of [execution.json](results.md#executionjson). The plugin manifests keep the plugin protocol's keys, such as `read_only`.
 
-Remote runs do not stream the agent's events. They print `artifact-written`, and a failed local JUnit download can also print a `warning`. Load runs also print `stop:`, `loss check:` and `smoke:` lines and the summary to standard error. Argument errors, such as an unknown flag, print as text and exit `2` before any JSON.
+Load runs also print `stop:`, `loss check:` and `smoke:` lines and the summary to standard error. Argument errors, such as an unknown flag, print as text and exit `2` before any JSON.
