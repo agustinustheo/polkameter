@@ -113,9 +113,9 @@ Install the plugin again after every rebuild. A checksum or version mismatch sto
 
 ### plugin registry \<path> is not a valid registry: …
 
-The registry file is not valid JSON, or has fields PolkaMeter does not know. A manual edit or a full disk can cause this.
+The registry file is not valid JSON. A manual edit or a full disk can cause this.
 
-Move the damaged registry file to a backup path. Register the plugins and settings again with `plugin install`, `plugin credential`, `plugin topology` and `plugin capability`.
+Move the damaged registry file to a backup path. Register the plugins and settings again with `plugin install`, `plugin credential` and `plugin topology`.
 
 ## Credentials and topologies
 

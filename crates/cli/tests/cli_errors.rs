@@ -220,18 +220,17 @@ fn concurrent_registry_commands_keep_every_change() {
 	let children: Vec<_> = (0..12)
 		.map(|i| {
 			let mut command = work.polkameter();
-			match i % 3 {
+			match i % 2 {
 				0 => command
 					.arg("plugin")
 					.arg("install")
 					.arg(script_plugin(&work.0, &format!("plugin{i}"))),
-				1 => command.args([
+				_ => command.args([
 					"plugin",
 					"credential",
 					&format!("profile-{i}"),
 					&format!("ENV_{i}"),
 				]),
-				_ => command.args(["plugin", "capability", &format!("capability-{i}")]),
 			};
 			command.stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap()
 		})
@@ -242,20 +241,13 @@ fn concurrent_registry_commands_keep_every_change() {
 	}
 	let registry: Value = serde_json::from_slice(&std::fs::read(work.registry()).unwrap()).unwrap();
 	for i in 0..12 {
-		match i % 3 {
+		match i % 2 {
 			0 => assert_eq!(
 				registry["plugins"][format!("plugin{i}")]["version"],
 				"0.1.0",
 				"{registry}"
 			),
-			1 => assert_eq!(registry["credentials"][format!("profile-{i}")], format!("ENV_{i}")),
-			_ => assert!(
-				registry["capabilities"]
-					.as_array()
-					.unwrap()
-					.contains(&Value::from(format!("capability-{i}"))),
-				"{registry}"
-			),
+			_ => assert_eq!(registry["credentials"][format!("profile-{i}")], format!("ENV_{i}")),
 		}
 	}
 	// No temporary file is left next to the registry.
@@ -281,7 +273,7 @@ fn a_corrupt_registry_names_its_path_and_the_recovery() {
 	);
 	assert!(stderr.contains("move it aside and run `polkameter plugin install`"), "{stderr}");
 	// A write does not replace the corrupt file.
-	let (code, _, _) = output(work.polkameter().args(["plugin", "capability", "x"]));
+	let (code, _, _) = output(work.polkameter().args(["plugin", "credential", "x", "X"]));
 	assert_eq!(code, 2);
 	assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"plugins\": ");
 }

@@ -31,7 +31,6 @@
 //!             id: "hello".into(),
 //!             version: "0.1.0".into(),
 //!             protocol: PROTOCOL,
-//!             requirements: vec![],
 //!             operations: [(
 //!                 "greet".into(),
 //!                 Operation::new(
@@ -274,9 +273,9 @@ fn fields(fields: &[(&str, Schema)]) -> BTreeMap<String, Field> {
 		.collect()
 }
 /// What a plugin offers. The plugin returns it for the `$describe` request. PolkaMeter checks
-/// it at `polkameter plugin install` and at the start of every run.
+/// it at `polkameter plugin install` and at the start of every run. Unknown fields, such as the
+/// `requirements` of a plugin built with SDK 0.3, are ignored.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct Manifest {
 	/// The plugin's name in plans, as in `use="<id>.<operation>"`. Not empty and not `core`.
 	pub id: String,
@@ -286,23 +285,6 @@ pub struct Manifest {
 	pub protocol: u32,
 	/// The operations a plan can call, by name.
 	pub operations: BTreeMap<String, Operation>,
-	/// Evidence PolkaMeter checks before setup. Defaults to none.
-	#[serde(default)]
-	pub requirements: Vec<Requirement>,
-}
-/// Evidence PolkaMeter checks before setup, such as an RPC method the plugin needs.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Requirement {
-	/// `rpc`, `metric` or `capability`.
-	pub kind: String,
-	/// For `rpc`, a target ID in the plan. For `metric`, a monitor role. Unused by `capability`.
-	pub target: String,
-	/// For `rpc`, the RPC method. For `metric`, the metric family. For `capability`, the
-	/// capability name.
-	pub name: String,
-	/// `false` to skip the check.
-	pub required: bool,
 }
 /// Where an operation runs. PolkaMeter sends it with every [`Request`]. Unknown fields, such as
 /// the `user` and `iteration` that PolkaMeter 0.3 sends, are ignored.
@@ -598,7 +580,7 @@ mod tests {
 	use serde_json::json;
 
 	#[test]
-	fn manifest_round_trips_and_rejects_unknown_fields() {
+	fn manifest_round_trips_and_ignores_unknown_fields() {
 		let manifest = Manifest {
 			id: "hello".into(),
 			version: "0.1.0".into(),
@@ -612,12 +594,6 @@ mod tests {
 				)
 				.read_only(),
 			)]),
-			requirements: vec![Requirement {
-				kind: "pallet".into(),
-				target: "chain".into(),
-				name: "People".into(),
-				required: true,
-			}],
 		};
 		let encoded = serde_json::to_value(&manifest).unwrap();
 		assert_eq!(encoded["operations"]["greet"]["inputs"]["names"]["schema"]["type"], "array");
@@ -626,7 +602,7 @@ mod tests {
 		assert_eq!(serde_json::to_value(&decoded).unwrap(), encoded);
 		assert_eq!(decoded.operations["greet"].inputs, manifest.operations["greet"].inputs);
 
-		// Defaults: no requirements, not read-only, a field is required.
+		// Defaults: not read-only, a field is required.
 		let minimal: Manifest = serde_json::from_value(json!({
 			"id": "x", "version": "1", "protocol": 1,
 			"operations": {"op": {
@@ -634,13 +610,13 @@ mod tests {
 			}}
 		}))
 		.unwrap();
-		assert!(minimal.requirements.is_empty());
 		assert!(!minimal.operations["op"].read_only);
 		assert!(!minimal.operations["op"].inputs["a"].optional);
 
-		let mut extra = encoded;
-		extra["unexpected"] = json!(1);
-		assert!(serde_json::from_value::<Manifest>(extra).is_err());
+		// A plugin built with SDK 0.3 still sends `requirements`.
+		let mut older = encoded;
+		older["requirements"] = json!([]);
+		assert!(serde_json::from_value::<Manifest>(older).is_ok());
 		assert!(serde_json::from_value::<Schema>(json!({"type": "date"})).is_err());
 	}
 

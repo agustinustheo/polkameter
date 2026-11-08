@@ -110,7 +110,6 @@ pub fn manifest() -> Manifest {
 		id: ID.into(),
 		version: env!("CARGO_PKG_VERSION").into(),
 		protocol: PROTOCOL,
-		requirements: vec![],
 		operations: BTreeMap::from([
 			(
 				"preflight".into(),

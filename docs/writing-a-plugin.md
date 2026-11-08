@@ -48,7 +48,6 @@ impl Plugin for Hello {
 			id: "hello".into(),
 			version: "0.1.0".into(),
 			protocol: PROTOCOL,
-			requirements: vec![],
 			operations: [(
 				"greet".into(),
 				Operation::new(

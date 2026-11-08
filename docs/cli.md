@@ -122,7 +122,7 @@ Status: completed
 
 ## plugin
 
-Installs plugins and records this host's credential profiles, topologies and capabilities. A plan names these things. The host holds the values. The registry is a JSON file; [Environment variables](#environment-variables) gives its path. A failed `plugin` subcommand exits `2`. `plugin install` prints one line. The other subcommands print JSON.
+Installs plugins and records this host's credential profiles and topologies. A plan names these things. The host holds the values. The registry is a JSON file; [Environment variables](#environment-variables) gives its path. A failed `plugin` subcommand exits `2`. `plugin install` prints one line. The other subcommands print JSON.
 
 | Command | Effect |
 | --- | --- |
@@ -131,7 +131,6 @@ Installs plugins and records this host's credential profiles, topologies and cap
 | `plugin inspect PLAN` | Starts the plan's plugins and prints their manifests. It submits nothing |
 | `plugin credential PROFILE ENV_VAR` | Maps a credential profile to an environment variable |
 | `plugin topology NAME PATH` | Registers a Zombienet `zombie.json` under the alias that `<monitors topology="…">` names |
-| `plugin capability NAME` | Records a capability that the network provisioner supplies |
 
 Install a plugin again after each rebuild. PolkaMeter refuses to run a plugin whose file changed.
 
@@ -152,7 +151,6 @@ polkameter plugin list
 
 ```json
 {
-  "capabilities": [],
   "credentials": {
     "sudo": "SUDO_SEED"
   },

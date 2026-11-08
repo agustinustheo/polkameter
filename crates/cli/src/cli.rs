@@ -40,7 +40,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-	/// Install plugins and configure this host's credentials, topologies and capabilities.
+	/// Install plugins and configure this host's credentials and topologies.
 	Plugin {
 		#[command(subcommand)]
 		command: PluginCommand,
@@ -73,7 +73,7 @@ enum Command {
 		/// The plan file (`*.polkameter.xml`, at most 2 MiB), or a pipe such as /dev/stdin.
 		plan: PathBuf,
 	},
-	/// Check installed plugins, required evidence and read-only steps, without submitting.
+	/// Check installed plugins, credentials, the chain and read-only steps, without submitting.
 	///
 	/// Starts the plan's plugins, checks every operation and input against their manifests,
 	/// checks that every credential's variable is set, checks the chain and runs the <preflight>
@@ -126,12 +126,6 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum PluginCommand {
-	/// Record a capability supplied by the local network provisioner.
-	#[command(after_long_help = "Example:\n  polkameter plugin capability zombienet")]
-	Capability {
-		/// The capability name, as a plugin's manifest requires it.
-		name: String,
-	},
 	/// Start a plan's plugins and print their manifests, without connecting or submitting.
 	#[command(
 		after_long_help = "Example:\n  polkameter plugin inspect examples/plugin-data-flow.polkameter.xml"
@@ -151,7 +145,7 @@ enum PluginCommand {
 		/// The plugin executable; it must answer the `$describe` request.
 		executable: PathBuf,
 	},
-	/// List installed plugins, credential profile variables, topologies and capabilities as JSON.
+	/// List installed plugins, credential profile variables and topologies as JSON.
 	///
 	/// Credentials show the environment variable each profile reads, never its value.
 	List,
@@ -682,7 +676,6 @@ async fn plugin_command(command: PluginCommand) -> Result<i32, CliError> {
 				"topologies": registry.topologies.iter()
 					.map(|(alias, file)| (alias.clone(), file.to_string_lossy().into_owned()))
 					.collect::<std::collections::BTreeMap<_, _>>(),
-				"capabilities": registry.capabilities,
 			})
 		},
 		PluginCommand::Inspect { scenario } => {
@@ -711,14 +704,6 @@ async fn plugin_command(command: PluginCommand) -> Result<i32, CliError> {
 				manifest.id, manifest.version
 			));
 			return Ok(0);
-		},
-		PluginCommand::Capability { name } => {
-			update_registry(&path, |registry| {
-				if !registry.capabilities.contains(&name) {
-					registry.capabilities.push(name);
-				}
-			})?;
-			json!({"configured":true})
 		},
 		PluginCommand::Credential { profile, env } => {
 			update_registry(&path, |registry| {

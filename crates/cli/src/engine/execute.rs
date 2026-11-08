@@ -517,23 +517,7 @@ pub async fn inspect(plan: &Plan, registry: &Registry) -> Result<Value> {
 async fn inspect_plugins(plan: &Plan, registry: &Registry) -> Result<Value> {
 	with_scratch_plugins(plan, registry, "inspect", async |plugins, _, _| {
 		validate_contracts(plan, plugins)?;
-		let requirements: Vec<_> =
-			plugins.manifests.values().flat_map(|m| m.requirements.clone()).collect();
-		let metric_catalog: Vec<_> =
-			polkameter_plugin_sdk::observers::files::registry::NODE_METRICS
-				.iter()
-				.map(
-					|m| json!({"name": m.name, "description": m.help, "labels": m.labels, "roles": m.from}),
-				)
-				.collect();
-		Ok(json!({
-			"valid": true,
-			"plugins": plugins.manifests,
-			"requirements": requirements,
-			"targets": plan.targets,
-			"monitorRequirements": plan.monitors,
-			"metricCatalog": metric_catalog,
-		}))
+		Ok(json!({"valid": true, "plugins": plugins.manifests, "targets": plan.targets}))
 	})
 	.await
 }
@@ -545,7 +529,6 @@ pub async fn preflight(plan: &Plan, registry: &Registry) -> Result<()> {
 		// Every credential the plan declares must resolve, as a run needs it; no value is used.
 		registry.check_credentials(plan)?;
 		check_environment(plan, registry).await?;
-		check_requirements(plan, registry, plugins).await?;
 		let mut values = plan.values("preflight");
 		let mut redactor = redactor(plan, registry, &[]);
 		let mut _diagnostics = crate::redact::activate(&redactor);
@@ -771,8 +754,8 @@ pub async fn run_stoppable(
 	run.outcome(result)
 }
 
-/// The phase of a run before setup: credential, plugin, contract, environment and requirement
-/// checks, `<preflight>` steps and calibration.
+/// The phase of a run before setup: credential, plugin, contract and environment checks,
+/// `<preflight>` steps and calibration.
 const PREFLIGHT: &str = "preflight";
 
 /// One run in progress: its plan and host, its directory and event log, and its deadline.
@@ -902,7 +885,6 @@ impl Run<'_> {
 		validate_contracts(self.plan, plugins)?;
 		self.write_resolved(plugins)?;
 		check_environment(self.plan, self.registry).await?;
-		check_requirements(self.plan, self.registry, plugins).await?;
 		self.run_steps(&self.plan.preflight.entries, plugins, values).await?;
 		calibrate(self.plan, &self.directory).await?;
 		self.enter("setup")?;
@@ -1468,48 +1450,6 @@ fn plugin_checks(
 		out.extend(checks);
 	}
 	Ok(out)
-}
-
-async fn check_requirements(plan: &Plan, registry: &Registry, plugins: &Plugins) -> Result<()> {
-	for requirement in plugins
-		.manifests
-		.values()
-		.flat_map(|manifest| &manifest.requirements)
-		.filter(|requirement| requirement.required)
-	{
-		match requirement.kind.as_str() {
-			"capability" => ensure!(
-				registry.capabilities.contains(&requirement.name),
-				"provisioner has not declared capability {}",
-				requirement.name
-			),
-			"rpc" => {
-				let endpoint = target_endpoint(plan, &requirement.target)?;
-				let client = polkameter_plugin_sdk::chain::Client::connect(endpoint).await?;
-				let methods: Value =
-					client.request("rpc_methods", subxt_rpcs::rpc_params![]).await?;
-				ensure!(
-					methods["methods"].as_array().is_some_and(|methods| methods
-						.iter()
-						.any(|method| method.as_str() == Some(&requirement.name))),
-					"required RPC method {} is missing",
-					requirement.name
-				);
-			},
-			"metric" => {
-				let targets = wiring::monitor_targets(plan, registry)?
-					.context("metric requirement needs a topology")?;
-				let role = requirement.target.parse::<Job>()?;
-				crate::engine::monitors::preflight::require_metrics(
-					&targets,
-					&[(role, requirement.name.clone())],
-				)
-				.await?;
-			},
-			other => bail!("unsupported required evidence kind {other}"),
-		}
-	}
-	Ok(())
 }
 
 fn validate_interval(configured: f64, measured: f64) -> Result<()> {
