@@ -7,7 +7,7 @@ use polkameter::load::{
 	submit::Submit,
 	tracker::{Phase, Tracker},
 };
-use polkameter_plugin_sdk::observers::files::{
+use polkameter_plugin_sdk::observers::{
 	BlockRecord, RunDir,
 	summary::{Outcome, Rule},
 };

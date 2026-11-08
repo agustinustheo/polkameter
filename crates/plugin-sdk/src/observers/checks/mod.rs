@@ -1,26 +1,11 @@
-//! The evaluator: reads a run's recorded series and `summary.json`, runs every check, and returns
-//! one verdict per check. It depends on the file formats only, so it runs on any finished run.
-//!
-//! A new requirement is a new entry in one of the outcome lists under `outcomes/`: add its metric
-//! to the registry, record it in a monitor if none has it yet, and write the check.
+//! Run data and verdicts: window math over a run's recorded series, and the result shape a check
+//! returns.
 
 mod data;
-mod limits;
-mod outcomes;
-#[doc(hidden)]
-pub mod report;
 
-use crate::observers::files::{registry::Outcome, serde_name};
 use serde::{Deserialize, Serialize};
 
-/// Part of the plugin API (used by out-of-tree plugins).
-pub use data::{
-	CounterReset, Label, Phase, RunData, SCRAPE_TIMEOUT_MS, Window, count_above, quantile,
-};
-#[doc(hidden)]
-pub use limits::LIMITS;
-#[doc(hidden)]
-pub use outcomes::all;
+pub use data::{CounterReset, Label, Phase, RunData, Window, count_above, quantile};
 
 /// A check's status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,20 +50,6 @@ impl Verdict {
 	}
 }
 
-/// One check of one outcome.
-#[doc(hidden)]
-#[derive(Debug, Clone, Copy)]
-pub struct Check {
-	/// The outcome it belongs to.
-	pub outcome: Outcome,
-	/// Its name in the summary.
-	pub name: &'static str,
-	/// The data may be absent in a normal run (no voucher loads); smoke mode doesn't need it.
-	pub optional: bool,
-	/// Computes the verdict.
-	pub run: fn(&RunData) -> Result<Verdict, CounterReset>,
-}
-
 /// A check's result, as summary.json has it. Plugin checks return the same shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckResult {
@@ -95,45 +66,4 @@ pub struct CheckResult {
 	/// Smoke mode does not need a result from it.
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub optional: bool,
-}
-
-/// Checks without a result that a smoke run must still produce.
-#[doc(hidden)]
-pub fn smoke_gaps(results: &[CheckResult]) -> Vec<String> {
-	results
-		.iter()
-		.filter(|r| r.verdict.status == Status::NoResult && !r.optional)
-		.map(|r| format!("{}: {}", r.check, r.verdict.detail))
-		.collect()
-}
-
-/// Runs the checks; a counter that went down in a window gives that check no result.
-///
-/// A check without a result whose inputs the plan does not monitor at all (no `<monitors>`, or
-/// no node of the kind it reads) is not applicable: its detail starts with `not applicable:` and
-/// it is optional, so it does not make the verdict INCONCLUSIVE.
-#[doc(hidden)]
-pub fn run(checks: &[Check], data: &RunData) -> Vec<CheckResult> {
-	checks
-		.iter()
-		.map(|c| {
-			let mut verdict = (c.run)(data).unwrap_or_else(|reset| {
-				Verdict::new(Status::NoResult, format!("a node restarted: {reset}"))
-			});
-			let mut optional = c.optional;
-			if verdict.status == Status::NoResult
-				&& let Some(why) = outcomes::not_applicable(c.name, data)
-			{
-				verdict = Verdict::new(Status::NoResult, format!("not applicable: {why}"));
-				optional = true;
-			}
-			CheckResult {
-				source: None,
-				outcome: serde_name(c.outcome),
-				check: c.name.to_owned(),
-				verdict,
-				optional,
-			}
-		})
-		.collect()
 }

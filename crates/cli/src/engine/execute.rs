@@ -8,7 +8,8 @@ use crate::engine::{
 };
 use crate::redact::Redactor;
 use anyhow::{Context as _, Result, bail, ensure};
-use polkameter_plugin_sdk::observers::files::RunDir;
+use polkameter_plugin_sdk::chain::{ChainError, Client, fetch};
+use polkameter_plugin_sdk::observers::RunDir;
 use polkameter_plugin_sdk::{Artifact, Context, Operation, PreparedTx, Schema, strip_0x};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -106,7 +107,7 @@ impl Log {
 		Ok(Self { file: Arc::new(Mutex::new(file)), sink, redactor })
 	}
 	fn emit(&self, mut value: Value) -> Result<()> {
-		value["timestamp"] = json!(polkameter_plugin_sdk::observers::files::now_ms());
+		value["timestamp"] = json!(polkameter_plugin_sdk::observers::now_ms());
 		value["version"] = json!(2);
 		self.redactor.value(&mut value);
 		let text = serde_json::to_string(&value)?;
@@ -484,7 +485,7 @@ async fn with_scratch_plugins<T>(
 	let directory = std::env::temp_dir().join(format!(
 		"polkameter-{purpose}-{}-{}-{}",
 		std::process::id(),
-		polkameter_plugin_sdk::observers::files::now_ms(),
+		polkameter_plugin_sdk::observers::now_ms(),
 		next_directory_sequence()
 	));
 	std::fs::create_dir(&directory)?;
@@ -577,8 +578,8 @@ async fn calibrate(plan: &Plan, directory: &Path) -> Result<()> {
 	let Some(load) = &plan.load else { return Ok(()) };
 	let endpoint = target_endpoint(plan, &load.target)?;
 	let measured = async {
-		let client = polkameter_plugin_sdk::chain::Client::connect(endpoint).await?;
-		client.block_interval_s().await
+		let client = Client::connect(endpoint).await?;
+		block_interval_s(&client).await
 	}
 	.await
 	.context("block interval calibration failed during preflight")?;
@@ -591,6 +592,71 @@ async fn calibrate(plan: &Plan, directory: &Path) -> Result<()> {
 	// Preserve the evidence even when the mismatch prevents setup.
 	RunDir::open(directory).write_json("calibration.json", &calibration)?;
 	validate_interval(load.block_interval_seconds, measured)
+}
+
+/// The chain's block interval: the `Timestamp.Now` span of the last 60 blocks since the fork
+/// started, over their count. Not a median or trimmed mean of gaps: on a fork the timestamps
+/// come in bunches (0 s / 12 s pairs on 1 core, 12 s then five 0 s on 3 cores), and only the
+/// span is right. A fork just started has fewer blocks: this waits for 20 of them.
+pub(crate) async fn block_interval_s(client: &Client) -> Result<f64, ChainError> {
+	let deadline = tokio::time::Instant::now() + INTERVAL_WAIT;
+	loop {
+		let number = client.best_number().await?;
+		let all = timestamps(client, number).await?;
+		let stamps = since_restart(&all);
+		if let Some(s) = interval_s(stamps) {
+			return Ok(s);
+		}
+		if tokio::time::Instant::now() >= deadline {
+			return Err(ChainError::Timeout(format!(
+				"block interval: {} blocks since the fork started at block {number}, {MIN_INTERVALS} needed, after {INTERVAL_WAIT:?}",
+				stamps.len().saturating_sub(1)
+			)));
+		}
+		tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+	}
+}
+
+/// `Timestamp.Now` of block `number` and up to 60 before it, newest first; the walk stops
+/// at a block the node doesn't have (a fork keeps none from before its bite).
+async fn timestamps(client: &Client, number: u32) -> Result<Vec<u64>, ChainError> {
+	let mut stamps = Vec::new();
+	for n in (number.saturating_sub(60)..=number).rev() {
+		let hash: Option<subxt::utils::H256> =
+			client.request("chain_getBlockHash", subxt_rpcs::rpc_params![n]).await?;
+		let Some(hash) = hash else { break };
+		stamps.push(
+			fetch::<(), u64>(&client.at(hash.0).await?, "Timestamp", "Now", ())
+				.await?
+				.unwrap_or(0),
+		);
+	}
+	Ok(stamps)
+}
+
+/// A gap between two blocks longer than any slot: the bite to the fork's first block (or a
+/// stall). On a fork the longest normal gap is 12 s.
+const RESTART_GAP_MS: u64 = 60_000;
+/// Blocks the interval spans at least: enough whole timestamp bunches (six blocks on 3 cores)
+/// for the span to be right.
+const MIN_INTERVALS: usize = 20;
+/// How long to wait for `MIN_INTERVALS` blocks after a fork started.
+const INTERVAL_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// The newest blocks of `stamps` (newest first, ms) up to the first gap over `RESTART_GAP_MS`:
+/// the blocks since the fork started.
+fn since_restart(stamps: &[u64]) -> &[u64] {
+	let first_gap = stamps.windows(2).position(|w| w[0].saturating_sub(w[1]) > RESTART_GAP_MS);
+	&stamps[..first_gap.map_or(stamps.len(), |i| i + 1)]
+}
+
+/// The block interval, s, over `stamps` (newest first, ms); `None` with fewer than
+/// `MIN_INTERVALS` blocks or a zero span.
+fn interval_s(stamps: &[u64]) -> Option<f64> {
+	let (newest, oldest) = (stamps.first()?, stamps.last()?);
+	let intervals = stamps.len() - 1;
+	let span = newest.saturating_sub(*oldest);
+	(intervals >= MIN_INTERVALS && span > 0).then(|| span as f64 / intervals as f64 / 1000.0)
 }
 
 /// Opt-in run exit policies. Defaults preserve the original run behavior.
@@ -665,7 +731,7 @@ pub async fn run_stoppable(
 	std::fs::create_dir_all(root)?;
 	let run_id = format!(
 		"run-{}-{}-{}",
-		polkameter_plugin_sdk::observers::files::now_ms(),
+		polkameter_plugin_sdk::observers::now_ms(),
 		std::process::id(),
 		next_directory_sequence()
 	);
@@ -753,7 +819,7 @@ impl Run<'_> {
 			"exit_code": code,
 			"state": RunState::Stopping,
 			"error": format!("stopped by {reason}; teardown was still running"),
-			"stop_requested_at": polkameter_plugin_sdk::observers::files::now_ms(),
+			"stop_requested_at": polkameter_plugin_sdk::observers::now_ms(),
 		});
 		let _ = RunDir::open(&self.directory).write_json("execution.json", &provisional);
 		let _ = redact_plugin_logs(&self.directory, &self.log.redactor);
@@ -1389,17 +1455,16 @@ fn plugin_checks(
 	plan: &Plan,
 	plugins: &Plugins,
 	values: &Values,
-) -> Result<Vec<polkameter_plugin_sdk::observers::checks::CheckResult>> {
+) -> Result<Vec<polkameter_plugin_sdk::observers::CheckResult>> {
 	let mut out = Vec::new();
 	for step in &plan.evaluate.entries {
 		if !contract(plugins, &step.operation)?.outputs.contains_key("checks") {
 			continue;
 		}
 		let Some(value) = values.get(&format!("steps.{}", step.id)) else { continue };
-		let mut checks = Vec::<polkameter_plugin_sdk::observers::checks::CheckResult>::deserialize(
-			&value["checks"],
-		)
-		.with_context(|| format!("step {} returned malformed checks", step.id))?;
+		let mut checks =
+			Vec::<polkameter_plugin_sdk::observers::CheckResult>::deserialize(&value["checks"])
+				.with_context(|| format!("step {} returned malformed checks", step.id))?;
 		for check in &mut checks {
 			check.source = Some(step.id.clone());
 		}

@@ -1,7 +1,8 @@
 //! Window math and one check on a few hand-written samples.
 
-use polkameter_plugin_sdk::observers::checks::{self, RunData, Status, Verdict};
-use polkameter_plugin_sdk::observers::files::{
+use super::{end_reasons, outcomes::all, report::overall_status, run, smoke_gaps};
+use polkameter_plugin_sdk::observers::{CheckResult, RunData, Status, Verdict};
+use polkameter_plugin_sdk::observers::{
 	Point, Series, Store, parse_sample_line,
 	summary::{OverallStatus, Rule, Summary},
 };
@@ -38,7 +39,7 @@ fn parse_samples(text: &str) -> Store {
 }
 
 fn summary() -> Summary {
-	serde_json::from_str(include_str!("../../cli/tests/fixtures/smoke-run/summary.json")).unwrap()
+	serde_json::from_str(include_str!("../../../tests/fixtures/smoke-run/summary.json")).unwrap()
 }
 
 #[test]
@@ -57,7 +58,7 @@ substrate_proposer_end_proposal_reason{instance="a",job="collator",reason="hit_b
 # EOF
 "#;
 	let d = RunData::new(parse_samples(samples), summary());
-	let mut reasons = d.end_reasons(&d.steps()[0]).unwrap();
+	let mut reasons = end_reasons(&d, &d.steps()[0]).unwrap();
 	reasons.sort_by(|a, b| a.0.cmp(&b.0));
 	// weight: a's series first appears at the end scrape, after a was scraped without it: 0 -> 2.
 	assert_eq!(
@@ -68,8 +69,7 @@ substrate_proposer_end_proposal_reason{instance="a",job="collator",reason="hit_b
 
 #[test]
 fn a_state_check_without_a_result_makes_the_verdict_inconclusive() {
-	use polkameter_plugin_sdk::observers::checks::{all, report::overall_status, run};
-	use polkameter_plugin_sdk::observers::files::summary::{OverallStatus, Rule, Stop};
+	use polkameter_plugin_sdk::observers::summary::{OverallStatus, Rule, Stop};
 	let mut s = summary();
 	// A clean run: every check passes but the plan's state check timed out.
 	s.breaking_point = None;
@@ -91,8 +91,7 @@ fn a_state_check_without_a_result_makes_the_verdict_inconclusive() {
 
 #[test]
 fn blocks_unobserved_for_longer_than_a_stall_are_no_result() {
-	use polkameter_plugin_sdk::observers::checks::{all, report::overall_status, run};
-	use polkameter_plugin_sdk::observers::files::summary::{OverallStatus, Rule, Stop};
+	use polkameter_plugin_sdk::observers::summary::{OverallStatus, Rule, Stop};
 	let mut s = summary();
 	s.breaking_point = None;
 	s.stop = Stop::new(Rule::RateCap, Some(2), "all 3 steps ran");
@@ -115,11 +114,7 @@ fn blocks_unobserved_for_longer_than_a_stall_are_no_result() {
 /// The verdict of the built-in check `name` on `samples`.
 fn verdict(samples: &str, name: &str) -> Verdict {
 	let d = RunData::new(parse_samples(samples), summary());
-	checks::run(&checks::all(), &d)
-		.into_iter()
-		.find(|r| r.check == name)
-		.unwrap()
-		.verdict
+	run(&all(), &d).into_iter().find(|r| r.check == name).unwrap().verdict
 }
 
 const BUILD: &str = "build time within the authoring deadline";
@@ -391,12 +386,12 @@ fn relay_checks_need_finalized_relay_blocks() {
 }
 
 /// Every check's result on `samples` with the plan's `<monitors>` (and so its para id) or not.
-fn results(samples: &str, monitors: bool) -> Vec<checks::CheckResult> {
+fn results(samples: &str, monitors: bool) -> Vec<CheckResult> {
 	let mut s = summary();
 	if !monitors {
 		s.network.para_id = None;
 	}
-	checks::run(&checks::all(), &RunData::new(parse_samples(samples), s))
+	run(&all(), &RunData::new(parse_samples(samples), s))
 }
 
 #[test]
@@ -417,7 +412,7 @@ fn unmonitored_nodes_are_optional_and_silent_ones_are_required() {
 		assert!(r.verdict.detail.starts_with("not applicable:"), "{name}");
 		assert!(r.optional, "{name}");
 	}
-	assert!(checks::smoke_gaps(&all).iter().all(|g| !g.contains("not applicable")));
+	assert!(smoke_gaps(&all).iter().all(|g| !g.contains("not applicable")));
 	assert!(!get("refusals are clean").optional);
 	// Not-applicable checks alone never make a clean run INCONCLUSIVE.
 	let mut s = summary();
@@ -431,7 +426,7 @@ fn unmonitored_nodes_are_optional_and_silent_ones_are_required() {
 		.filter(|r| r.verdict.detail.starts_with("not applicable:"))
 		.collect();
 	assert_eq!(na.len(), 7);
-	assert_eq!(checks::report::overall_status(&s, &na), OverallStatus::Pass);
+	assert_eq!(overall_status(&s, &na), OverallStatus::Pass);
 
 	// A monitored node that never answered, and the relay recorder that runs with
 	// <monitors>: required checks with no result.

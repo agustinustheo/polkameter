@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use polkameter_plugin_sdk::observers::files::{
+use polkameter_plugin_sdk::observers::{
 	Millis,
 	summary::{Rule, Stop},
 };

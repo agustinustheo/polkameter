@@ -12,7 +12,7 @@ use polkameter::load::{
 	submit::Submit,
 	tracker::{Phase, Tracker},
 };
-use polkameter_plugin_sdk::observers::files::{Problems, RunDir, now_ms, summary::Rule};
+use polkameter_plugin_sdk::observers::{Problems, RunDir, now_ms, summary::Rule};
 
 /// A node that accepts every tx at once.
 struct FakeSender(tokio::sync::mpsc::UnboundedSender<Reply>);
@@ -114,11 +114,7 @@ async fn run(
 	name: &str,
 	boot: fn() -> Option<u64>,
 	restarts: Problems,
-) -> (
-	Tracker<FakeSender>,
-	polkameter_plugin_sdk::observers::files::summary::Stop,
-	std::time::Duration,
-) {
+) -> (Tracker<FakeSender>, polkameter_plugin_sdk::observers::summary::Stop, std::time::Duration) {
 	let (mut t, mut io, opts) = setup(name, boot, restarts);
 	let virtual_start = tokio::time::Instant::now();
 	let stop = load(&mut t, &mut io, &opts).await.unwrap();

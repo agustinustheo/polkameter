@@ -7,7 +7,7 @@ mod blocks;
 
 use std::collections::HashMap;
 
-use polkameter_plugin_sdk::observers::files::{
+use polkameter_plugin_sdk::observers::{
 	BlockRecord, FileError, JsonlWriter, Millis, SeriesWriter,
 	registry::{PHASE, STEP, TX_REJECTED, TX_SENT},
 	summary::{Outcome, Probe},

@@ -26,9 +26,10 @@ use subxt::{PolkadotConfig, client::Blocks};
 use subxt_rpcs::rpc_params;
 
 use polkameter_plugin_sdk::chain::{
-	ChainError, Client, DecodeAsType, Fault, events, failed_extrinsics, fetch, hex0x, tx_hash,
+	ChainError, Client, DecodeAsType, Fault, decode_err, events, failed_extrinsics, fetch, hex0x,
+	tx_hash,
 };
-use polkameter_plugin_sdk::observers::files::{BlockRecord, Millis};
+use polkameter_plugin_sdk::observers::{BlockRecord, Millis};
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
@@ -133,6 +134,45 @@ async fn until_stopped<T>(stop: &CancellationToken, work: impl Future<Output = T
 		() = stop.cancelled() => None,
 		out = work => Some(out),
 	}
+}
+
+/// The running runtime's normal class limit (ref time, proof size): `System.BlockWeights`.
+/// Read it here, never from the runtime source: live previewnet allows 1.5 s, `main` 1.7 s.
+pub async fn normal_limit(client: &Client) -> Result<(u64, u64), ChainError> {
+	// `Weight { ref_time, proof_size }` decodes as the tuple `(ref_time, proof_size)`.
+	#[derive(DecodeAsType)]
+	#[decode_as_type(crate_path = "polkameter_plugin_sdk::chain::scale_decode_reexport")]
+	struct Class {
+		max_total: Option<(u64, u64)>,
+	}
+	#[derive(DecodeAsType)]
+	#[decode_as_type(crate_path = "polkameter_plugin_sdk::chain::scale_decode_reexport")]
+	struct PerClass {
+		normal: Class,
+	}
+	#[derive(DecodeAsType)]
+	#[decode_as_type(crate_path = "polkameter_plugin_sdk::chain::scale_decode_reexport")]
+	struct BlockWeights {
+		per_class: PerClass,
+	}
+	let at = client.finalized().await?;
+	let w = at
+		.constants()
+		.entry(subxt::dynamic::constant::<BlockWeights>("System", "BlockWeights"))
+		.map_err(decode_err("System.BlockWeights"))?;
+	Ok(w.per_class.normal.max_total.unwrap_or_default())
+}
+
+/// The parent hash of block `hash`.
+async fn parent(client: &Client, hash: [u8; 32]) -> Result<[u8; 32], ChainError> {
+	let mut header: serde_json::Value =
+		client.request("chain_getHeader", rpc_params![hex0x(hash)]).await?;
+	serde_json::from_value::<subxt::utils::H256>(header["parentHash"].take())
+		.map(|h| h.0)
+		.map_err(|e| ChainError::Read {
+			what: "header",
+			detail: format!("no parent hash for {}: {e}", hex0x(hash)),
+		})
 }
 
 /// Starts both tasks; they end at `stop`. `url` opens the connection again when it drops.
@@ -353,7 +393,7 @@ async fn follow(
 						let (number, hash, seen_at) = (b.number() as u32, b.hash().0, now_ms());
 						let _ = out.send(BlockEvent::Head { number, seen_at });
 						let after_gap = std::mem::take(&mut f.after_gap);
-						let walk = fill_in(b.header().parent_hash.0, number, first, &f.seen, |h| bounded("parent header", client.parent(h)));
+						let walk = fill_in(b.header().parent_hash.0, number, first, &f.seen, |h| bounded("parent header", parent(&client, h)));
 						match until_stopped(stop, walk).await? {
 							Ok(missing) => for (h, n) in missing {
 								f.seen.insert(h);

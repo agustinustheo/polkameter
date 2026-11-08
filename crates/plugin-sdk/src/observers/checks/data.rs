@@ -110,7 +110,7 @@ const EDGE_SCRAPE_MS: f64 = 1000.0;
 
 /// How long the scraper waits for a node's answer, in ms: a scrape lands at most this long after
 /// it was asked for.
-pub const SCRAPE_TIMEOUT_MS: f64 = 5_000.0;
+const SCRAPE_TIMEOUT_MS: f64 = 5_000.0;
 
 /// The scrape interval assumed for a node with fewer than two recorded scrapes, in ms.
 const DEFAULT_SCRAPE_INTERVAL_MS: f64 = 5_000.0;
@@ -121,11 +121,6 @@ const UNSCRAPED_JOBS: [&str; 2] = ["stress", "plugin"];
 
 /// The counter of failed scrapes, per node (`job`, `instance`).
 const SCRAPE_FAILED: &str = "polkameter_scrape_failed_total";
-
-/// The collator's labels: each block is counted once over the collators.
-pub const COLLATOR: (&str, &str) = ("job", "collator");
-/// The collator's counter of why a block stopped taking txs, per `reason`.
-pub const END_REASON: &str = "substrate_proposer_end_proposal_reason";
 
 fn node(s: &Series) -> (String, String) {
 	let get = |k: &str| s.labels.get(k).cloned().unwrap_or_default();
@@ -236,11 +231,10 @@ impl RunData {
 	}
 
 	/// The longest a node's scrape may land after a window edge and still stand for that edge,
-	/// in ms: twice the node's scrape interval plus [`SCRAPE_TIMEOUT_MS`], so one failed scrape
+	/// in ms: twice the node's scrape interval plus the 5 s scrape timeout, so one failed scrape
 	/// at an edge still leaves the edge fresh. The interval comes from the scrapes the run
 	/// recorded (good and failed), so a slower scraper gets a longer limit. Unscraped nodes and
 	/// nodes without records get the limit of a 5 s interval.
-	/// Part of the plugin API (used by out-of-tree plugins).
 	pub fn edge_lag_ms(&self, job: &str, instance: &str) -> f64 {
 		self.node_lag
 			.get(&(job.to_owned(), instance.to_owned()))
@@ -250,7 +244,7 @@ impl RunData {
 
 	/// True when the run recorded any scrape, good or failed, of a node of `job` (`collator`,
 	/// `collator-relay`, `validator`): the plan monitored that kind of node.
-	pub(crate) fn monitors_job(&self, job: &str) -> bool {
+	pub fn monitors_job(&self, job: &str) -> bool {
 		self.node_lag.keys().any(|(j, _)| j == job)
 	}
 
@@ -274,7 +268,6 @@ impl RunData {
 	/// Otherwise the value at that edge would come from a scrape too late to say on which side of
 	/// the edge the counter moved (stale), so a check over `w` should have no result. Series the
 	/// load tool, the chain recorders or plugins write change on events and are never stale here.
-	/// Part of the plugin API (used by out-of-tree plugins).
 	pub fn gap(&self, name: &str, filter: Filter<'_>, w: &Window) -> Option<String> {
 		let scraped: Vec<&Series> = self
 			.series(name, filter)
@@ -315,7 +308,6 @@ impl RunData {
 	/// (every node when it has neither). A failed scrape inside a window leaves its counter
 	/// deltas right when both edges are fresh ([`RunData::gap`]), but it hides what happened in
 	/// between, so a check should say so.
-	/// Part of the plugin API (used by out-of-tree plugins).
 	pub fn failed_scrapes(&self, filter: Filter<'_>, w: &Window) -> f64 {
 		let nodes: Vec<(&str, &str)> = filter
 			.iter()
@@ -496,50 +488,13 @@ impl RunData {
 			.flat_map(|s| s.points.iter().map(|p| p.t))
 			.collect()
 	}
-
-	/// The collator's blocks per end reason (short names) in `w`.
-	pub fn end_reasons(&self, w: &Window) -> Result<Vec<(String, f64)>, CounterReset> {
-		// One series per collator and reason; `diff` already sums the collators, so once per
-		// reason.
-		let mut reasons: Vec<&str> = self
-			.series(END_REASON, &[COLLATOR])
-			.iter()
-			.filter_map(|s| s.labels.get("reason").map(String::as_str))
-			.collect();
-		reasons.sort_unstable();
-		reasons.dedup();
-		let mut out: Vec<(String, f64)> = Vec::new();
-		for reason in reasons {
-			let n = self.diff(END_REASON, &[COLLATOR, ("reason", reason)], w)?.unwrap_or(0.0);
-			if n > 0.0 {
-				add_to(&mut out, short_reason(reason).to_owned(), n);
-			}
-		}
-		Ok(out)
-	}
-}
-
-/// `reason count` pairs, comma-separated: `empty 3, weight 2`.
-pub fn reasons_text(r: &[(String, f64)]) -> String {
-	r.iter().map(|(k, n)| format!("{k} {}", num(*n))).collect::<Vec<_>>().join(", ")
 }
 
 /// Adds `n` to the entry for `key`, or appends one.
-pub(crate) fn add_to<K: PartialEq, V: AddAssign>(list: &mut Vec<(K, V)>, key: K, n: V) {
+fn add_to<K: PartialEq, V: AddAssign>(list: &mut Vec<(K, V)>, key: K, n: V) {
 	match list.iter_mut().find(|(k, _)| *k == key) {
 		Some((_, sum)) => *sum += n,
 		None => list.push((key, n)),
-	}
-}
-
-fn short_reason(reason: &str) -> &str {
-	match reason {
-		"hit_block_weight_limit" => "weight",
-		"hit_block_size_limit" => "size",
-		"hit_deadline" => "deadline",
-		"no_more_transactions" => "empty",
-		"transactions_forbidden" => "forbidden",
-		other => other,
 	}
 }
 

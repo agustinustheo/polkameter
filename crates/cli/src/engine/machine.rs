@@ -2,7 +2,7 @@
 
 use std::process::Command;
 
-use polkameter_plugin_sdk::observers::files::summary::Runner;
+use polkameter_plugin_sdk::observers::summary::Runner;
 
 fn sysctl(key: &str) -> Option<String> {
 	let out = Command::new("sysctl")

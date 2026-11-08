@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use polkameter_plugin_sdk::observers::files::{
+use polkameter_plugin_sdk::observers::{
 	FileError, Millis, NodeMax, Problems,
 	summary::{Baseline, Outcome, ProbePhase, Recovery},
 };

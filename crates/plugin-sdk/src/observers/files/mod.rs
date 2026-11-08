@@ -24,7 +24,7 @@ pub use metrics::{PluginMetric, Point, Series, Store, parse_sample_line, read_st
 pub use num::{num, to_fixed};
 pub use problems::Problems;
 #[doc(hidden)]
-pub use records::{BlockRecord, FinalStep, NodeSample, ScrapeRecord, SeriesRecord};
+pub use records::{BlockRecord, NodeSample, ScrapeRecord};
 pub use records::{BlockStats, Millis, NodeMax};
 pub use run_dir::{JsonlWriter, RunDir};
 pub use series::SeriesWriter;

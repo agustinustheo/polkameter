@@ -2,32 +2,23 @@
 //! and `summary.md`. The collator table comes from the same series, so the summary and the checks
 //! read the same numbers, and `polkameter report <dir>` can write it all again later.
 
-use crate::observers::files::{
-	BlockStats, FileError, FinalStep, RunDir, num, read_store, serde_name,
+use polkameter_plugin_sdk::observers::{
+	BlockStats, CheckResult, FileError, Label, Phase, RunData, RunDir, Status, Window, num,
+	read_store, serde_name,
 	summary::{OverallStatus, ProbePhase, Rule, RunVerdict, Summary},
 	to_fixed,
 };
 
-use crate::observers::checks::{
-	CheckResult, RunData, Status, Window, all,
-	data::{COLLATOR, END_REASON, Label, Phase, add_to, reasons_text},
-	run,
+use crate::engine::checks::{
+	COLLATOR, END_REASON, add_to, end_reasons, outcomes::all, reasons_text, run,
 };
+use crate::load::steps::FinalStep;
 
 /// Runs every check on the run's files, appends the plugins' check results, and writes
 /// summary.json (with all checks) and summary.md, and prints summary.md to standard error.
-pub fn write(
-	dir: &RunDir,
-	summary: Summary,
-	finals: &[FinalStep],
-	plugin_checks: &[CheckResult],
-) -> Result<Vec<CheckResult>, FileError> {
-	write_redacted(dir, summary, finals, plugin_checks, &|text| text.to_owned())
-}
-
-/// [`write`], passing every text through `redact` before it is rendered, written or printed:
-/// each check's fields first (so Markdown escaping cannot hide a secret from `redact`), then
-/// every string in summary.json and the whole of summary.md. Returns the redacted checks.
+/// Every text passes through `redact` before it is rendered, written or printed: each check's
+/// fields first (so Markdown escaping cannot hide a secret from `redact`), then every string in
+/// summary.json and the whole of summary.md. Returns the redacted checks.
 pub fn write_redacted(
 	dir: &RunDir,
 	mut summary: Summary,
@@ -159,7 +150,7 @@ fn collator_step(d: &RunData, w: Option<&Window>) -> Option<CollatorStep> {
 		validations: d.diff("substrate_sub_txpool_validations_finished", &[COLLATOR], w).ok()?,
 		waiting: scheduled.zip(finished).map(|(s, f)| s - f),
 		ready: at("substrate_ready_transactions_number"),
-		end_reasons: d.end_reasons(w).ok()?,
+		end_reasons: end_reasons(d, w).ok()?,
 	})
 }
 
@@ -442,15 +433,17 @@ fn render_summary(s: &Summary, steps: &[FinalStep], d: &RunData, checks: &[Check
 
 #[cfg(test)]
 mod tests {
-	use crate::observers::files::summary::{BreakingPoint, Stop};
+	use polkameter_plugin_sdk::observers::{
+		Verdict,
+		summary::{BreakingPoint, Stop},
+	};
 
 	use super::*;
-	use crate::observers::checks::Verdict;
 
 	/// The recorded smoke run. Its breaking point is cleared: the
 	/// verdict tests set their own.
 	fn summary() -> Summary {
-		let text = include_str!("../../../../cli/tests/fixtures/smoke-run/summary.json");
+		let text = include_str!("../../../tests/fixtures/smoke-run/summary.json");
 		let mut s: Summary = serde_json::from_str(text).expect("summary fixture");
 		s.breaking_point = None;
 		s

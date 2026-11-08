@@ -1,6 +1,6 @@
 //! After the load: when do new txs land in time again.
 
-use polkameter_plugin_sdk::observers::files::{
+use polkameter_plugin_sdk::observers::{
 	BlockRecord, Millis,
 	summary::{Outcome, Probe, ProbePhase},
 };

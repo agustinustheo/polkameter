@@ -29,16 +29,16 @@ PolkaMeter is a load-testing tool for Polkadot SDK chains. The `polkameter` CLI 
 2. `engine::plugins` starts one process per plugin. Each step sends an operation over the SDK protocol.
 3. For a load test, `engine::measurement::run` starts the monitors (`engine/monitors`) and the load runner (`load`).
 4. After the finality wait, `load::loss` gives each flood transaction its status.
-5. `observers::checks::report::write` reads the files through `observers::files`, runs the checks and writes `summary.json` and `summary.md`.
+5. `engine::checks::report::write_redacted` reads the files through the SDK's `observers`, runs the checks and writes `summary.json` and `summary.md`.
 6. `engine::artifacts` writes `samples.jtl`. `execute` writes `execution.json`.
 
-Each part writes its own raw files. Only `observers::files` knows the formats. That's why `polkameter report` can run steps 5 and 6 again from the files alone.
+Each part writes its own raw files. Only the SDK's `observers` knows the formats. That's why `polkameter report` can run steps 5 and 6 again from the files alone.
 
 Where to change things:
 
-- New check: add its metric to `crates/plugin-sdk/src/observers/files/registry.rs`, record it in a monitor, and add the check under `crates/plugin-sdk/src/observers/checks/outcomes/`.
+- New check: add its metric to `crates/plugin-sdk/src/observers/files/registry.rs`, record it in a monitor, and add the check under `crates/cli/src/engine/checks/outcomes/`.
 - Stop rule or default threshold: `crates/cli/src/load/rules.rs`.
-- Check limit: `crates/plugin-sdk/src/observers/checks/limits.rs`.
+- Check limit: `crates/cli/src/engine/checks/limits.rs`.
 - Plan rules: `crates/cli/src/engine/plan.rs` and `xml.rs`, and the XSD in `schemas/`. `tests/validate-plans.py` runs every example and documentation plan through both xmllint and `polkameter validate`.
 
 ## Build and test
