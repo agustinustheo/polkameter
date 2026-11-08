@@ -10,7 +10,7 @@ use subxt::{
 	dynamic::{self, Value},
 };
 
-use crate::chain::tx::ChainInfo;
+use crate::chain::{reads::fetch, tx::ChainInfo};
 
 /// subxt at a block.
 pub type AtBlock = subxt::client::ClientAtBlock<
@@ -208,6 +208,23 @@ impl Client {
 		let best: serde_json::Value = self.request("chain_getHeader", rpc_params![]).await?;
 		u32::from_str_radix(best["number"].as_str().unwrap_or("0x0").trim_start_matches("0x"), 16)
 			.map_err(decode_err("header number"))
+	}
+
+	/// The mean seconds between the last (up to) 10 blocks, from their `Timestamp.Now`; `None`
+	/// when the chain has fewer than 3 blocks or its timestamps do not move. It never waits.
+	pub async fn recent_block_seconds(&self) -> Result<Option<f64>, ChainError> {
+		let best = self.best_number().await?;
+		let span = best.min(10);
+		if span < 2 {
+			return Ok(None);
+		}
+		let mut stamps = [0u64; 2];
+		for (slot, number) in stamps.iter_mut().zip([best, best - span]) {
+			let at = self.at(self.block_hash(number).await?).await?;
+			*slot = fetch::<(), u64>(&at, "Timestamp", "Now", ()).await?.unwrap_or(0);
+		}
+		let seconds = stamps[0].saturating_sub(stamps[1]) as f64 / f64::from(span) / 1000.0;
+		Ok((seconds > 0.0).then_some(seconds))
 	}
 
 	/// Encodes a call by pallet and call name, with metadata.

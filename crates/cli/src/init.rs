@@ -1,7 +1,6 @@
 //! `polkameter init`: a starter load-test plan for the substrate plugin, written from what a live
 //! chain reports: its calls, its block time and its token.
 
-use crate::engine::execute::block_interval_s;
 use anyhow::{Result, ensure};
 use polkameter_plugin_sdk::chain::Client;
 use serde_json::Value;
@@ -79,9 +78,10 @@ pub async fn inspect(rpc: &str, kind: Kind) -> Result<Facts> {
 	})
 }
 
-/// The block interval the run calibrates against ([`block_interval_s`]).
+/// The mean block time over the last (up to) 10 blocks, from `Timestamp.Now`; 6 s when the chain
+/// is too young to tell.
 async fn block_seconds(client: &Client) -> Result<f64> {
-	let seconds = block_interval_s(client).await?;
+	let seconds = client.recent_block_seconds().await?.unwrap_or(6.0);
 	// One decimal, at least 0.5 s: the plan's block-interval-seconds.
 	Ok(if seconds >= 0.5 { (seconds * 10.0).round() / 10.0 } else { 6.0 })
 }

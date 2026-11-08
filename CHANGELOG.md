@@ -19,9 +19,8 @@ User-visible changes in each release. The GitHub release notes list every merged
 
 - The action installs PolkaMeter from the release with `install.sh`, which checks the checksum and the build attestation, and uploads the run with `actions/upload-artifact`.
 - Preflight starts the plan's plugins once, not twice.
-- `polkameter init` measures the block time the way the run's preflight does. On a new chain it waits for 20 blocks.
 - Plugin SDK: the unused chain API (`chain::derive`, `chain::scale_value_reexport`, `TxBuilder::at`, `TxBuilder::has_constant`, `Client::spendable`) and `Response::into_result` are removed. The SDK no longer depends on `scale-value`, `scale-decode`, `frame-decode`, `futures-util` and `subxt-rpcs`; use subxt's re-exports.
-- Plugin SDK: the CLI's built-in checks, summary report and its own chain reads move into the CLI (`Check`, `run`, `smoke_gaps`, `report`, `registry::Outcome`, `FinalStep`, `Client::{normal_limit, block_interval_s, recent_block_seconds, parent, pending}`). The `chain::{client, keys, reads, sign, tx}` and `observers::{checks, files, monitors}` modules are private. Use the flat `chain::*` and `observers::*` paths, as in [Migrating from 0.2](docs/plugins.md#migrating-from-02).
+- Plugin SDK: the CLI's built-in checks, summary report and its own chain reads move into the CLI (`Check`, `run`, `smoke_gaps`, `report`, `registry::Outcome`, `FinalStep`, `Client::{normal_limit, block_interval_s, parent, pending}`). The `chain::{client, keys, reads, sign, tx}` and `observers::{checks, files, monitors}` modules are private. Use the flat `chain::*` and `observers::*` paths, as in [Migrating from 0.2](docs/plugins.md#migrating-from-02).
 - Plugins built with SDK 0.3 keep working. PolkaMeter accepts their `requirements`, and existing registry files still load.
 
 ## 0.3.0 (2026-11-08)
