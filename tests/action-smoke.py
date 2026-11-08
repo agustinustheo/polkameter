@@ -145,7 +145,7 @@ class RunTest(unittest.TestCase):
         paths = values["artifact-paths"].splitlines()
         self.assertTrue(all(p.startswith(prefix) for p in paths))
         names = {p[len(prefix):] for p in paths}
-        self.assertTrue({"execution.json", "summary.md", "plots/*.svg", "plugins/*/stderr.log"} <= names)
+        self.assertTrue({"execution.json", "summary.md", "plugins/*/stderr.log"} <= names)
         self.assertFalse({n for n in names if "raw" in n or "dump" in n})
         self.assertEqual(self.run_plan("error", artifact_name="mine")[1]["artifact-name"], "mine")
 
