@@ -27,13 +27,6 @@ Work through [checklist.md](checklist.md) and tick items as you go.
    export PATH="$HOME/.local/bin:$PATH"
    ```
 
-   <!-- v0.3.0: remove after release -->
-   Until v0.3.0 is released, the installer stops because v0.2.0 has no CLI archive. Build both executables from source:
-
-   ```sh
-   cargo install --locked --git https://github.com/agustinustheo/polkameter --rev 259400a67647d9f662506e3b7469a0d565d7c676 polkameter polkameter-substrate-plugin
-   ```
-
    `cargo install --locked polkameter` alone never installs the plugin. Register the plugin after every install, upgrade or rebuild:
 
    ```sh
@@ -42,9 +35,8 @@ Work through [checklist.md](checklist.md) and tick items as you go.
 
 2. Get a chain. Use the user's node if one is running (`ws://127.0.0.1:9944` is typical). Otherwise fetch the dev chain script, from the installed PolkaMeter version, into the repository root:
 
-   <!-- v0.3.0: remove after release (replace main with v0.3.0) -->
    ```sh
-   curl -fsSLO https://raw.githubusercontent.com/agustinustheo/polkameter/main/scripts/dev-chain.sh
+   curl -fsSLO https://raw.githubusercontent.com/agustinustheo/polkameter/v0.3.0/scripts/dev-chain.sh
    bash dev-chain.sh start      # waits about 2 minutes for 21 blocks
    ```
 

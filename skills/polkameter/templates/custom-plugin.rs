@@ -9,10 +9,6 @@
 //! tokio = { version = "1", features = ["full"] }
 //! ```
 //!
-//! <!-- v0.3.0: remove after release -->
-//! Until polkameter-plugin-sdk 0.3 is on crates.io, depend on the repository instead:
-//! `polkameter-plugin-sdk = { git = "https://github.com/agustinustheo/polkameter", branch = "main", features = ["chain"] }`.
-//!
 //! Replace `System.remark` with your call and its fields. Keep secrets in credential profiles:
 //! the plan passes the seed as `<input name="seed" ref="credentials.seed"/>`. Fund the flood
 //! signer and one signer per probe before a load, for example with the substrate plugin's

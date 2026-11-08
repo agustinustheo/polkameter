@@ -53,9 +53,6 @@ export PATH="$HOME/.local/bin:$PATH"
 polkameter --version
 ```
 
-<!-- v0.3.0: remove after release -->
-Until v0.3.0 is released, the script stops because v0.2.0 has no CLI archive. Build from source as [Install](https://agustinustheodorus.com/polkameter/install.html#before-v030-is-released) shows.
-
 [Install](https://agustinustheodorus.com/polkameter/install.html) also covers `cargo binstall`, the container and the release archives.
 
 ## Tour
@@ -120,7 +117,6 @@ The generated plan ramps from 10 to 50 transactions per second, so a dev chain p
 
 The action installs the CLI, your plugins and credentials, runs the plan and uploads the run's reports. Save this as `.github/workflows/load-test.yml`:
 
-<!-- v0.3.0: remove after release (change the action ref below to @v0) -->
 ```yaml
 name: load-test
 on: workflow_dispatch
@@ -131,7 +127,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - id: load
-        uses: agustinustheo/polkameter@259400a67647d9f662506e3b7469a0d565d7c676
+        uses: agustinustheo/polkameter@v0
         with:
           plan: <plan>
           plugins: plugins/<plugin-binary>

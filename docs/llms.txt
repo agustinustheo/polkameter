@@ -2,7 +2,7 @@
 
 > PolkaMeter is a Rust CLI for load and stress tests on Polkadot SDK chains. XML plans select rates, plugins prepare transactions, and load reports give a verdict (PASS, WARN, FAIL or INCONCLUSIVE). Results include samples in JMeter's CSV format. The substrate plugin loads chains with the standard System and Balances pallets and compatible signing types without custom code.
 
-Install the CLI and the substrate plugin with `curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh | sh`. <!-- v0.3.0: remove after release -->Until v0.3.0 is released, build both from source as the Install page shows. Register the plugin with `polkameter plugin install "$(command -v polkameter-substrate-plugin)"`. `polkameter init --rpc ws://127.0.0.1:9944` writes a starter plan. Plans never hold secrets: `polkameter plugin credential PROFILE ENV_VAR` maps a credential profile to an environment variable.
+Install the CLI and the substrate plugin with `curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh | sh`. Register the plugin with `polkameter plugin install "$(command -v polkameter-substrate-plugin)"`. `polkameter init --rpc ws://127.0.0.1:9944` writes a starter plan. Plans never hold secrets: `polkameter plugin credential PROFILE ENV_VAR` maps a credential profile to an environment variable.
 
 ## Start here
 

@@ -164,9 +164,6 @@ mkdir -p plans
 curl -fsSL -o plans/substrate-remarks-ci.polkameter.xml https://raw.githubusercontent.com/agustinustheo/polkameter/v0.3.0/examples/substrate-remarks-ci.polkameter.xml
 ```
 
-<!-- v0.3.0: remove after release -->
-Both CI jobs need the v0.3.0 release. Until then, replace `v0.3.0` with `main` in the two URLs above. In the GitHub job, use `agustinustheo/polkameter@259400a67647d9f662506e3b7469a0d565d7c676` and delete `version:`. In GitLab, use a Rust image, replace the install script with [the source build](install.md#before-v030-is-released), and install the plugin from `$(command -v polkameter-substrate-plugin)`.
-
 Keep the action's `version` equal to the plan's substrate plugin version, `<plugin id="substrate" version="0.3.0">`. The plugin ships with the CLI, and PolkaMeter refuses a plugin of another version.
 
 ```yaml
