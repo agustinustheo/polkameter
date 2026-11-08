@@ -40,7 +40,7 @@ fn a_monitorless_run_is_not_inconclusive() {
 	fs::write(work.0.join("summary.json"), summary.to_string()).unwrap();
 
 	let output = std::process::Command::new(env!("CARGO_BIN_EXE_polkameter"))
-		.args(["report", "--format", "json"])
+		.arg("report")
 		.arg(&work.0)
 		.env("POLKAMETER_PLUGIN_REGISTRY", work.0.join("plugins.json"))
 		.output()

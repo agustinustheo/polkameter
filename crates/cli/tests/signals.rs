@@ -92,15 +92,9 @@ impl Work {
 		command
 	}
 
-	/// Starts `polkameter run` on the plan, with JSON output.
+	/// Starts `polkameter run` on the plan.
 	fn run(&self, args: &[&str]) -> Process {
-		Process::spawn(
-			self.polkameter()
-				.arg("run")
-				.arg(self.0.join("plan.xml"))
-				.args(["--format", "json"])
-				.args(args),
-		)
+		Process::spawn(self.polkameter().arg("run").arg(self.0.join("plan.xml")).args(args))
 	}
 
 	/// The only run directory under `root`, once it exists.
@@ -217,9 +211,8 @@ fn sigterm_and_sigint_stop_a_local_run_after_teardown_and_exit_143_and_130() {
 		assert!(cleanup_succeeded(&run));
 		assert!(!alive(pid.trim()), "the plugin outlived the run");
 		let stdout = BufReader::new(process.0.stdout.take().unwrap());
-		let last: Value = serde_json::from_str(&stdout.lines().last().unwrap().unwrap()).unwrap();
-		assert_eq!(last["event"], "artifact-written");
-		assert_eq!(last["outcome"]["exit_code"], code);
+		let last = stdout.lines().last().unwrap().unwrap();
+		assert!(last.starts_with("Run stopped. Artifacts: "), "{last}");
 	}
 }
 

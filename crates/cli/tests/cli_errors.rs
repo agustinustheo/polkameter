@@ -1,6 +1,5 @@
-//! The CLI's errors in CI: `--format json` prints errors as JSON lines and versions every line,
-//! plan errors name the file and position, a closed standard output does not panic, and
-//! concurrent `polkameter plugin` commands keep every change to the registry.
+//! The CLI's errors in CI: plan errors name the file and position, a closed standard output does
+//! not panic, and concurrent `polkameter plugin` commands keep every change to the registry.
 
 use std::{
 	path::{Path, PathBuf},
@@ -55,22 +54,8 @@ fn output(command: &mut Command) -> (i32, String, String) {
 	)
 }
 
-/// Every line of `stdout` as JSON, each checked for `event` and `schemaVersion`.
-fn json_lines(stdout: &str) -> Vec<Value> {
-	let lines: Vec<Value> = stdout
-		.lines()
-		.map(|line| serde_json::from_str(line).unwrap_or_else(|e| panic!("{line}: {e}")))
-		.collect();
-	assert!(!lines.is_empty(), "no JSON output");
-	for line in &lines {
-		assert!(line["event"].is_string(), "line without event: {line}");
-		assert_eq!(line["schemaVersion"], 1, "line without schemaVersion: {line}");
-	}
-	lines
-}
-
 #[test]
-fn failed_validate_prints_a_json_error_naming_the_file_and_position() {
+fn failed_validate_names_the_file_and_position() {
 	let work = Work::new("validate");
 	let big = format!("{CORE_PLAN}<!--{}-->", "x".repeat(2 * 1024 * 1024));
 	// Files left empty here are not written: a directory, a FIFO and a device.
@@ -108,69 +93,44 @@ fn failed_validate_prints_a_json_error_naming_the_file_and_position() {
 		if !contents.is_empty() {
 			std::fs::write(work.0.join(name), contents).unwrap();
 		}
-		let (code, stdout, stderr) =
-			output(work.polkameter().args(["validate", name, "--format", "json"]));
+		let (code, stdout, stderr) = output(work.polkameter().args(["validate", name]));
 		assert_eq!(code, 2, "{name}: {stderr}");
-		let lines = json_lines(&stdout);
-		assert_eq!(lines.len(), 1, "{stdout}");
-		let error = &lines[0];
-		assert_eq!(error["event"], "error");
-		assert_eq!(error["command"], "validate");
-		assert_eq!(error["exitCode"], 2);
-		assert_eq!(error["file"], name, "{error}");
+		assert!(stdout.is_empty(), "{stdout}");
+		assert!(stderr.contains(name), "{stderr}");
 		if let Some((line, column)) = position {
-			assert_eq!(
-				(error["kind"].as_str(), error["valid"].as_bool()),
-				(Some("invalid"), Some(false))
-			);
-			assert_eq!(
-				(error["line"].as_u64(), error["column"].as_u64()),
-				(Some(line), Some(column))
-			);
+			let at = format!("PolkaMeter: {name}: line {line}, column {column}: ");
+			assert!(stderr.starts_with(&at), "{stderr}");
 		}
 	}
 }
 
 #[test]
-fn preflight_json_carries_event_and_version_and_errors_are_json() {
+fn preflight_errors_name_the_file_and_position() {
 	let work = Work::new("preflight");
 	work.write("core.xml", CORE_PLAN);
-	let (code, stdout, stderr) =
-		output(work.polkameter().args(["preflight", "core.xml", "--format", "json"]));
+	let (code, stdout, stderr) = output(work.polkameter().args(["preflight", "core.xml"]));
 	assert_eq!(code, 0, "{stderr}");
-	let lines = json_lines(&stdout);
-	assert_eq!(lines.len(), 1);
-	assert_eq!(lines[0]["event"], "preflight");
-	assert_eq!(lines[0]["valid"], true);
+	assert_eq!(stdout, "Preflight passed.\n");
 
 	let missing = CORE_PLAN.replace(
 		"<setup>",
 		"<plugins><plugin id=\"example\" version=\"0.1.0\" protocol=\"1\"/></plugins><setup>",
 	);
 	work.write("missing.xml", &missing);
-	let (code, stdout, stderr) =
-		output(work.polkameter().args(["preflight", "missing.xml", "--format", "json"]));
+	let (code, _, stderr) = output(work.polkameter().args(["preflight", "missing.xml"]));
 	assert_eq!(code, 3, "{stderr}");
 	let expected = "plugin example is not installed on this host; run `polkameter plugin install \
 	                <path-to-executable>`";
 	assert!(stderr.contains(expected), "{stderr}");
-	let error = &json_lines(&stdout)[0];
-	assert_eq!(error["event"], "error");
-	assert_eq!(error["command"], "preflight");
-	assert_eq!(error["kind"], "preflight");
-	assert_eq!(error["exitCode"], 3);
-	assert!(error["message"].as_str().unwrap().contains(expected), "{error}");
-	assert!(error.get("valid").is_none());
 	// It names the <plugin> element and the registry it read.
-	assert_eq!((error["file"].as_str(), error["line"].as_u64()), (Some("missing.xml"), Some(2)));
+	assert!(stderr.starts_with("PolkaMeter: missing.xml: line 2, "), "{stderr}");
 	let registry = format!("(registry {})", work.registry().display());
 	assert!(stderr.contains(&registry), "{stderr}");
 
 	// A contract error names the file, the step, the operation and the input.
 	let unknown = CORE_PLAN.replace("name=\"expected\"", "name=\"wanted\"");
 	work.write("unknown.xml", &unknown);
-	let (code, stdout, stderr) =
-		output(work.polkameter().args(["preflight", "unknown.xml", "--format", "json"]));
+	let (code, _, stderr) = output(work.polkameter().args(["preflight", "unknown.xml"]));
 	assert_eq!(code, 3, "{stderr}");
 	assert!(
 		stderr.contains(
@@ -179,8 +139,6 @@ fn preflight_json_carries_event_and_version_and_errors_are_json() {
 		),
 		"{stderr}"
 	);
-	let error = &json_lines(&stdout)[0];
-	assert_eq!((error["file"].as_str(), error["line"].as_u64()), (Some("unknown.xml"), Some(4)));
 }
 
 /// Runs `args` with standard output (or standard error) closed by its reader before the command
@@ -212,9 +170,7 @@ fn broken_output_streams() {
 	let run = &["run", "core.xml", "--output", "runs"][..];
 	for (args, expected) in [
 		(&["validate", "core.xml"][..], 0),
-		(&["validate", "core.xml", "--format", "json"], 0),
-		(&["validate", "missing.xml", "--format", "json"], 2),
-		(&["run", "core.xml", "--output", "runs", "--format", "json"], 0),
+		(&["validate", "missing.xml"], 2),
 		(run, 0),
 		(&["plugin", "list"], 0),
 		(&["--help"], 0),
@@ -229,7 +185,7 @@ fn broken_output_streams() {
 		let (code, stdout) = with_closed(&work, args, false);
 		assert_eq!(code, 0, "{args:?}: {stdout}");
 	}
-	let mut runs = 3;
+	let mut runs = 2;
 	if cfg!(target_os = "linux") {
 		for args in [&["validate", "core.xml"][..], run] {
 			let full = std::fs::OpenOptions::new().write(true).open("/dev/full").unwrap();

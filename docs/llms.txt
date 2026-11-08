@@ -22,7 +22,7 @@ Install the CLI and the substrate plugin with `curl -fsSL https://raw.githubuser
 ## Reference
 
 - [Plan](https://agustinustheodorus.com/polkameter/plans.html): every plan element and attribute
-- [CLI](https://agustinustheodorus.com/polkameter/cli.html): commands, exit codes, environment variables, JSON output
+- [CLI](https://agustinustheodorus.com/polkameter/cli.html): commands, exit codes, environment variables
 - [Run directory](https://agustinustheodorus.com/polkameter/results.html): every file a run writes
 - [Plugin reference](https://agustinustheodorus.com/polkameter/plugins.html): plugin protocol, manifest, PreparedTx, the polkameter-plugin-sdk crate
 - [The substrate plugin](https://agustinustheodorus.com/polkameter/substrate-plugin.html): its operations, inputs and outputs

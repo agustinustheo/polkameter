@@ -7,7 +7,6 @@ Requires python3, xmllint (CI installs libxml2-utils), and a built CLI:
 Set POLKAMETER to use another CLI binary. No plugins or chain are needed.
 """
 
-from html.parser import HTMLParser
 import json
 import os
 from pathlib import Path
@@ -59,47 +58,18 @@ def mutate(xml, path, attribute, value):
     return ET.tostring(root, encoding="unicode")
 
 
-class CodeBlocks(HTMLParser):
-    """Read rendered XML in the slides, including text split across syntax spans."""
-
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.blocks = []
-        self.current = None
-
-    def handle_starttag(self, tag, attrs):
-        if tag == "pre":
-            self.current = []
-
-    def handle_data(self, data):
-        if self.current is not None:
-            self.current.append(data)
-
-    def handle_endtag(self, tag):
-        if tag == "pre" and self.current is not None:
-            self.blocks.append("".join(self.current))
-            self.current = None
-
-
 def published_plans():
     for path in sorted((ROOT / "examples").rglob("*.polkameter.xml")):
         yield str(path.relative_to(ROOT)), path.read_text()
     for path in sorted((SKILL / "templates").glob("*.polkameter.xml")):
         yield str(path.relative_to(ROOT)), path.read_text()
-    for path in sorted((ROOT / "docs").rglob("*")):
-        if path.suffix == ".md":
-            # Accept both Markdown fence styles, including indented list fences.
-            blocks = re.findall(
-                r"^\s*(`{3,}|~{3,})[^\n]*\n(.*?)^\s*\1\s*$",
-                path.read_text(), re.MULTILINE | re.DOTALL,
-            )
-            blocks = [body for _, body in blocks]
-        elif path.suffix == ".html":
-            parser = CodeBlocks()
-            parser.feed(path.read_text())
-            blocks = parser.blocks
-        else:
-            continue
+    for path in sorted((ROOT / "docs").rglob("*.md")):
+        # Accept both Markdown fence styles, including indented list fences.
+        blocks = re.findall(
+            r"^\s*(`{3,}|~{3,})[^\n]*\n(.*?)^\s*\1\s*$",
+            path.read_text(), re.MULTILINE | re.DOTALL,
+        )
+        blocks = [body for _, body in blocks]
         for index, body in enumerate(blocks, 1):
             # A plan starts with markup; CLI output that quotes an element name is not one.
             if body.lstrip().startswith("<") and re.search(r"<polkameter-plan(?:\s|/?>)", body):
@@ -125,25 +95,16 @@ class PlanValidation(unittest.TestCase):
             capture_output=True, text=True, timeout=30,
         )
         cli = subprocess.run(
-            [str(CLI), "validate", str(path), "--format", "json"],
+            [str(CLI), "validate", str(path)],
             capture_output=True, text=True, timeout=30,
         )
         self.assertEqual(schema.returncode, 0 if schema_valid else 3, schema.stderr)
         self.assertEqual(cli.returncode, 0 if cli_valid else 2, cli.stdout + cli.stderr)
-        result = json.loads(cli.stdout)
-        self.assertEqual(result["schemaVersion"], 1)
         if cli_valid:
-            self.assertEqual(result["event"], "validation")
-            self.assertIs(result["valid"], True)
+            self.assertIn("Plan is structurally valid.", cli.stdout)
         else:
-            # The diagnostic goes to stderr and, with --format json, as an error line to stdout.
             self.assertIn(cli_error, cli.stderr)
-            self.assertEqual(result["event"], "error")
-            self.assertIs(result["valid"], False)
-            self.assertEqual(result["exitCode"], 2)
-            self.assertEqual(result["file"], str(path))
-            self.assertIn(cli_error, result["message"])
-            self.assertTrue(result["message"].startswith(f"{path}: "), result["message"])
+            self.assertTrue(cli.stderr.startswith(f"PolkaMeter: {path}: "), cli.stderr)
         if not schema_valid:
             for fragment in schema_error:
                 self.assertIn(fragment, schema.stderr)

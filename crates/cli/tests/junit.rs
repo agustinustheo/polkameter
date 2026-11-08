@@ -1,4 +1,4 @@
-//! Process-level JUnit replay, copies, redaction and schema validation.
+//! Process-level JUnit replay, redaction and schema validation.
 use std::{fs, path::Path, process::Command};
 
 #[path = "support/smoke_run.rs"]
@@ -36,40 +36,21 @@ fn validate(path: &Path) {
 }
 
 #[test]
-fn recorded_report_matches_golden_validates_and_copies() {
+fn recorded_report_matches_golden_and_validates() {
 	let work = Work::new("fixture");
 	smoke_run::copy_to(&work.0);
-	let copy = work.0.join("reports/load.xml");
-	let output = work
-		.cli()
-		.arg("report")
-		.arg(&work.0)
-		.arg("--junit")
-		.arg(&copy)
-		.output()
-		.unwrap();
+	let output = work.cli().arg("report").arg(&work.0).output().unwrap();
 	assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
 	let xml_path = work.0.join("junit.xml");
 	let xml = fs::read_to_string(&xml_path).unwrap();
-	assert_eq!(xml, fs::read_to_string(copy).unwrap());
 	let normalized = xml.replace(&work.0.display().to_string(), "/runs/smoke-run");
 	assert_eq!(normalized, include_str!("fixtures/smoke-run/junit.xml"));
 	validate(&xml_path);
 	// samples.jtl: JMeter CSV, steps stamped with their start time.
 	let jtl = fs::read_to_string(work.0.join("samples.jtl")).unwrap();
 	assert_eq!(jtl, include_str!("fixtures/smoke-run/samples.jtl"));
-	// Rebuilding is deterministic and accepts a destination equal to the default file.
-	assert!(
-		work.cli()
-			.arg("report")
-			.arg(&work.0)
-			.arg("--junit")
-			.arg(&xml_path)
-			.output()
-			.unwrap()
-			.status
-			.success()
-	);
+	// Rebuilding is deterministic.
+	assert!(work.cli().arg("report").arg(&work.0).output().unwrap().status.success());
 	assert_eq!(xml, fs::read_to_string(xml_path).unwrap());
 }
 
@@ -94,7 +75,7 @@ fn report_refuses_an_unknown_summary_schema_and_rewrites_nothing() {
 		assert!(stderr.contains(&format!("has schemaVersion {shown}")), "{stderr}");
 		assert!(stderr.contains("reads and writes only schemaVersion 1"), "{stderr}");
 		assert_eq!(fs::read_to_string(&path).unwrap(), text);
-		for derived in ["summary.md", "junit.xml", "samples.jtl", "plots"] {
+		for derived in ["summary.md", "junit.xml", "samples.jtl"] {
 			assert!(!work.0.join(derived).exists(), "{derived} was written");
 		}
 	}
@@ -118,15 +99,12 @@ fn failed_run_writes_redacted_failures_and_skips_and_report_rebuilds_them() {
 			.status
 			.success()
 	);
-	let copy = work.0.join("reports/failure.xml");
 	let output = work
 		.cli()
 		.arg("run")
 		.arg(plan)
 		.arg("--output")
 		.arg(work.0.join("runs"))
-		.arg("--junit")
-		.arg(&copy)
 		.env("POLKAMETER_JUNIT_SECRET", "secret_check")
 		.output()
 		.unwrap();
@@ -136,7 +114,6 @@ fn failed_run_writes_redacted_failures_and_skips_and_report_rebuilds_them() {
 	assert_eq!(runs.len(), 1);
 	let run = &runs[0];
 	let xml = fs::read_to_string(run.join("junit.xml")).unwrap();
-	assert_eq!(xml, fs::read_to_string(copy).unwrap());
 	assert!(!xml.contains("secret_check"));
 	assert!(xml.contains("expected &quot;b&quot;, got &quot;[redacted]&quot;"));
 	for name in ["events.jsonl", "execution.json"] {

@@ -18,7 +18,7 @@ flowchart TD
   load --> evaluate["5. Evaluate steps"]
   evaluate --> judge["6. Judge: checks and verdict, load test only"]
   judge --> teardown["7. Teardown and plugin shutdown"]
-  teardown --> report["8. Report: execution.json, samples, plots"]
+  teardown --> report["8. Report: execution.json, samples"]
 ```
 
 1. Validate. PolkaMeter checks the plan's structure and references. It doesn't contact a chain or start a plugin. A plan that fails here leaves no run directory.
@@ -28,7 +28,7 @@ flowchart TD
 5. Evaluate. Evaluate steps run, and plugins can return checks from them.
 6. Judge. The built-in checks run on the recorded data, and the verdict follows.
 7. Teardown. Teardown steps run even after a failure in setup or later. Then the plugins shut down. A run that fails in preflight sent nothing, so it skips teardown.
-8. Report. The run writes its outcome, `samples.jtl` and the plots.
+8. Report. The run writes its outcome and `samples.jtl`.
 
 An error in preflight, setup or an evaluate step ends the run as `failed`. A stop rule that fires during the load is a result, not an error, so the report is still written. [Exit codes](cli.md#exit-codes) lists what each case returns.
 

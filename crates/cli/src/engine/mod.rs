@@ -8,6 +8,5 @@ pub mod junit;
 mod machine;
 pub mod measurement;
 pub mod monitors;
-mod plots;
 mod wiring;
 mod xml;

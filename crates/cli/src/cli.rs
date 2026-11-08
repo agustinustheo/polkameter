@@ -12,12 +12,12 @@ use std::{
 
 use crate::engine::{
 	execute::{Outcome, RunOptions, RunState, Stop},
-	plan::{Location, Plan, PlanError, read_plan},
+	plan::{Plan, PlanError, read_plan},
 	plugins::Registry,
 };
 use crate::shutdown::{self, Signal, Signals};
 use anyhow::Context as _;
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
 
 use crate::PRODUCT_NAME;
@@ -37,10 +37,6 @@ struct Cli {
 	#[command(subcommand)]
 	command: Command,
 }
-
-/// Help for `--format` on every command that has it.
-const FORMAT_HELP: &str = "Output format: human-readable text, or one JSON object per line on \
-                           standard output, errors included";
 
 #[derive(Debug, Subcommand)]
 enum Command {
@@ -76,8 +72,6 @@ enum Command {
 	Validate {
 		/// The plan file (`*.polkameter.xml`, at most 2 MiB), or a pipe such as /dev/stdin.
 		plan: PathBuf,
-		#[arg(long, value_enum, default_value_t = OutputFormat::Human, help = FORMAT_HELP)]
-		format: OutputFormat,
 	},
 	/// Check installed plugins, required evidence and read-only steps, without submitting.
 	///
@@ -93,16 +87,13 @@ enum Command {
 		/// Environment variable for the plan's only credential, instead of its configured profile.
 		#[arg(long, value_name = "ENV_VAR")]
 		credential_env: Option<String>,
-		#[arg(long, value_enum, default_value_t = OutputFormat::Human, help = FORMAT_HELP)]
-		format: OutputFormat,
 	},
 	/// Run a plan.
 	///
 	/// Writes a run-* directory under --output with events, results, summary.md and junit.xml.
 	/// Exits 3 when the run fails before its setup phase, so before it submits anything, as
 	/// preflight does; teardown is then skipped.
-	#[command(after_long_help = "Example:\n  polkameter run plan.polkameter.xml --output runs \
-	                             --junit reports/polkameter.xml")]
+	#[command(after_long_help = "Example:\n  polkameter run plan.polkameter.xml --output runs")]
 	Run {
 		/// The plan file (`*.polkameter.xml`, at most 2 MiB), or a pipe such as /dev/stdin.
 		plan: PathBuf,
@@ -120,26 +111,16 @@ enum Command {
 		/// or a required check has no result. Combine with --fail-on-verdict to fail on both.
 		#[arg(long)]
 		fail_on_inconclusive: bool,
-		/// Write an additional copy of junit.xml to this local path.
-		#[arg(long, value_name = "PATH")]
-		junit: Option<PathBuf>,
 		/// Seconds a run gets after SIGINT or SIGTERM to finish its teardown and write its
 		/// results. A second signal, or the end of this period, interrupts teardown.
 		#[arg(long, value_name = "SECONDS", default_value_t = shutdown::DEFAULT_GRACE.as_secs())]
 		shutdown_grace: u64,
-		#[arg(long, value_enum, default_value_t = OutputFormat::Human, help = FORMAT_HELP)]
-		format: OutputFormat,
 	},
-	/// Regenerate the checks, summary and plots of a run directory from its files.
+	/// Regenerate the checks, summary and samples of a run directory from its files.
 	#[command(after_long_help = "Example:\n  polkameter report runs/run-1792255021142-12303-1")]
 	Report {
 		/// The run-* directory that holds execution.json and summary.md.
 		artifact_directory: PathBuf,
-		/// Write an additional copy of junit.xml to this path.
-		#[arg(long, value_name = "PATH")]
-		junit: Option<PathBuf>,
-		#[arg(long, value_enum, default_value_t = OutputFormat::Human, help = FORMAT_HELP)]
-		format: OutputFormat,
 	},
 }
 
@@ -195,19 +176,6 @@ enum PluginCommand {
 	},
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
-enum OutputFormat {
-	/// Human-readable text.
-	#[default]
-	Human,
-	/// One JSON object per line.
-	Json,
-}
-
-/// The version of the `--format json` output: every line carries it as `schemaVersion`. It
-/// changes only when a field is removed, renamed or changes meaning.
-pub const OUTPUT_SCHEMA_VERSION: u32 = 1;
-
 /// Which exit code an error maps to.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ErrorKind {
@@ -219,19 +187,16 @@ enum ErrorKind {
 	Runtime,
 }
 
-/// A command's failure: its message and exit code, and the plan file and position it refers to,
-/// when it refers to one.
+/// A command's failure: its message and exit code.
 #[derive(Debug)]
 struct CliError {
 	kind: ErrorKind,
 	message: String,
-	file: Option<PathBuf>,
-	location: Option<Location>,
 }
 
 impl CliError {
 	fn new(kind: ErrorKind, message: String) -> Self {
-		Self { kind, message, file: None, location: None }
+		Self { kind, message }
 	}
 	fn invalid(message: String) -> Self {
 		Self::new(ErrorKind::Invalid, message)
@@ -253,7 +218,7 @@ impl CliError {
 			Some(location) => format!("{}: {location}: {detail}", path.display()),
 			None => format!("{}: {detail}", path.display()),
 		};
-		Self { kind, message, file: Some(path.to_owned()), location }
+		Self { kind, message }
 	}
 	fn exit_code(&self) -> i32 {
 		match self.kind {
@@ -262,51 +227,11 @@ impl CliError {
 			ErrorKind::Runtime => 1,
 		}
 	}
-	/// The error as a `--format json` line for `command`.
-	fn to_json(&self, command: &str) -> Value {
-		let kind = match self.kind {
-			ErrorKind::Invalid => "invalid",
-			ErrorKind::Preflight => "preflight",
-			ErrorKind::Runtime => "runtime",
-		};
-		let mut line = json!({
-			"event": "error",
-			"command": command,
-			"kind": kind,
-			"exitCode": self.exit_code(),
-			"message": self.message,
-		});
-		if command == "validate" {
-			line["valid"] = json!(false);
-		}
-		if let Some(file) = &self.file {
-			// A path that is not UTF-8 is shown with replacement characters, as on standard error.
-			line["file"] = json!(file.to_string_lossy());
-		}
-		if let Some(location) = self.location {
-			line["line"] = json!(location.line);
-			line["column"] = json!(location.column);
-		}
-		line
-	}
 }
 
 impl std::fmt::Display for CliError {
 	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		formatter.write_str(&self.message)
-	}
-}
-
-impl Command {
-	/// The command's name if it prints `--format json`, so that an error is printed as JSON too.
-	fn json_name(&self) -> Option<&'static str> {
-		match self {
-			Self::Validate { format: OutputFormat::Json, .. } => Some("validate"),
-			Self::Preflight { format: OutputFormat::Json, .. } => Some("preflight"),
-			Self::Run { format: OutputFormat::Json, .. } => Some("run"),
-			Self::Report { format: OutputFormat::Json, .. } => Some("report"),
-			_ => None,
-		}
 	}
 }
 
@@ -318,7 +243,6 @@ pub fn main() -> i32 {
 			return error.exit_code();
 		},
 	};
-	let json_command = cli.command.json_name();
 	let result = match tokio::runtime::Runtime::new() {
 		Ok(runtime) => runtime.block_on(execute(cli)),
 		Err(error) => Err(CliError::runtime(format!("cannot start the async runtime: {error}"))),
@@ -327,9 +251,6 @@ pub fn main() -> i32 {
 		Ok(code) => code,
 		Err(error) => {
 			eprintln!("{PRODUCT_NAME}: {error}");
-			if let Some(command) = json_command {
-				write_json_line(&error.to_json(command));
-			}
 			error.exit_code()
 		},
 	};
@@ -342,32 +263,26 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 		Command::Init { rpc, kind, profile, output, force } => {
 			init(&rpc, kind, &profile, output, force).await
 		},
-		Command::Validate { plan: path, format } => {
+		Command::Validate { plan: path } => {
 			let plan = load(&path)?;
 			// Built-in operations are checked here too; plugin operations need preflight.
 			crate::engine::execute::validate_core_contracts(&plan)
 				.map_err(|e| CliError::in_plan(ErrorKind::Invalid, &path, &e))?;
-			write_result(
-				format,
-				&json!({"event":"validation","valid":true,"plan":plan.name}),
-				"Plan is structurally valid. Preflight checks the installed plugins.".into(),
-			);
+			write_stdout("Plan is structurally valid. Preflight checks the installed plugins.");
 			Ok(0)
 		},
-		Command::Preflight { plan: path, credential_env, format } => {
+		Command::Preflight { plan: path, credential_env } => {
 			let plan = load(&path)?;
 			let registry = registry(&plan, credential_env)?;
-			let mut result =
-				crate::engine::execute::preflight(&plan, &registry).await.map_err(|e| {
-					// Errors about one step or element name the plan file and position.
-					if e.downcast_ref::<PlanError>().is_some_and(|e| e.location.is_some()) {
-						CliError::in_plan(ErrorKind::Preflight, &path, &e)
-					} else {
-						CliError::preflight(format!("{e:#}"))
-					}
-				})?;
-			result["event"] = json!("preflight");
-			write_result(format, &result, "Preflight passed.".into());
+			crate::engine::execute::preflight(&plan, &registry).await.map_err(|e| {
+				// Errors about one step or element name the plan file and position.
+				if e.downcast_ref::<PlanError>().is_some_and(|e| e.location.is_some()) {
+					CliError::in_plan(ErrorKind::Preflight, &path, &e)
+				} else {
+					CliError::preflight(format!("{e:#}"))
+				}
+			})?;
+			write_stdout("Preflight passed.");
 			Ok(0)
 		},
 		Command::Run {
@@ -376,9 +291,7 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 			credential_env,
 			fail_on_verdict,
 			fail_on_inconclusive,
-			junit,
 			shutdown_grace,
-			format,
 		} => {
 			// Before any work, so that no signal can end the process without cleanup.
 			let mut signals = install_signals()?;
@@ -393,12 +306,10 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 				)));
 			}
 			let registry = registry(&plan, credential_env)?;
-			let local = LocalRun { plan, registry, output, options, junit, grace, path };
-			run_local(local, format, &mut signals).await
+			let local = LocalRun { plan, registry, output, options, grace, path };
+			run_local(local, &mut signals).await
 		},
-		Command::Report { artifact_directory, format, junit } => {
-			report(artifact_directory, format, junit)
-		},
+		Command::Report { artifact_directory } => report(artifact_directory),
 	}
 }
 
@@ -478,7 +389,7 @@ fn load(path: &Path) -> Result<Plan, CliError> {
 		if e.downcast_ref::<PlanError>().is_some() {
 			CliError::in_plan(ErrorKind::Invalid, path, &e)
 		} else {
-			CliError { file: Some(path.to_owned()), ..CliError::invalid(format!("{e:#}")) }
+			CliError::invalid(format!("{e:#}"))
 		}
 	})?;
 	Plan::parse(&xml).map_err(|e| CliError::in_plan(ErrorKind::Invalid, path, &e))
@@ -510,25 +421,17 @@ struct LocalRun {
 	registry: Registry,
 	output: PathBuf,
 	options: RunOptions,
-	junit: Option<PathBuf>,
 	grace: Duration,
 }
 
-async fn run_local(
-	run: LocalRun,
-	format: OutputFormat,
-	signals: &mut Signals,
-) -> Result<i32, CliError> {
-	let LocalRun { path, plan, registry, output, options, junit, grace } = run;
+async fn run_local(run: LocalRun, signals: &mut Signals) -> Result<i32, CliError> {
+	let LocalRun { path, plan, registry, output, options, grace } = run;
 	let stop = Stop::default();
 	let sink = Arc::new(move |event: Value| {
-		if format == OutputFormat::Json {
-			write_json_line(&event);
-		} else if event["event"] == "phase" {
+		if event["event"] == "phase" {
 			eprintln!("Phase: {}", event["phase"].as_str().unwrap_or("unknown"));
 		}
 	});
-	let secrets = available_secrets(&registry);
 	let work =
 		crate::engine::execute::run_stoppable(plan, registry, &output, stop.clone(), sink, options);
 	let supervised = shutdown::supervise(
@@ -558,29 +461,14 @@ async fn run_local(
 		return Ok(signal.exit_code());
 	};
 	let outcome = result.map_err(|e| CliError::runtime(e.to_string()))?;
-	if let Err(error) = copy_junit(&outcome.artifact_dir, junit.as_deref()) {
-		junit_warning(format, Some(&outcome.artifact_dir), &error.to_string(), &secrets);
-	}
-	write_artifact_written(format, &path, &outcome);
+	write_artifact_written(&path, &outcome);
 	Ok(outcome.exit_code)
 }
 
 /// Reports a finished run's artifacts. A failed run, or one that completed with failures, also
-/// prints its reason to standard error in both formats. When a failed run's reason points into
-/// the plan, the JSON line also has the plan's `file`, `line` and `column`, as an `error` line
-/// does.
-fn write_artifact_written(format: OutputFormat, plan: &Path, outcome: &Outcome) {
-	let mut line = json!({"event":"artifact-written","outcome":outcome});
-	if let Some(at) = outcome.error_location.filter(|_| outcome.state == RunState::Failed) {
-		line["file"] = json!(plan.to_string_lossy());
-		line["line"] = json!(at.line);
-		line["column"] = json!(at.column);
-	}
-	write_result(
-		format,
-		&line,
-		format!("Run {}. Artifacts: {}", outcome.state, outcome.artifact_dir.display()),
-	);
+/// prints its reason to standard error.
+fn write_artifact_written(plan: &Path, outcome: &Outcome) {
+	write_stdout(&format!("Run {}. Artifacts: {}", outcome.state, outcome.artifact_dir.display()));
 	if let Some(reason) = failure_reason(plan, outcome) {
 		eprintln!("{PRODUCT_NAME}: {reason}");
 	}
@@ -684,10 +572,10 @@ fn check_summary_version(directory: &std::path::Path) -> Result<(), CliError> {
 	}
 }
 
-fn report(path: PathBuf, format: OutputFormat, junit: Option<PathBuf>) -> Result<i32, CliError> {
+fn report(path: PathBuf) -> Result<i32, CliError> {
 	let runtime = |e: anyhow::Error| CliError::runtime(format!("{e:#}"));
 	check_summary_version(&path)?;
-	crate::engine::artifacts::write_outputs(&path)
+	crate::engine::artifacts::write_samples(&path)
 		.with_context(|| format!("cannot read run directory {}", path.display()))
 		.map_err(runtime)?;
 	// The credentials this host has now. The run's endpoints are not known here: the files
@@ -701,12 +589,10 @@ fn report(path: PathBuf, format: OutputFormat, junit: Option<PathBuf>) -> Result
 	}
 	let redactor = crate::redact::Redactor::new(&secrets, None::<&str>);
 	if let Err(error) = crate::engine::junit::write(&path, &redactor) {
-		junit_warning(format, Some(&path), &error.to_string(), &secrets);
-	} else if let Err(error) = copy_junit(&path, junit.as_deref()) {
-		junit_warning(format, Some(&path), &error.to_string(), &secrets);
+		crate::engine::junit::warning(Some(&path), &error.to_string(), &secrets);
 	}
 	let execution = path.join("execution.json");
-	let outcome: crate::engine::execute::Outcome = serde_json::from_slice(
+	serde_json::from_slice::<Outcome>(
 		&std::fs::read(&execution)
 			.map_err(|e| CliError::runtime(format!("cannot read {}: {e}", execution.display())))?,
 	)
@@ -714,7 +600,7 @@ fn report(path: PathBuf, format: OutputFormat, junit: Option<PathBuf>) -> Result
 	let summary_path = path.join("summary.md");
 	let summary = std::fs::read_to_string(&summary_path)
 		.map_err(|e| CliError::runtime(format!("cannot read {}: {e}", summary_path.display())))?;
-	write_result(format, &json!({"event":"report","outcome":outcome,"summary":summary}), summary);
+	write_stdout(&summary);
 	Ok(0)
 }
 
@@ -725,61 +611,6 @@ fn available_secrets(registry: &Registry) -> Vec<String> {
 		.filter_map(|name| std::env::var(name).ok())
 		.filter(|value| !value.is_empty())
 		.collect()
-}
-
-fn junit_warning(
-	format: OutputFormat,
-	directory: Option<&std::path::Path>,
-	message: &str,
-	secrets: &[String],
-) {
-	let event = crate::engine::junit::warning(directory, message, secrets);
-	if format == OutputFormat::Json {
-		write_json_line(&event);
-	}
-}
-
-/// Keep the default report even when the caller requests a copy (including the same path).
-fn copy_junit(
-	directory: &std::path::Path,
-	destination: Option<&std::path::Path>,
-) -> Result<(), CliError> {
-	if let Some(destination) = destination {
-		let xml = std::fs::read_to_string(directory.join("junit.xml"))
-			.map_err(|e| CliError::runtime(format!("cannot read junit.xml: {e}")))?;
-		write_junit_copy(destination, &xml)?;
-	}
-	Ok(())
-}
-
-fn write_junit_copy(destination: &std::path::Path, xml: &str) -> Result<(), CliError> {
-	let result = (|| -> std::io::Result<()> {
-		if let Some(parent) = destination.parent().filter(|p| !p.as_os_str().is_empty()) {
-			std::fs::create_dir_all(parent)?;
-		}
-		std::fs::write(destination, xml)
-	})();
-	result.map_err(|e| {
-		CliError::runtime(format!("cannot write JUnit copy {}: {e}", destination.display()))
-	})
-}
-
-/// A JSON line in JSON mode, else the human text on stdout.
-fn write_result(format: OutputFormat, json_value: &Value, human: String) {
-	if format == OutputFormat::Json {
-		write_json_line(json_value);
-	} else {
-		write_stdout(&human);
-	}
-}
-
-/// Writes one JSON line, adding `schemaVersion` to an object that lacks it.
-fn write_json_line(value: &Value) {
-	let mut value = value.clone();
-	if let Some(object) = value.as_object_mut() {
-		object.entry("schemaVersion").or_insert(json!(OUTPUT_SCHEMA_VERSION));
-	}
-	write_stdout(&value.to_string());
 }
 
 /// Set once standard output is gone, for example after `| head -1` exits.

@@ -4,7 +4,7 @@ Each run stores its reports and recorded data in a new run directory. [Read the 
 
 ## The run directory
 
-Example plan, no load test (plot files trimmed):
+Example plan, no load test:
 
 ```text
 run-1792253315025-76883-1/
@@ -12,7 +12,6 @@ run-1792253315025-76883-1/
   execution.json
   junit.xml
   plan.json
-  plots/                      throughput.svg, latency-percentiles.svg, failure-breakdown.svg
   plugins/example/stderr.log
   resolved-plan.json
   samples.jtl
@@ -32,7 +31,6 @@ The name is `run-<milliseconds>-<pid>-<sequence>`. The directory is created in `
 | `plan.json` | The plan as parsed. |
 | `resolved-plan.json` | Plugin manifests and registry records, `<monitors>` settings, CLI version and BLAKE2 hash. |
 | `samples.jtl` | One CSV row per step, and per transaction in a load test. See [samples.jtl](#samplesjtl). |
-| `plots/*.svg` | Throughput, latency percentiles, and failures by status. |
 | `plugins/<id>/stderr.log` | Standard error of each plugin that started. |
 
 ## Redaction
@@ -44,7 +42,7 @@ Redaction replaces known credential values and endpoint secrets with `[redacted]
 
 An endpoint keeps its scheme, host, port, path and parameter names. For example, `wss://user:pass@rpc.example/ws?apikey=KEY` is written as `wss://[redacted]@rpc.example/ws?apikey=[redacted]`.
 
-Redaction covers every file PolkaMeter writes in the run directory, including the load-test records. It also covers each plugin's `stderr.log`, the `--format json` events, and the messages on standard error. PolkaMeter also finds a secret in its JSON-escaped forms.
+Redaction covers every file PolkaMeter writes in the run directory, including the load-test records. It also covers each plugin's `stderr.log` and the messages on standard error. PolkaMeter also finds a secret in its JSON-escaped forms.
 
 PolkaMeter doesn't redact:
 
@@ -99,7 +97,7 @@ PolkaMeter writes `execution.json` after teardown. When you stop a run, it write
 
 ## junit.xml
 
-`junit.xml` is a test report that CI systems such as GitLab, Jenkins and GitHub test-report actions can display. Every run tries to write it after teardown, also when the run failed or was stopped. `--junit PATH` on `run` or `report` writes one more copy to `PATH`.
+`junit.xml` is a test report that CI systems such as GitLab, Jenkins and GitHub test-report actions can display. Every run tries to write it after teardown, also when the run failed or was stopped.
 
 | Recorded result | JUnit test case |
 | --- | --- |
@@ -256,15 +254,13 @@ Each event has a `timestamp` in milliseconds and `version` `2`. Credentials are 
 | `warning` | `message` | Something did not stop the run: a reconnect to a different node, a plugin that could not be restarted, or a JUnit file that could not be written. |
 | `completed` | `outcome` | The run ended, with the same outcome as `execution.json`. |
 
-`--format json` adds `artifact-written`, `report` and `validation` lines. These are not written to `events.jsonl`.
-
 ## Rebuilding a report
 
 `polkameter report <run directory>` rebuilds the reports from the recorded data and prints `summary.md`. It needs `execution.json` and `summary.md`.
 
 | Plan | Rewrites |
 | --- | --- |
-| Without `<load>` | `junit.xml`, `samples.jtl` and the plots |
+| Without `<load>` | `junit.xml` and `samples.jtl` |
 | With `<load>` | Also the checks, `summary.json` and `summary.md` |
 
 The result comes only from the files. So you can copy a run directory to another machine and report it there.

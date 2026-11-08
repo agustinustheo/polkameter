@@ -30,7 +30,7 @@ PolkaMeter is a load-testing tool for Polkadot SDK chains. The `polkameter` CLI 
 3. For a load test, `engine::measurement::run` starts the monitors (`engine/monitors`) and the load runner (`load`).
 4. After the finality wait, `load::loss` gives each flood transaction its status.
 5. `observers::checks::report::write` reads the files through `observers::files`, runs the checks and writes `summary.json` and `summary.md`.
-6. `engine::artifacts` writes `samples.jtl` and the plots. `execute` writes `execution.json`.
+6. `engine::artifacts` writes `samples.jtl`. `execute` writes `execution.json`.
 
 Each part writes its own raw files. Only `observers::files` knows the formats. That's why `polkameter report` can run steps 5 and 6 again from the files alone.
 

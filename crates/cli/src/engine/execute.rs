@@ -537,52 +537,53 @@ async fn inspect_plugins(plan: &Plan, registry: &Registry) -> Result<Value> {
 	})
 	.await
 }
-pub async fn preflight(plan: &Plan, registry: &Registry) -> Result<Value> {
-	let mut inspected = inspect(plan, registry).await?;
-	// Preflight never arms setup or load and writes only to its scratch directory.
-	// Every credential the plan declares must resolve, as a run needs it; no value is used here.
-	registry.check_credentials(plan)?;
-	let calibration =
-		with_scratch_plugins(plan, registry, "preflight", async |plugins, context, directory| {
-			check_environment(plan, registry).await?;
-			check_requirements(plan, registry, plugins).await?;
-			let mut values = plan.values("preflight");
-			let mut redactor = redactor(plan, registry, &[]);
-			let mut _diagnostics = crate::redact::activate(&redactor);
-			// Resolve credentials only if an explicit preflight step references one.
-			if plan
-				.preflight
-				.entries
-				.iter()
-				.flat_map(|s| &s.inputs)
-				.any(|i| matches!(&i.source, InputSource::Ref(r) if r.starts_with("credentials.")))
-			{
-				let credentials = registry.resolve_credentials(plan)?;
-				redactor = self::redactor(plan, registry, &secret_values(&credentials));
-				_diagnostics = crate::redact::activate(&redactor);
-				for warning in short_credentials(&credentials) {
-					crate::redact::diag!("{} warning: {warning}", crate::PRODUCT_NAME);
-				}
-				values.extend(credentials);
+/// Checks the plan against its plugins, credentials and chain, and runs its `<preflight>` steps
+/// and the calibration. Never arms setup or load and writes only to its scratch directory.
+pub async fn preflight(plan: &Plan, registry: &Registry) -> Result<()> {
+	with_scratch_plugins(plan, registry, "preflight", async |plugins, context, directory| {
+		validate_contracts(plan, plugins)?;
+		// Every credential the plan declares must resolve, as a run needs it; no value is used.
+		registry.check_credentials(plan)?;
+		check_environment(plan, registry).await?;
+		check_requirements(plan, registry, plugins).await?;
+		let mut values = plan.values("preflight");
+		let mut redactor = redactor(plan, registry, &[]);
+		let mut _diagnostics = crate::redact::activate(&redactor);
+		// Resolve credentials only if an explicit preflight step references one.
+		if plan
+			.preflight
+			.entries
+			.iter()
+			.flat_map(|s| &s.inputs)
+			.any(|i| matches!(&i.source, InputSource::Ref(r) if r.starts_with("credentials.")))
+		{
+			let credentials = registry.resolve_credentials(plan)?;
+			redactor = self::redactor(plan, registry, &secret_values(&credentials));
+			_diagnostics = crate::redact::activate(&redactor);
+			for warning in short_credentials(&credentials) {
+				crate::redact::diag!("{} warning: {warning}", crate::PRODUCT_NAME);
 			}
-			let redacted = |e: anyhow::Error| anyhow::anyhow!(redactor.text(&format!("{e:#}")));
-			for step in &plan.preflight.entries {
-				// Plugin errors may echo a credential, so they are redacted as the run's are.
-				let output =
-					invoke(step, plugins, &values, context, &CancellationToken::new(), &redactor)
-						.await
-						.map_err(redacted)?;
-				values.insert(format!("steps.{}", step.id), output);
-			}
-			calibrate(plan, directory).await.map_err(redacted)
-		})
-		.await
-		// Monitor and RPC checks may report an endpoint.
-		.map_err(|e| anyhow::anyhow!(redactor(plan, registry, &[]).text(&format!("{e:#}"))))?;
-	if let Some(calibration) = calibration {
-		inspected["calibration"] = calibration;
-	}
-	Ok(inspected)
+			values.extend(credentials);
+		}
+		let redacted = |e: anyhow::Error| anyhow::anyhow!(redactor.text(&format!("{e:#}")));
+		for step in &plan.preflight.entries {
+			// Plugin errors may echo a credential, so they are redacted as the run's are.
+			let output =
+				invoke(step, plugins, &values, context, &CancellationToken::new(), &redactor)
+					.await
+					.map_err(redacted)?;
+			values.insert(format!("steps.{}", step.id), output);
+		}
+		calibrate(plan, directory).await.map_err(redacted)
+	})
+	.await
+	.map_err(|e| {
+		// Plan errors keep their position. Monitor and RPC checks may report an endpoint.
+		if e.downcast_ref::<crate::engine::plan::PlanError>().is_some() {
+			return e;
+		}
+		anyhow::anyhow!(redactor(plan, registry, &[]).text(&format!("{e:#}")))
+	})
 }
 async fn check_environment(plan: &Plan, registry: &Registry) -> Result<()> {
 	let (Some(monitor), Some(targets)) = (&plan.monitors, wiring::monitor_targets(plan, registry)?)
@@ -601,8 +602,8 @@ async fn check_environment(plan: &Plan, registry: &Registry) -> Result<()> {
 	Ok(())
 }
 /// Calibrate during preflight, before any recognition, signing or proving in setup.
-async fn calibrate(plan: &Plan, directory: &Path) -> Result<Option<Value>> {
-	let Some(load) = &plan.load else { return Ok(None) };
+async fn calibrate(plan: &Plan, directory: &Path) -> Result<()> {
+	let Some(load) = &plan.load else { return Ok(()) };
 	let endpoint = target_endpoint(plan, &load.target)?;
 	let measured = async {
 		let client = polkameter_plugin_sdk::chain::Client::connect(endpoint).await?;
@@ -618,8 +619,7 @@ async fn calibrate(plan: &Plan, directory: &Path) -> Result<Option<Value>> {
 	});
 	// Preserve the evidence even when the mismatch prevents setup.
 	write_json(&directory.join("calibration.json"), &calibration)?;
-	validate_interval(load.block_interval_seconds, measured)?;
-	Ok(Some(calibration))
+	validate_interval(load.block_interval_seconds, measured)
 }
 
 /// Opt-in run exit policies. Defaults preserve the original run behavior.
@@ -1131,8 +1131,8 @@ impl Run<'_> {
 				.flatten()
 				.map(|reason| self.log.redactor.text(&reason)),
 		};
-		// Samples and plots come from the raw files.
-		for error in [redacted, artifacts::write_outputs(&self.directory)]
+		// Samples come from the raw files.
+		for error in [redacted, artifacts::write_samples(&self.directory)]
 			.into_iter()
 			.filter_map(Result::err)
 		{
