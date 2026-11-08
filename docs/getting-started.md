@@ -36,20 +36,19 @@ PolkaMeter refuses to run a plugin whose file changed after you installed it. In
 ## 3. Validate and run the example plan
 
 ```sh
-polkameter validate examples/plugin-workflow.polkameter.xml
-polkameter run examples/plugin-workflow.polkameter.xml --output target/runs
+polkameter validate examples/plugin-data-flow.polkameter.xml
+polkameter run examples/plugin-data-flow.polkameter.xml --output target/runs
 ```
 
 ```text
 Plan is structurally valid. Preflight checks the installed plugins.
 Phase: preflight
 Phase: setup
-Phase: workflow
 Phase: teardown
 Run completed. Artifacts: ~/polkameter/target/runs/run-1792254543387-3002-1
 ```
 
-Here's what the plan did. The setup step calls `example.double` on 21 and gets 42. Then the workflow runs. The plan simulates three users, and each user repeats the steps twice. Each time, `example.double` turns 42 into 84. Then `core.assert-equal` checks the result. It's an assertion: a step that fails the run when two values differ.
+Here's what the plan did. Its setup steps call `example.double` on 21 and get 42, then call it again on 42 and get 84. Then `core.assert-equal` checks the result. It's an assertion: a step that fails the run when two values differ.
 
 ## 4. Read the run directory
 
@@ -81,7 +80,7 @@ Start with `summary.md`. The other files you'll use most:
 Make a copy of the plan that expects the wrong answer, 85 instead of 84. Run it and print the exit code:
 
 ```sh
-sed 's/value="84"/value="85"/' examples/plugin-workflow.polkameter.xml > target/broken.polkameter.xml
+sed 's/value="84"/value="85"/' examples/plugin-data-flow.polkameter.xml > target/broken.polkameter.xml
 polkameter run target/broken.polkameter.xml --output target/runs
 echo $?
 ```

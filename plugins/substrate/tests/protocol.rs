@@ -37,7 +37,7 @@ impl Session {
 			"id": self.next,
 			"operation": operation,
 			"inputs": inputs,
-			"context": {"run_id": "run-test", "artifact_dir": std::env::temp_dir(), "user": null, "iteration": null},
+			"context": {"run_id": "run-test", "artifact_dir": std::env::temp_dir()},
 		});
 		writeln!(self.stdin, "{request}").unwrap();
 		self.stdin.flush().unwrap();

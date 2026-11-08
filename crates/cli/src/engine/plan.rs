@@ -327,7 +327,6 @@ element! {
 		credentials: Credentials = child "credentials",
 		preflight: Steps = child "preflight",
 		setup: Steps = child "setup",
-		workflows: Vec<Workflow> = list "workflow",
 		load: Option<Load> = opt_child "load",
 		monitors: Option<Monitors> = opt_child "monitors",
 		thresholds: Thresholds = child "thresholds",
@@ -389,16 +388,6 @@ element! {
 		operation: String = attr "use",
 		timeout_ms: u64 = attr "timeout-ms" or 60_000,
 		inputs: Vec<Input> = list "input",
-	}
-}
-element! {
-	pub struct Workflow {
-		location: Location = position "",
-		id: String = attr "id",
-		users: u32 = attr "users" or 1,
-		iterations: u32 = attr "iterations" or 1,
-		concurrency: u32 = attr "concurrency" or 1,
-		steps: Vec<Step> = list "step",
 	}
 }
 element! {
@@ -813,34 +802,6 @@ impl Plan {
 		}
 		self.validate_plan_steps(&self.preflight.entries, "<preflight>", &mut known, &mut names)?;
 		self.validate_plan_steps(&self.setup.entries, "<setup>", &mut known, &mut names)?;
-		let mut workflow_ids = BTreeSet::new();
-		for workflow in &self.workflows {
-			let at = workflow.location;
-			let id = &workflow.id;
-			check!(identifier(id), at, "workflow ID `{id}` is invalid; {ID_RULE}");
-			check!(workflow_ids.insert(id), at, "workflow ID `{id}` is declared twice");
-			check!(
-				(1..=100_000).contains(&workflow.users),
-				at,
-				"workflow `{id}` has users=\"{}\"; use 1 to 100000",
-				workflow.users
-			);
-			check!(
-				workflow.iterations > 0,
-				at,
-				"workflow `{id}` has iterations=\"0\"; use at least 1"
-			);
-			check!(
-				(1..=1000).contains(&workflow.concurrency),
-				at,
-				"workflow `{id}` has concurrency=\"{}\"; use 1 to 1000",
-				workflow.concurrency
-			);
-			// A workflow's own outputs and loop indices are visible only inside it.
-			let mut scope = BTreeSet::from(["user.index".to_owned(), "iteration.index".to_owned()]);
-			let section = format!("workflow `{id}`");
-			self.validate_steps(&workflow.steps, &section, &known, &mut scope, &mut names)?;
-		}
 		if let Some(load) = &self.load {
 			self.validate_load(load, &known, &names)?;
 		}
@@ -920,27 +881,13 @@ impl Plan {
 		}
 		Ok(())
 	}
-	/// Checks plan-level steps, whose outputs stay visible to the steps after them.
+	/// Checks steps in order. References may name `known` (the plan's values and earlier steps);
+	/// each step's outputs join `known` for the steps after it.
 	fn validate_plan_steps<'a>(
 		&self,
 		steps: &'a [Step],
 		section: &str,
 		known: &mut BTreeSet<String>,
-		names: &mut Names<'a>,
-	) -> Result<()> {
-		let mut outputs = BTreeSet::new();
-		self.validate_steps(steps, section, known, &mut outputs, names)?;
-		known.append(&mut outputs);
-		Ok(())
-	}
-	/// Checks steps in order. References may name `known` (the plan's values and earlier steps
-	/// outside workflows) or `scope` (this scope's own step outputs); outputs go into `scope`.
-	fn validate_steps<'a>(
-		&self,
-		steps: &'a [Step],
-		section: &str,
-		known: &BTreeSet<String>,
-		scope: &mut BTreeSet<String>,
 		names: &mut Names<'a>,
 	) -> Result<()> {
 		for step in steps {
@@ -966,14 +913,14 @@ impl Plan {
 				);
 				if let InputSource::Ref(reference) = &input.source {
 					check!(
-						reference_known(known, reference) || reference_known(scope, reference),
+						reference_known(known, reference),
 						input.location,
 						"step `{id}` ({operation}): input `{name}` refers to `{reference}`, {}",
 						undefined(reference, names, "this step")
 					);
 				}
 			}
-			scope.insert(format!("steps.{id}"));
+			known.insert(format!("steps.{id}"));
 		}
 		Ok(())
 	}
@@ -982,7 +929,6 @@ impl Plan {
 			.entries
 			.iter()
 			.chain(&self.setup.entries)
-			.chain(self.workflows.iter().flat_map(|w| &w.steps))
 			.chain(&self.evaluate.entries)
 			.chain(&self.teardown.entries)
 	}
@@ -1019,13 +965,11 @@ fn reference_known(known: &BTreeSet<String>, reference: &str) -> bool {
 fn undefined(reference: &str, names: &Names, user: &str) -> String {
 	let step = reference.strip_prefix("steps.").and_then(|rest| rest.split('.').next());
 	match step {
-		Some(step) if names.all_steps.contains(step) => format!(
-			"but step `{step}` does not run before {user}; move `{step}` earlier (a workflow's \
-			 outputs are visible only inside that workflow)"
-		),
+		Some(step) if names.all_steps.contains(step) => {
+			format!("but step `{step}` does not run before {user}; move `{step}` earlier")
+		},
 		_ => "but nothing in the plan defines it; use targets.<id>, credentials.<id>, run.id, \
-		      run.directory, run.probeBudget, steps.<earlier step>.<output>, or in a workflow \
-		      user.index or iteration.index"
+		      run.directory, run.probeBudget or steps.<earlier step>.<output>"
 			.to_owned(),
 	}
 }

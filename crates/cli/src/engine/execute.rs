@@ -2,7 +2,7 @@
 use crate::engine::monitors::Job;
 use crate::engine::{
 	artifacts, measurement,
-	plan::{InputSource, Plan, Step, Workflow},
+	plan::{InputSource, Plan, Step},
 	plugins::{Plugins, Registry, checksum},
 	wiring,
 };
@@ -310,10 +310,6 @@ fn check_contracts(plan: &Plan, contracts: Contracts<'_>) -> Result<()> {
 			.iter()
 			.map(|c| (format!("credentials.{}", c.id), Schema::String)),
 	);
-	types.extend([
-		("user.index".into(), Schema::Integer),
-		("iteration.index".into(), Schema::Integer),
-	]);
 	// Steps whose outputs are known, with their operation; and steps whose contract is unknown
 	// here (plugin operations without plugins), whose outputs may be anything.
 	let mut producers: BTreeMap<&str, (&str, Vec<String>)> = BTreeMap::new();
@@ -686,7 +682,7 @@ impl Stop {
 	}
 }
 
-/// Runs a plan in a new directory under `root`. Phases: preflight, setup, workflows, measurement,
+/// Runs a plan in a new directory under `root`. Phases: preflight, setup, measurement,
 /// evaluate, then teardown, which runs whenever the plugins started. The outcome is written to the
 /// run directory and returned; its exit code is 130 when the run was cancelled.
 pub async fn run(
@@ -911,9 +907,6 @@ impl Run<'_> {
 		calibrate(self.plan, &self.directory).await?;
 		self.enter("setup")?;
 		self.run_steps(&self.plan.setup.entries, plugins, values).await?;
-		for workflow in &self.plan.workflows {
-			self.workflow(plugins, values, workflow).await?;
-		}
 		let measured = match &self.plan.load {
 			Some(_) => {
 				self.enter("measurement")?;
@@ -1018,46 +1011,6 @@ impl Run<'_> {
 		values: &mut Values,
 	) -> Result<()> {
 		execute_steps(steps, plugins, values, &self.context, &self.cancel, &self.log).await
-	}
-
-	/// Each user runs its iterations concurrently with the other users, up to the workflow's
-	/// concurrency. A user's iterations run in order, each on a copy of the user's values.
-	async fn workflow(
-		&self,
-		plugins: &Plugins,
-		values: &Values,
-		workflow: &Workflow,
-	) -> Result<()> {
-		self.log
-			.emit(json!({"event": "phase", "phase": "workflow", "id": workflow.id}))?;
-		let steps = Arc::new(workflow.steps.clone());
-		let mut tasks = tokio::task::JoinSet::new();
-		for user in 0..workflow.users {
-			if tasks.len() >= workflow.concurrency as usize {
-				tasks.join_next().await.context("workflow join missing")???;
-			}
-			let (plugins, log, cancel, steps) =
-				(plugins.clone(), self.log.clone(), self.cancel.clone(), Arc::clone(&steps));
-			let (mut context, mut user_values) = (self.context.clone(), values.clone());
-			let iterations = workflow.iterations;
-			tasks.spawn(async move {
-				context.user = Some(user);
-				user_values.insert("user.index".into(), json!(user));
-				for iteration in 0..iterations {
-					// Iteration outputs cannot leak into the next iteration.
-					let mut iteration_values = user_values.clone();
-					context.iteration = Some(iteration);
-					iteration_values.insert("iteration.index".into(), json!(iteration));
-					execute_steps(&steps, &plugins, &mut iteration_values, &context, &cancel, &log)
-						.await?;
-				}
-				Ok::<_, anyhow::Error>(())
-			});
-		}
-		while let Some(task) = tasks.join_next().await {
-			task??;
-		}
-		Ok(())
 	}
 
 	/// Teardown runs even after a failure or cancellation, and runs every step even after one
@@ -1271,7 +1224,7 @@ async fn execute_steps(
 	for step in steps {
 		ensure!(!cancel.is_cancelled(), "run cancelled");
 		let started = Instant::now();
-		let mut event = step_event("step-started", step, context);
+		let mut event = step_event("step-started", step);
 		event["operation"] = json!(step.operation);
 		log.emit(event)?;
 		let result: Result<Value> = with_progress(
@@ -1281,7 +1234,7 @@ async fn execute_steps(
 			invoke(step, plugins, values, context, cancel, &log.redactor),
 		)
 		.await?;
-		let mut event = step_event("step-finished", step, context);
+		let mut event = step_event("step-finished", step);
 		event["elapsedMs"] = json!(started.elapsed().as_millis());
 		event["success"] = json!(result.is_ok());
 		event["error"] = json!(result.as_ref().err().map(ToString::to_string));
@@ -1291,13 +1244,8 @@ async fn execute_steps(
 	Ok(())
 }
 
-fn step_event(kind: &str, step: &Step, context: &Context) -> Value {
-	json!({
-		"event": kind,
-		"step": step.id,
-		"user": context.user,
-		"iteration": context.iteration,
-	})
+fn step_event(kind: &str, step: &Step) -> Value {
+	json!({"event": kind, "step": step.id})
 }
 
 /// Awaits a step, logging a `step-progress` event every five seconds until it completes.

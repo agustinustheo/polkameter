@@ -304,28 +304,19 @@ pub struct Requirement {
 	/// `false` to skip the check.
 	pub required: bool,
 }
-/// Where and for whom an operation runs. PolkaMeter sends it with every [`Request`].
+/// Where an operation runs. PolkaMeter sends it with every [`Request`]. Unknown fields, such as
+/// the `user` and `iteration` that PolkaMeter 0.3 sends, are ignored.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct Context {
 	/// The run's ID.
 	pub run_id: String,
 	/// The plugin's own directory inside the run directory. Write files here.
 	pub artifact_dir: PathBuf,
-	/// The workflow user, from 0. `None` outside a workflow.
-	pub user: Option<u32>,
-	/// The workflow iteration, from 0. `None` outside a workflow.
-	pub iteration: Option<u32>,
 }
 impl Context {
-	/// Context for host work outside any workflow user or iteration.
+	/// Context for host work.
 	pub fn host(run_id: impl Into<String>, artifact_dir: impl Into<PathBuf>) -> Self {
-		Self {
-			run_id: run_id.into(),
-			artifact_dir: artifact_dir.into(),
-			user: None,
-			iteration: None,
-		}
+		Self { run_id: run_id.into(), artifact_dir: artifact_dir.into() }
 	}
 }
 /// One line PolkaMeter writes to the plugin's standard input. [`serve`] reads it.
@@ -344,7 +335,7 @@ pub struct Request {
 	/// The operation's inputs, a JSON object. Defaults to `null`.
 	#[serde(default)]
 	pub inputs: Value,
-	/// Where and for whom the operation runs.
+	/// Where the operation runs.
 	pub context: Context,
 }
 /// One line the plugin writes to standard output in reply to a [`Request`]. [`serve`] writes
@@ -372,8 +363,7 @@ impl Response {
 /// A plugin: a manifest and the code behind its operations. Pass it to [`serve`].
 ///
 /// PolkaMeter starts one plugin process per run and keeps it until the run ends. Calls to one
-/// plugin never overlap. Workflow users and iterations share the process, so key any per-user
-/// state by [`Context::user`] and [`Context::iteration`].
+/// plugin never overlap.
 ///
 /// The [crate-level example](crate#example) implements this trait.
 pub trait Plugin {

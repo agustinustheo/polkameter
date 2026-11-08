@@ -14,7 +14,6 @@ use crate::redact::Redactor;
 
 /// Maximum message/name length before XML escaping (entities require at most six bytes).
 pub const MESSAGE_CHARS: usize = 2048;
-const FAILURES_PER_STEP: usize = 100;
 const REPORT_BYTES: usize = 4 * 1024 * 1024;
 const XML_CHAR_BYTES: usize = 6;
 const SUITE_RESERVE: usize = MESSAGE_CHARS * XML_CHAR_BYTES * 6 + 4096;
@@ -56,8 +55,6 @@ struct Suite {
 	name: String,
 	cases: Vec<Case>,
 }
-
-type Key = (String, Option<u64>, Option<u64>);
 
 /// Writes `junit.xml`. Run-time callers pass the run's redactor, which redacted its events;
 /// offline callers one of the credentials available now, over the already-redacted files. Only recorded
@@ -102,10 +99,6 @@ fn items(value: &Value) -> &[Value] {
 	value.as_array().map_or(&[], Vec::as_slice)
 }
 
-fn key(event: &Value) -> Key {
-	(text(event, "step").into(), event["user"].as_u64(), event["iteration"].as_u64())
-}
-
 /// What the report keeps of a `step-finished` event.
 struct Finished {
 	success: bool,
@@ -130,62 +123,8 @@ impl LoadTiming {
 	}
 }
 
-/// One step's finished invocations, aggregated as they are read: passing user/iteration
-/// invocations only add to a count and a duration, and at most [`FAILURES_PER_STEP`] failures
-/// are kept, the first in key order; the rest only add their duration. Memory stays bounded
-/// however many invocations a run has.
-#[derive(Default)]
-struct StepRecord {
-	/// Finished invocations.
-	finished: u64,
-	/// Passing user/iteration invocations.
-	passed: u64,
-	/// Their total time.
-	passed_ms: u64,
-	/// Failed invocations.
-	failures: usize,
-	/// The total time of the failures not kept.
-	overflow_ms: u64,
-	/// Kept cases in key order: the first failures, and passes outside a workflow.
-	kept: BTreeMap<Key, Finished>,
-	/// How many of `kept` are failures.
-	kept_failures: usize,
-}
-
-impl StepRecord {
-	fn finish(&mut self, key: Key, event: Finished) {
-		self.finished += 1;
-		if key.1.is_some() && event.success {
-			self.passed += 1;
-			self.passed_ms = self.passed_ms.saturating_add(event.elapsed_ms);
-			return;
-		}
-		let failed = !event.success;
-		if let Some(old) = self.kept.insert(key, event) {
-			// The same invocation finished twice: the later record replaces the earlier.
-			self.finished -= 1;
-			if !old.success {
-				self.failures -= 1;
-				self.kept_failures -= 1;
-			}
-		}
-		if !failed {
-			return;
-		}
-		self.failures += 1;
-		self.kept_failures += 1;
-		if self.kept_failures > FAILURES_PER_STEP {
-			let last = self.kept.iter().rev().find(|(_, f)| !f.success).map(|(k, _)| k.clone());
-			if let Some(f) = last.and_then(|k| self.kept.remove(&k)) {
-				self.overflow_ms = self.overflow_ms.saturating_add(f.elapsed_ms);
-				self.kept_failures -= 1;
-			}
-		}
-	}
-}
-
-/// Builds the suites from the plan and the recorded events, read once in order. Only bounded
-/// aggregates per step are kept, never the events themselves.
+/// Builds the suites from the plan and the recorded events, read once in order. Only what each
+/// step's last events say is kept, never the events themselves.
 fn suites(
 	plan: &Value,
 	events: impl IntoIterator<Item = Result<Value>>,
@@ -197,17 +136,9 @@ fn suites(
 	for section in ["preflight", "setup", "evaluate", "teardown"] {
 		add_section(&mut suites, &mut owners, section.into(), items(&plan[section]["step"]));
 	}
-	for workflow in items(&plan["workflow"]) {
-		add_section(
-			&mut suites,
-			&mut owners,
-			format!("workflow:{}", text(workflow, "@id")),
-			items(&workflow["step"]),
-		);
-	}
 	// Started and not finished: what is left at the end was interrupted.
-	let mut started: BTreeMap<Key, Option<u64>> = BTreeMap::new();
-	let mut records: BTreeMap<String, StepRecord> = BTreeMap::new();
+	let mut started: BTreeMap<String, Option<u64>> = BTreeMap::new();
+	let mut records: BTreeMap<String, Finished> = BTreeMap::new();
 	let mut phase = "plan".to_owned();
 	// The timestamp of the last event that is neither `completed` nor `warning`.
 	let mut end = None;
@@ -225,29 +156,23 @@ fn suites(
 			timing.stop = Some(event["timestamp"].as_u64());
 		}
 		match name {
-			"phase" => {
-				phase = if event["phase"] == "workflow" {
-					format!("workflow:{}", text(&event, "id"))
-				} else {
-					text(&event, "phase").into()
-				};
-			},
+			"phase" => phase = text(&event, "phase").into(),
 			"step-started" | "step-finished" => {
-				let key = key(&event);
+				let step = text(&event, "step").to_owned();
 				// Old runs may have no plan.json. Their event phases still identify suites.
-				if !owners.contains_key(&key.0) {
+				if !owners.contains_key(&step) {
 					let index = suites.iter().position(|s| s.name == phase).unwrap_or_else(|| {
 						suites.push(Suite { name: phase.clone(), cases: vec![] });
 						suites.len() - 1
 					});
-					owners.insert(key.0.clone(), index);
+					owners.insert(step.clone(), index);
 				}
 				if name == "step-started" {
-					started.insert(key, event["timestamp"].as_u64());
+					started.insert(step, event["timestamp"].as_u64());
 				} else {
-					started.remove(&key);
-					records.entry(key.0.clone()).or_default().finish(
-						key,
+					started.remove(&step);
+					records.insert(
+						step,
 						Finished {
 							success: event["success"] == true,
 							elapsed_ms: event["elapsedMs"].as_u64().unwrap_or(0),
@@ -261,83 +186,24 @@ fn suites(
 	}
 	let end = end.flatten().unwrap_or(0);
 	for (id, index) in owners {
-		let mut cases = Vec::new();
-		let record = records.remove(&id).unwrap_or_default();
-		let (passed, passed_ms) = (record.passed, record.passed_ms);
-		let (mut failures, mut overflow_ms, mut invocations) =
-			(record.failures, record.overflow_ms, record.finished);
-		for (key, event) in &record.kept {
-			cases.push(Case {
-				name: case_name(key),
+		let case = if let Some(event) = records.remove(&id) {
+			Case {
+				name: id,
 				ms: event.elapsed_ms,
 				status: if event.success { Status::Passed } else { Status::Failed },
-				message: event.error.clone().unwrap_or_else(|| "Step completed".into()),
-			});
-		}
-		let interrupted = started.range((id.clone(), None, None)..).take_while(|(k, _)| k.0 == id);
-		for (key, timestamp) in interrupted {
-			invocations += 1;
-			failures += 1;
-			if failures > FAILURES_PER_STEP {
-				overflow_ms =
-					overflow_ms.saturating_add(end.saturating_sub(timestamp.unwrap_or(end)));
-				continue;
+				message: event.error.unwrap_or_else(|| "Step completed".into()),
 			}
-			cases.push(Case {
-				name: case_name(key),
+		} else if let Some(timestamp) = started.get(&id) {
+			Case {
+				name: id,
 				ms: end.saturating_sub(timestamp.unwrap_or(end)),
 				status: Status::Failed,
 				message: format!("Step interrupted: {}", text(outcome, "error")),
-			});
-		}
-		if passed > 0 {
-			cases.push(Case {
-				name: format!("{id} [passing invocations]"),
-				ms: passed_ms,
-				status: Status::Passed,
-				message: format!("{passed} passing user/iteration invocations"),
-			});
-		}
-		if failures > FAILURES_PER_STEP {
-			cases.push(Case {
-				name: format!("{id} [additional failures]"),
-				ms: overflow_ms,
-				status: Status::Failed,
-				message: format!(
-					"{} additional failed invocations; full details in events.jsonl",
-					failures - FAILURES_PER_STEP
-				),
-			});
-		}
-		if let Some(workflow) = items(&plan["workflow"])
-			.iter()
-			.find(|w| items(&w["step"]).iter().any(|s| text(s, "@id") == id))
-		{
-			let expected = workflow["@users"]
-				.as_u64()
-				.unwrap_or(1)
-				.saturating_mul(workflow["@iterations"].as_u64().unwrap_or(1));
-			if invocations > 0 && invocations < expected {
-				cases.push(Case {
-					name: format!("{id} [not run]"),
-					ms: 0,
-					status: Status::Skipped,
-					message: format!(
-						"{} user/iteration invocations not run",
-						expected - invocations
-					),
-				});
 			}
-		}
-		if cases.is_empty() {
-			cases.push(Case {
-				name: id,
-				ms: 0,
-				status: Status::Skipped,
-				message: "Step not run".into(),
-			});
-		}
-		suites[index].cases.extend(cases);
+		} else {
+			Case { name: id, ms: 0, status: Status::Skipped, message: "Step not run".into() }
+		};
+		suites[index].cases.push(case);
 	}
 	let mut execution = mapped_case(
 		"execution".into(),
@@ -424,13 +290,6 @@ fn add_section(
 	suites.push(Suite { name, cases: vec![] });
 	for step in steps {
 		owners.insert(text(step, "@id").into(), index);
-	}
-}
-
-fn case_name((id, user, iteration): &Key) -> String {
-	match (user, iteration) {
-		(Some(user), Some(iteration)) => format!("{id} [user={user}, iteration={iteration}]"),
-		_ => id.clone(),
 	}
 }
 
@@ -552,7 +411,7 @@ fn render(suites: &[Suite], directory: &Path) -> String {
 		xml.push_str("\" errors=\"0\" skipped=\"0\" time=\"0.000\">\n");
 		xml.push_str(&render_case(&Case { name: "additional results".into(), ms: 0,
 			status: if omitted[1] > 0 { Status::Failed } else { Status::Passed },
-			message: format!("Report size limit: {} passed, {} failed, {} skipped cases omitted (cases may aggregate invocations); full details in events.jsonl and summary.json", omitted[0], omitted[1], omitted[2]) }, "report overflow", "additional results"));
+			message: format!("Report size limit: {} passed, {} failed, {} skipped cases omitted; full details in events.jsonl and summary.json", omitted[0], omitted[1], omitted[2]) }, "report overflow", "additional results"));
 		xml.push_str("  </testsuite>\n");
 	}
 	xml.push_str("</testsuites>\n");
@@ -625,33 +484,6 @@ mod tests {
 
 	#[test]
 	fn report_size_stays_bounded() {
-		// Steps never run in a huge workflow are one skipped case, not one per invocation.
-		let plan = json!({"workflow":[{"@id":"w","@users":100000,"@iterations":4000000000u64,
-			"step":[{"@id":"a"},{"@id":"b"}]}]});
-		let events = vec![
-			json!({"event":"step-finished","step":"a","success":true,"user":0,"iteration":0}),
-			json!({"event":"step-finished","step":"a","success":false,"user":1,"iteration":0}),
-		];
-		let unrun = suites(&plan, ok(events), &Value::Null, &json!({"state":"failed"})).unwrap();
-		assert_eq!(unrun[1].cases.len(), 4);
-		assert_eq!(unrun[1].cases[2].status, Status::Skipped);
-		// 200,000 invocations: the first failures are kept, the rest and the passes aggregated.
-		let plan = json!({"workflow":[{"@id":"workers","@users":1000,"@iterations":200,"step":[{"@id":"work"}]}]});
-		let events: Vec<_> = (0..1000)
-			.flat_map(|user| {
-				(0..200).map(move |iteration| {
-					json!({"event":"step-finished", "step":"work", "user":user,"iteration":iteration,
-				"success": !(user == 0 && iteration < 150), "elapsedMs":1})
-				})
-			})
-			.collect();
-		let suites =
-			suites(&plan, ok(events), &Value::Null, &json!({"state":"completed"})).unwrap();
-		let cases = &suites[1].cases;
-		assert_eq!(cases.len(), FAILURES_PER_STEP + 2);
-		assert_eq!(cases.iter().filter(|c| c.status == Status::Failed).count(), 101);
-		assert_eq!(cases.iter().map(|c| c.ms).sum::<u64>(), 200000);
-		assert!(render(&suites, Path::new("/runs/large")).len() < 30000);
 		// 10,000 failed steps with the longest messages still fit the whole-report budget.
 		let suite = Suite {
 			name: "huge".into(),

@@ -17,7 +17,7 @@ polkameter init --rpc ENDPOINT [--kind remarks|transfers] [--profile PROFILE] [-
 Checks a plan's XML, structure, built-in `core.` operations and references. It does not start plugins or connect to a chain. An invalid plan exits `2` and names the file, line and column of the first problem.
 
 ```sh
-polkameter validate examples/plugin-workflow.polkameter.xml
+polkameter validate examples/plugin-data-flow.polkameter.xml
 ```
 
 ```text
@@ -29,7 +29,7 @@ Plan is structurally valid. Preflight checks the installed plugins.
 Starts the plan's plugins and checks each operation and input against its plugin's manifest. It checks that every credential the plan declares has its variable set. It also checks the chain, runs the read-only `<preflight>` steps and, for a plan with a load, measures the block interval. It submits nothing. A failed check exits `3`. Install the plugins first with [`plugin install`](#plugin).
 
 ```sh
-polkameter preflight examples/plugin-workflow.polkameter.xml
+polkameter preflight examples/plugin-data-flow.polkameter.xml
 ```
 
 ```text
@@ -41,7 +41,7 @@ Preflight passed.
 Runs a plan. It writes one `run-*` directory under `--output`.
 
 ```sh
-polkameter run examples/plugin-workflow.polkameter.xml --output runs
+polkameter run examples/plugin-data-flow.polkameter.xml --output runs
 ```
 
 ```text
@@ -192,7 +192,7 @@ Plugins start with a cleared environment. Only `PATH`, `TMPDIR`, `TEMP`, `SYSTEM
 With `--format json`, `validate`, `preflight`, `run` and `report` print one JSON object per line on standard output. They do this also when they fail.
 
 ```sh
-polkameter validate examples/plugin-workflow.polkameter.xml --format json
+polkameter validate examples/plugin-data-flow.polkameter.xml --format json
 ```
 
 ```json

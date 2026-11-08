@@ -1,9 +1,9 @@
 timeStamp,elapsed,label,responseCode,responseMessage,threadName,success,bytes,sentBytes,Latency,Connect,allThreads,grpThreads
-1791020675981,26,step:compatibility,STEP_OK,,user:null:iteration:null,true,0,0,0,0,1,1
-1791020676008,129,step:recognition,STEP_OK,,user:null:iteration:null,true,0,0,0,0,1,1
-1791020676137,34197,step:recognized,STEP_OK,,user:null:iteration:null,true,0,0,0,0,1,1
-1791020710336,104890,step:claims,STEP_OK,,user:null:iteration:null,true,0,0,0,0,1,1
-1791020815227,29,step:fresh,STEP_OK,,user:null:iteration:null,true,0,0,0,0,1,1
+1791020675981,26,step:compatibility,STEP_OK,,steps,true,0,0,0,0,1,1
+1791020676008,129,step:recognition,STEP_OK,,steps,true,0,0,0,0,1,1
+1791020676137,34197,step:recognized,STEP_OK,,steps,true,0,0,0,0,1,1
+1791020710336,104890,step:claims,STEP_OK,,steps,true,0,0,0,0,1,1
+1791020815227,29,step:fresh,STEP_OK,,steps,true,0,0,0,0,1,1
 1791020833576,5602,load:step:0,finalized,93d879c7ebab7b3b083857f489f8e59f9509b44f50f68f8db0c3e5c9eb48e742,load,true,0,0,14,0,1,1
 1791020834076,5102,load:step:0,finalized,0f2c916f428d7481d0d7ee4751803555115380679fd2dc9b682d7fb337093843,load,true,0,0,14,0,1,1
 1791020834576,4602,load:step:0,finalized,43c5966ecee57ba927baf0cd632d3e670e4cc85e119d0eea029b6a5a790946a8,load,true,0,0,14,0,1,1

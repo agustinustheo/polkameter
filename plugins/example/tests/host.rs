@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 mod executable;
 
 fn fixture() -> String {
-	include_str!("../../../examples/plugin-workflow.polkameter.xml").into()
+	include_str!("../../../examples/plugin-data-flow.polkameter.xml").into()
 }
 /// A plan that installs the example plugin; `body` holds its credentials, setup and teardown.
 fn plugin_plan(name: &str, body: &str) -> String {
@@ -87,13 +87,13 @@ fn finished<'a>(events: &'a [Value], step: &'a str) -> impl Iterator<Item = &'a 
 }
 
 #[tokio::test]
-async fn independent_plugin_feeds_builtin_and_plugin_steps_with_scoped_iterations() {
-	let root = scratch("workflow");
+async fn independent_plugin_feeds_builtin_and_plugin_steps() {
+	let root = scratch("data-flow");
 	let outcome = run(&fixture(), registry().await, &root).await;
 	assert_eq!(outcome.exit_code, 0, "{:?}", outcome.error);
 	let events = read_events(&outcome.artifact_dir);
 	assert_eq!(finished(&events, "seed").count(), 1);
-	assert_eq!(finished(&events, "verified").filter(|e| e["success"] == true).count(), 6);
+	assert_eq!(finished(&events, "verified").filter(|e| e["success"] == true).count(), 1);
 }
 #[tokio::test]
 async fn incompatible_version_and_unknown_operation_fail_before_setup() {

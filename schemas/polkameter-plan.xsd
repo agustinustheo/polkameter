@@ -5,10 +5,9 @@
   <xs:annotation>
     <xs:documentation>
       XSD 1.0 checks local structure and value limits. Always run polkameter validate too.
-      The CLI checks section cardinality (all root children except workflow occur at most once),
-      scoped and ordered output references, declared operation providers, monitors requiring load,
-      and expanded ramp rates remaining finite and nonnegative. The choice at the root allows
-      sections in any order, including repeated workflows; xs:all cannot repeat workflows in XSD 1.0.
+      The CLI checks section cardinality (each root child occurs at most once), ordered output
+      references, declared operation providers, monitors requiring load, and expanded ramp rates
+      remaining finite and nonnegative. The choice at the root allows sections in any order.
       The CLI also applies parser limits (2 MiB, depth 16, no DOCTYPE/CDATA or non-leading processing instructions).
       XSD cannot reproduce these parser restrictions or the CLI's restricted namespace syntax.
       Native-size counters use the 64-bit host limit; a 32-bit host also applies its usize limit.
@@ -70,18 +69,6 @@
     <xs:restriction base="xs:integer">
       <xs:minInclusive value="1"/>
       <xs:maxInclusive value="18446744073709551615"/>
-    </xs:restriction>
-  </xs:simpleType>
-  <xs:simpleType name="users">
-    <xs:restriction base="p:positiveU32">
-      <xs:minInclusive value="1"/>
-      <xs:maxInclusive value="100000"/>
-    </xs:restriction>
-  </xs:simpleType>
-  <xs:simpleType name="concurrency">
-    <xs:restriction base="p:positiveU32">
-      <xs:minInclusive value="1"/>
-      <xs:maxInclusive value="1000"/>
     </xs:restriction>
   </xs:simpleType>
   <xs:simpleType name="connections">
@@ -183,17 +170,6 @@
       <xs:element name="credential" type="p:credential" minOccurs="0" maxOccurs="unbounded"/>
     </xs:sequence>
   </xs:complexType>
-  <xs:complexType name="workflow">
-    <xs:sequence>
-      <xs:element name="step" type="p:step" minOccurs="0" maxOccurs="unbounded">
-        <xs:unique name="workflowInputNames"><xs:selector xpath="p:input"/><xs:field xpath="@name"/></xs:unique>
-      </xs:element>
-    </xs:sequence>
-    <xs:attribute name="id" type="p:identifier" use="required"/>
-    <xs:attribute name="users" type="p:users" default="1"/>
-    <xs:attribute name="iterations" type="p:positiveU32" default="1"/>
-    <xs:attribute name="concurrency" type="p:concurrency" default="1"/>
-  </xs:complexType>
   <xs:complexType name="rate">
     <xs:attribute name="tx-per-second" type="p:nonnegativeDouble" use="required"/>
     <xs:attribute name="seconds" type="p:positiveU32" use="required"/>
@@ -258,7 +234,6 @@
         <xs:element name="credentials" type="p:credentials"/>
         <xs:element name="preflight" type="p:steps"/>
         <xs:element name="setup" type="p:steps"/>
-        <xs:element name="workflow" type="p:workflow"/>
         <xs:element name="load" type="p:load"/>
         <xs:element name="monitors" type="p:monitors"/>
         <xs:element name="thresholds" type="p:thresholds"/>
@@ -273,8 +248,7 @@
     <xs:unique name="pluginIds"><xs:selector xpath="p:plugins/p:plugin"/><xs:field xpath="@id"/></xs:unique>
     <xs:unique name="targetIds"><xs:selector xpath="p:targets/p:target"/><xs:field xpath="@id"/></xs:unique>
     <xs:unique name="credentialIds"><xs:selector xpath="p:credentials/p:credential"/><xs:field xpath="@id"/></xs:unique>
-    <xs:unique name="workflowIds"><xs:selector xpath="p:workflow"/><xs:field xpath="@id"/></xs:unique>
-    <xs:unique name="stepIds"><xs:selector xpath="p:preflight/p:step | p:setup/p:step | p:workflow/p:step | p:evaluate/p:step | p:teardown/p:step"/><xs:field xpath="@id"/></xs:unique>
+    <xs:unique name="stepIds"><xs:selector xpath="p:preflight/p:step | p:setup/p:step | p:evaluate/p:step | p:teardown/p:step"/><xs:field xpath="@id"/></xs:unique>
     <xs:keyref name="loadTarget" refer="p:targetIds"><xs:selector xpath="p:load"/><xs:field xpath="@target"/></xs:keyref>
     <xs:keyref name="relayTarget" refer="p:targetIds"><xs:selector xpath="p:monitors"/><xs:field xpath="@relay-target"/></xs:keyref>
   </xs:element>

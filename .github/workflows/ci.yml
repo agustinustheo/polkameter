@@ -159,7 +159,7 @@ jobs:
         id: plan
         with:
           version: latest
-          plan: examples/plugin-workflow.polkameter.xml
+          plan: examples/plugin-data-flow.polkameter.xml
           plugins: target/release/polkameter-example-plugin
           fail-on: verdict
       # A second use in the same matrix job must not collide on the artifact name.
@@ -167,7 +167,7 @@ jobs:
         id: again
         with:
           version: latest
-          plan: examples/plugin-workflow.polkameter.xml
+          plan: examples/plugin-data-flow.polkameter.xml
           plugins: target/release/polkameter-example-plugin
           artifact-retention-days: "1"
       - name: Assert the example plan passed

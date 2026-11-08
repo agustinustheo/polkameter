@@ -71,7 +71,7 @@ enum Command {
 	///
 	/// Exits 2 and names the file, line and column of the first problem when the plan is invalid.
 	#[command(
-		after_long_help = "Example:\n  polkameter validate examples/plugin-workflow.polkameter.xml"
+		after_long_help = "Example:\n  polkameter validate examples/plugin-data-flow.polkameter.xml"
 	)]
 	Validate {
 		/// The plan file (`*.polkameter.xml`, at most 2 MiB), or a pipe such as /dev/stdin.
@@ -85,7 +85,7 @@ enum Command {
 	/// checks that every credential's variable is set, checks the chain and runs the <preflight>
 	/// steps. Exits 3 when a check fails.
 	#[command(
-		after_long_help = "Example:\n  polkameter preflight examples/plugin-workflow.polkameter.xml"
+		after_long_help = "Example:\n  polkameter preflight examples/plugin-data-flow.polkameter.xml"
 	)]
 	Preflight {
 		/// The plan file (`*.polkameter.xml`, at most 2 MiB), or a pipe such as /dev/stdin.
@@ -153,7 +153,7 @@ enum PluginCommand {
 	},
 	/// Start a plan's plugins and print their manifests, without connecting or submitting.
 	#[command(
-		after_long_help = "Example:\n  polkameter plugin inspect examples/plugin-workflow.polkameter.xml"
+		after_long_help = "Example:\n  polkameter plugin inspect examples/plugin-data-flow.polkameter.xml"
 	)]
 	Inspect {
 		/// The plan file (`*.polkameter.xml`, at most 2 MiB), or a pipe such as /dev/stdin.

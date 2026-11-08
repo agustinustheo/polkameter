@@ -4,35 +4,33 @@ PolkaMeter runs your plan and records how it ended. A load test also gives a ver
 
 ## The phases of a run
 
-The phases run in this order. A plan without a load test skips phase 5 and the verdict in phase 7.
+The phases run in this order. A plan without a load test skips phase 4 and the verdict in phase 6.
 
 ```mermaid
 flowchart TD
   validate["1. Validate the plan"] --> preflight["2. Preflight: plugins, read-only steps, block interval"]
   preflight --> setup["3. Setup steps, once"]
-  setup --> workflows["4. Workflows: each user and iteration"]
-  workflows --> load
-  subgraph load["5. Load test only"]
+  setup --> load
+  subgraph load["4. Load test only"]
     direction LR
     baseline["Baseline probes"] --> ramp["Load steps or ramp"] --> recovery["Recovery probes"] --> loss["Drain, finality wait, loss check"]
   end
-  load --> evaluate["6. Evaluate steps"]
-  evaluate --> judge["7. Judge: checks and verdict, load test only"]
-  judge --> teardown["8. Teardown and plugin shutdown"]
-  teardown --> report["9. Report: execution.json, samples, plots"]
+  load --> evaluate["5. Evaluate steps"]
+  evaluate --> judge["6. Judge: checks and verdict, load test only"]
+  judge --> teardown["7. Teardown and plugin shutdown"]
+  teardown --> report["8. Report: execution.json, samples, plots"]
 ```
 
 1. Validate. PolkaMeter checks the plan's structure and references. It doesn't contact a chain or start a plugin. A plan that fails here leaves no run directory.
 2. Preflight. It checks the installed plugins against the plan and runs the preflight steps. For a load test, it also compares the block interval with the chain's. Preflight steps can't change chain state.
 3. Setup. Setup steps run once. They usually prepare the transactions for the load.
-4. Workflows. Each workflow runs its users and their iterations.
-5. Load test. The baseline sends one probe per block with no load. Then the flood runs through the plan's rate steps or ramp until every step ran or a stop rule ends it. Recovery sends one probe per block until the chain is back or `recovery-seconds` runs out. Then the run waits for finality and checks every flood transaction.
-6. Evaluate. Evaluate steps run, and plugins can return checks from them.
-7. Judge. The built-in checks run on the recorded data, and the verdict follows.
-8. Teardown. Teardown steps run even after a failure in setup or later. Then the plugins shut down. A run that fails in preflight sent nothing, so it skips teardown.
-9. Report. The run writes its outcome, `samples.jtl` and the plots.
+4. Load test. The baseline sends one probe per block with no load. Then the flood runs through the plan's rate steps or ramp until every step ran or a stop rule ends it. Recovery sends one probe per block until the chain is back or `recovery-seconds` runs out. Then the run waits for finality and checks every flood transaction.
+5. Evaluate. Evaluate steps run, and plugins can return checks from them.
+6. Judge. The built-in checks run on the recorded data, and the verdict follows.
+7. Teardown. Teardown steps run even after a failure in setup or later. Then the plugins shut down. A run that fails in preflight sent nothing, so it skips teardown.
+8. Report. The run writes its outcome, `samples.jtl` and the plots.
 
-An error in preflight, setup, a workflow or an evaluate step ends the run as `failed`. A stop rule that fires during the load is a result, not an error, so the report is still written. [Exit codes](cli.md#exit-codes) lists what each case returns.
+An error in preflight, setup or an evaluate step ends the run as `failed`. A stop rule that fires during the load is a result, not an error, so the report is still written. [Exit codes](cli.md#exit-codes) lists what each case returns.
 
 ## Why every transaction gets one status
 

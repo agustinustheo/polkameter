@@ -77,7 +77,7 @@ fn write_samples(directory: &Path) -> Result<()> {
 			label: format!("step:{}", event["step"].as_str().unwrap_or("unknown")),
 			response_code: if success { "STEP_OK" } else { "STEP_FAILED" }.into(),
 			response_message: event["error"].as_str().unwrap_or("").into(),
-			thread_name: format!("user:{}:iteration:{}", event["user"], event["iteration"]),
+			thread_name: "steps".into(),
 			success,
 			bytes: 0,
 			sent_bytes: 0,

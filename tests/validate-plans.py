@@ -37,7 +37,7 @@ FULL = plan('''
   <setup><step id="prepare" use="example.prepare">
     <input name="value" value="21"/>
   </step></setup>
-  <workflow id="users"><step id="echo" use="core.echo"><input name="value" ref="user.index"/></step></workflow>
+  <evaluate><step id="echo" use="core.echo"><input name="value" ref="run.id"/></step></evaluate>
   <load target="chain" source-ref="steps.prepare.flood" probes-ref="steps.prepare.probes">
     <rate tx-per-second="0" seconds="1"/>
   </load>
@@ -235,9 +235,6 @@ case("smoke mode", plan(attrs='version="1" name="test" mode="smoke"'))
 reversed_plan = ET.fromstring(FULL)
 reversed_plan[:] = reversed(list(reversed_plan))
 case("sections in reverse order", ET.tostring(reversed_plan, encoding="unicode"))
-case("workflows interleaved with sections", plan('''
-  <workflow id="a"/><targets/><workflow id="b"/><setup/><workflow id="c"/>
-'''))
 
 # Every required attribute is checked with both validators, including nested elements.
 for path, attributes in [
@@ -247,7 +244,6 @@ for path, attributes in [
     ("p:credentials/p:credential", ["id", "profile"]),
     ("p:setup/p:step", ["id", "use"]),
     ("p:setup/p:step/p:input", ["name"]),
-    ("p:workflow", ["id"]),
     ("p:load", ["target", "source-ref", "probes-ref"]),
     ("p:load/p:rate", ["tx-per-second", "seconds"]),
     ("p:monitors", ["topology", "relay-target", "para-id"]),
@@ -285,12 +281,6 @@ for path, attribute, good, bad, reason in [
       'core.': 'step `prepare`: use="core." has an invalid operation name ``'}),
     ("p:setup/p:step", "timeout-ms", ["1"], ["0"],
      'step `prepare`: `timeout-ms` must be at least 1'),
-    ("p:workflow", "users", ["100000"], ["100001"],
-     'workflow `users` has users='),
-    ("p:workflow", "iterations", ["1"], ["0"],
-     'workflow `users` has iterations="0"; use at least 1'),
-    ("p:workflow", "concurrency", ["1000"], ["1001"],
-     'workflow `users` has concurrency='),
     ("p:load", "connections", ["64"], ["65"],
      '<load> has connections='),
     ("p:load", "baseline-probes", ["1000"], ["1001"],
@@ -364,17 +354,17 @@ case("unknown attribute", mutate(FULL, ".", "unknown", "x"), False,
 case("unknown child", plan('<unknown/>'), False,
      cli_error="unknown element <unknown> in <polkameter-plan>",
      schema_error=(f"Element '{{{NAMESPACE}}}unknown'", "not expected"))
-for tag in ["plugin", "target", "credential", "workflow", "step"]:
+for tag in ["plugin", "target", "credential", "step"]:
     root = ET.fromstring(FULL)
     node = root.find(f".//{{{NAMESPACE}}}{tag}")
     parent = next(parent for parent in root.iter() if node in list(parent))
     parent.append(ET.fromstring(ET.tostring(node)))
     reason = {"plugin": "plugin ID `example` is declared twice", "target": "target ID `chain` is declared twice",
-              "credential": "credential ID `admin` is declared twice", "workflow": "workflow ID `users` is declared twice",
+              "credential": "credential ID `admin` is declared twice",
               "step": "step ID `prepare` is declared twice"}[tag]
     case(f"duplicate {tag} ID", ET.tostring(root, encoding="unicode"), False,
          cli_error=reason, schema_error=(f"Element '{{{NAMESPACE}}}{tag}'", "Duplicate key-sequence"))
-case("step IDs are global", FULL.replace('<workflow id="users">', '<workflow id="users"><step id="prepare" use="core.echo"/>'), False,
+case("step IDs are global", FULL.replace('<evaluate>', '<evaluate><step id="prepare" use="core.echo"/>'), False,
      cli_error="step ID `prepare` is declared twice; step IDs must be unique in the whole plan",
      schema_error=(f"Element '{{{NAMESPACE}}}step'", "Duplicate key-sequence"))
 case("duplicate input name", FULL.replace('<input name="value" value="21"/>', '<input name="value" value="21"/>' * 2), False,

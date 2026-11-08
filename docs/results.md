@@ -106,7 +106,6 @@ PolkaMeter writes `execution.json` after teardown. When you stop a run, it write
 | Plan execution, and each plan step | One case each. Success passes. A failure is `<failure>`. A step that never started is `<skipped>`. |
 | Each load check | One case. `fail` is `<failure>`. `warn` passes, with the warning in the output. `no result` is `<skipped>`. |
 | The load verdict | One case, `overall verdict`. FAIL is `<failure>`. INCONCLUSIVE is `<skipped>`. |
-| Workflow steps | Passing calls of a step become one case with a count. Each failure up to 100 per step is its own case. |
 
 The JUnit report doesn't change the exit code.
 
@@ -236,7 +235,7 @@ If the plan does not monitor what a check reads, the check is `no result` with a
 | `label` | `step:<step id>` | `load:step:<step index>` |
 | `responseCode` | `STEP_OK` or `STEP_FAILED` | Transaction status |
 | `responseMessage` | Step error, or empty | Transaction hash |
-| `threadName` | `user:<n>:iteration:<n>`, or `user:null:iteration:null` outside a workflow | `load` |
+| `threadName` | `steps` | `load` |
 | `success` | `true` if the step succeeded | `true` if finalized and not failed |
 | `Latency` | `0` | Reply time, in milliseconds |
 
@@ -248,10 +247,10 @@ Each event has a `timestamp` in milliseconds and `version` `2`. Credentials are 
 
 | `event` | Fields | When |
 | --- | --- | --- |
-| `phase` | `phase`, and `id` for a workflow | Each phase start: `preflight`, `setup`, `workflow`, `teardown`. A load test adds, in order, `measurement`, `baseline`, `load`, `recovery`, `reconciliation` and `checks`. |
-| `step-started` | `step`, `operation`, `user`, `iteration` | A step starts. |
+| `phase` | `phase` | Each phase start: `preflight`, `setup`, `teardown`. A load test adds, in order, `measurement`, `baseline`, `load`, `recovery`, `reconciliation` and `checks`. |
+| `step-started` | `step`, `operation` | A step starts. |
 | `step-progress` | `step`, `elapsedMs` | Every 5 seconds while a step runs. |
-| `step-finished` | `step`, `elapsedMs`, `success`, `error`, `user`, `iteration` | A step ends. |
+| `step-finished` | `step`, `elapsedMs`, `success`, `error` | A step ends. |
 | `cleanup-failed` | `error`, `errors` | Teardown steps failed. `errors` lists every failure. |
 | `plugin-restarted` | `plugin` | A plugin that crashed, timed out or was stopped was started again for a teardown step. |
 | `warning` | `message` | Something did not stop the run: a reconnect to a different node, a plugin that could not be restarted, or a JUnit file that could not be written. |

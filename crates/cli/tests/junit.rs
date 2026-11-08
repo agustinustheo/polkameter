@@ -55,7 +55,7 @@ fn recorded_report_matches_golden_validates_and_copies() {
 	let normalized = xml.replace(&work.0.display().to_string(), "/runs/smoke-run");
 	assert_eq!(normalized, include_str!("fixtures/smoke-run/junit.xml"));
 	validate(&xml_path);
-	// samples.jtl: JMeter CSV, workflow and setup steps stamped with their start time.
+	// samples.jtl: JMeter CSV, steps stamped with their start time.
 	let jtl = fs::read_to_string(work.0.join("samples.jtl")).unwrap();
 	assert_eq!(jtl, include_str!("fixtures/smoke-run/samples.jtl"));
 	// Rebuilding is deterministic and accepts a destination equal to the default file.
@@ -106,9 +106,9 @@ fn failed_run_writes_redacted_failures_and_skips_and_report_rebuilds_them() {
 	let plan = work.0.join("plan.xml");
 	fs::write(&plan, r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="JUnit">
 <credentials><credential id="key" profile="test"/></credentials>
-<workflow id="workers" users="2" iterations="3"><step id="secret_check" use="core.assert-equal">
+<setup><step id="secret_check" use="core.assert-equal">
 <input name="actual" ref="credentials.key"/><input name="expected" value="b"/></step>
-<step id="later" use="core.assert-equal"><input name="actual" value="a"/><input name="expected" value="a"/></step></workflow>
+<step id="later" use="core.assert-equal"><input name="actual" value="a"/><input name="expected" value="a"/></step></setup>
 </polkameter-plan>"#).unwrap();
 	assert!(
 		work.cli()

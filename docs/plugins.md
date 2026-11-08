@@ -73,7 +73,7 @@ The host checks inputs before the call and outputs when the plugin replies. A mi
 
 The plugin protocol exchanges one JSON message per line over standard input and output. A request carries `operation`, `inputs` and `context`. The reply repeats the request `id` and contains exactly one of `result` or `error`.
 
-PolkaMeter starts one process per plugin per run and keeps it until the run ends. Users in a workflow can run concurrently. Workflows run in plan order, and calls to each plugin are serialized. The `Context` holds `run_id`, `artifact_dir`, `user` and `iteration`. `user` and `iteration` are `null` outside a workflow.
+PolkaMeter starts one process per plugin per run and keeps it until the run ends. Calls to each plugin are serialized. The `Context` holds `run_id` and `artifact_dir`.
 
 `$describe` must return the manifest within 10 seconds. `$shutdown` returns `{}`. The plugin must then exit within 1 second, or the host kills it.
 

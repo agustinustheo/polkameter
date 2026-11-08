@@ -7,7 +7,7 @@ set -euo pipefail
 
 cli=${POLKAMETER:-target/debug/polkameter}
 plugin=${POLKAMETER_EXAMPLE_PLUGIN:-target/debug/polkameter-example-plugin}
-plan=examples/plugin-workflow.polkameter.xml
+plan=examples/plugin-data-flow.polkameter.xml
 work=$(mktemp -d)
 export POLKAMETER_PLUGIN_REGISTRY="$work/plugins.json"
 trap 'rm -rf "$work"' EXIT

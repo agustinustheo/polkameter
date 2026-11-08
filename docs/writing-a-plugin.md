@@ -117,18 +117,16 @@ Save this as `hello.polkameter.xml` in the `hello-plugin` directory:
   <plugins><plugin id="hello" version="0.1.0" protocol="1"/></plugins>
   <setup>
     <step id="greet" use="hello.greet"><input name="name" value="Polkadot"/></step>
-  </setup>
-  <workflow id="check" users="2" iterations="1">
     <step id="verified" use="core.assert-equal">
       <input name="actual" ref="steps.greet.greeting"/><input name="expected" value="Hello, Polkadot!"/>
     </step>
-  </workflow>
+  </setup>
 </polkameter-plan>
 ```
 
 - `<plugins>` names the plugin and its version. The version must match the one you installed.
-- The setup step calls `hello.greet` once. Later steps read its output as `steps.greet.greeting`.
-- The workflow runs two simulated users. `core.assert-equal` fails the run if `actual` and `expected` differ.
+- The first step calls `hello.greet`. Later steps read its output as `steps.greet.greeting`.
+- `core.assert-equal` fails the run if `actual` and `expected` differ.
 
 [Plans](plans.md) lists every element.
 
@@ -143,7 +141,6 @@ polkameter run hello.polkameter.xml --output runs
 ```text
 Phase: preflight
 Phase: setup
-Phase: workflow
 Phase: teardown
 Run completed. Artifacts: ~/hello-plugin/runs/run-1792254908788-10278-1
 ```
