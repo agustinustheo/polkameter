@@ -168,26 +168,31 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # Local uses exercises the source path. tests/action-smoke.py covers the
-      # release download against a mocked release, here and in Distribution (macOS).
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo +${{ env.RUST_VERSION }} build --locked --release -p polkameter-example-plugin
+      # A local action has no release tag, so it installs the latest release with install.sh.
       - uses: ./
         id: plan
         with:
+          version: latest
           plan: examples/plugin-workflow.polkameter.xml
-          plugin-crates: plugins/example:polkameter-example-plugin
+          plugins: target/release/polkameter-example-plugin
           fail-on: verdict
       # A second use in the same matrix job must not collide on the artifact name.
       - uses: ./
         id: again
         with:
+          version: latest
           plan: examples/plugin-workflow.polkameter.xml
-          plugin-crates: plugins/example:polkameter-example-plugin
+          plugins: target/release/polkameter-example-plugin
           artifact-retention-days: "1"
       - name: Assert the example plan passed
         env:
           EXIT_CODE: ${{ steps.plan.outputs.exit-code }}
           VERDICT: ${{ steps.plan.outputs.verdict }}
-          INSTALL_METHOD: ${{ steps.plan.outputs.install-method }}
           VERSION: ${{ steps.plan.outputs.version }}
           ARTIFACT: ${{ steps.plan.outputs.artifact-name }}
           ARTIFACT_ID: ${{ steps.plan.outputs.artifact-id }}
@@ -196,7 +201,6 @@ jobs:
         run: |
           test "$EXIT_CODE" = 0
           test -z "$VERDICT"
-          test "$INSTALL_METHOD" = source
           test -n "$VERSION"
           test -n "$ARTIFACT_ID" && test -n "$SECOND_ARTIFACT_ID"
           test "$ARTIFACT" != "$SECOND_ARTIFACT"
