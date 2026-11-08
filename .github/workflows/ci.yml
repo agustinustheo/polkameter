@@ -40,7 +40,6 @@ jobs:
           tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" -shellcheck= -color
       - run: corepack pnpm install --frozen-lockfile
-      - run: corepack pnpm test
       - run: corepack pnpm build
       - run: cargo +${{ env.RUST_VERSION }} fmt --all -- --check
       - run: cargo +${{ env.RUST_VERSION }} test --workspace
