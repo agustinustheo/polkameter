@@ -4,11 +4,11 @@
 //! Errors here are the chain's, not ours: the caller decides whether one stops a setup or is a
 //! result of the run.
 
+use subxt::rpcs::{RpcClient, rpc_params};
 use subxt::{
 	OnlineClient, PolkadotConfig,
 	dynamic::{self, Value},
 };
-use subxt_rpcs::{RpcClient, rpc_params};
 
 use crate::chain::{
 	reads::fetch,
@@ -30,7 +30,7 @@ pub enum ChainError {
 		/// Method.
 		method: &'static str,
 		/// Why.
-		source: subxt_rpcs::Error,
+		source: subxt::rpcs::Error,
 	},
 	/// A subxt read failed.
 	#[error("{what}: {detail}")]
@@ -135,7 +135,7 @@ impl Client {
 	pub async fn request<T: serde::de::DeserializeOwned>(
 		&self,
 		method: &'static str,
-		params: subxt_rpcs::client::RpcParams,
+		params: subxt::rpcs::client::RpcParams,
 	) -> Result<T, ChainError> {
 		self.rpc
 			.request(method, params)
@@ -195,15 +195,18 @@ impl Client {
 	/// Read it here, never from the runtime source: live previewnet allows 1.5 s, `main` 1.7 s.
 	pub async fn normal_limit(&self) -> Result<(u64, u64), ChainError> {
 		// `Weight { ref_time, proof_size }` decodes as the tuple `(ref_time, proof_size)`.
-		#[derive(scale_decode::DecodeAsType)]
+		#[derive(subxt::ext::scale_decode::DecodeAsType)]
+		#[decode_as_type(crate_path = "subxt::ext::scale_decode")]
 		struct Class {
 			max_total: Option<(u64, u64)>,
 		}
-		#[derive(scale_decode::DecodeAsType)]
+		#[derive(subxt::ext::scale_decode::DecodeAsType)]
+		#[decode_as_type(crate_path = "subxt::ext::scale_decode")]
 		struct PerClass {
 			normal: Class,
 		}
-		#[derive(scale_decode::DecodeAsType)]
+		#[derive(subxt::ext::scale_decode::DecodeAsType)]
+		#[decode_as_type(crate_path = "subxt::ext::scale_decode")]
 		struct BlockWeights {
 			per_class: PerClass,
 		}
@@ -217,7 +220,7 @@ impl Client {
 
 	/// The hash of block `number` on the node's canonical chain; `None` when the node doesn't
 	/// have the block (a fork keeps none from before its bite).
-	pub async fn try_block_hash(&self, number: u32) -> Result<Option<[u8; 32]>, ChainError> {
+	async fn try_block_hash(&self, number: u32) -> Result<Option<[u8; 32]>, ChainError> {
 		let hash: Option<String> = self.request("chain_getBlockHash", rpc_params![number]).await?;
 		hash.map(|h| hex32(&h)).transpose()
 	}
@@ -320,7 +323,7 @@ impl Client {
 	pub async fn sudo(&self, inner: &[u8]) -> Result<Vec<u8>, ChainError> {
 		let at = self.finalized().await?;
 		let md = at.metadata_ref();
-		let call = scale_value::scale::decode_as_type(
+		let call = subxt::ext::scale_value::scale::decode_as_type(
 			&mut &inner[..],
 			md.outer_enums().call_enum_ty(),
 			md.types(),

@@ -54,7 +54,7 @@ pub enum Mortality {
 	/// Valid for `period` blocks from block `from_number`, whose hash is `from_hash`. The chain
 	/// rounds `period` up to a power of two between 4 and 65536. For periods above 4096, the
 	/// era starts at a multiple of `period / 4096`, so `from_number` must be such a block:
-	/// [`TxBuilder::mortal`] picks it, and [`era_birth`] computes it.
+	/// [`TxBuilder::mortal`] picks it.
 	Mortal {
 		/// Blocks the transaction stays valid for.
 		period: u64,
@@ -75,7 +75,7 @@ pub fn era_period(period: u64) -> u64 {
 /// `period` blocks. The era encodes its start in 12 bits, so for periods above 4096 the start is
 /// rounded down to a multiple of `period / 4096`: block 49 with a period of 65536 gives block 48.
 /// The transaction must be signed against that block's hash.
-pub fn era_birth(period: u64, number: u64) -> u64 {
+fn era_birth(period: u64, number: u64) -> u64 {
 	let quantum = (era_period(period) >> 12).max(1);
 	number - number % quantum
 }
@@ -83,7 +83,7 @@ pub fn era_birth(period: u64, number: u64) -> u64 {
 /// Why the runtime's address or signature types are not ones an sr25519 key can sign for, from
 /// the types' metadata; `Ok` for `MultiAddress` (with an `AccountId32` `Id`) or `AccountId32`,
 /// and `MultiSignature` (or another signature enum with an `Sr25519` variant).
-pub fn check_signing_types(
+fn check_signing_types(
 	types: &scale_info::PortableRegistry,
 	address: u32,
 	signature: u32,
@@ -182,7 +182,8 @@ impl AccountInfo {
 	}
 }
 
-#[derive(scale_decode::DecodeAsType)]
+#[derive(subxt::ext::scale_decode::DecodeAsType)]
+#[decode_as_type(crate_path = "subxt::ext::scale_decode")]
 struct RawAccount {
 	nonce: u64,
 	// Read by name: older runtimes have `misc_frozen` and `fee_frozen` instead of `frozen`.
@@ -205,14 +206,8 @@ impl std::fmt::Debug for TxBuilder {
 }
 
 impl TxBuilder {
-	/// A builder for the runtime at `at`.
-	pub fn new(at: AtBlock) -> Self {
+	fn new(at: AtBlock) -> Self {
 		Self { at }
-	}
-
-	/// The block whose metadata the builder uses.
-	pub fn at(&self) -> &AtBlock {
-		&self.at
 	}
 
 	/// The number of the builder's block.
@@ -221,7 +216,7 @@ impl TxBuilder {
 	}
 
 	/// A mortality of `period` blocks from the builder's block. For periods above 4096, the era
-	/// starts up to `period / 4096 - 1` blocks earlier (see [`era_birth`]); this reads that
+	/// starts up to `period / 4096 - 1` blocks earlier; this reads that
 	/// block's hash from `System.BlockHash`, as the runtime does.
 	pub async fn mortal(&self, period: u64) -> Result<Mortality, ChainError> {
 		let number = self.at.block_number();
@@ -286,15 +281,6 @@ impl TxBuilder {
 			.metadata_ref()
 			.pallet_by_name(pallet)
 			.and_then(|p| p.call_variant_by_name(call))
-			.is_some()
-	}
-
-	/// True when the runtime has the constant `pallet.name`.
-	pub fn has_constant(&self, pallet: &str, name: &str) -> bool {
-		self.at
-			.metadata_ref()
-			.pallet_by_name(pallet)
-			.and_then(|p| p.constant_by_name(name))
 			.is_some()
 	}
 
@@ -371,19 +357,18 @@ impl TxBuilder {
 }
 
 impl Client {
-	/// The hash of the node's finalized head, from `chain_getFinalizedHead`. Unlike
-	/// [`Client::finalized`], it asks the node on every call, so a loop that waits for
-	/// finality sees each new block.
-	pub async fn finalized_head(&self) -> Result<[u8; 32], ChainError> {
+	async fn finalized_head(&self) -> Result<[u8; 32], ChainError> {
 		let hash: String =
-			self.request("chain_getFinalizedHead", subxt_rpcs::rpc_params![]).await?;
+			self.request("chain_getFinalizedHead", subxt::rpcs::rpc_params![]).await?;
 		hex::decode(hash.trim_start_matches("0x"))
 			.ok()
 			.and_then(|bytes| bytes.try_into().ok())
 			.ok_or_else(|| ChainError::Read { what: "finalized head", detail: hash })
 	}
 
-	/// subxt at the node's finalized head, as [`Client::finalized_head`] reports it.
+	/// subxt at the node's finalized head, from `chain_getFinalizedHead`. Unlike
+	/// [`Client::finalized`], it asks the node on every call, so a loop that waits for
+	/// finality sees each new block.
 	pub async fn finalized_now(&self) -> Result<AtBlock, ChainError> {
 		self.at(self.finalized_head().await?).await
 	}
@@ -417,19 +402,17 @@ impl Client {
 		let mut args = bytes.to_vec();
 		args.extend(len.to_le_bytes());
 		let raw = runtime_call(&at, "TransactionPaymentApi_query_info", &args).await?;
-		let info =
-			scale_value::scale::decode_as_type(&mut &raw[..], output, at.metadata_ref().types())
-				.map_err(decode_err("TransactionPaymentApi.query_info"))?
-				.remove_context();
+		let info = subxt::ext::scale_value::scale::decode_as_type(
+			&mut &raw[..],
+			output,
+			at.metadata_ref().types(),
+		)
+		.map_err(decode_err("TransactionPaymentApi.query_info"))?
+		.remove_context();
 		field(&info, "partial_fee").and_then(as_u128).ok_or_else(|| ChainError::Decode {
 			what: "TransactionPaymentApi.query_info",
 			detail: "no partial_fee".into(),
 		})
-	}
-
-	/// The spendable balance of `account` at the node's finalized head: free minus frozen.
-	pub async fn spendable(&self, account: [u8; 32]) -> Result<u128, ChainError> {
-		Ok(self.account(account).await?.spendable())
 	}
 
 	/// `Balances.ExistentialDeposit`: the smallest balance an account can hold.

@@ -85,7 +85,6 @@
 //! }
 //! ```
 //!
-//! The same plugin is a complete program in the crate's `examples/hello.rs`.
 //! [Writing a plugin](https://agustinustheodorus.com/polkameter/writing-a-plugin.html) builds,
 //! installs and runs it.
 #![cfg_attr(docsrs, feature(doc_cfg))]
@@ -368,20 +367,6 @@ impl Response {
 	}
 	fn err(id: u64, error: impl Into<String>) -> Self {
 		Self { protocol: PROTOCOL, id, result: None, error: Some(error.into()) }
-	}
-	/// Checks the envelope against the request it answers and returns the result.
-	///
-	/// # Errors
-	///
-	/// Fails if the protocol or ID differ, if the plugin returned an error, or if the response
-	/// sets both or neither of `result` and `error`.
-	pub fn into_result(self, id: u64) -> Result<Value> {
-		ensure!(self.protocol == PROTOCOL && self.id == id, "plugin protocol/request ID mismatch");
-		match (self.result, self.error) {
-			(Some(result), None) => Ok(result),
-			(None, Some(error)) => bail!("plugin operation failed: {error}"),
-			_ => bail!("invalid plugin response"),
-		}
 	}
 }
 /// A plugin: a manifest and the code behind its operations. Pass it to [`serve`].
@@ -667,20 +652,6 @@ mod tests {
 		extra["unexpected"] = json!(1);
 		assert!(serde_json::from_value::<Manifest>(extra).is_err());
 		assert!(serde_json::from_value::<Schema>(json!({"type": "date"})).is_err());
-	}
-
-	#[test]
-	fn response_matches_its_request() {
-		let ok = Response::ok(7, json!({"a": 1}));
-		assert_eq!(ok.into_result(7).unwrap(), json!({"a": 1}));
-		assert!(Response::ok(7, json!(1)).into_result(8).is_err());
-		let error = Response::err(7, "boom").into_result(7).unwrap_err().to_string();
-		assert_eq!(error, "plugin operation failed: boom");
-		let both =
-			Response { protocol: PROTOCOL, id: 1, result: Some(json!(1)), error: Some("x".into()) };
-		assert!(both.into_result(1).is_err());
-		let newer = Response { protocol: PROTOCOL + 1, id: 1, result: Some(json!(1)), error: None };
-		assert!(newer.into_result(1).is_err());
 	}
 
 	#[test]

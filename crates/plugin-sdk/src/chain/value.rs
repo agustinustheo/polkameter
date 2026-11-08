@@ -1,7 +1,7 @@
 //! Reading a dynamic [`Value`] (an event's fields, a storage enum) without a type for it: a
 //! field by name at any depth, a number through its newtype wrappers, a 32-byte key.
 
-use scale_value::{Composite, Primitive, ValueDef};
+use subxt::ext::scale_value::{Composite, Primitive, ValueDef};
 
 use crate::chain::Value;
 

@@ -45,34 +45,28 @@
 
 #![warn(missing_docs, clippy::needless_pass_by_value, clippy::too_many_lines)]
 
-pub mod client;
-pub mod keys;
-pub mod reads;
-pub mod sign;
-pub mod tx;
+mod client;
+mod keys;
+mod reads;
+mod sign;
+mod tx;
 pub mod value;
 
 pub use client::{AtBlock, ChainError, Client, Fault, LayoutChanged, Refusal, decode_err, hex0x};
-pub use keys::{
-	KeyError, account_id, derive, derive_range, junctions, keypair, parse_account, ss58,
-};
+pub use keys::{KeyError, account_id, derive_range, junctions, keypair, parse_account, ss58};
 pub use reads::{
 	Event, calls, entries, events, failed_extrinsics, fetch, has_prefix, runtime_call,
 };
-#[doc(hidden)]
-/// Part of the plugin API (used by out-of-tree plugins).
-pub use scale_decode as scale_decode_reexport;
-pub use scale_decode::DecodeAsType;
-#[doc(hidden)]
-/// Part of the plugin API (used by out-of-tree plugins).
-pub use scale_value as scale_value_reexport;
 pub use sign::{
-	AccountInfo, Call, Mortality, SignError, TxBuilder, TxParams, account_at, check_signing_types,
-	era_birth, era_period,
+	AccountInfo, Call, Mortality, SignError, TxBuilder, TxParams, account_at, era_period,
 };
 /// A dynamic SCALE value: the fields of a call for [`Client::call_data`], or a storage key.
 /// Re-exported from subxt, so a plugin does not need its own subxt dependency.
 pub use subxt::dynamic::Value;
+#[doc(hidden)]
+/// Part of the plugin API (used by out-of-tree plugins).
+pub use subxt::ext::scale_decode as scale_decode_reexport;
+pub use subxt::ext::scale_decode::DecodeAsType;
 /// An sr25519 keypair to sign transactions with. Re-exported from subxt-signer.
 pub use subxt_signer::sr25519::Keypair;
 pub use tx::{ChainInfo, tx_hash};
