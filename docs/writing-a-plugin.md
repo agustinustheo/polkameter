@@ -144,7 +144,7 @@ Phase: teardown
 Run completed. Artifacts: ~/hello-plugin/runs/run-1792254908788-10278-1
 ```
 
-Each run writes a new run directory under `--output`. The setup step ran once, and the workflow step ran once for each user. [Run directory](results.md#the-run-directory) lists the files a run writes.
+Each run writes a new run directory under `--output`. Both setup steps ran once. [Run directory](results.md#the-run-directory) lists the files a run writes.
 
 Now let's break it. Copy the plan to `wrong.polkameter.xml` and change `expected` to `Hello, Ferris!`. Run the copy and print its exit code:
 
