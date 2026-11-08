@@ -1177,6 +1177,10 @@ mod tests {
 		stops: Mutex<Vec<(&'static str, String)>>,
 		/// Notified when a poll or a plain stop stalls.
 		stalled: Notify,
+		/// Notified when a start request arrives.
+		started: Notify,
+		/// When set, the start request waits for this.
+		start_gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
 		/// Keep answering from the script after a stop.
 		ignore_stops: bool,
 		/// Stop requests without `force` never get an answer.
@@ -1224,6 +1228,11 @@ mod tests {
 							ids.push(request.run_id.clone());
 							ids.len() - 1
 						};
+						mock.started.notify_one();
+						let gate = mock.start_gate.lock().unwrap().take();
+						if let Some(gate) = gate {
+							let _ = gate.await;
+						}
 						match mock.starts.get(index).copied().unwrap_or(Start::Running) {
 							Start::Running => {
 								// Like a current agent, the run takes the ID the client chose.
@@ -1368,6 +1377,36 @@ mod tests {
 			}
 			server.abort();
 		}
+	}
+
+	#[tokio::test]
+	async fn a_signal_during_the_start_request_stops_the_run_once_it_started() {
+		let (release, gate) = tokio::sync::oneshot::channel();
+		let mock = Arc::new(Mock {
+			script: vec![Poll::Running],
+			start_gate: Mutex::new(Some(gate)),
+			..Mock::default()
+		});
+		let (endpoint, server) = mock_agent(mock.clone()).await;
+		let (sender, mut signals) = Signals::channel();
+		let started = mock.clone();
+		tokio::spawn(async move {
+			started.started.notified().await;
+			sender.send(Signal::Interrupt).unwrap();
+			// The client has the signal before the agent answers.
+			tokio::task::yield_now().await;
+			let _ = release.send(());
+			// Keep the channel open, as the operating system does.
+			std::future::pending::<()>().await;
+		});
+		let Followed::Ended { status, signal } =
+			follow(&endpoint, &mut signals, &limits()).await.unwrap()
+		else {
+			panic!("the run was abandoned")
+		};
+		assert_eq!((status.state.as_str(), signal), ("stopped", Some(Signal::Interrupt)));
+		assert_eq!(mock.stop_kinds(), ["stop"]);
+		server.abort();
 	}
 
 	#[tokio::test]

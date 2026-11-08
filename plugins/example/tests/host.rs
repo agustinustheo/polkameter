@@ -240,6 +240,17 @@ async fn credentials_and_endpoint_keys_reach_no_file_and_no_event() {
 			.map(|needle| if needle == secret { "the credential" } else { "a secret part" })
 			.collect()
 	};
+	// A failing preflight step echoes the credential; its error must not.
+	let preflight = plugin_plan(
+		"Preflight",
+		r#"<credentials><credential id="secret" profile="test"/></credentials>
+    <preflight><step id="failure" use="example.fail-with-message"><input name="message" ref="credentials.secret"/></step></preflight>"#,
+	);
+	let error = execute::preflight(&Plan::parse(&preflight).unwrap(), &registry)
+		.await
+		.unwrap_err()
+		.to_string();
+	assert!(leaks(&error).is_empty(), "{error}");
 	let events = Arc::new(std::sync::Mutex::new(Vec::new()));
 	let sink_events = events.clone();
 	let paused = Arc::new(tokio::sync::Notify::new());

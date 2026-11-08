@@ -744,6 +744,26 @@ mod tests {
 	}
 
 	#[test]
+	fn report_from_the_files_redacts_the_summary_it_writes() {
+		let root =
+			std::env::temp_dir().join(format!("polkameter-offline-report-{}", std::process::id()));
+		std::fs::create_dir_all(&root).unwrap();
+		let mut summary: Summary =
+			serde_json::from_str(include_str!("../../tests/fixtures/smoke-run/summary.json"))
+				.unwrap();
+		// A file written before redaction covered it, or by something else.
+		summary.scenario = "Plan OfflineSecret-0123".into();
+		RunDir::open(&root).write_json("summary.json", &summary).unwrap();
+		check(&root, &Redactor::new(["OfflineSecret-0123"], None::<&str>)).unwrap();
+		for name in ["summary.md", "summary.json"] {
+			let text = std::fs::read_to_string(root.join(name)).unwrap();
+			assert!(!text.contains("OfflineSecret"), "{name}: {text}");
+			assert!(text.contains("Plan [redacted]"), "{name}: {text}");
+		}
+		std::fs::remove_dir_all(root).unwrap();
+	}
+
+	#[test]
 	fn plugin_check_details_and_endpoints_are_redacted_before_the_report_renders_them() {
 		let root =
 			std::env::temp_dir().join(format!("polkameter-redacted-report-{}", std::process::id()));

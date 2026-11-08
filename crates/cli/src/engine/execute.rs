@@ -1657,4 +1657,14 @@ mod tests {
 			"{error}"
 		);
 	}
+
+	#[test]
+	fn a_credential_longer_than_the_assertion_limit_leaks_no_prefix() {
+		let secret = "abcdefghij".repeat(20);
+		let value = assertion_value(
+			&json!(format!("{secret}\n tail")),
+			&Redactor::new([secret.clone()], None::<&str>),
+		);
+		assert!(!value.contains(&secret[..20]), "{value}");
+	}
 }
