@@ -1,7 +1,7 @@
 //! Every tx we sent, and what became of it. Plain code with no clock and no IO of its own
 //! besides the two files it owns (`load.jsonl`, `blocks.jsonl`): the runner feeds it the time,
-//! the send tick, the submit replies and the block events. Flood txs count towards the step and
-//! lane they were sent in; probes are apart. Block events are in [`blocks`].
+//! the send tick, the submit replies and the block events. Flood txs count towards the step they
+//! were sent in; probes are apart. Block events are in [`blocks`].
 
 mod blocks;
 
@@ -42,7 +42,7 @@ impl Phase {
 /// What a tx was sent as.
 #[derive(Debug, Clone, Copy)]
 enum Kind {
-	/// A flood tx, counted in step `step` of its lane.
+	/// A flood tx, counted in step `step`.
 	Flood { step: usize },
 	/// A baseline or recovery probe: `probes[index]`.
 	Probe { index: usize },
@@ -50,7 +50,6 @@ enum Kind {
 
 #[derive(Debug)]
 struct Sent {
-	lane: usize,
 	kind: Kind,
 	sent_at: Millis,
 }
@@ -79,7 +78,6 @@ pub struct FloodTx {
 #[derive(Debug)]
 struct Request {
 	hash: TxHash,
-	lane: usize,
 	kind: Kind,
 	connection: usize,
 	/// Since when it waits for a reply: when it was sent, or when its connection opened again.
@@ -95,19 +93,17 @@ const ALREADY_HAVE: [i64; 2] = [1012, 1013]; // temporarily banned, already impo
 
 /// The tracker.
 pub struct Tracker<S> {
-	lanes: Vec<Lane>,
+	lane: Lane,
 	sender: S,
 	load: SeriesWriter,
 	blocks_out: JsonlWriter,
 	sent: HashMap<TxHash, Sent>,
 	requests: HashMap<u64, Request>,
 	next_id: u64,
-	/// Per lane, the steps so far.
-	pub steps: Vec<Vec<StepStats>>,
-	/// Every probe (lane 0 sends them).
+	/// The steps so far.
+	pub steps: Vec<StepStats>,
+	/// Every probe.
 	pub probes: Vec<Probe>,
-	/// Included flood txs that did not fail, per lane, for the state check.
-	pub included_ok: Vec<Vec<TxHash>>,
 	/// Every flood tx sent.
 	pub flood: HashMap<TxHash, FloodTx>,
 	/// The block each included flood tx was seen in.
@@ -179,27 +175,25 @@ impl std::fmt::Display for ObservationGap {
 }
 
 impl<S: Submit> Tracker<S> {
-	/// A tracker sending `lanes` through `sender`, starting at `now`.
+	/// A tracker sending `lane` through `sender`, starting at `now`.
 	pub fn new(
-		lanes: Vec<Lane>,
+		lane: Lane,
 		sender: S,
 		load: JsonlWriter,
 		blocks_out: JsonlWriter,
 		baseline_probes: usize,
 		now: Millis,
 	) -> Self {
-		let n = lanes.len();
 		Self {
-			lanes,
+			lane,
 			sender,
 			load: SeriesWriter::new(load),
 			blocks_out,
 			sent: HashMap::new(),
 			requests: HashMap::new(),
 			next_id: 1,
-			steps: vec![Vec::new(); n],
+			steps: Vec::new(),
 			probes: Vec::new(),
-			included_ok: vec![Vec::new(); n],
 			flood: HashMap::new(),
 			included_in: HashMap::new(),
 			first_fetched: None,
@@ -227,9 +221,9 @@ impl<S: Submit> Tracker<S> {
 		self.redactor = redactor;
 	}
 
-	/// The lanes.
-	pub fn lanes(&self) -> &[Lane] {
-		&self.lanes
+	/// The txs and their `call` label.
+	pub fn lane(&self) -> &Lane {
+		&self.lane
 	}
 
 	/// The sender.
@@ -266,17 +260,15 @@ impl<S: Submit> Tracker<S> {
 		Ok(())
 	}
 
-	/// Starts step `k` with a target rate per lane.
-	pub fn start_step(&mut self, k: u32, rates: &[f64], now: Millis) -> Result<(), FileError> {
-		for (lane, rate) in self.steps.iter_mut().zip(rates) {
-			lane.push(StepStats {
-				step: k,
-				target_rate: *rate,
-				started_at: now,
-				ended_at: now,
-				..StepStats::default()
-			});
-		}
+	/// Starts step `k` with a target rate.
+	pub fn start_step(&mut self, k: u32, rate: f64, now: Millis) -> Result<(), FileError> {
+		self.steps.push(StepStats {
+			step: k,
+			target_rate: rate,
+			started_at: now,
+			ended_at: now,
+			..StepStats::default()
+		});
 		self.load.gauge(&STEP, [], f64::from(k), now)
 	}
 
@@ -284,23 +276,16 @@ impl<S: Submit> Tracker<S> {
 	/// the step now, so a stall at its end is seen in its own numbers.
 	pub fn end_step(&mut self, now: Millis) {
 		let (prev, unobserved) = (self.prev_head_at, self.unobserved_since());
-		for lane in &mut self.steps {
-			if let Some(st) = lane.last_mut() {
-				st.ended_at = now;
-				st.closed = true;
-				if let Some(prev) = prev {
-					st.gap_portion(prev, now);
-				}
-				if let Some(from) = unobserved {
-					st.unobserved_ms += now.saturating_sub(from.max(st.started_at));
-				}
+		if let Some(st) = self.steps.last_mut() {
+			st.ended_at = now;
+			st.closed = true;
+			if let Some(prev) = prev {
+				st.gap_portion(prev, now);
+			}
+			if let Some(from) = unobserved {
+				st.unobserved_ms += now.saturating_sub(from.max(st.started_at));
 			}
 		}
-	}
-
-	/// True while the block follower is connected.
-	pub fn observing(&self) -> bool {
-		self.unobserved_since().is_none()
 	}
 
 	/// The time from `from` to `to` that the block follower was disconnected. The stall rules
@@ -328,40 +313,40 @@ impl<S: Submit> Tracker<S> {
 			.map(|g| g.from)
 	}
 
-	/// Sends one flood tx of `lane`; false when it has none ready or every connection is backed up.
+	/// Sends one flood tx; false when it has none ready or every connection is backed up.
 	/// A tx that could not be queued goes back to the source and is the next one sent.
-	pub fn send_next(&mut self, lane: usize, now: Millis) -> bool {
-		let Some(tx) = self.lanes[lane].source.next_tx() else {
-			self.current(lane).starved_ticks += 1;
+	pub fn send_next(&mut self, now: Millis) -> bool {
+		let Some(tx) = self.lane.source.next_tx() else {
+			self.current().starved_ticks += 1;
 			return false;
 		};
-		let step = self.steps[lane].len() - 1;
-		if !self.submit(lane, tx.hash, &tx.bytes, Kind::Flood { step }, now) {
-			self.lanes[lane].source.put_back(tx);
-			self.current(lane).backpressure_ticks += 1;
+		let step = self.steps.len() - 1;
+		if !self.submit(tx.hash, &tx.bytes, Kind::Flood { step }, now) {
+			self.lane.source.put_back(tx);
+			self.current().backpressure_ticks += 1;
 			return false;
 		}
-		self.current(lane).sent += 1;
-		self.load.inc(&TX_SENT, [self.lanes[lane].call], 1.0, now);
+		self.current().sent += 1;
+		self.load.inc(&TX_SENT, [self.lane.call], 1.0, now);
 		true
 	}
 
-	fn current(&mut self, lane: usize) -> &mut StepStats {
-		self.steps[lane].last_mut().expect("a step runs")
+	fn current(&mut self) -> &mut StepStats {
+		self.steps.last_mut().expect("a step runs")
 	}
 
-	fn submit(&mut self, lane: usize, hash: TxHash, bytes: &[u8], kind: Kind, now: Millis) -> bool {
+	fn submit(&mut self, hash: TxHash, bytes: &[u8], kind: Kind, now: Millis) -> bool {
 		let id = self.next_id;
 		self.next_id += 1;
 		let Some(connection) = self.sender.submit(id, bytes) else { return false };
 		let waiting_since = Some(now);
 		self.requests
-			.insert(id, Request { hash, lane, kind, connection, waiting_since, resent: false });
+			.insert(id, Request { hash, kind, connection, waiting_since, resent: false });
 		if let Kind::Flood { step } = kind {
 			let flood = FloodTx { step, sent_at: now, bytes: bytes.to_vec(), ..Default::default() };
 			self.flood.insert(hash, flood);
 		}
-		self.sent.insert(hash, Sent { lane, kind, sent_at: now });
+		self.sent.insert(hash, Sent { kind, sent_at: now });
 		true
 	}
 
@@ -384,14 +369,12 @@ impl<S: Submit> Tracker<S> {
 			.unwrap_or(0)
 	}
 
-	/// Records the longest reply wait so far in each lane's running step, and writes pending
-	/// series once a second.
+	/// Records the longest reply wait so far in the running step, and writes pending series once
+	/// a second.
 	pub fn tick(&mut self, now: Millis) -> Result<(), FileError> {
 		let oldest = self.oldest_pending_ms(now);
-		for lane in &mut self.steps {
-			if let Some(st) = lane.last_mut() {
-				st.max_oldest_pending_ms = st.max_oldest_pending_ms.max(oldest);
-			}
+		if let Some(st) = self.steps.last_mut() {
+			st.max_oldest_pending_ms = st.max_oldest_pending_ms.max(oldest);
 		}
 		self.load.tick(now)
 	}
@@ -417,7 +400,7 @@ impl<S: Submit> Tracker<S> {
 		let Some(req) = self.requests.remove(&id) else { return };
 		let reply_ms = at.saturating_sub(req.waiting_since.unwrap_or(at));
 		if let Kind::Flood { step } = req.kind {
-			self.steps[req.lane][step].reply_ms.push(reply_ms);
+			self.steps[step].reply_ms.push(reply_ms);
 		}
 		if let Some(tx) = self.flood.get_mut(&req.hash) {
 			tx.reply_ms = Some(reply_ms);
@@ -440,17 +423,12 @@ impl<S: Submit> Tracker<S> {
 		match req.kind {
 			Kind::Probe { index } => self.probes[index].outcome = Outcome::Refused,
 			Kind::Flood { step } => {
-				let st = &mut self.steps[req.lane][step];
+				let st = &mut self.steps[step];
 				st.rejected += 1;
 				let error = self.redactor.text(format!("{code} {error}").trim());
 				let key = crate::redact::truncate(&error, 160).trim_end().to_owned();
 				*st.errors.entry(key).or_default() += 1;
-				self.load.inc(
-					&TX_REJECTED,
-					[self.lanes[req.lane].call, &code.to_string()],
-					1.0,
-					at,
-				);
+				self.load.inc(&TX_REJECTED, [self.lane.call, &code.to_string()], 1.0, at);
 			},
 		}
 	}

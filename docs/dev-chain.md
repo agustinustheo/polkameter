@@ -234,16 +234,15 @@ load-test:
     - polkameter plugin install "$HOME/.local/bin/polkameter-substrate-plugin"
     - polkameter plugin credential substrate-dev POLKAMETER_SUBSTRATE_SEED
     - polkameter validate plans/substrate-remarks-ci.polkameter.xml
-    - polkameter run plans/substrate-remarks-ci.polkameter.xml --output polkameter-runs --junit test-results/polkameter.xml --fail-on-verdict
+    - polkameter run plans/substrate-remarks-ci.polkameter.xml --output polkameter-runs --fail-on-verdict
   after_script:
     - bash dev-chain.sh stop
   artifacts:
     when: always
     reports:
-      junit: test-results/polkameter.xml
+      junit: polkameter-runs/run-*/junit.xml
     paths:
       - polkameter-runs/
-      - test-results/polkameter.xml
 ```
 
 `//Alice` is a public dev key, so it's fine in the job. On a shared network, put the seed in a masked CI/CD variable.

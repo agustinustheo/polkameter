@@ -2,7 +2,7 @@
 use crate::engine::monitors::Job;
 use crate::engine::{
 	artifacts, measurement,
-	plan::{InputSource, Plan, Step, Workflow},
+	plan::{InputSource, Plan, Step},
 	plugins::{Plugins, Registry, checksum},
 	wiring,
 };
@@ -94,23 +94,16 @@ impl std::fmt::Display for RunState {
 struct Log {
 	file: Arc<Mutex<File>>,
 	sink: EventSink,
-	/// The credential values, for the JUnit report, which builds its own redactor.
-	secrets: Arc<Vec<String>>,
 	/// The run's credentials and endpoint secrets.
 	redactor: Redactor,
 }
 impl Log {
-	fn open(
-		directory: &Path,
-		sink: EventSink,
-		secrets: Vec<String>,
-		redactor: Redactor,
-	) -> Result<Self> {
+	fn open(directory: &Path, sink: EventSink, redactor: Redactor) -> Result<Self> {
 		let file = OpenOptions::new()
 			.create_new(true)
 			.write(true)
 			.open(directory.join("events.jsonl"))?;
-		Ok(Self { file: Arc::new(Mutex::new(file)), sink, secrets: Arc::new(secrets), redactor })
+		Ok(Self { file: Arc::new(Mutex::new(file)), sink, redactor })
 	}
 	fn emit(&self, mut value: Value) -> Result<()> {
 		value["timestamp"] = json!(polkameter_plugin_sdk::observers::files::now_ms());
@@ -161,10 +154,6 @@ fn endpoints(plan: &Plan, registry: &Registry) -> Vec<String> {
 /// The redactor of `plan` with the given credential values.
 fn redactor(plan: &Plan, registry: &Registry, secrets: &[String]) -> Redactor {
 	Redactor::new(secrets, endpoints(plan, registry))
-}
-fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
-	std::fs::write(path, serde_json::to_vec_pretty(value)?)?;
-	Ok(())
 }
 
 /// Scratch directory removed when dropped, so early returns clean up too.
@@ -310,10 +299,6 @@ fn check_contracts(plan: &Plan, contracts: Contracts<'_>) -> Result<()> {
 			.iter()
 			.map(|c| (format!("credentials.{}", c.id), Schema::String)),
 	);
-	types.extend([
-		("user.index".into(), Schema::Integer),
-		("iteration.index".into(), Schema::Integer),
-	]);
 	// Steps whose outputs are known, with their operation; and steps whose contract is unknown
 	// here (plugin operations without plugins), whose outputs may be anything.
 	let mut producers: BTreeMap<&str, (&str, Vec<String>)> = BTreeMap::new();
@@ -512,7 +497,6 @@ async fn with_scratch_plugins<T>(
 	result
 }
 pub async fn inspect(plan: &Plan, registry: &Registry) -> Result<Value> {
-	plan.validate()?;
 	let mut inspected = inspect_plugins(plan, registry).await?;
 	// The targets' endpoints may hold API keys.
 	redactor(plan, registry, &[]).value(&mut inspected["targets"]);
@@ -521,72 +505,56 @@ pub async fn inspect(plan: &Plan, registry: &Registry) -> Result<Value> {
 async fn inspect_plugins(plan: &Plan, registry: &Registry) -> Result<Value> {
 	with_scratch_plugins(plan, registry, "inspect", async |plugins, _, _| {
 		validate_contracts(plan, plugins)?;
-		let requirements: Vec<_> =
-			plugins.manifests.values().flat_map(|m| m.requirements.clone()).collect();
-		let metric_catalog: Vec<_> =
-			polkameter_plugin_sdk::observers::files::registry::NODE_METRICS
-				.iter()
-				.map(
-					|m| json!({"name": m.name, "description": m.help, "labels": m.labels, "roles": m.from}),
-				)
-				.collect();
-		Ok(json!({
-			"valid": true,
-			"plugins": plugins.manifests,
-			"requirements": requirements,
-			"targets": plan.targets,
-			"monitorRequirements": plan.monitors,
-			"metricCatalog": metric_catalog,
-		}))
+		Ok(json!({"valid": true, "plugins": plugins.manifests, "targets": plan.targets}))
 	})
 	.await
 }
-pub async fn preflight(plan: &Plan, registry: &Registry) -> Result<Value> {
-	let mut inspected = inspect(plan, registry).await?;
-	// Preflight never arms setup or load and writes only to its scratch directory.
-	// Every credential the plan declares must resolve, as a run needs it; no value is used here.
-	registry.check_credentials(plan)?;
-	let calibration =
-		with_scratch_plugins(plan, registry, "preflight", async |plugins, context, directory| {
-			check_environment(plan, registry).await?;
-			check_requirements(plan, registry, plugins).await?;
-			let mut values = plan.values("preflight");
-			let mut redactor = redactor(plan, registry, &[]);
-			let mut _diagnostics = crate::redact::activate(&redactor);
-			// Resolve credentials only if an explicit preflight step references one.
-			if plan
-				.preflight
-				.entries
-				.iter()
-				.flat_map(|s| &s.inputs)
-				.any(|i| matches!(&i.source, InputSource::Ref(r) if r.starts_with("credentials.")))
-			{
-				let credentials = registry.resolve_credentials(plan)?;
-				redactor = self::redactor(plan, registry, &secret_values(&credentials));
-				_diagnostics = crate::redact::activate(&redactor);
-				for warning in short_credentials(&credentials) {
-					crate::redact::diag!("{} warning: {warning}", crate::PRODUCT_NAME);
-				}
-				values.extend(credentials);
+/// Checks the plan against its plugins, credentials and chain, and runs its `<preflight>` steps
+/// and the calibration. Never arms setup or load and writes only to its scratch directory.
+pub async fn preflight(plan: &Plan, registry: &Registry) -> Result<()> {
+	with_scratch_plugins(plan, registry, "preflight", async |plugins, context, directory| {
+		validate_contracts(plan, plugins)?;
+		// Every credential the plan declares must resolve, as a run needs it; no value is used.
+		registry.check_credentials(plan)?;
+		check_environment(plan, registry).await?;
+		let mut values = plan.values("preflight");
+		let mut redactor = redactor(plan, registry, &[]);
+		let mut _diagnostics = crate::redact::activate(&redactor);
+		// Resolve credentials only if an explicit preflight step references one.
+		if plan
+			.preflight
+			.entries
+			.iter()
+			.flat_map(|s| &s.inputs)
+			.any(|i| matches!(&i.source, InputSource::Ref(r) if r.starts_with("credentials.")))
+		{
+			let credentials = registry.resolve_credentials(plan)?;
+			redactor = self::redactor(plan, registry, &secret_values(&credentials));
+			_diagnostics = crate::redact::activate(&redactor);
+			for warning in short_credentials(&credentials) {
+				crate::redact::diag!("{} warning: {warning}", crate::PRODUCT_NAME);
 			}
-			let redacted = |e: anyhow::Error| anyhow::anyhow!(redactor.text(&format!("{e:#}")));
-			for step in &plan.preflight.entries {
-				// Plugin errors may echo a credential, so they are redacted as the run's are.
-				let output =
-					invoke(step, plugins, &values, context, &CancellationToken::new(), &redactor)
-						.await
-						.map_err(redacted)?;
-				values.insert(format!("steps.{}", step.id), output);
-			}
-			calibrate(plan, directory).await.map_err(redacted)
-		})
-		.await
-		// Monitor and RPC checks may report an endpoint.
-		.map_err(|e| anyhow::anyhow!(redactor(plan, registry, &[]).text(&format!("{e:#}"))))?;
-	if let Some(calibration) = calibration {
-		inspected["calibration"] = calibration;
-	}
-	Ok(inspected)
+			values.extend(credentials);
+		}
+		let redacted = |e: anyhow::Error| anyhow::anyhow!(redactor.text(&format!("{e:#}")));
+		for step in &plan.preflight.entries {
+			// Plugin errors may echo a credential, so they are redacted as the run's are.
+			let output =
+				invoke(step, plugins, &values, context, &CancellationToken::new(), &redactor)
+					.await
+					.map_err(redacted)?;
+			values.insert(format!("steps.{}", step.id), output);
+		}
+		calibrate(plan, directory).await.map_err(redacted)
+	})
+	.await
+	.map_err(|e| {
+		// Plan errors keep their position. Monitor and RPC checks may report an endpoint.
+		if e.downcast_ref::<crate::engine::plan::PlanError>().is_some() {
+			return e;
+		}
+		anyhow::anyhow!(redactor(plan, registry, &[]).text(&format!("{e:#}")))
+	})
 }
 async fn check_environment(plan: &Plan, registry: &Registry) -> Result<()> {
 	let (Some(monitor), Some(targets)) = (&plan.monitors, wiring::monitor_targets(plan, registry)?)
@@ -605,8 +573,8 @@ async fn check_environment(plan: &Plan, registry: &Registry) -> Result<()> {
 	Ok(())
 }
 /// Calibrate during preflight, before any recognition, signing or proving in setup.
-async fn calibrate(plan: &Plan, directory: &Path) -> Result<Option<Value>> {
-	let Some(load) = &plan.load else { return Ok(None) };
+async fn calibrate(plan: &Plan, directory: &Path) -> Result<()> {
+	let Some(load) = &plan.load else { return Ok(()) };
 	let endpoint = target_endpoint(plan, &load.target)?;
 	let measured = async {
 		let client = polkameter_plugin_sdk::chain::Client::connect(endpoint).await?;
@@ -621,9 +589,8 @@ async fn calibrate(plan: &Plan, directory: &Path) -> Result<Option<Value>> {
 		"relativeTolerance": 0.25
 	});
 	// Preserve the evidence even when the mismatch prevents setup.
-	write_json(&directory.join("calibration.json"), &calibration)?;
-	validate_interval(load.block_interval_seconds, measured)?;
-	Ok(Some(calibration))
+	RunDir::open(directory).write_json("calibration.json", &calibration)?;
+	validate_interval(load.block_interval_seconds, measured)
 }
 
 /// Opt-in run exit policies. Defaults preserve the original run behavior.
@@ -656,18 +623,14 @@ pub struct Stop {
 }
 impl Default for Stop {
 	fn default() -> Self {
-		Self::from_cancel(CancellationToken::new())
-	}
-}
-impl Stop {
-	/// A stop whose first stage is `cancel`, for callers that only cancel.
-	pub fn from_cancel(cancel: CancellationToken) -> Self {
 		Self {
-			cancel,
+			cancel: CancellationToken::new(),
 			force: CancellationToken::new(),
 			exit_code: Arc::new(STOPPED_EXIT_CODE.into()),
 		}
 	}
+}
+impl Stop {
 	/// Ends the running phases; teardown still runs. The first request's `exit_code` is kept
 	/// as the stopped run's exit code.
 	pub fn request(&self, exit_code: i32) {
@@ -686,33 +649,10 @@ impl Stop {
 	}
 }
 
-/// Runs a plan in a new directory under `root`. Phases: preflight, setup, workflows, measurement,
+/// Runs a plan in a new directory under `root`. Phases: preflight, setup, measurement,
 /// evaluate, then teardown, which runs whenever the plugins started. The outcome is written to the
-/// run directory and returned; its exit code is 130 when the run was cancelled.
-pub async fn run(
-	plan: Plan,
-	registry: Registry,
-	root: &Path,
-	cancel: CancellationToken,
-	sink: EventSink,
-) -> Result<Outcome> {
-	run_with_options(plan, registry, root, cancel, sink, RunOptions::default()).await
-}
-
-/// Runs a plan with explicit exit policies, persisted in the outcome after teardown.
-pub async fn run_with_options(
-	plan: Plan,
-	registry: Registry,
-	root: &Path,
-	cancel: CancellationToken,
-	sink: EventSink,
-	options: RunOptions,
-) -> Result<Outcome> {
-	run_stoppable(plan, registry, root, Stop::from_cancel(cancel), sink, options).await
-}
-
-/// Runs a plan that can be stopped in two stages; see [`Stop`]. A stopped run's exit code is the
-/// one passed to the first [`Stop::request`].
+/// run directory and returned. The run can be stopped in two stages; see [`Stop`]. A stopped
+/// run's exit code is the one passed to the first [`Stop::request`].
 pub async fn run_stoppable(
 	plan: Plan,
 	registry: Registry,
@@ -721,7 +661,6 @@ pub async fn run_stoppable(
 	sink: EventSink,
 	options: RunOptions,
 ) -> Result<Outcome> {
-	plan.validate()?;
 	// A new `run-…` directory under `root`: a run never reuses one.
 	std::fs::create_dir_all(root)?;
 	let run_id = format!(
@@ -732,15 +671,12 @@ pub async fn run_stoppable(
 	);
 	let directory = root.join(&run_id);
 	std::fs::create_dir(&directory).context("run directory must be new")?;
-	// Held until the run ends: an agent pruning old run directories skips locked ones.
-	let lock = File::create(directory.join(RUN_LOCK))?;
-	lock.lock()?;
 	let credentials = registry.resolve_credentials(&plan);
 	let secrets = credentials.as_ref().map(secret_values).unwrap_or_default();
 	let redactor = redactor(&plan, &registry, &secrets);
 	// What the run prints on standard error is redacted too, until it ends.
 	let _diagnostics = crate::redact::activate(&redactor);
-	let log = Log::open(&directory, sink, secrets, redactor)?;
+	let log = Log::open(&directory, sink, redactor)?;
 	if let Ok(credentials) = &credentials {
 		for warning in short_credentials(credentials) {
 			crate::redact::diag!("{} warning: {warning}", crate::PRODUCT_NAME);
@@ -748,7 +684,7 @@ pub async fn run_stoppable(
 		}
 	}
 	let recorded_plan = log.redactor.json(&plan)?;
-	write_json(&directory.join("plan.json"), &recorded_plan)?;
+	RunDir::open(&directory).write_json("plan.json", &recorded_plan)?;
 	let context = Context::host(run_id, directory.canonicalize()?);
 	let run = Run {
 		plan: &plan,
@@ -775,17 +711,12 @@ pub async fn run_stoppable(
 			execute.await
 		},
 	};
-	let outcome = run.outcome(result);
-	drop(lock);
-	outcome
+	run.outcome(result)
 }
 
-/// The phase of a run before setup: credential, plugin, contract, environment and requirement
-/// checks, `<preflight>` steps and calibration.
+/// The phase of a run before setup: credential, plugin, contract and environment checks,
+/// `<preflight>` steps and calibration.
 const PREFLIGHT: &str = "preflight";
-
-/// The lock file of a run directory, locked while the run is in progress.
-pub const RUN_LOCK: &str = "run.lock";
 
 /// One run in progress: its plan and host, its directory and event log, and its deadline.
 struct Run<'a> {
@@ -824,7 +755,7 @@ impl Run<'_> {
 			"error": format!("stopped by {reason}; teardown was still running"),
 			"stop_requested_at": polkameter_plugin_sdk::observers::files::now_ms(),
 		});
-		let _ = write_json(&self.directory.join("execution.json"), &provisional);
+		let _ = RunDir::open(&self.directory).write_json("execution.json", &provisional);
 		let _ = redact_plugin_logs(&self.directory, &self.log.redactor);
 	}
 
@@ -914,14 +845,10 @@ impl Run<'_> {
 		validate_contracts(self.plan, plugins)?;
 		self.write_resolved(plugins)?;
 		check_environment(self.plan, self.registry).await?;
-		check_requirements(self.plan, self.registry, plugins).await?;
 		self.run_steps(&self.plan.preflight.entries, plugins, values).await?;
 		calibrate(self.plan, &self.directory).await?;
 		self.enter("setup")?;
 		self.run_steps(&self.plan.setup.entries, plugins, values).await?;
-		for workflow in &self.plan.workflows {
-			self.workflow(plugins, values, workflow).await?;
-		}
 		let measured = match &self.plan.load {
 			Some(_) => {
 				self.enter("measurement")?;
@@ -985,10 +912,8 @@ impl Run<'_> {
 				"blake2": checksum(&std::env::current_exe()?)?,
 			},
 		});
-		write_json(
-			&self.directory.join("resolved-plan.json"),
-			&self.log.redactor.json(&resolved)?,
-		)?;
+		RunDir::open(&self.directory)
+			.write_json("resolved-plan.json", &self.log.redactor.json(&resolved)?)?;
 		if let (Some(monitors), Some(targets)) =
 			(&self.plan.monitors, wiring::monitor_targets(self.plan, self.registry)?)
 		{
@@ -1011,10 +936,8 @@ impl Run<'_> {
 				"topologyHash": checksum(topology)?,
 				"targets": target_records,
 			});
-			write_json(
-				&self.directory.join("resolved-targets.json"),
-				&self.log.redactor.json(&resolved)?,
-			)?;
+			RunDir::open(&self.directory)
+				.write_json("resolved-targets.json", &self.log.redactor.json(&resolved)?)?;
 		}
 		Ok(())
 	}
@@ -1026,46 +949,6 @@ impl Run<'_> {
 		values: &mut Values,
 	) -> Result<()> {
 		execute_steps(steps, plugins, values, &self.context, &self.cancel, &self.log).await
-	}
-
-	/// Each user runs its iterations concurrently with the other users, up to the workflow's
-	/// concurrency. A user's iterations run in order, each on a copy of the user's values.
-	async fn workflow(
-		&self,
-		plugins: &Plugins,
-		values: &Values,
-		workflow: &Workflow,
-	) -> Result<()> {
-		self.log
-			.emit(json!({"event": "phase", "phase": "workflow", "id": workflow.id}))?;
-		let steps = Arc::new(workflow.steps.clone());
-		let mut tasks = tokio::task::JoinSet::new();
-		for user in 0..workflow.users {
-			if tasks.len() >= workflow.concurrency as usize {
-				tasks.join_next().await.context("workflow join missing")???;
-			}
-			let (plugins, log, cancel, steps) =
-				(plugins.clone(), self.log.clone(), self.cancel.clone(), Arc::clone(&steps));
-			let (mut context, mut user_values) = (self.context.clone(), values.clone());
-			let iterations = workflow.iterations;
-			tasks.spawn(async move {
-				context.user = Some(user);
-				user_values.insert("user.index".into(), json!(user));
-				for iteration in 0..iterations {
-					// Iteration outputs cannot leak into the next iteration.
-					let mut iteration_values = user_values.clone();
-					context.iteration = Some(iteration);
-					iteration_values.insert("iteration.index".into(), json!(iteration));
-					execute_steps(&steps, &plugins, &mut iteration_values, &context, &cancel, &log)
-						.await?;
-				}
-				Ok::<_, anyhow::Error>(())
-			});
-		}
-		while let Some(task) = tasks.join_next().await {
-			task??;
-		}
-		Ok(())
 	}
 
 	/// Teardown runs even after a failure or cancellation, and runs every step even after one
@@ -1186,14 +1069,14 @@ impl Run<'_> {
 				.flatten()
 				.map(|reason| self.log.redactor.text(&reason)),
 		};
-		// Samples and plots come from the raw files.
-		for error in [redacted, artifacts::write_outputs(&self.directory)]
+		// Samples come from the raw files.
+		for error in [redacted, artifacts::write_samples(&self.directory)]
 			.into_iter()
 			.filter_map(Result::err)
 		{
 			fail_report(&mut outcome, error);
 		}
-		write_json(&self.directory.join("execution.json"), &outcome)?;
+		RunDir::open(&self.directory).write_json("execution.json", &outcome)?;
 		let summary = self.directory.join("summary.md");
 		if summary.exists() {
 			// The report redacted it as it was written; this is a second pass.
@@ -1217,11 +1100,11 @@ impl Run<'_> {
 			if path.exists() {
 				let mut value: Value = serde_json::from_slice(&std::fs::read(&path)?)?;
 				self.log.redactor.value(&mut value);
-				write_json(&path, &value)?;
+				RunDir::open(&self.directory).write_json(name, &value)?;
 			}
 		}
 		if let Err(error) = crate::engine::junit::write(&self.directory, &self.log.redactor) {
-			let event = crate::engine::junit::warning(None, &error.to_string(), &self.log.secrets);
+			let event = crate::engine::junit::warning(None, &error.to_string(), &self.log.redactor);
 			let _ = self.log.emit(event);
 		}
 		self.log.emit(json!({"event": "completed", "outcome": outcome}))?;
@@ -1279,7 +1162,7 @@ async fn execute_steps(
 	for step in steps {
 		ensure!(!cancel.is_cancelled(), "run cancelled");
 		let started = Instant::now();
-		let mut event = step_event("step-started", step, context);
+		let mut event = step_event("step-started", step);
 		event["operation"] = json!(step.operation);
 		log.emit(event)?;
 		let result: Result<Value> = with_progress(
@@ -1289,7 +1172,7 @@ async fn execute_steps(
 			invoke(step, plugins, values, context, cancel, &log.redactor),
 		)
 		.await?;
-		let mut event = step_event("step-finished", step, context);
+		let mut event = step_event("step-finished", step);
 		event["elapsedMs"] = json!(started.elapsed().as_millis());
 		event["success"] = json!(result.is_ok());
 		event["error"] = json!(result.as_ref().err().map(ToString::to_string));
@@ -1299,13 +1182,8 @@ async fn execute_steps(
 	Ok(())
 }
 
-fn step_event(kind: &str, step: &Step, context: &Context) -> Value {
-	json!({
-		"event": kind,
-		"step": step.id,
-		"user": context.user,
-		"iteration": context.iteration,
-	})
+fn step_event(kind: &str, step: &Step) -> Value {
+	json!({"event": kind, "step": step.id})
 }
 
 /// Awaits a step, logging a `step-progress` event every five seconds until it completes.
@@ -1530,48 +1408,6 @@ fn plugin_checks(
 	Ok(out)
 }
 
-async fn check_requirements(plan: &Plan, registry: &Registry, plugins: &Plugins) -> Result<()> {
-	for requirement in plugins
-		.manifests
-		.values()
-		.flat_map(|manifest| &manifest.requirements)
-		.filter(|requirement| requirement.required)
-	{
-		match requirement.kind.as_str() {
-			"capability" => ensure!(
-				registry.capabilities.contains(&requirement.name),
-				"provisioner has not declared capability {}",
-				requirement.name
-			),
-			"rpc" => {
-				let endpoint = target_endpoint(plan, &requirement.target)?;
-				let client = polkameter_plugin_sdk::chain::Client::connect(endpoint).await?;
-				let methods: Value =
-					client.request("rpc_methods", subxt_rpcs::rpc_params![]).await?;
-				ensure!(
-					methods["methods"].as_array().is_some_and(|methods| methods
-						.iter()
-						.any(|method| method.as_str() == Some(&requirement.name))),
-					"required RPC method {} is missing",
-					requirement.name
-				);
-			},
-			"metric" => {
-				let targets = wiring::monitor_targets(plan, registry)?
-					.context("metric requirement needs a topology")?;
-				let role = requirement.target.parse::<Job>()?;
-				crate::engine::monitors::preflight::require_metrics(
-					&targets,
-					&[(role, requirement.name.clone())],
-				)
-				.await?;
-			},
-			other => bail!("unsupported required evidence kind {other}"),
-		}
-	}
-	Ok(())
-}
-
 fn validate_interval(configured: f64, measured: f64) -> Result<()> {
 	ensure!(
 		measured.is_finite()
@@ -1612,10 +1448,16 @@ mod tests {
 				next_directory_sequence()
 			));
 			let plan = Plan::parse(xml).unwrap();
-			let outcome =
-				run(plan, Registry::default(), &root, CancellationToken::new(), Arc::new(|_| {}))
-					.await
-					.unwrap();
+			let outcome = run_stoppable(
+				plan,
+				Registry::default(),
+				&root,
+				Stop::default(),
+				Arc::new(|_| {}),
+				RunOptions::default(),
+			)
+			.await
+			.unwrap();
 			assert_eq!(
 				(outcome.exit_code, outcome.state),
 				(exit_code, RunState::Failed),

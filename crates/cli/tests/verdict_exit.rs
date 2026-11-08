@@ -1,9 +1,4 @@
-//! Exercises the CLI process and remote option/exit-code plumbing with a controlled agent, and the
-//! verdict a monitorless run's report reaches.
-use axum::{
-	Json, Router,
-	routing::{get, post},
-};
+//! The verdict a monitorless run's report reaches.
 use serde_json::{Value, json};
 #[path = "support/work.rs"]
 mod work;
@@ -11,156 +6,11 @@ mod work;
 use std::{
 	fs,
 	path::{Path, PathBuf},
-	sync::{
-		Arc,
-		atomic::{AtomicBool, Ordering},
-	},
 };
 use work::Work;
 
-/// `(--fail-on-verdict, --fail-on-inconclusive)`: every combination.
-const POLICIES: [(bool, bool); 4] = [(false, false), (true, false), (false, true), (true, true)];
-const VERDICTS: [&str; 4] = ["PASS", "WARN", "FAIL", "INCONCLUSIVE"];
-
-/// The exit code the engine's policy gives a verdict (the engine's own tests cover the rules).
-fn expected_code((fail_on_verdict, fail_on_inconclusive): (bool, bool), verdict: &str) -> i32 {
-	i32::from(
-		(verdict == "FAIL" && fail_on_verdict)
-			|| (verdict == "INCONCLUSIVE" && fail_on_inconclusive),
-	)
-}
-
 fn repository() -> PathBuf {
 	Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
-
-/// A fake agent advertising `capabilities`. It checks the options it receives and answers with
-/// the exit code the engine would give `verdict` under them. `started` records a `POST /runs`.
-async fn agent(
-	capabilities: Value,
-	policy: (bool, bool),
-	verdict: &'static str,
-	started: Arc<AtomicBool>,
-) -> (String, tokio::task::JoinHandle<()>) {
-	let code = expected_code(policy, verdict);
-	let flag = if verdict == "FAIL" { "--fail-on-verdict" } else { "--fail-on-inconclusive" };
-	let reason = (code == 1).then(|| {
-		format!("verdict {verdict}: test; exit 1 because of {flag} (the checks are in summary.md)")
-	});
-	let app = Router::new()
-		.route("/plugins", get(move || async move { Json(capabilities) }))
-		.route(
-			"/runs",
-			post(move |Json(request): Json<Value>| async move {
-				assert_eq!(request["options"]["failOnVerdict"], policy.0);
-				assert_eq!(request["options"]["failOnInconclusive"], policy.1);
-				started.store(true, Ordering::SeqCst);
-				Json(json!({"id":"test", "state":"running"}))
-			}),
-		)
-		.route(
-			"/runs/test",
-			get(move || async move {
-				let state = if code == 0 { "completed" } else { "completed_with_failures" };
-				Json(json!({"id":"test", "state":state, "outcome":{
-					"artifact_dir":"/agent/run-test", "exit_code":code, "state":state, "error":null,
-					"exit_reason":reason
-				}}))
-			}),
-		);
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move {
-		axum::serve(listener, app).await.unwrap();
-	});
-	(endpoint, server)
-}
-
-async fn run_remote(
-	endpoint: &str,
-	(fail_on_verdict, fail_on_inconclusive): (bool, bool),
-) -> std::process::Output {
-	let mut cli = tokio::process::Command::new(env!("CARGO_BIN_EXE_polkameter"));
-	cli.args([
-		"run",
-		"examples/plugin-workflow.polkameter.xml",
-		"--remote",
-		endpoint,
-		"--remote-token-env",
-		"POLKAMETER_TEST_AGENT_TOKEN",
-		"--format",
-		"json",
-	])
-	.current_dir(repository())
-	.env("POLKAMETER_TEST_AGENT_TOKEN", "test-token");
-	if fail_on_verdict {
-		cli.arg("--fail-on-verdict");
-	}
-	if fail_on_inconclusive {
-		cli.arg("--fail-on-inconclusive");
-	}
-	cli.output().await.unwrap()
-}
-
-#[tokio::test]
-async fn run_flags_are_sent_to_the_agent_and_return_its_exit_code() {
-	let capabilities = json!({"runOptions":{"failOnVerdict":true,"failOnInconclusive":true}});
-	for policy in POLICIES {
-		for verdict in VERDICTS {
-			let started = Arc::new(AtomicBool::new(false));
-			let (endpoint, server) =
-				agent(capabilities.clone(), policy, verdict, started.clone()).await;
-			let output = run_remote(&endpoint, policy).await;
-			let code = expected_code(policy, verdict);
-			assert_eq!(
-				output.status.code(),
-				Some(code),
-				"{policy:?} {verdict}: {}",
-				String::from_utf8_lossy(&output.stderr)
-			);
-			assert!(started.load(Ordering::SeqCst));
-			let event: Value = serde_json::from_slice(&output.stdout).unwrap();
-			assert_eq!(event["event"], "artifact-written");
-			assert_eq!(event["outcome"]["exit_code"], code);
-			// The agent's recorded reason is printed once the run has ended, and only then.
-			let stderr = String::from_utf8_lossy(&output.stderr);
-			assert_eq!(
-				stderr
-					.contains(&format!("PolkaMeter: remote run: verdict {verdict}: test; exit 1")),
-				code == 1,
-				"{policy:?} {verdict}: {stderr}"
-			);
-			server.abort();
-		}
-	}
-}
-
-#[tokio::test]
-async fn fail_on_inconclusive_refuses_an_agent_without_the_option() {
-	// An agent from before --fail-on-inconclusive advertises only failOnVerdict, and would
-	// silently ignore the new option.
-	let older = json!({"runOptions":{"failOnVerdict":true}});
-	for policy in [(false, true), (true, true)] {
-		let started = Arc::new(AtomicBool::new(false));
-		let (endpoint, server) =
-			agent(older.clone(), policy, "INCONCLUSIVE", started.clone()).await;
-		let output = run_remote(&endpoint, policy).await;
-		let stderr = String::from_utf8_lossy(&output.stderr);
-		assert_eq!(output.status.code(), Some(1), "{stderr}");
-		assert!(
-			stderr
-				.contains("remote agent does not support --fail-on-inconclusive; update the agent"),
-			"{stderr}"
-		);
-		assert!(!started.load(Ordering::SeqCst), "the run started anyway");
-		server.abort();
-	}
-	// --fail-on-verdict alone still works with that agent.
-	let started = Arc::new(AtomicBool::new(false));
-	let (endpoint, server) = agent(older, (true, false), "FAIL", started.clone()).await;
-	assert_eq!(run_remote(&endpoint, (true, false)).await.status.code(), Some(1));
-	assert!(started.load(Ordering::SeqCst));
-	server.abort();
 }
 
 /// A run without `<monitors>`, rebuilt by `polkameter report`, is not INCONCLUSIVE: the checks
@@ -190,7 +40,7 @@ fn a_monitorless_run_is_not_inconclusive() {
 	fs::write(work.0.join("summary.json"), summary.to_string()).unwrap();
 
 	let output = std::process::Command::new(env!("CARGO_BIN_EXE_polkameter"))
-		.args(["report", "--format", "json"])
+		.arg("report")
 		.arg(&work.0)
 		.env("POLKAMETER_PLUGIN_REGISTRY", work.0.join("plugins.json"))
 		.output()

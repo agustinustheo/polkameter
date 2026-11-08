@@ -17,13 +17,12 @@ Install the CLI and the substrate plugin with `curl -fsSL https://raw.githubuser
 - [Run a load test](https://agustinustheodorus.com/polkameter/load-test.html): write, validate, preflight and run a load plan
 - [Read the results](https://agustinustheodorus.com/polkameter/reading-results.html): verdict, breaking point, max sustained rate, loss check
 - [Run in CI](https://agustinustheodorus.com/polkameter/ci.html): the GitHub Action, GitLab CI, Jenkins
-- [Run on a remote machine](https://agustinustheodorus.com/polkameter/remote-runs.html): the agent, `--remote` and what the agent refuses
 - [Troubleshooting](https://agustinustheodorus.com/polkameter/troubleshooting.html): common errors and fixes
 
 ## Reference
 
 - [Plan](https://agustinustheodorus.com/polkameter/plans.html): every plan element and attribute
-- [CLI](https://agustinustheodorus.com/polkameter/cli.html): commands, exit codes, environment variables, JSON output
+- [CLI](https://agustinustheodorus.com/polkameter/cli.html): commands, exit codes, environment variables
 - [Run directory](https://agustinustheodorus.com/polkameter/results.html): every file a run writes
 - [Plugin reference](https://agustinustheodorus.com/polkameter/plugins.html): plugin protocol, manifest, PreparedTx, the polkameter-plugin-sdk crate
 - [The substrate plugin](https://agustinustheodorus.com/polkameter/substrate-plugin.html): its operations, inputs and outputs

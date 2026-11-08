@@ -147,7 +147,7 @@ runs:
         # Files PolkaMeter writes, redacted or free of credential values. Plugins also write into
         # the run directory; their files are not redacted and never uploaded.
         uploaded=(execution.json plan.json resolved-plan.json resolved-targets.json calibration.json
-          junit.xml 'plots/*.svg' events.jsonl steps.jsonl lost.jsonl samples.jtl blocks.jsonl load.jsonl
+          junit.xml events.jsonl steps.jsonl lost.jsonl samples.jtl blocks.jsonl load.jsonl
           node.jsonl chain.jsonl transactions.jsonl scrapes.jsonl)
         # PolkaMeter's last event follows its final redaction pass. A run killed before then
         # (SIGKILL, out of memory, a panic) misses it, so these files are withheld.

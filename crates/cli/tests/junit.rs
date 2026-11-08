@@ -1,4 +1,4 @@
-//! Process-level JUnit replay, copies, redaction and schema validation.
+//! Process-level JUnit replay, redaction and schema validation.
 use std::{fs, path::Path, process::Command};
 
 #[path = "support/smoke_run.rs"]
@@ -36,40 +36,21 @@ fn validate(path: &Path) {
 }
 
 #[test]
-fn recorded_report_matches_golden_validates_and_copies() {
+fn recorded_report_matches_golden_and_validates() {
 	let work = Work::new("fixture");
 	smoke_run::copy_to(&work.0);
-	let copy = work.0.join("reports/load.xml");
-	let output = work
-		.cli()
-		.arg("report")
-		.arg(&work.0)
-		.arg("--junit")
-		.arg(&copy)
-		.output()
-		.unwrap();
+	let output = work.cli().arg("report").arg(&work.0).output().unwrap();
 	assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
 	let xml_path = work.0.join("junit.xml");
 	let xml = fs::read_to_string(&xml_path).unwrap();
-	assert_eq!(xml, fs::read_to_string(copy).unwrap());
 	let normalized = xml.replace(&work.0.display().to_string(), "/runs/smoke-run");
 	assert_eq!(normalized, include_str!("fixtures/smoke-run/junit.xml"));
 	validate(&xml_path);
-	// samples.jtl: JMeter CSV, workflow and setup steps stamped with their start time.
+	// samples.jtl: JMeter CSV, steps stamped with their start time.
 	let jtl = fs::read_to_string(work.0.join("samples.jtl")).unwrap();
 	assert_eq!(jtl, include_str!("fixtures/smoke-run/samples.jtl"));
-	// Rebuilding is deterministic and accepts a destination equal to the default file.
-	assert!(
-		work.cli()
-			.arg("report")
-			.arg(&work.0)
-			.arg("--junit")
-			.arg(&xml_path)
-			.output()
-			.unwrap()
-			.status
-			.success()
-	);
+	// Rebuilding is deterministic.
+	assert!(work.cli().arg("report").arg(&work.0).output().unwrap().status.success());
 	assert_eq!(xml, fs::read_to_string(xml_path).unwrap());
 }
 
@@ -94,7 +75,7 @@ fn report_refuses_an_unknown_summary_schema_and_rewrites_nothing() {
 		assert!(stderr.contains(&format!("has schemaVersion {shown}")), "{stderr}");
 		assert!(stderr.contains("reads and writes only schemaVersion 1"), "{stderr}");
 		assert_eq!(fs::read_to_string(&path).unwrap(), text);
-		for derived in ["summary.md", "junit.xml", "samples.jtl", "plots"] {
+		for derived in ["summary.md", "junit.xml", "samples.jtl"] {
 			assert!(!work.0.join(derived).exists(), "{derived} was written");
 		}
 	}
@@ -106,9 +87,9 @@ fn failed_run_writes_redacted_failures_and_skips_and_report_rebuilds_them() {
 	let plan = work.0.join("plan.xml");
 	fs::write(&plan, r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="JUnit">
 <credentials><credential id="key" profile="test"/></credentials>
-<workflow id="workers" users="2" iterations="3"><step id="secret_check" use="core.assert-equal">
+<setup><step id="secret_check" use="core.assert-equal">
 <input name="actual" ref="credentials.key"/><input name="expected" value="b"/></step>
-<step id="later" use="core.assert-equal"><input name="actual" value="a"/><input name="expected" value="a"/></step></workflow>
+<step id="later" use="core.assert-equal"><input name="actual" value="a"/><input name="expected" value="a"/></step></setup>
 </polkameter-plan>"#).unwrap();
 	assert!(
 		work.cli()
@@ -118,15 +99,12 @@ fn failed_run_writes_redacted_failures_and_skips_and_report_rebuilds_them() {
 			.status
 			.success()
 	);
-	let copy = work.0.join("reports/failure.xml");
 	let output = work
 		.cli()
 		.arg("run")
 		.arg(plan)
 		.arg("--output")
 		.arg(work.0.join("runs"))
-		.arg("--junit")
-		.arg(&copy)
 		.env("POLKAMETER_JUNIT_SECRET", "secret_check")
 		.output()
 		.unwrap();
@@ -136,7 +114,6 @@ fn failed_run_writes_redacted_failures_and_skips_and_report_rebuilds_them() {
 	assert_eq!(runs.len(), 1);
 	let run = &runs[0];
 	let xml = fs::read_to_string(run.join("junit.xml")).unwrap();
-	assert_eq!(xml, fs::read_to_string(copy).unwrap());
 	assert!(!xml.contains("secret_check"));
 	assert!(xml.contains("expected &quot;b&quot;, got &quot;[redacted]&quot;"));
 	for name in ["events.jsonl", "execution.json"] {
@@ -201,82 +178,4 @@ fn offline_report_redacts_available_registry_credentials_in_details() {
 	assert!(xml.contains("plugin detail: [redacted]"));
 	assert!(!xml.contains(secret));
 	validate(&work.0.join("junit.xml"));
-}
-
-/// A JUnit copy that cannot be written, or fetched from the agent, is a warning: the run keeps
-/// exit 0.
-#[tokio::test]
-async fn a_junit_copy_failure_warns_and_keeps_exit_0() {
-	use axum::{
-		Json, Router,
-		routing::{get, post},
-	};
-	use serde_json::json;
-	let work = Work::new("junit-copy-errors");
-	let app = Router::new()
-		.route(
-			"/runs",
-			post(|| async {
-				Json(
-					json!({"id":"test","state":"running","phase":null,"outcome":null,"error":null}),
-				)
-			}),
-		)
-		.route(
-			"/runs/test",
-			get(|| async {
-				Json(json!({"id":"test", "state":"completed", "phase":null, "error":null,
-					"outcome":{"artifact_dir":"/agent/run", "state":"completed", "exit_code":0,
-						"error":null}}))
-			}),
-		)
-		.route(
-			"/runs/test/junit",
-			get(|| async { (axum::http::StatusCode::NOT_FOUND, Json("report missing")) }),
-		);
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move {
-		axum::serve(listener, app).await.unwrap();
-	});
-	let plan = work.0.join("plan.xml");
-	fs::write(&plan, r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="test"><setup><step id="ok" use="core.echo"><input name="value" value="1"/></step></setup></polkameter-plan>"#).unwrap();
-	#[cfg(unix)]
-	let blocker = work.0.join("blocker & 'quoted'\n\t\u{1b}\u{202e}");
-	#[cfg(not(unix))]
-	let blocker = work.0.join("blocker & 'quoted'");
-	fs::write(&blocker, "a file, so no directory can be created under it").unwrap();
-	let runs = work.0.join("runs");
-	let local = &["--output", runs.to_str().unwrap()][..];
-	let remote = &["--remote", &endpoint, "--remote-token-env", "POLKAMETER_JUNIT_TOKEN"][..];
-	for (destination, args) in [
-		(work.0.clone(), local),
-		(blocker.join("report.xml"), local),
-		(work.0.join("report.xml"), remote),
-	] {
-		let mut command = work.cli();
-		command
-			.arg("run")
-			.arg(&plan)
-			.args(args)
-			.args(["--format", "json", "--junit"])
-			.arg(destination)
-			.env("POLKAMETER_JUNIT_TOKEN", "test-token");
-		let output = tokio::task::spawn_blocking(move || command.output().unwrap()).await.unwrap();
-		let stderr = String::from_utf8(output.stderr).unwrap();
-		assert_eq!(output.status.code(), Some(0), "{stderr}");
-		assert_eq!(stderr.lines().count(), 1, "{stderr}");
-		assert!(!stderr.contains(['\t', '\u{1b}', '\u{202e}']), "{stderr}");
-		assert!(!stderr.contains("&amp;") && !stderr.contains("&apos;"), "{stderr}");
-		let events: Vec<Value> = String::from_utf8(output.stdout)
-			.unwrap()
-			.lines()
-			.map(|line| serde_json::from_str(line).unwrap())
-			.collect();
-		assert!(events.iter().any(|e| e["event"] == "warning"));
-		let artifact = events.last().unwrap();
-		assert_eq!(artifact["event"], "artifact-written");
-		assert_eq!(artifact["outcome"]["exit_code"], 0);
-	}
-	server.abort();
 }

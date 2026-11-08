@@ -4,7 +4,7 @@ A plan is an XML file that lists the test steps and settings. A plan never conta
 
 ## Example
 
-This plan runs without a chain. It is `examples/plugin-workflow.polkameter.xml`:
+This plan runs without a chain. It is `examples/plugin-data-flow.polkameter.xml`:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -13,18 +13,16 @@ This plan runs without a chain. It is `examples/plugin-workflow.polkameter.xml`:
   <setup>
     <step id="seed" use="example.double"><input name="value" value="21"/></step>
     <step id="copied" use="core.echo"><input name="value" ref="steps.seed.value"/></step>
-  </setup>
-  <workflow id="users" users="3" iterations="2" concurrency="2">
     <step id="computed" use="example.double"><input name="value" ref="steps.copied.value"/></step>
     <step id="verified" use="core.assert-equal">
       <input name="actual" ref="steps.computed.value"/><input name="expected" value="84"/>
     </step>
-  </workflow>
+  </setup>
 </polkameter-plan>
 ```
 
 ```sh
-polkameter validate examples/plugin-workflow.polkameter.xml
+polkameter validate examples/plugin-data-flow.polkameter.xml
 ```
 
 ```text
@@ -79,7 +77,7 @@ In the tables below, the Default column gives the default value, `required`, or 
 
 The root element. Its `name` appears in the report.
 
-Children, in any order: `plugins`, `targets`, `credentials`, `preflight`, `setup`, `workflow`, `load`, `monitors`, `thresholds`, `evaluate`, `teardown`. Each appears at most once, except `workflow`. The run always uses that phase order, whatever the order in the XML. Steps in a phase run in their written order.
+Children, in any order: `plugins`, `targets`, `credentials`, `preflight`, `setup`, `load`, `monitors`, `thresholds`, `evaluate`, `teardown`. Each appears at most once. The run always uses that phase order, whatever the order in the XML. Steps in a phase run in their written order.
 
 | Attribute | Type | Default | Limits | Meaning |
 | --- | --- | --- | --- | --- |
@@ -128,22 +126,10 @@ PolkaMeter reads the secret on the host when the run starts. It [redacts](result
 Each holds zero or more `step` elements.
 
 - `preflight` steps check the chain before the run. They can use only read-only operations.
-- `setup` steps run once, before the workflows.
+- `setup` steps run once, before the load.
 - `evaluate` steps run after the load and before the report. An operation that returns `checks` adds them to the report. See [Observers and checks](plugins.md#observers-and-checks).
 - `teardown` steps clean up at the end, also after a failure or a stop. Every step runs, even if an earlier one fails. After SIGINT or SIGTERM, `--shutdown-grace` also limits teardown. See [Stop a run](cli.md#stop-a-run).
 
-### workflow
-
-A workflow repeats its steps for each simulated user. Each user repeats the steps `iterations` times. At most `concurrency` users run at once. A plan can hold any number of workflows. Workflows run one after another, in plan order.
-
-Children: `step`, zero or more.
-
-| Attribute | Type | Default | Limits | Meaning |
-| --- | --- | --- | --- | --- |
-| `id` | identifier | required | unique | The workflow's name in events |
-| `users` | integer | `1` | 1 to 100000 | Simulated users |
-| `iterations` | integer | `1` | at least 1 | Repeats per user |
-| `concurrency` | integer | `1` | 1 to 1000 | Users that run at the same time |
 
 ### load
 
@@ -275,11 +261,6 @@ For quotes inside a JSON literal, use XML escapes, for example `value="[&quot;a&
 | `run.id` | The run ID, such as `run-1791091539106-57209-1` | Everywhere |
 | `run.directory` | The absolute path of the run directory | Once the directory exists |
 | `run.probeBudget` | The probe budget, or `0` without a `<load>` | Everywhere |
-| `user.index` | The user's index, from 0 | Workflow steps |
-| `iteration.index` | The iteration's index, from 0 | Workflow steps |
-
-- Setup outputs are copied into every user and iteration of each workflow.
-- A workflow step's outputs reach only later steps in the same iteration. Evaluate and teardown steps cannot use them.
 
 `validate` checks that a referenced step exists. `preflight` checks the output name against the plugin's manifest.
 

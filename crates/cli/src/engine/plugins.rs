@@ -21,8 +21,9 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+/// The plugin registry file. Unknown fields, such as the `capabilities` that PolkaMeter 0.3
+/// wrote, are ignored and dropped on the next write.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct Registry {
 	#[serde(default)]
 	pub plugins: BTreeMap<String, Installation>,
@@ -31,8 +32,6 @@ pub struct Registry {
 	pub credentials: BTreeMap<String, String>,
 	#[serde(default)]
 	pub topologies: BTreeMap<String, PathBuf>,
-	#[serde(default)]
-	pub capabilities: Vec<String>,
 	/// The file this registry was read from, for error messages. Not stored.
 	#[serde(skip)]
 	pub source: Option<PathBuf>,
@@ -83,8 +82,8 @@ impl Registry {
 			Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
 				anyhow::anyhow!(
 					"plugin registry {shown} is not a valid registry: {e}. Fix the file, or move \
-					 it aside and run `polkameter plugin install` (and `plugin credential`, \
-					 `plugin topology`, `plugin capability`) again"
+					 it aside and run `polkameter plugin install` (and `plugin credential` and \
+					 `plugin topology`) again"
 				)
 			})?,
 			Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::default(),
@@ -226,11 +225,6 @@ impl Registry {
 			version: manifest.version.clone(),
 		};
 		Ok((manifest, installation))
-	}
-	pub async fn install(&mut self, executable: &Path) -> Result<Manifest> {
-		let (manifest, installation) = Self::describe(executable).await?;
-		self.plugins.insert(manifest.id.clone(), installation);
-		Ok(manifest)
 	}
 	/// Checks that plugin `id` is installed as `version` and that its executable has not changed
 	/// since `polkameter plugin install`. Each message says how to fix it before the evidence.

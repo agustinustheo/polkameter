@@ -63,7 +63,6 @@ The max sustained rate is the target rate of the step before the first breaking 
 
 [Stop rules and thresholds](results.md#stop-rules-and-thresholds) lists every rule. The plan's [`<thresholds>`](plans.md#thresholds) sets the limits and lists the defaults. A dropped connection that PolkaMeter reconnects isn't a stop. [How a run works](how-it-works.md#why-a-dropped-connection-is-not-a-chain-failure) explains why.
 
-The run directory also has plots in `plots/`: throughput over time, latency percentiles and failures by status.
 
 ## Which step does a number belong to?
 

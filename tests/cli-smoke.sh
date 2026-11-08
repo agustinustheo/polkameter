@@ -1,32 +1,28 @@
 #!/usr/bin/env bash
 # Exercises the CLI end to end without a chain: install the example plugin, validate and run its
-# plan locally and through a loopback remote agent, regenerate the report, and check that a
-# failed assertion exits nonzero. Also replay a recorded load report and check the action's
-# verdict extraction. Build first: cargo build -p polkameter --bin polkameter
+# plan, regenerate the report, and check that a failed assertion exits nonzero. Also replay a
+# recorded load report and check the action's verdict extraction. Build first: cargo build -p polkameter --bin polkameter
 # and cargo build -p polkameter-example-plugin.
 set -euo pipefail
 
 cli=${POLKAMETER:-target/debug/polkameter}
 plugin=${POLKAMETER_EXAMPLE_PLUGIN:-target/debug/polkameter-example-plugin}
-plan=examples/plugin-workflow.polkameter.xml
+plan=examples/plugin-data-flow.polkameter.xml
 work=$(mktemp -d)
 export POLKAMETER_PLUGIN_REGISTRY="$work/plugins.json"
-agent=""
-trap '[ -n "$agent" ] && kill "$agent" 2>/dev/null; rm -rf "$work"' EXIT
+trap 'rm -rf "$work"' EXIT
 
 "$cli" plugin install "$plugin" > /dev/null
-"$cli" validate "$plan" --format json | grep -q '"valid":true'
-"$cli" preflight "$plan" --format json > /dev/null
+"$cli" validate "$plan" | grep -q 'structurally valid'
+"$cli" preflight "$plan" > /dev/null
 
 # Both verdict policies on a plan without a load test: there is no verdict to fail on.
-"$cli" run "$plan" --output "$work/local" --junit "$work/reports/local.xml" --fail-on-verdict \
-	--fail-on-inconclusive --format json > "$work/local.json"
+"$cli" run "$plan" --output "$work/local" --fail-on-verdict --fail-on-inconclusive > /dev/null
 run=$(ls -d "$work"/local/run-*)
 [ ! -e "$run/summary.json" ]
-"$cli" report "$run" --format json | grep -q '"exit_code":0'
-cmp "$run/junit.xml" "$work/reports/local.xml"
+"$cli" report "$run" | grep -q '^Status: completed$'
 xmllint --nonet --noout --schema tests/schemas/junit.xsd "$run/junit.xml"
-for file in events.jsonl execution.json junit.xml samples.jtl summary.md plots/throughput.svg; do
+for file in events.jsonl execution.json junit.xml samples.jtl summary.md; do
 	[ -s "$run/$file" ] || { echo "missing $file" >&2; exit 1; }
 done
 
@@ -54,40 +50,26 @@ cat > "$work/secret.xml" <<'EOF'
 </polkameter-plan>
 EOF
 "$cli" plugin credential smoke POLKAMETER_SMOKE_SECRET > /dev/null
-for format in human json; do
-	out="$work/secret-$format"
-	code=0
-	POLKAMETER_SMOKE_SECRET='Smoke"Secret\Value' "$cli" run "$work/secret.xml" --output "$out" \
-		--format "$format" > "$out.stdout" 2> "$out.stderr" || code=$?
-	[ "$code" -eq 1 ] || { echo "the redaction run exited $code, expected 1" >&2; exit 1; }
-	for needle in Secret hunter2 SmokeApiKey; do
-		if grep -rlF -- "$needle" "$out" "$out.stdout" "$out.stderr"; then
-			echo "$needle leaked into the files above" >&2
-			exit 1
-		fi
-	done
-	grep -qF 'before [redacted] after' "$out"/run-*/plugins/example/stderr.log
-	grep -qF 'wss://[redacted]@127.0.0.1:1/ws?apikey=[redacted]&v=[redacted]' "$out.stderr"
+out="$work/secret"
+code=0
+POLKAMETER_SMOKE_SECRET='Smoke"Secret\Value' "$cli" run "$work/secret.xml" --output "$out" \
+	> "$out.stdout" 2> "$out.stderr" || code=$?
+[ "$code" -eq 1 ] || { echo "the redaction run exited $code, expected 1" >&2; exit 1; }
+for needle in Secret hunter2 SmokeApiKey; do
+	if grep -rlF -- "$needle" "$out" "$out.stdout" "$out.stderr"; then
+		echo "$needle leaked into the files above" >&2
+		exit 1
+	fi
 done
+grep -qF 'before [redacted] after' "$out"/run-*/plugins/example/stderr.log
+grep -qF 'wss://[redacted]@127.0.0.1:1/ws?apikey=[redacted]&v=[redacted]' "$out.stderr"
 
 # Exercise the action's jq expression on a real FAIL report, not the shell-test stub.
 mkdir "$work/recorded"
 cp crates/cli/tests/fixtures/smoke-run/*.json crates/cli/tests/fixtures/smoke-run/*.jsonl "$work/recorded/"
 gzip -dc crates/cli/tests/fixtures/smoke-run/scrapes.jsonl.gz > "$work/recorded/scrapes.jsonl"
-"$cli" report "$work/recorded" --format json > "$work/recorded.json" 2> "$work/report.log"
+"$cli" report "$work/recorded" > "$work/recorded.out" 2> "$work/report.log"
 xmllint --nonet --noout --schema tests/schemas/junit.xsd "$work/recorded/junit.xml"
 [ "$(jq -r '.verdict.result // empty' "$work/recorded/summary.json")" = FAIL ]
 
-port=$((20000 + RANDOM % 20000))
-export POLKAMETER_AGENT_TOKEN=smoke-token-0123456789abcdef0123456789
-"$cli" agent serve --bind "127.0.0.1:$port" --output-root "$work/remote" > "$work/agent.log" 2>&1 &
-agent=$!
-for _ in $(seq 1 50); do
-	curl --silent --fail "http://127.0.0.1:$port/health" > /dev/null && break
-	sleep 0.2
-done
-"$cli" run "$plan" --remote "http://127.0.0.1:$port" --remote-token-env POLKAMETER_AGENT_TOKEN \
-	--junit "$work/reports/remote.xml" --fail-on-verdict --fail-on-inconclusive --format json | grep -q '"exit_code":0'
-xmllint --nonet --noout --schema tests/schemas/junit.xsd "$work/reports/remote.xml"
-cmp "$work/reports/remote.xml" "$work"/remote/run-*/junit.xml
 echo "CLI smoke passed"

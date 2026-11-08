@@ -66,7 +66,7 @@ fn setup_with(
 	let lane = Lane { call: "Test.call", source: QueueSource::new(txs, vec![], "txs") };
 	let (replies_tx, replies) = tokio::sync::mpsc::unbounded_channel();
 	let mut t = Tracker::new(
-		vec![lane],
+		lane,
 		FakeSender(replies_tx),
 		dir.jsonl("load.jsonl").unwrap(),
 		dir.jsonl("blocks.jsonl").unwrap(),
@@ -134,7 +134,7 @@ async fn steps_run_on_monotonic_time() {
 	assert!(real.elapsed() < std::time::Duration::from_secs(10), "{:?}", real.elapsed());
 	assert_eq!((stop.rule, stop.step), (Rule::RateCap, Some(1)), "{}", stop.detail);
 	assert_eq!(elapsed.as_secs(), 40);
-	let steps: Vec<_> = t.steps[0].iter().map(|s| final_step(s, None)).collect();
+	let steps: Vec<_> = t.steps.iter().map(final_step).collect();
 	assert_eq!(steps.iter().map(|f| f.seconds).collect::<Vec<_>>(), [20.0, 20.0]);
 	// 2 then 3 tx/s; the bucket starts empty, so the first step sends one fewer at most.
 	assert!((39..=40).contains(&steps[0].sent), "{}", steps[0].sent);
@@ -149,13 +149,13 @@ async fn a_flood_sized_to_the_plan_reaches_the_rate_cap() {
 	// What the plan sends on the paused clock, from a flood larger than it needs.
 	let (t, stop, _) = run("sized-probe", boot_awake, Problems::default()).await;
 	assert_eq!(stop.rule, Rule::RateCap, "{}", stop.detail);
-	let sent: u64 = t.steps[0].iter().map(|s| final_step(s, None).sent).sum();
+	let sent: u64 = t.steps.iter().map(|s| final_step(s).sent).sum();
 	assert!((99..=100).contains(&sent), "2 tx/s for 20 s, then 3 tx/s for 20 s: {sent}");
 
 	let (mut t, mut io, opts) =
 		setup_with("sized", boot_awake, Problems::default(), u32::try_from(sent).unwrap());
 	let stop = load(&mut t, &mut io, &opts).await.unwrap();
-	assert!(t.lanes()[0].source.exhausted(), "the flood was sized to the plan");
+	assert!(t.lane().source.exhausted(), "the flood was sized to the plan");
 	assert_eq!((stop.rule, stop.step), (Rule::RateCap, Some(1)), "{}", stop.detail);
 
 	let (mut t, mut io, opts) = setup_with("short", boot_awake, Problems::default(), 50);

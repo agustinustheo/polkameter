@@ -10,11 +10,10 @@ PolkaMeter is a load-testing tool for Polkadot SDK chains. The `polkameter` CLI 
 
 | Path | What it is | Published |
 | --- | --- | --- |
-| `crates/cli` | The `polkameter` CLI and remote agent. Plan engine in `src/engine`, load runner in `src/load` | crates.io `polkameter` |
+| `crates/cli` | The `polkameter` CLI. Plan engine in `src/engine`, load runner in `src/load` | crates.io `polkameter` |
 | `crates/plugin-sdk` | `polkameter-plugin-sdk`: protocol (default), `chain` feature (RPC, reads, signing, keys), `observers` feature (run files, checks) | crates.io `polkameter-plugin-sdk` |
 | `plugins/substrate` | The substrate plugin, `polkameter-substrate-plugin`. Needs the standard `System` and `Balances` pallets and supported account and signature types | release archives and container only |
 | `plugins/example` | Example plugin for tests. No chain | no |
-| `src-tauri`, `src` | Desktop app (Tauri, TypeScript). Not documented for users | no |
 | `examples/` | Example plans. `tests/validate-plans.py` validates every `*.polkameter.xml` here | |
 | `schemas/` | The plan XSD | |
 | `docs/` | mdBook user docs. Read `docs/STYLE.md` before you edit them | |
@@ -26,12 +25,12 @@ PolkaMeter is a load-testing tool for Polkadot SDK chains. The `polkameter` CLI 
 
 ## How a run flows through the code
 
-1. `engine::execute::run` validates the plan, creates the run directory and writes events to `events.jsonl`.
+1. `engine::execute::run_stoppable` creates the run directory and writes events to `events.jsonl`.
 2. `engine::plugins` starts one process per plugin. Each step sends an operation over the SDK protocol.
 3. For a load test, `engine::measurement::run` starts the monitors (`engine/monitors`) and the load runner (`load`).
 4. After the finality wait, `load::loss` gives each flood transaction its status.
 5. `observers::checks::report::write` reads the files through `observers::files`, runs the checks and writes `summary.json` and `summary.md`.
-6. `engine::artifacts` writes `samples.jtl` and the plots. `execute` writes `execution.json`.
+6. `engine::artifacts` writes `samples.jtl`. `execute` writes `execution.json`.
 
 Each part writes its own raw files. Only `observers::files` knows the formats. That's why `polkameter report` can run steps 5 and 6 again from the files alone.
 
@@ -60,8 +59,6 @@ python3 tests/distribution.py
 python3 tests/action-smoke.py
 mdbook build
 ```
-
-The workspace includes the desktop app, which needs GTK and WebKit libraries on Linux. To skip it, test the packages you changed with `-p`.
 
 Tests that need a chain are `#[ignore]`d. Start the dev chain, run them, and stop it:
 

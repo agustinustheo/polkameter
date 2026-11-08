@@ -42,7 +42,6 @@ impl Plugin for MyRuntime {
 			id: "my-runtime".into(),
 			version: "0.1.0".into(),
 			protocol: PROTOCOL,
-			requirements: vec![],
 			operations: [(
 				"prepare".into(),
 				Operation::new(

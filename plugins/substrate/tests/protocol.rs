@@ -37,7 +37,7 @@ impl Session {
 			"id": self.next,
 			"operation": operation,
 			"inputs": inputs,
-			"context": {"run_id": "run-test", "artifact_dir": std::env::temp_dir(), "user": null, "iteration": null},
+			"context": {"run_id": "run-test", "artifact_dir": std::env::temp_dir()},
 		});
 		writeln!(self.stdin, "{request}").unwrap();
 		self.stdin.flush().unwrap();
@@ -126,8 +126,9 @@ fn bad_inputs_fail_before_any_connection() {
 
 #[tokio::test]
 async fn polkameter_installs_it_and_accepts_the_example_plans() {
-	let mut registry = polkameter::engine::plugins::Registry::default();
-	registry.install(std::path::Path::new(PLUGIN)).await.unwrap();
+	polkameter::engine::plugins::Registry::describe(std::path::Path::new(PLUGIN))
+		.await
+		.unwrap();
 	let examples = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples");
 	for name in [
 		"substrate-remarks",

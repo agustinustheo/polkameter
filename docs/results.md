@@ -4,7 +4,7 @@ Each run stores its reports and recorded data in a new run directory. [Read the 
 
 ## The run directory
 
-Example plan, no load test (plot files trimmed):
+Example plan, no load test:
 
 ```text
 run-1792253315025-76883-1/
@@ -12,14 +12,13 @@ run-1792253315025-76883-1/
   execution.json
   junit.xml
   plan.json
-  plots/                      throughput.svg, latency-percentiles.svg, failure-breakdown.svg
   plugins/example/stderr.log
   resolved-plan.json
   samples.jtl
   summary.md
 ```
 
-The name is `run-<milliseconds>-<pid>-<sequence>`. The directory is created in `--output`, or in `--output-root` on a remote agent. A run never reuses a directory.
+The name is `run-<milliseconds>-<pid>-<sequence>`. The directory is created in `--output`. A run never reuses a directory.
 
 ## Files in every run
 
@@ -32,9 +31,7 @@ The name is `run-<milliseconds>-<pid>-<sequence>`. The directory is created in `
 | `plan.json` | The plan as parsed. |
 | `resolved-plan.json` | Plugin manifests and registry records, `<monitors>` settings, CLI version and BLAKE2 hash. |
 | `samples.jtl` | One CSV row per step, and per transaction in a load test. See [samples.jtl](#samplesjtl). |
-| `plots/*.svg` | Throughput, latency percentiles, and failures by status. |
 | `plugins/<id>/stderr.log` | Standard error of each plugin that started. |
-| `run.lock` | Locked while the run is in progress. |
 
 ## Redaction
 
@@ -45,7 +42,7 @@ Redaction replaces known credential values and endpoint secrets with `[redacted]
 
 An endpoint keeps its scheme, host, port, path and parameter names. For example, `wss://user:pass@rpc.example/ws?apikey=KEY` is written as `wss://[redacted]@rpc.example/ws?apikey=[redacted]`.
 
-Redaction covers every file PolkaMeter writes in the run directory, including the load-test records. It also covers each plugin's `stderr.log`, the `--format json` events, and the messages on standard error. PolkaMeter also finds a secret in its JSON-escaped forms.
+Redaction covers every file PolkaMeter writes in the run directory, including the load-test records. It also covers each plugin's `stderr.log` and the messages on standard error. PolkaMeter also finds a secret in its JSON-escaped forms.
 
 PolkaMeter doesn't redact:
 
@@ -92,7 +89,7 @@ PolkaMeter writes `execution.json` after teardown. When you stop a run, it write
 | --- | --- |
 | `completed` | `0` |
 | `completed_with_failures` | `1` |
-| `stopped` | `130` after SIGINT or a remote stop, `143` after SIGTERM |
+| `stopped` | `130` after SIGINT, `143` after SIGTERM |
 | `stopping` | `130` or `143`. Provisional. If it remains after the process ended, the process was killed. |
 | `failed` | `3` before setup, `1` in setup or later |
 
@@ -100,14 +97,13 @@ PolkaMeter writes `execution.json` after teardown. When you stop a run, it write
 
 ## junit.xml
 
-`junit.xml` is a test report that CI systems such as GitLab, Jenkins and GitHub test-report actions can display. Every run tries to write it after teardown, also when the run failed or was stopped. `--junit PATH` on `run` or `report` writes one more copy to `PATH`.
+`junit.xml` is a test report that CI systems such as GitLab, Jenkins and GitHub test-report actions can display. Every run tries to write it after teardown, also when the run failed or was stopped.
 
 | Recorded result | JUnit test case |
 | --- | --- |
 | Plan execution, and each plan step | One case each. Success passes. A failure is `<failure>`. A step that never started is `<skipped>`. |
 | Each load check | One case. `fail` is `<failure>`. `warn` passes, with the warning in the output. `no result` is `<skipped>`. |
 | The load verdict | One case, `overall verdict`. FAIL is `<failure>`. INCONCLUSIVE is `<skipped>`. |
-| Workflow steps | Passing calls of a step become one case with a count. Each failure up to 100 per step is its own case. |
 
 The JUnit report doesn't change the exit code.
 
@@ -237,7 +233,7 @@ If the plan does not monitor what a check reads, the check is `no result` with a
 | `label` | `step:<step id>` | `load:step:<step index>` |
 | `responseCode` | `STEP_OK` or `STEP_FAILED` | Transaction status |
 | `responseMessage` | Step error, or empty | Transaction hash |
-| `threadName` | `user:<n>:iteration:<n>`, or `user:null:iteration:null` outside a workflow | `load` |
+| `threadName` | `steps` | `load` |
 | `success` | `true` if the step succeeded | `true` if finalized and not failed |
 | `Latency` | `0` | Reply time, in milliseconds |
 
@@ -249,16 +245,14 @@ Each event has a `timestamp` in milliseconds and `version` `2`. Credentials are 
 
 | `event` | Fields | When |
 | --- | --- | --- |
-| `phase` | `phase`, and `id` for a workflow | Each phase start: `preflight`, `setup`, `workflow`, `teardown`. A load test adds, in order, `measurement`, `baseline`, `load`, `recovery`, `reconciliation` and `checks`. |
-| `step-started` | `step`, `operation`, `user`, `iteration` | A step starts. |
+| `phase` | `phase` | Each phase start: `preflight`, `setup`, `teardown`. A load test adds, in order, `measurement`, `baseline`, `load`, `recovery`, `reconciliation` and `checks`. |
+| `step-started` | `step`, `operation` | A step starts. |
 | `step-progress` | `step`, `elapsedMs` | Every 5 seconds while a step runs. |
-| `step-finished` | `step`, `elapsedMs`, `success`, `error`, `user`, `iteration` | A step ends. |
+| `step-finished` | `step`, `elapsedMs`, `success`, `error` | A step ends. |
 | `cleanup-failed` | `error`, `errors` | Teardown steps failed. `errors` lists every failure. |
 | `plugin-restarted` | `plugin` | A plugin that crashed, timed out or was stopped was started again for a teardown step. |
 | `warning` | `message` | Something did not stop the run: a reconnect to a different node, a plugin that could not be restarted, or a JUnit file that could not be written. |
 | `completed` | `outcome` | The run ended, with the same outcome as `execution.json`. |
-
-`--format json` adds `artifact-written`, `report` and `validation` lines. These are not written to `events.jsonl`.
 
 ## Rebuilding a report
 
@@ -266,7 +260,7 @@ Each event has a `timestamp` in milliseconds and `version` `2`. Credentials are 
 
 | Plan | Rewrites |
 | --- | --- |
-| Without `<load>` | `junit.xml`, `samples.jtl` and the plots |
+| Without `<load>` | `junit.xml` and `samples.jtl` |
 | With `<load>` | Also the checks, `summary.json` and `summary.md` |
 
 The result comes only from the files. So you can copy a run directory to another machine and report it there.

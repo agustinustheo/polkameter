@@ -1,4 +1,4 @@
-//! Portable JMeter-compatible samples and plots, written from a run's raw files.
+//! Portable JMeter-compatible samples, written from a run's raw files.
 use anyhow::Result;
 use serde::Serialize;
 use serde_json::Value;
@@ -43,13 +43,6 @@ struct Sample {
 	grp_threads: u64,
 }
 
-/// What every finished run, and `polkameter report`, derives from the raw files: `samples.jtl`
-/// and the plots.
-pub fn write_outputs(directory: &Path) -> Result<()> {
-	write_samples(directory)?;
-	crate::engine::plots::write(directory)
-}
-
 /// The records of a JSON-lines file, read one line at a time.
 fn records(path: &Path) -> Result<impl Iterator<Item = Result<Value>>> {
 	let lines = BufReader::new(fs::File::open(path)?).lines();
@@ -59,7 +52,7 @@ fn records(path: &Path) -> Result<impl Iterator<Item = Result<Value>>> {
 /// samples.jtl: one row per step and per transaction in the run's event and ledger files, which
 /// are read one line at a time. As in JMeter, `timeStamp` is when a sample started and `elapsed`
 /// how long it took: a step's start is its finish time minus its elapsed time.
-fn write_samples(directory: &Path) -> Result<()> {
+pub fn write_samples(directory: &Path) -> Result<()> {
 	let mut out = csv::WriterBuilder::new()
 		.has_headers(false)
 		.from_path(directory.join("samples.jtl"))?;
@@ -77,7 +70,7 @@ fn write_samples(directory: &Path) -> Result<()> {
 			label: format!("step:{}", event["step"].as_str().unwrap_or("unknown")),
 			response_code: if success { "STEP_OK" } else { "STEP_FAILED" }.into(),
 			response_message: event["error"].as_str().unwrap_or("").into(),
-			thread_name: format!("user:{}:iteration:{}", event["user"], event["iteration"]),
+			thread_name: "steps".into(),
 			success,
 			bytes: 0,
 			sent_bytes: 0,

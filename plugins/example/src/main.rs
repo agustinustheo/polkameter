@@ -49,7 +49,6 @@ impl Plugin for Example {
 			id: "example".into(),
 			version: "0.1.0".into(),
 			protocol: PROTOCOL,
-			requirements: vec![],
 			operations: operations
 				.into_iter()
 				.map(|(name, operation)| (name.into(), operation))

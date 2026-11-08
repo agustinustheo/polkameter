@@ -1,7 +1,7 @@
 //! The phases every scenario shares:
 //!
 //!   1. baseline    a few probe txs, one per block, before any load
-//!   2. load        the plan's steps, every lane at its own rate, until a failure or the end
+//!   2. load        the plan's steps at their rates, until a failure or the end
 //!   3. recovery    no load, one probe per block, until probes land in time again
 //!
 //! One loop per phase over three inputs: a tick, submit replies, block events. The tracker owns

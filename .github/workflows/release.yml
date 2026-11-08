@@ -169,45 +169,6 @@ jobs:
           path: release-source/release-assets/*
           if-no-files-found: error
 
-  desktop:
-    name: Desktop (${{ matrix.target }})
-    needs: prepare
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-22.04
-            target: linux-x86_64
-            bundles: appimage,deb
-          - os: macos-15
-            target: macos-aarch64
-            bundles: dmg
-          - os: windows-latest
-            target: windows-x86_64
-            bundles: nsis
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.workflow_sha }}
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.prepare.outputs.commit }}
-          path: release-source
-      - uses: ./.github/actions/setup
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-          cache: "false"
-      - run: corepack pnpm install --frozen-lockfile
-        working-directory: release-source
-      - run: corepack pnpm tauri build --bundles ${{ matrix.bundles }}
-        working-directory: release-source
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: desktop-${{ matrix.target }}
-          path: release-source/target/release/bundle/**
-          if-no-files-found: error
-
   crates-io:
     name: Publish crates to crates.io (resumable)
     # crates.io versions are permanent, so publish only after every build, the
@@ -317,7 +278,7 @@ jobs:
 
   publish:
     name: Publish GitHub release (resumable)
-    needs: [prepare, cli-linux, cli-other, desktop]
+    needs: [prepare, cli-linux, cli-other]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -332,19 +293,6 @@ jobs:
           pattern: cli-*
           merge-multiple: true
           path: release-assets
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: desktop-*
-          path: desktop-artifacts
-      - name: Package desktop assets separately
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          for artifact in desktop-artifacts/desktop-*; do
-            test -d "$artifact"
-            target=${artifact##*/desktop-}
-            tar -C "$artifact" -czf "release-assets/polkameter-desktop-${VERSION}-${target}.tar.gz" .
-          done
       - name: Generate SPDX SBOM
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
@@ -353,7 +301,7 @@ jobs:
           output-file: release-assets/polkameter.spdx.json
           # release-github.py uploads every release asset after attestation.
           upload-release-assets: false
-      - name: Attest CLI archives and desktop bundles
+      - name: Attest CLI archives
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: release-assets/*

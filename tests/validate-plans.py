@@ -7,7 +7,6 @@ Requires python3, xmllint (CI installs libxml2-utils), and a built CLI:
 Set POLKAMETER to use another CLI binary. No plugins or chain are needed.
 """
 
-from html.parser import HTMLParser
 import json
 import os
 from pathlib import Path
@@ -37,7 +36,7 @@ FULL = plan('''
   <setup><step id="prepare" use="example.prepare">
     <input name="value" value="21"/>
   </step></setup>
-  <workflow id="users"><step id="echo" use="core.echo"><input name="value" ref="user.index"/></step></workflow>
+  <evaluate><step id="echo" use="core.echo"><input name="value" ref="run.id"/></step></evaluate>
   <load target="chain" source-ref="steps.prepare.flood" probes-ref="steps.prepare.probes">
     <rate tx-per-second="0" seconds="1"/>
   </load>
@@ -59,47 +58,18 @@ def mutate(xml, path, attribute, value):
     return ET.tostring(root, encoding="unicode")
 
 
-class CodeBlocks(HTMLParser):
-    """Read rendered XML in the slides, including text split across syntax spans."""
-
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.blocks = []
-        self.current = None
-
-    def handle_starttag(self, tag, attrs):
-        if tag == "pre":
-            self.current = []
-
-    def handle_data(self, data):
-        if self.current is not None:
-            self.current.append(data)
-
-    def handle_endtag(self, tag):
-        if tag == "pre" and self.current is not None:
-            self.blocks.append("".join(self.current))
-            self.current = None
-
-
 def published_plans():
     for path in sorted((ROOT / "examples").rglob("*.polkameter.xml")):
         yield str(path.relative_to(ROOT)), path.read_text()
     for path in sorted((SKILL / "templates").glob("*.polkameter.xml")):
         yield str(path.relative_to(ROOT)), path.read_text()
-    for path in sorted((ROOT / "docs").rglob("*")):
-        if path.suffix == ".md":
-            # Accept both Markdown fence styles, including indented list fences.
-            blocks = re.findall(
-                r"^\s*(`{3,}|~{3,})[^\n]*\n(.*?)^\s*\1\s*$",
-                path.read_text(), re.MULTILINE | re.DOTALL,
-            )
-            blocks = [body for _, body in blocks]
-        elif path.suffix == ".html":
-            parser = CodeBlocks()
-            parser.feed(path.read_text())
-            blocks = parser.blocks
-        else:
-            continue
+    for path in sorted((ROOT / "docs").rglob("*.md")):
+        # Accept both Markdown fence styles, including indented list fences.
+        blocks = re.findall(
+            r"^\s*(`{3,}|~{3,})[^\n]*\n(.*?)^\s*\1\s*$",
+            path.read_text(), re.MULTILINE | re.DOTALL,
+        )
+        blocks = [body for _, body in blocks]
         for index, body in enumerate(blocks, 1):
             # A plan starts with markup; CLI output that quotes an element name is not one.
             if body.lstrip().startswith("<") and re.search(r"<polkameter-plan(?:\s|/?>)", body):
@@ -125,25 +95,16 @@ class PlanValidation(unittest.TestCase):
             capture_output=True, text=True, timeout=30,
         )
         cli = subprocess.run(
-            [str(CLI), "validate", str(path), "--format", "json"],
+            [str(CLI), "validate", str(path)],
             capture_output=True, text=True, timeout=30,
         )
         self.assertEqual(schema.returncode, 0 if schema_valid else 3, schema.stderr)
         self.assertEqual(cli.returncode, 0 if cli_valid else 2, cli.stdout + cli.stderr)
-        result = json.loads(cli.stdout)
-        self.assertEqual(result["schemaVersion"], 1)
         if cli_valid:
-            self.assertEqual(result["event"], "validation")
-            self.assertIs(result["valid"], True)
+            self.assertIn("Plan is structurally valid.", cli.stdout)
         else:
-            # The diagnostic goes to stderr and, with --format json, as an error line to stdout.
             self.assertIn(cli_error, cli.stderr)
-            self.assertEqual(result["event"], "error")
-            self.assertIs(result["valid"], False)
-            self.assertEqual(result["exitCode"], 2)
-            self.assertEqual(result["file"], str(path))
-            self.assertIn(cli_error, result["message"])
-            self.assertTrue(result["message"].startswith(f"{path}: "), result["message"])
+            self.assertTrue(cli.stderr.startswith(f"PolkaMeter: {path}: "), cli.stderr)
         if not schema_valid:
             for fragment in schema_error:
                 self.assertIn(fragment, schema.stderr)
@@ -235,9 +196,6 @@ case("smoke mode", plan(attrs='version="1" name="test" mode="smoke"'))
 reversed_plan = ET.fromstring(FULL)
 reversed_plan[:] = reversed(list(reversed_plan))
 case("sections in reverse order", ET.tostring(reversed_plan, encoding="unicode"))
-case("workflows interleaved with sections", plan('''
-  <workflow id="a"/><targets/><workflow id="b"/><setup/><workflow id="c"/>
-'''))
 
 # Every required attribute is checked with both validators, including nested elements.
 for path, attributes in [
@@ -247,7 +205,6 @@ for path, attributes in [
     ("p:credentials/p:credential", ["id", "profile"]),
     ("p:setup/p:step", ["id", "use"]),
     ("p:setup/p:step/p:input", ["name"]),
-    ("p:workflow", ["id"]),
     ("p:load", ["target", "source-ref", "probes-ref"]),
     ("p:load/p:rate", ["tx-per-second", "seconds"]),
     ("p:monitors", ["topology", "relay-target", "para-id"]),
@@ -285,12 +242,6 @@ for path, attribute, good, bad, reason in [
       'core.': 'step `prepare`: use="core." has an invalid operation name ``'}),
     ("p:setup/p:step", "timeout-ms", ["1"], ["0"],
      'step `prepare`: `timeout-ms` must be at least 1'),
-    ("p:workflow", "users", ["100000"], ["100001"],
-     'workflow `users` has users='),
-    ("p:workflow", "iterations", ["1"], ["0"],
-     'workflow `users` has iterations="0"; use at least 1'),
-    ("p:workflow", "concurrency", ["1000"], ["1001"],
-     'workflow `users` has concurrency='),
     ("p:load", "connections", ["64"], ["65"],
      '<load> has connections='),
     ("p:load", "baseline-probes", ["1000"], ["1001"],
@@ -364,17 +315,17 @@ case("unknown attribute", mutate(FULL, ".", "unknown", "x"), False,
 case("unknown child", plan('<unknown/>'), False,
      cli_error="unknown element <unknown> in <polkameter-plan>",
      schema_error=(f"Element '{{{NAMESPACE}}}unknown'", "not expected"))
-for tag in ["plugin", "target", "credential", "workflow", "step"]:
+for tag in ["plugin", "target", "credential", "step"]:
     root = ET.fromstring(FULL)
     node = root.find(f".//{{{NAMESPACE}}}{tag}")
     parent = next(parent for parent in root.iter() if node in list(parent))
     parent.append(ET.fromstring(ET.tostring(node)))
     reason = {"plugin": "plugin ID `example` is declared twice", "target": "target ID `chain` is declared twice",
-              "credential": "credential ID `admin` is declared twice", "workflow": "workflow ID `users` is declared twice",
+              "credential": "credential ID `admin` is declared twice",
               "step": "step ID `prepare` is declared twice"}[tag]
     case(f"duplicate {tag} ID", ET.tostring(root, encoding="unicode"), False,
          cli_error=reason, schema_error=(f"Element '{{{NAMESPACE}}}{tag}'", "Duplicate key-sequence"))
-case("step IDs are global", FULL.replace('<workflow id="users">', '<workflow id="users"><step id="prepare" use="core.echo"/>'), False,
+case("step IDs are global", FULL.replace('<evaluate>', '<evaluate><step id="prepare" use="core.echo"/>'), False,
      cli_error="step ID `prepare` is declared twice; step IDs must be unique in the whole plan",
      schema_error=(f"Element '{{{NAMESPACE}}}step'", "Duplicate key-sequence"))
 case("duplicate input name", FULL.replace('<input name="value" value="21"/>', '<input name="value" value="21"/>' * 2), False,

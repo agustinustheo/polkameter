@@ -1,4 +1,4 @@
-//! What the load tool counts per step and lane, and a step's final numbers ([`FinalStep`],
+//! What the load tool counts per step, and a step's final numbers ([`FinalStep`],
 //! `steps.jsonl`) once all its txs settled.
 
 use std::collections::BTreeMap;
@@ -7,7 +7,7 @@ use polkameter_plugin_sdk::observers::files::{
 	BlockRecord, BlockStats, FinalStep, Millis, NodeMax,
 };
 
-/// Counters of one step of one lane while it runs and settles.
+/// Counters of one step while it runs and settles.
 #[derive(Debug, Clone, Default)]
 pub struct StepStats {
 	/// Step index.
@@ -38,7 +38,7 @@ pub struct StepStats {
 	pub backpressure_ticks: u64,
 	/// Longest wait for a submit reply during the step.
 	pub max_oldest_pending_ms: Millis,
-	/// Blocks seen while the step ran, with `ours` counted for this lane.
+	/// Blocks seen while the step ran.
 	pub blocks: Vec<BlockRecord>,
 	/// The step ended.
 	pub closed: bool,
@@ -87,13 +87,13 @@ pub fn block_stats(blocks: &[BlockRecord]) -> BlockStats {
 	}
 }
 
-/// The final numbers of a step; `lane` is `None` in a single-lane run (the TS layout).
-pub fn final_step(st: &StepStats, lane: Option<&str>) -> FinalStep {
+/// The final numbers of a step.
+pub fn final_step(st: &StepStats) -> FinalStep {
 	let seconds = (st.ended_at.saturating_sub(st.started_at) as f64 / 1000.0).max(0.001);
 	let ratio = |a: u64, b: u64, none: f64| if b == 0 { none } else { a as f64 / b as f64 };
 	FinalStep {
 		step: st.step,
-		lane: lane.map(str::to_owned),
+		lane: None,
 		target_rate: st.target_rate,
 		seconds: (seconds * 10.0).round() / 10.0,
 		sent: st.sent,

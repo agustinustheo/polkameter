@@ -23,11 +23,15 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/setup
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: ${{ env.RUST_VERSION }}
           components: rustfmt, clippy
-          apt-packages: libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libxml2-utils shellcheck
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Install Linux system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxml2-utils shellcheck
       - name: Lint workflows
         env:
           ACTIONLINT_VERSION: 1.7.12
@@ -39,8 +43,6 @@ jobs:
           echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" -shellcheck= -color
-      - run: corepack pnpm install --frozen-lockfile
-      - run: corepack pnpm build
       - run: cargo +${{ env.RUST_VERSION }} fmt --all -- --check
       - run: cargo +${{ env.RUST_VERSION }} test --workspace
       - run: cargo +${{ env.RUST_VERSION }} clippy --workspace --all-targets -- -D warnings
@@ -78,7 +80,7 @@ jobs:
           cargo +${{ env.RUST_VERSION }} build -p polkameter-example-plugin
           tests/cli-smoke.sh
       - name: Package the crates for crates.io
-        run: cargo +${{ env.RUST_VERSION }} publish --workspace --exclude polkameter-desktop --exclude polkameter-example-plugin --exclude polkameter-substrate-plugin --dry-run --locked
+        run: cargo +${{ env.RUST_VERSION }} publish --workspace --exclude polkameter-example-plugin --exclude polkameter-substrate-plugin --dry-run --locked
 
   dev-chain:
     name: Substrate plugin on a dev chain
@@ -134,27 +136,6 @@ jobs:
             target/dev-chain/node.log
           if-no-files-found: ignore
 
-  desktop-build:
-    name: Desktop build (${{ matrix.name }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Linux
-            os: ubuntu-22.04
-          - name: macOS
-            os: macos-15
-          - name: Windows
-            os: windows-latest
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/setup
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-      - run: corepack pnpm install --frozen-lockfile
-      - run: corepack pnpm tauri build --debug --no-bundle
-
   action:
     name: Action (${{ matrix.name }})
     strategy:
@@ -178,7 +159,7 @@ jobs:
         id: plan
         with:
           version: latest
-          plan: examples/plugin-workflow.polkameter.xml
+          plan: examples/plugin-data-flow.polkameter.xml
           plugins: target/release/polkameter-example-plugin
           fail-on: verdict
       # A second use in the same matrix job must not collide on the artifact name.
@@ -186,7 +167,7 @@ jobs:
         id: again
         with:
           version: latest
-          plan: examples/plugin-workflow.polkameter.xml
+          plan: examples/plugin-data-flow.polkameter.xml
           plugins: target/release/polkameter-example-plugin
           artifact-retention-days: "1"
       - name: Assert the example plan passed

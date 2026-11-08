@@ -1,5 +1,5 @@
 use polkameter::engine::{
-	execute::{self, Outcome, RunState},
+	execute::{self, EventSink, Outcome, RunOptions, RunState, Stop},
 	plan::Plan,
 	plugins::Registry,
 };
@@ -8,13 +8,12 @@ use std::{
 	path::{Path, PathBuf},
 	sync::Arc,
 };
-use tokio_util::sync::CancellationToken;
 
 #[path = "../../../crates/cli/tests/support/executable.rs"]
 mod executable;
 
 fn fixture() -> String {
-	include_str!("../../../examples/plugin-workflow.polkameter.xml").into()
+	include_str!("../../../examples/plugin-data-flow.polkameter.xml").into()
 }
 /// A plan that installs the example plugin; `body` holds its credentials, setup and teardown.
 fn plugin_plan(name: &str, body: &str) -> String {
@@ -53,23 +52,20 @@ fn scratch(name: &str) -> Scratch {
 	Scratch(path)
 }
 async fn registry() -> Registry {
+	let executable = Path::new(env!("CARGO_BIN_EXE_polkameter-example-plugin"));
+	let (manifest, installation) = Registry::describe(executable).await.unwrap();
 	let mut registry = Registry::default();
-	registry
-		.install(Path::new(env!("CARGO_BIN_EXE_polkameter-example-plugin")))
-		.await
-		.unwrap();
+	registry.plugins.insert(manifest.id, installation);
 	registry
 }
+/// Runs `plan` to its outcome, sending its events to `sink`.
+async fn run_plan(plan: Plan, registry: Registry, root: &Path, sink: EventSink) -> Outcome {
+	execute::run_stoppable(plan, registry, root, Stop::default(), sink, RunOptions::default())
+		.await
+		.unwrap()
+}
 async fn run(xml: &str, registry: Registry, root: &Path) -> Outcome {
-	execute::run(
-		Plan::parse(xml).unwrap(),
-		registry,
-		root,
-		CancellationToken::new(),
-		Arc::new(|_| {}),
-	)
-	.await
-	.unwrap()
+	run_plan(Plan::parse(xml).unwrap(), registry, root, Arc::new(|_| {})).await
 }
 /// The parsed events.jsonl of a run.
 fn read_events(directory: &Path) -> Vec<Value> {
@@ -87,13 +83,13 @@ fn finished<'a>(events: &'a [Value], step: &'a str) -> impl Iterator<Item = &'a 
 }
 
 #[tokio::test]
-async fn independent_plugin_feeds_builtin_and_plugin_steps_with_scoped_iterations() {
-	let root = scratch("workflow");
+async fn independent_plugin_feeds_builtin_and_plugin_steps() {
+	let root = scratch("data-flow");
 	let outcome = run(&fixture(), registry().await, &root).await;
 	assert_eq!(outcome.exit_code, 0, "{:?}", outcome.error);
 	let events = read_events(&outcome.artifact_dir);
 	assert_eq!(finished(&events, "seed").count(), 1);
-	assert_eq!(finished(&events, "verified").filter(|e| e["success"] == true).count(), 6);
+	assert_eq!(finished(&events, "verified").filter(|e| e["success"] == true).count(), 1);
 }
 #[tokio::test]
 async fn incompatible_version_and_unknown_operation_fail_before_setup() {
@@ -263,9 +259,7 @@ async fn credentials_and_endpoint_keys_reach_no_file_and_no_event() {
 	});
 	let output = root.0.clone();
 	let plan = Plan::parse(&xml).unwrap();
-	let run = tokio::spawn(async move {
-		execute::run(plan, registry, &output, CancellationToken::new(), sink).await
-	});
+	let run = tokio::spawn(async move { run_plan(plan, registry, &output, sink).await });
 	// While the plugin waits, before any end-of-run pass: the streamed log is already redacted.
 	paused.notified().await;
 	let run_dir = std::fs::read_dir(&root.0).unwrap().next().unwrap().unwrap().path();
@@ -278,7 +272,7 @@ async fn credentials_and_endpoint_keys_reach_no_file_and_no_event() {
 		"{log}"
 	);
 	assert!(leaks(&log).is_empty(), "{log}");
-	let outcome = run.await.unwrap().unwrap();
+	let outcome = run.await.unwrap();
 	assert_eq!(outcome.exit_code, 1);
 	let error = outcome.error.unwrap();
 	assert!(error.contains("[redacted]") && leaks(&error).is_empty(), "{error}");
@@ -331,9 +325,7 @@ async fn teardown_does_not_restart_a_plugin_whose_file_changed() {
 			std::fs::write(&tamper, b"#!/bin/sh\nexit 1\n").unwrap();
 		}
 	});
-	let outcome = execute::run(plan, registry, &root, CancellationToken::new(), sink)
-		.await
-		.unwrap();
+	let outcome = run_plan(plan, registry, &root, sink).await;
 	assert_eq!(outcome.exit_code, 1);
 	let events = read_events(&outcome.artifact_dir);
 	assert!(events.iter().any(|e| {
@@ -343,81 +335,4 @@ async fn teardown_does_not_restart_a_plugin_whose_file_changed() {
 				.is_some_and(|m| m.contains("plugin example checksum mismatch"))
 	}));
 	assert!(finished(&events, "cleanup").any(|e| e["success"] == false));
-}
-/// A wrapper around the example plugin, for tests that need it to misbehave.
-#[cfg(unix)]
-fn wrapper(directory: &Path, body: &str) -> PathBuf {
-	let script = directory.join("wrapped-plugin");
-	executable::write_executable(
-		&script,
-		format!("#!/bin/sh\n{body}\nexec '{}'\n", env!("CARGO_BIN_EXE_polkameter-example-plugin")),
-	);
-	script
-}
-
-/// Polls until `ready` holds, failing after a minute.
-#[cfg(unix)]
-fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
-	let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-	while !ready() {
-		assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
-		std::thread::sleep(std::time::Duration::from_millis(10));
-	}
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn admission_leaves_the_status_free_and_ends_when_the_host_closes() {
-	use polkameter::plugin_application::{self as application, State};
-	let root = scratch("admission");
-	let slow = root.join("slow");
-	let entered = root.join("entered");
-	let script = wrapper(
-		&root,
-		&format!(
-			"if [ -e '{}' ]; then touch '{}'; sleep 30; fi",
-			slow.display(),
-			entered.display()
-		),
-	);
-	let mut registry = Registry::default();
-	registry.install(&script).await.unwrap();
-	// From now on, starting the plugin (to inspect the plan) takes 30 s.
-	std::fs::write(&slow, "").unwrap();
-	let xml = plugin_plan(
-		"Admission",
-		r#"<setup><step id="d" use="example.double"><input name="value" value="1"/></step></setup>"#,
-	);
-	let state = Arc::new(State::default());
-	let start = |id: &str| {
-		application::start_plan(
-			Plan::parse(&xml).unwrap(),
-			registry.clone(),
-			root.join("runs").to_string_lossy().into(),
-			state.clone(),
-			Arc::new(|_| {}),
-			Default::default(),
-			Some(id.into()),
-		)
-	};
-	let admitting = tokio::spawn(start("c-first"));
-	let marker = entered.clone();
-	tokio::task::spawn_blocking(move || wait_until("the inspection", || marker.exists()))
-		.await
-		.unwrap();
-	// The plan is being inspected, and the status is still readable at once.
-	let started = std::time::Instant::now();
-	assert!(application::status(&state, "unknown").await.is_err());
-	assert!(started.elapsed() < std::time::Duration::from_secs(5));
-	// Another run is refused; the same run is asked to retry.
-	let other = start("c-second").await.unwrap_err();
-	assert_eq!((other.message.as_str(), other.retry), ("a plugin plan is already running", false));
-	let again = start("c-first").await.unwrap_err();
-	assert!(again.retry, "{again:?}");
-	// Shutting down ends the admission without waiting for the slow plugin.
-	state.closing.cancel();
-	let error = admitting.await.unwrap().unwrap_err();
-	assert_eq!((error.message.as_str(), error.retry), ("the agent is shutting down", true));
-	assert!(started.elapsed() < std::time::Duration::from_secs(20));
-	assert!(state.admitting.lock().unwrap().is_none());
 }

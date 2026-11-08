@@ -15,4 +15,3 @@ tokio.workspace = true
 
 [dev-dependencies]
 polkameter.workspace = true
-tokio-util.workspace = true
