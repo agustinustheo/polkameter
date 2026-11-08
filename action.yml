@@ -8,32 +8,12 @@ inputs:
     description: Plugin executables to install, one per line, relative to the workspace. A bare name, such as polkameter-substrate-plugin, is found on PATH.
     required: false
     default: ""
-  plugin-crates:
-    description: Plugin package directories or Cargo.toml paths to build and install, one path or path:package per line.
-    required: false
-    default: ""
-  plugin-unlocked:
-    description: Allow plugin-crates builds to update Cargo.lock. By default builds use --locked and require an up-to-date lockfile.
-    required: false
-    default: "false"
-  install:
-    description: 'CLI installation: auto (release with source fallback), release or source.'
-    required: false
-    default: auto
   version:
-    description: Release version (X.Y.Z or vX.Y.Z, optionally with a prerelease such as -rc.1). Empty uses a full release tag or the package version for a moving major tag; other refs build from source.
+    description: CLI release to install, such as 0.3.0, or latest. Empty uses the action's release tag.
     required: false
     default: ""
   credentials:
     description: Credential profiles to map to environment variables, one PROFILE=ENV_VAR per line. Set the secret variables on the calling step with env:; secrets are never inputs.
-    required: false
-    default: ""
-  topologies:
-    description: Zombienet topologies to register, one ALIAS=path per line.
-    required: false
-    default: ""
-  capabilities:
-    description: Capabilities the network provisioner supplies, one name per line.
     required: false
     default: ""
   output:
@@ -49,26 +29,19 @@ inputs:
     required: false
     default: "true"
   artifact-name:
-    description: Name of the uploaded run artifact. Empty derives a name unique to the job, attempt and action step.
+    description: Name of the uploaded run artifact. Empty derives a name unique to the job, attempt and run.
     required: false
     default: ""
   artifact-retention-days:
     description: Days to keep the run artifact, 1 to 90. Empty uses the repository setting.
     required: false
     default: ""
-  toolchain:
-    description: Rust toolchain that builds PolkaMeter or plugin-crates. It must be 1.93 or newer.
-    required: false
-    default: 1.93.0
 outputs:
   version:
     description: Installed CLI version, without the v prefix.
     value: ${{ steps.install.outputs.version }}
-  install-method:
-    description: CLI installation method (release or source).
-    value: ${{ steps.install.outputs.install-method }}
   junit:
-    description: Path to the run's junit.xml (from v0.3.0), or empty if it was not written.
+    description: Path to the run's junit.xml, or empty if it was not written.
     value: ${{ steps.run.outputs.junit }}
   run-dir:
     description: The run directory, relative to the workspace.
@@ -80,109 +53,56 @@ outputs:
     description: Load verdict (PASS, WARN, FAIL or INCONCLUSIVE), or empty when no verdict was written.
     value: ${{ steps.run.outputs.verdict }}
   artifact-name:
-    description: Name of the run artifact, or empty when nothing was staged.
-    value: ${{ steps.stage.outputs.artifact-name }}
-  artifact-path:
-    description: Directory holding the staged artifact files, or empty when nothing was staged.
-    value: ${{ steps.stage.outputs.artifact-path }}
+    description: Name of the run artifact, or empty when it was not uploaded.
+    value: ${{ steps.upload.outputs.artifact-id && steps.run.outputs.artifact-name || '' }}
   artifact-id:
     description: ID of the uploaded run artifact, or empty when it was not uploaded.
     value: ${{ steps.upload.outputs.artifact-id }}
 runs:
   using: composite
   steps:
-    - name: Validate failure policy
-      shell: bash
-      env:
-        FAIL_ON: ${{ inputs.fail-on }}
-      run: |
-        case "$FAIL_ON" in
-          error|verdict|verdict-or-inconclusive) ;;
-          *) echo "::error::fail-on must be error, verdict or verdict-or-inconclusive"; exit 2 ;;
-        esac
-    - name: Validate artifact inputs
-      shell: bash
-      env:
-        UPLOAD: ${{ inputs.upload }}
-        RETENTION_DAYS: ${{ inputs.artifact-retention-days }}
-      run: python3 "$GITHUB_ACTION_PATH/scripts/action-stage-artifact.py" --check
-    - name: Install released PolkaMeter or select source
+    - name: Install PolkaMeter
       id: install
       shell: bash
       env:
-        INSTALL: ${{ inputs.install }}
-        VERSION: ${{ inputs.version }}
-        ACTION_REF: ${{ github.action_ref }}
-        GITHUB_TOKEN: ${{ github.token }}
-        PLUGIN_CRATES: ${{ inputs.plugin-crates }}
-      run: python3 "$GITHUB_ACTION_PATH/scripts/action-install.py"
-    - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
-      if: steps.install.outputs.needs-toolchain == 'true'
-      with:
-        toolchain: ${{ inputs.toolchain }}
-    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      if: steps.install.outputs.install-method == 'source'
-      with:
-        # A target dir of its own, so restoring the cache never overwrites the
-        # caller's target/ when the action runs from the same checkout (uses: ./).
-        workspaces: ${{ github.action_path }} -> .polkameter-action-target
-        key: polkameter-action
-    - name: Build PolkaMeter
-      if: steps.install.outputs.install-method == 'source'
-      shell: bash
-      env:
-        TOOLCHAIN: ${{ inputs.toolchain }}
+        VERSION: ${{ inputs.version || github.action_ref }}
+        # install.sh verifies the build attestation with gh when gh is signed in to github.com.
+        GH_TOKEN: ${{ github.server_url == 'https://github.com' && github.token || '' }}
+        POLKAMETER_INSTALL_DIR: ${{ runner.temp }}/polkameter/bin
       run: |
-        cargo +"$TOOLCHAIN" build --locked --release -p polkameter -p polkameter-substrate-plugin \
-          --bin polkameter --bin polkameter-substrate-plugin \
-          --manifest-path "$GITHUB_ACTION_PATH/Cargo.toml" --target-dir "$GITHUB_ACTION_PATH/.polkameter-action-target"
-        echo "$GITHUB_ACTION_PATH/.polkameter-action-target/release" >> "$GITHUB_PATH"
+        case "$VERSION" in
+          # A moving major tag such as v0 installs the release this action package is.
+          v[0-9]|v[0-9][0-9]) VERSION=$(grep -m 1 '^version = ' "$GITHUB_ACTION_PATH/Cargo.toml" | cut -d '"' -f 2) ;;
+          latest|v[0-9]*.*.*|[0-9]*.*.*) ;;
+          *) echo "::error::Use the action at a release tag, such as agustinustheo/polkameter@v0, or set version"; exit 1 ;;
+        esac
+        sh "$GITHUB_ACTION_PATH/install.sh" "$VERSION"
+        echo "$POLKAMETER_INSTALL_DIR" >> "$GITHUB_PATH"
+        installed=$("$POLKAMETER_INSTALL_DIR/polkameter" --version)
+        echo "version=${installed##* }" >> "$GITHUB_OUTPUT"
     - name: Run the plan
       id: run
       shell: bash
       env:
         PLAN: ${{ inputs.plan }}
         PLUGINS: ${{ inputs.plugins }}
-        PLUGIN_CRATES: ${{ inputs.plugin-crates }}
-        TOOLCHAIN: ${{ inputs.toolchain }}
-        PLUGIN_UNLOCKED: ${{ inputs.plugin-unlocked }}
         CREDENTIALS: ${{ inputs.credentials }}
-        TOPOLOGIES: ${{ inputs.topologies }}
-        CAPABILITIES: ${{ inputs.capabilities }}
         OUTPUT: ${{ inputs.output }}
         FAIL_ON: ${{ inputs.fail-on }}
+        ARTIFACT_NAME: ${{ inputs.artifact-name }}
       run: |
         run_args=("$PLAN" --output "$OUTPUT")
-        fail_on_inconclusive=false
         case "$FAIL_ON" in
+          error) ;;
           verdict) run_args+=(--fail-on-verdict) ;;
-          verdict-or-inconclusive)
-            run_args+=(--fail-on-verdict)
-            # The installed CLI is this action's own release or source build, which has the
-            # flag (v0.2.0 release assets do not match the installer's names, so version: 0.2.0
-            # builds this ref). Ask its help anyway, so a CLI without the flag warns instead of
-            # failing every run on an unknown argument.
-            run_help=$(polkameter run --help 2>&1 || true)
-            case "$run_help" in
-              *--fail-on-inconclusive*)
-                run_args+=(--fail-on-inconclusive)
-                fail_on_inconclusive=true
-                ;;
-              *)
-                echo "::warning::This PolkaMeter CLI has no --fail-on-inconclusive (added in v0.3.0), so an INCONCLUSIVE verdict will not fail the job; a FAIL verdict still does. Install v0.3.0 or newer, or set fail-on: verdict to keep this behaviour without the warning."
-                ;;
-            esac
-            ;;
+          verdict-or-inconclusive) run_args+=(--fail-on-verdict --fail-on-inconclusive) ;;
+          *) echo "::error::fail-on must be error, verdict or verdict-or-inconclusive"; exit 2 ;;
         esac
 
         # Prints the non-blank lines of $1 with surrounding spaces removed.
         lines() { printf '%s\n' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d'; }
         export POLKAMETER_PLUGIN_REGISTRY="$RUNNER_TEMP/polkameter/plugins.json"
         echo "POLKAMETER_PLUGIN_REGISTRY=$POLKAMETER_PLUGIN_REGISTRY" >> "$GITHUB_ENV"
-
-        if [ -n "${PLUGIN_CRATES//[[:space:]]/}" ]; then
-          python3 "$GITHUB_ACTION_PATH/scripts/action-build-plugins.py"
-        fi
         while IFS= read -r plugin; do
           # A bare name such as polkameter-substrate-plugin is looked up on PATH.
           if [ ! -e "$plugin" ] && [[ "$plugin" != */* ]] && command -v "$plugin" > /dev/null; then
@@ -193,12 +113,6 @@ runs:
         while IFS='=' read -r profile variable; do
           polkameter plugin credential "$profile" "${variable:?expected PROFILE=ENV_VAR}"
         done < <(lines "$CREDENTIALS")
-        while IFS='=' read -r alias path; do
-          polkameter plugin topology "$alias" "${path:?expected ALIAS=path}"
-        done < <(lines "$TOPOLOGIES")
-        while IFS= read -r capability; do
-          polkameter plugin capability "$capability"
-        done < <(lines "$CAPABILITIES")
 
         polkameter validate "$PLAN"
 
@@ -228,89 +142,47 @@ runs:
           fi
         fi
         echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
-        finished=false
-        if [ -f "$run_dir/summary.md" ]; then
-          # PolkaMeter redacts summary.md as it writes it and again when the run finishes; a
-          # run that did not finish may have written it without the final pass.
-          if python3 "$GITHUB_ACTION_PATH/scripts/action-stage-artifact.py" --finished "$run_dir"; then
-            finished=true
+
+        # Files PolkaMeter writes, redacted or free of credential values. Plugins also write into
+        # the run directory; their files are not redacted and never uploaded.
+        uploaded=(execution.json plan.json resolved-plan.json resolved-targets.json calibration.json
+          junit.xml 'plots/*.svg' events.jsonl steps.jsonl lost.jsonl samples.jtl blocks.jsonl load.jsonl
+          node.jsonl chain.jsonl transactions.jsonl scrapes.jsonl)
+        # PolkaMeter's last event follows its final redaction pass. A run killed before then
+        # (SIGKILL, out of memory, a panic) misses it, so these files are withheld.
+        if [ "$(tail -n 1 "$run_dir/events.jsonl" 2> /dev/null | jq -r '.event' 2> /dev/null)" = completed ]; then
+          uploaded+=(summary.md summary.json plugin-checks.json 'plugins/*/stderr.log')
+          if [ -f "$run_dir/summary.md" ]; then
             cat "$run_dir/summary.md" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "::notice::The run did not finish normally, so its summary.md missed PolkaMeter's final redaction pass; it is left out of the job summary."
           fi
+          reason=$(jq -r '.exit_reason // .error // empty' "$run_dir/execution.json" 2> /dev/null | tr '\r\n' '  ' || true)
+          if [ "$code" -ne 0 ] && [ -n "$reason" ]; then
+            echo "::error title=PolkaMeter exited $code::${reason//%/%25}"
+          fi
+        else
+          echo "::notice::The run did not finish normally, so it missed PolkaMeter's final redaction pass. Its summaries and plugin logs are left out of the job summary and the artifact."
         fi
 
-        # Say why the job fails when the report failed the run: smoke mode or the verdict. The CLI
-        # records why in execution.json (exit_reason); it is redacted once the run finished.
-        if [ "$code" -eq 1 ] && [ "$finished" = true ] \
-          && [ "$(jq -r '.state // empty' "$run_dir/execution.json" 2>/dev/null)" = completed_with_failures ]; then
-          reason=$( { jq -r '.exit_reason // empty' "$run_dir/execution.json" 2>/dev/null || true; } | tr '\r\n' '  ')
-          reason=${reason% }
-          # Smoke mode fails on monitor problems and required checks with no result whatever
-          # fail-on is, as the CLI does: then the policy is not what to change.
-          smoke_failed=$(jq -r 'if .mode == "smoke" and ((.problems // [] | length) > 0
-              or any(.checks[]?; .status == "no result" and (.optional | not))) then "true" else "false" end' \
-            "$run_dir/summary.json" 2>/dev/null || echo false)
-          results="https://github.com/agustinustheo/polkameter/blob/main/docs/reading-results.md"
-          if [ "$smoke_failed" = true ]; then
-            reason=${reason% (the checks are in summary.md)}
-            reason=${reason#smoke mode fails the run on * flags; fix this one: }
-            reason=${reason#smoke mode fails the run on * flags; fix these: }
-            reason=${reason:-a monitor problem or a required check with no result; see summary.md}
-            echo "::error title=PolkaMeter smoke run failed::${reason//%/%25}. Smoke mode fails the job on this whatever fail-on is set to; changing fail-on does not help."
-            {
-              echo
-              echo "### Why this job failed"
-              echo
-              echo "This smoke-mode run (\`mode=\"smoke\"\`) failed on: $reason."
-              echo
-              echo "Smoke mode fails the run on any monitor problem or required check with no result, whatever \`fail-on\` is set to, so \`fail-on: verdict\` or \`fail-on: error\` does not help. Fix the missing result or the monitor problem (see [what to do about INCONCLUSIVE]($results#what-to-do-about-inconclusive)), or run the plan in stress mode."
-            } >> "$GITHUB_STEP_SUMMARY"
-          elif [ "$verdict" = INCONCLUSIVE ] && [ "$fail_on_inconclusive" = true ]; then
-            reason=${reason%%; exit 1 because of *}
-            reason=${reason#verdict INCONCLUSIVE: }
-            reason=${reason:-see the outcome checks in summary.md}
-            echo "::error title=PolkaMeter verdict INCONCLUSIVE::${reason//%/%25}. fail-on: verdict-or-inconclusive (the default) fails the job on INCONCLUSIVE; set fail-on: verdict to fail only on FAIL."
-            {
-              echo
-              echo "### Why this job failed"
-              echo
-              echo "The load verdict is **INCONCLUSIVE**: $reason. The run did not show whether the chain holds the load, and \`fail-on: verdict-or-inconclusive\` (the default) fails the job on that."
-              echo
-              echo "Fix what kept the run from a result (see [what to do about INCONCLUSIVE]($results#what-to-do-about-inconclusive)), or set \`fail-on: verdict\` on this step to fail only on \`FAIL\`."
-            } >> "$GITHUB_STEP_SUMMARY"
-          elif [ "$verdict" = FAIL ] && [ "$FAIL_ON" != error ]; then
-            reason=${reason%%; exit 1 because of *}
-            reason=${reason#verdict FAIL: }
-            reason=${reason:-see the outcome checks in summary.md}
-            echo "::error title=PolkaMeter verdict FAIL::${reason//%/%25}. fail-on: $FAIL_ON fails the job on FAIL; set fail-on: error to fail only when the run itself fails."
-            {
-              echo
-              echo "### Why this job failed"
-              echo
-              echo "The load verdict is **FAIL**: $reason. FAIL means the chain broke a stress criterion under load: the load stopped on a failure, a failure mode was found, a step broke a measure, or a check failed. \`fail-on: $FAIL_ON\` fails the job on that."
-              echo
-              echo "See [did it pass?]($results#did-it-pass) for the rules. A ramp plan that pushes the chain until it breaks usually ends FAIL; to keep such a job green and read the verdict from the \`verdict\` output instead, set \`fail-on: error\` on this step."
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
+        echo "artifact-name=${ARTIFACT_NAME:-polkameter-run-$GITHUB_JOB-$GITHUB_RUN_ATTEMPT-${run_dir##*/}}" >> "$GITHUB_OUTPUT"
+        # upload-artifact follows symbolic links. PolkaMeter writes none, so a link is a plugin's.
+        if [ -n "$(find "$run_dir" -type l)" ]; then
+          echo "::warning::$run_dir holds symbolic links, so the run artifact is not uploaded."
+        else
+          {
+            echo 'artifact-paths<<POLKAMETER_PATHS'
+            for name in "${uploaded[@]}"; do
+              printf '%s/%s\n' "$run_dir" "$name"
+            done
+            echo POLKAMETER_PATHS
+          } >> "$GITHUB_OUTPUT"
         fi
-    - name: Stage the run artifact
-      id: stage
-      if: always() && inputs.upload == 'true' && steps.run.outputs.run-dir
-      shell: bash
-      env:
-        RUN_DIR: ${{ steps.run.outputs.run-dir }}
-        ARTIFACT_NAME: ${{ inputs.artifact-name }}
-        UPLOAD: ${{ inputs.upload }}
-        RETENTION_DAYS: ${{ inputs.artifact-retention-days }}
-      run: python3 "$GITHUB_ACTION_PATH/scripts/action-stage-artifact.py"
     - name: Upload the run
       id: upload
-      if: always() && steps.stage.outputs.artifact-path
+      if: always() && inputs.upload == 'true' && steps.run.outputs.artifact-paths
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
-        name: ${{ steps.stage.outputs.artifact-name }}
-        path: ${{ steps.stage.outputs.artifact-path }}
+        name: ${{ steps.run.outputs.artifact-name }}
+        path: ${{ steps.run.outputs.artifact-paths }}
         retention-days: ${{ inputs.artifact-retention-days }}
         if-no-files-found: error
     - name: Fail the job if the plan failed

@@ -26,23 +26,20 @@ jobs:
           POLKAMETER_SETUP_SURI: ${{ secrets.SETUP_SURI }}
 ```
 
-`@v0` installs the latest 0.x release of the CLI and checks its checksum and build attestation. To fix the version, use a full tag such as `@v0.3.0`. A branch or commit SHA builds the CLI from source. [`action.yml`](https://github.com/agustinustheo/polkameter/blob/main/action.yml) describes the `version`, `install` and `toolchain` inputs.
+`@v0` installs the latest 0.x release of the CLI and checks its checksum and build attestation. To fix the version, use a full tag such as `@v0.3.0`. A branch or commit SHA needs the `version` input.
 
-## Build plugins in the action
+## Build plugins
 
-Use `plugin-crates` to build and install plugins from your checkout. List one plugin package per line. Use `path:package` to select a package in a workspace. The action builds with `--locked`, so commit an up-to-date `Cargo.lock`.
+Build your plugin in an earlier step, then pass the executable in `plugins`:
 
 ```yaml
       - uses: actions/checkout@v7
+      - run: cargo build --locked --release -p <plugin-package>
       - uses: agustinustheo/polkameter@v0
         with:
-          plan: examples/plugin-workflow.polkameter.xml
-          plugin-crates: |
-            plugins/example:polkameter-example-plugin
-          fail-on: verdict
+          plan: <plan>
+          plugins: target/release/<plugin-binary>
 ```
-
-You can combine `plugin-crates` with `plugins` for prebuilt executables.
 
 ## Inputs and outputs
 
@@ -52,7 +49,6 @@ These are the inputs most jobs set. [`action.yml`](https://github.com/agustinust
 | --- | --- | --- |
 | `plan` | required | Path to the plan, relative to the workspace |
 | `plugins` | none | Plugin executables to install, one per line. A bare name, such as `polkameter-substrate-plugin`, is found on `PATH` |
-| `plugin-crates` | none | Plugin packages to build and install, one `path` or `path:package` per line |
 | `credentials` | none | Credential profiles to map, one `PROFILE=ENV_VAR` per line |
 | `fail-on` | `verdict-or-inconclusive` | Which verdicts fail the job. See [What fails the job](#what-fails-the-job) |
 | `version` | from the action's tag | The CLI release to install, such as `0.3.0` |
@@ -85,7 +81,7 @@ The `fail-on` input decides which [verdicts](reading-results.md#did-it-pass) als
 
 A failed run fails the job under every policy. A plan without a load test has no verdict. In smoke mode, monitor problems and missing required check results fail the run under every policy; see [`run`](cli.md#run). Other verdict failures still follow `fail-on`.
 
-When a verdict fails the job, the job summary ends with a "Why this job failed" section. A ramp that pushes the chain past its limit usually ends FAIL. To keep that job green and read the verdict instead, set `fail-on: error`. A later step can read the outputs even when the action failed:
+A ramp that pushes the chain past its limit usually ends FAIL. To keep that job green and read the verdict instead, set `fail-on: error`. A later step can read the outputs even when the action failed:
 
 ```yaml
       - name: Show the load verdict
