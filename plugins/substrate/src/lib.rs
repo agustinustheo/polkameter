@@ -20,7 +20,8 @@ use polkameter_plugin_sdk::{
 	StateCheckInput,
 	chain::{
 		AccountInfo, Call, ChainError, Client, Keypair, Mortality, TxBuilder, TxParams,
-		Value as ScaleValue, account_at, account_id, era_period, events, hex0x, ss58, tx_hash,
+		Value as ScaleValue, account_at, account_id, era_period, events, fetch, hex0x, ss58,
+		tx_hash,
 	},
 	strip_0x,
 };
@@ -800,7 +801,7 @@ fn require_fresh_signers(
 /// without that input, prints how long the transactions stay valid.
 async fn check_mortality(client: &Client, spec: &Prepare) -> Result<()> {
 	let Some(period) = spec.mortality else { return Ok(()) };
-	let measured = client.recent_block_seconds().await?;
+	let measured = recent_block_seconds(client).await?;
 	let block_seconds = measured.unwrap_or(6.0);
 	let lasts = era_period(period) as f64 * block_seconds;
 	let basis = if measured.is_some() { "measured" } else { "assumed" };
@@ -822,6 +823,23 @@ async fn check_mortality(client: &Client, spec: &Prepare) -> Result<()> {
 			Ok(())
 		},
 	}
+}
+
+/// The mean seconds between the last (up to) 10 blocks, from their `Timestamp.Now`; `None`
+/// when the chain has fewer than 3 blocks or its timestamps do not move. It never waits.
+async fn recent_block_seconds(client: &Client) -> Result<Option<f64>, ChainError> {
+	let best = client.best_number().await?;
+	let span = best.min(10);
+	if span < 2 {
+		return Ok(None);
+	}
+	let mut stamps = [0u64; 2];
+	for (slot, number) in stamps.iter_mut().zip([best, best - span]) {
+		let at = client.at(client.block_hash(number).await?).await?;
+		*slot = fetch::<(), u64>(&at, "Timestamp", "Now", ()).await?.unwrap_or(0);
+	}
+	let seconds = stamps[0].saturating_sub(stamps[1]) as f64 / f64::from(span) / 1000.0;
+	Ok((seconds > 0.0).then_some(seconds))
 }
 
 async fn prepare(

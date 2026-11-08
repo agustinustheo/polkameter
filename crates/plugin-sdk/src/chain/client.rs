@@ -10,10 +10,7 @@ use subxt::{
 	dynamic::{self, Value},
 };
 
-use crate::chain::{
-	reads::fetch,
-	tx::{ChainInfo, tx_hash},
-};
+use crate::chain::tx::ChainInfo;
 
 /// subxt at a block.
 pub type AtBlock = subxt::client::ClientAtBlock<
@@ -191,33 +188,6 @@ impl Client {
 		Ok(if live == ours { Ok(()) } else { Err(LayoutChanged { ours, live }) })
 	}
 
-	/// The running runtime's normal class limit (ref time, proof size): `System.BlockWeights`.
-	/// Read it here, never from the runtime source: live previewnet allows 1.5 s, `main` 1.7 s.
-	pub async fn normal_limit(&self) -> Result<(u64, u64), ChainError> {
-		// `Weight { ref_time, proof_size }` decodes as the tuple `(ref_time, proof_size)`.
-		#[derive(subxt::ext::scale_decode::DecodeAsType)]
-		#[decode_as_type(crate_path = "subxt::ext::scale_decode")]
-		struct Class {
-			max_total: Option<(u64, u64)>,
-		}
-		#[derive(subxt::ext::scale_decode::DecodeAsType)]
-		#[decode_as_type(crate_path = "subxt::ext::scale_decode")]
-		struct PerClass {
-			normal: Class,
-		}
-		#[derive(subxt::ext::scale_decode::DecodeAsType)]
-		#[decode_as_type(crate_path = "subxt::ext::scale_decode")]
-		struct BlockWeights {
-			per_class: PerClass,
-		}
-		let at = self.finalized().await?;
-		let w = at
-			.constants()
-			.entry(dynamic::constant::<BlockWeights>("System", "BlockWeights"))
-			.map_err(decode_err("System.BlockWeights"))?;
-		Ok(w.per_class.normal.max_total.unwrap_or_default())
-	}
-
 	/// The hash of block `number` on the node's canonical chain; `None` when the node doesn't
 	/// have the block (a fork keeps none from before its bite).
 	async fn try_block_hash(&self, number: u32) -> Result<Option<[u8; 32]>, ChainError> {
@@ -233,77 +203,11 @@ impl Client {
 		})
 	}
 
-	/// The parent hash of block `hash`.
-	pub async fn parent(&self, hash: [u8; 32]) -> Result<[u8; 32], ChainError> {
-		let header: serde_json::Value =
-			self.request("chain_getHeader", rpc_params![hex0x(hash)]).await?;
-		hex32(header["parentHash"].as_str().ok_or_else(|| ChainError::Read {
-			what: "header",
-			detail: format!("no parent hash for {}", hex0x(hash)),
-		})?)
-	}
-
 	/// The best block number now.
 	pub async fn best_number(&self) -> Result<u32, ChainError> {
 		let best: serde_json::Value = self.request("chain_getHeader", rpc_params![]).await?;
 		u32::from_str_radix(best["number"].as_str().unwrap_or("0x0").trim_start_matches("0x"), 16)
 			.map_err(decode_err("header number"))
-	}
-
-	/// The mean seconds between the last (up to) 10 blocks, from their `Timestamp.Now`; `None`
-	/// when the chain has fewer than 3 blocks or its timestamps do not move. Unlike
-	/// [`Client::block_interval_s`], it never waits.
-	pub async fn recent_block_seconds(&self) -> Result<Option<f64>, ChainError> {
-		let best = self.best_number().await?;
-		let span = best.min(10);
-		if span < 2 {
-			return Ok(None);
-		}
-		let mut stamps = [0u64; 2];
-		for (slot, number) in stamps.iter_mut().zip([best, best - span]) {
-			let at = self.at(self.block_hash(number).await?).await?;
-			*slot = fetch::<(), u64>(&at, "Timestamp", "Now", ()).await?.unwrap_or(0);
-		}
-		let seconds = stamps[0].saturating_sub(stamps[1]) as f64 / f64::from(span) / 1000.0;
-		Ok((seconds > 0.0).then_some(seconds))
-	}
-
-	/// The chain's block interval: the `Timestamp.Now` span of the last 60 blocks since the fork
-	/// started, over their count. Not a median or trimmed mean of gaps: on a fork the timestamps
-	/// come in bunches (0 s / 12 s pairs on 1 core, 12 s then five 0 s on 3 cores), and only the
-	/// span is right. A fork just started has fewer blocks: this waits for 20 of them.
-	pub async fn block_interval_s(&self) -> Result<f64, ChainError> {
-		let deadline = tokio::time::Instant::now() + INTERVAL_WAIT;
-		loop {
-			let number = self.best_number().await?;
-			let all = self.timestamps(number).await?;
-			let stamps = since_restart(&all);
-			if let Some(s) = interval_s(stamps) {
-				return Ok(s);
-			}
-			if tokio::time::Instant::now() >= deadline {
-				return Err(ChainError::Timeout(format!(
-					"block interval: {} blocks since the fork started at block {number}, {MIN_INTERVALS} needed, after {INTERVAL_WAIT:?}",
-					stamps.len().saturating_sub(1)
-				)));
-			}
-			tokio::time::sleep(std::time::Duration::from_secs(6)).await;
-		}
-	}
-
-	/// `Timestamp.Now` of block `number` and up to 60 before it, newest first; the walk stops
-	/// at a block the node doesn't have (a fork keeps none from before its bite).
-	async fn timestamps(&self, number: u32) -> Result<Vec<u64>, ChainError> {
-		let mut stamps = Vec::new();
-		for n in (number.saturating_sub(60)..=number).rev() {
-			let Some(hash) = self.try_block_hash(n).await? else { break };
-			stamps.push(
-				fetch::<(), u64>(&self.at(hash).await?, "Timestamp", "Now", ())
-					.await?
-					.unwrap_or(0),
-			);
-		}
-		Ok(stamps)
 	}
 
 	/// Encodes a call by pallet and call name, with metadata.
@@ -386,18 +290,6 @@ impl Client {
 			})
 			.collect()
 	}
-
-	/// Hashes of the ready txs in the node's pool.
-	pub async fn pending(&self) -> Result<Vec<[u8; 32]>, ChainError> {
-		let list: Vec<String> = self.request("author_pendingExtrinsics", rpc_params![]).await?;
-		list.iter()
-			.map(|x| {
-				hex::decode(x.trim_start_matches("0x"))
-					.map(|b| tx_hash(&b))
-					.map_err(read_any("pending hex"))
-			})
-			.collect()
-	}
 }
 
 /// `0x` and the hex of `bytes`: how the RPC and our files write a hash.
@@ -410,29 +302,4 @@ fn hex32(s: &str) -> Result<[u8; 32], ChainError> {
 		.ok()
 		.and_then(|b| b.try_into().ok())
 		.ok_or_else(|| ChainError::Read { what: "hash", detail: s.to_owned() })
-}
-
-/// A gap between two blocks longer than any slot: the bite to the fork's first block (or a
-/// stall). On a fork the longest normal gap is 12 s.
-const RESTART_GAP_MS: u64 = 60_000;
-/// Blocks the interval spans at least: enough whole timestamp bunches (six blocks on 3 cores)
-/// for the span to be right.
-const MIN_INTERVALS: usize = 20;
-/// How long to wait for `MIN_INTERVALS` blocks after a fork started.
-const INTERVAL_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
-
-/// The newest blocks of `stamps` (newest first, ms) up to the first gap over `RESTART_GAP_MS`:
-/// the blocks since the fork started.
-fn since_restart(stamps: &[u64]) -> &[u64] {
-	let first_gap = stamps.windows(2).position(|w| w[0].saturating_sub(w[1]) > RESTART_GAP_MS);
-	&stamps[..first_gap.map_or(stamps.len(), |i| i + 1)]
-}
-
-/// The block interval, s, over `stamps` (newest first, ms); `None` with fewer than
-/// `MIN_INTERVALS` blocks or a zero span.
-fn interval_s(stamps: &[u64]) -> Option<f64> {
-	let (newest, oldest) = (stamps.first()?, stamps.last()?);
-	let intervals = stamps.len() - 1;
-	let span = newest.saturating_sub(*oldest);
-	(intervals >= MIN_INTERVALS && span > 0).then(|| span as f64 / intervals as f64 / 1000.0)
 }

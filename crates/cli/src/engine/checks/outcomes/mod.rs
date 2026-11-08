@@ -10,13 +10,12 @@ mod pool;
 mod pvf;
 mod recorded;
 
-use crate::observers::{
-	checks::{
-		Check, Status, Verdict,
-		data::{Filter, RunData, Window},
-	},
-	files::num,
-};
+use polkameter_plugin_sdk::observers::{RunData, Status, Verdict, Window, num};
+
+use crate::engine::checks::Check;
+
+/// Label filter: every pair must match.
+type Filter<'a> = &'a [(&'a str, &'a str)];
 
 /// Every check, one list per outcome, in the order of the summary.
 pub fn all() -> Vec<Check> {

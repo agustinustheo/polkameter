@@ -38,10 +38,6 @@ subxt-signer = { version = "=0.51.1", default-features = false, features = ["sr2
 scale-info = { version = "2.11.6", default-features = false, features = ["std"], optional = true }
 tokio-util = { workspace = true, optional = true }
 
-[[test]]
-name = "checks_data"
-required-features = ["observers"]
-
 [lints]
 workspace = true
 

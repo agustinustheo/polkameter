@@ -1,11 +1,8 @@
 //! The run itself: did every monitor record what it should.
 
-use crate::observers::files::{registry::Outcome, to_fixed};
+use polkameter_plugin_sdk::observers::{CounterReset, RunData, Status, Verdict, to_fixed};
 
-use crate::observers::checks::{
-	Check, Status, Verdict,
-	data::{CounterReset, RunData},
-};
+use crate::engine::checks::{Check, Outcome};
 
 /// The stall limit when the summary has none: the default `stall-ms`.
 const STALL_MS: u64 = 30_000;

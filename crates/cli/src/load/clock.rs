@@ -6,7 +6,7 @@
 //! sleep (unlike `CLOCK_UPTIME_RAW`, which `Instant` uses). Elsewhere there is none, and only a
 //! long gap between send ticks shows a pause.
 
-use polkameter_plugin_sdk::observers::files::Millis;
+use polkameter_plugin_sdk::observers::Millis;
 
 /// Milliseconds on a clock that counts sleep and ignores wall-clock steps; `None` on platforms
 /// without one.

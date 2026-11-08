@@ -14,7 +14,7 @@
 
 use std::{future::Future, time::Duration};
 
-use polkameter_plugin_sdk::observers::files::{
+use polkameter_plugin_sdk::observers::{
 	FileError, JsonlWriter, Millis, NodeSample, Problems, now_ms,
 };
 use tokio::process::Command;

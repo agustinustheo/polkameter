@@ -3,7 +3,7 @@
 //! when a reorg later replaces that block (it is then usually included again); the loss check
 //! counts once more on the finalized chain.
 
-use polkameter_plugin_sdk::observers::files::{
+use polkameter_plugin_sdk::observers::{
 	BlockRecord, FileError, Millis,
 	registry::{TX_FAILED, TX_INCLUDED, TX_INCLUSION},
 	summary::{Outcome, Probe, ProbePhase},

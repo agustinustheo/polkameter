@@ -14,7 +14,7 @@ use polkameter_plugin_sdk::chain::{
 	ChainError, Client, decode_err, events, runtime_call,
 	value::{as_u64, field, nth},
 };
-use polkameter_plugin_sdk::observers::files::{
+use polkameter_plugin_sdk::observers::{
 	Problems, now_ms,
 	registry::{
 		PARA_BACKED, PARA_INCLUDED, PARA_SLOTS, PARA_TIMED_OUT, RELAY_DISPUTES,

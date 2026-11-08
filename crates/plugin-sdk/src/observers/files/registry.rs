@@ -19,21 +19,6 @@ pub enum Kind {
 	Histogram,
 }
 
-/// The outcomes in technical-design `test-design/outcomes.md`, plus `Run` for the ramp itself.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Outcome {
-	/// Why blocks end, build time.
-	#[serde(rename = "block production")]
-	BlockProduction,
-	/// Relay slots, PVF time, disputes.
-	Pvf,
-	/// Drain, loss, refusals, pool work.
-	Pool,
-	/// The run itself.
-	Run,
-}
-
 /// One metric definition.
 #[derive(Debug, Clone, Copy)]
 pub struct Def {

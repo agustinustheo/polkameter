@@ -2,7 +2,7 @@
 //! renamed metric or a changed type would make the data useless, so it stops the run.
 
 use anyhow::{Result, anyhow, bail};
-use polkameter_plugin_sdk::observers::files::registry::{Kind, NODE_METRICS};
+use polkameter_plugin_sdk::observers::registry::{Kind, NODE_METRICS};
 
 use crate::engine::monitors::{
 	Job, Target,

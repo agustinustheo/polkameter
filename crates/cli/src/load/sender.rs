@@ -25,7 +25,7 @@ use std::{
 };
 
 use futures_util::{SinkExt, StreamExt};
-use polkameter_plugin_sdk::observers::files::Millis;
+use polkameter_plugin_sdk::observers::Millis;
 use tokio::{net::TcpStream, sync::mpsc};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, tungstenite::Message};
 

@@ -385,9 +385,9 @@ impl Redactor {
 /// `writer`, redacting every string of each record before it is written. Object keys are
 /// redacted as [`Redactor::value`] says.
 pub fn records(
-	writer: polkameter_plugin_sdk::observers::files::JsonlWriter,
+	writer: polkameter_plugin_sdk::observers::JsonlWriter,
 	redactor: &Redactor,
-) -> polkameter_plugin_sdk::observers::files::JsonlWriter {
+) -> polkameter_plugin_sdk::observers::JsonlWriter {
 	if redactor.is_empty() {
 		return writer;
 	}
@@ -1184,7 +1184,7 @@ mod tests {
 
 	#[test]
 	fn records_are_redacted_before_they_are_written() {
-		use polkameter_plugin_sdk::observers::files::{RunDir, ScrapeRecord};
+		use polkameter_plugin_sdk::observers::{RunDir, ScrapeRecord};
 		let dir = std::env::temp_dir().join(format!("polkameter-records-{}", std::process::id()));
 		std::fs::create_dir_all(&dir).unwrap();
 		let run = RunDir::open(&dir);

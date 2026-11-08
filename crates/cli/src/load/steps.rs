@@ -3,9 +3,60 @@
 
 use std::collections::BTreeMap;
 
-use polkameter_plugin_sdk::observers::files::{
-	BlockRecord, BlockStats, FinalStep, Millis, NodeMax,
-};
+use polkameter_plugin_sdk::observers::{BlockRecord, BlockStats, Millis, NodeMax};
+use serde::{Deserialize, Serialize};
+
+/// A step's final numbers once all its txs settled (`steps.jsonl`), per lane.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinalStep {
+	/// Step index.
+	pub step: u32,
+	/// The lane (its tx call); absent in single-lane runs of the TS tool.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub lane: Option<String>,
+	/// Target rate.
+	pub target_rate: f64,
+	/// Length, 0.1 s.
+	pub seconds: f64,
+	/// Sent.
+	pub sent: u64,
+	/// Sent per second.
+	pub sent_per_s: f64,
+	/// Sent against target.
+	pub send_ratio: f64,
+	/// Included.
+	pub included: u64,
+	/// Included against sent (1 with nothing sent).
+	pub included_ratio: f64,
+	/// Our txs in blocks seen during the step, per second: what the chain took.
+	pub included_per_s: f64,
+	/// Failed after inclusion.
+	pub failed_in_block: u64,
+	/// Refused at submit.
+	pub rejected: u64,
+	/// Refused against sent.
+	pub rejected_ratio: f64,
+	/// p50 send to best block.
+	pub p50_latency_ms: Millis,
+	/// p95 send to best block.
+	pub p95_latency_ms: Millis,
+	/// p95 submit reply.
+	pub p95_reply_ms: Millis,
+	/// Longest wait for a reply.
+	pub max_oldest_pending_ms: Millis,
+	/// Refusals by "code message".
+	pub errors: BTreeMap<String, u64>,
+	/// Ticks without a tx.
+	pub starved_ticks: u64,
+	/// Ticks with every connection backed up.
+	pub backpressure_ticks: u64,
+	/// The step's blocks.
+	#[serde(flatten)]
+	pub blocks: BlockStats,
+	/// The node's highest CPU and memory.
+	pub node: NodeMax,
+}
 
 /// Counters of one step while it runs and settles.
 #[derive(Debug, Clone, Default)]

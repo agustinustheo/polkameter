@@ -1,6 +1,7 @@
 //! The measured load: baseline, rate steps, recovery and reconciliation of prepared transactions,
 //! with the node monitors. It returns the summary; the caller writes the report once plugin checks
 //! have run.
+use crate::engine::checks::report::overall_status;
 use crate::engine::{
 	execute::{RunOptions as ExitPolicy, Values, resolve, target_endpoint, transactions},
 	machine,
@@ -10,18 +11,19 @@ use crate::engine::{
 };
 use crate::load::runner::{Io, Mode, RunOptions, baseline, drain, load as apply_load, recover};
 use crate::load::sender::Sender;
+use crate::load::steps::FinalStep;
 use crate::load::steps::final_step;
 use crate::load::tracker::{Phase, Tracker};
 use crate::load::{Lane, QueueSource, Tx, TxHash, follower, now_ms, rules};
 use crate::redact::{Redactor, diag, records};
 use anyhow::{Context as _, Result, bail};
 use polkameter_plugin_sdk::chain::{ChainError, Client};
-use polkameter_plugin_sdk::observers::checks::{CheckResult, Status, report::overall_status};
-use polkameter_plugin_sdk::observers::files::summary::{
+use polkameter_plugin_sdk::observers::summary::{
 	Artifact, Loss, LostTx, MaxSustained, Network, NodePool, OverallStatus, Rule, SCHEMA_VERSION,
 	Summary,
 };
-use polkameter_plugin_sdk::observers::files::{FinalStep, NodeMax, NodeSample, RunDir};
+use polkameter_plugin_sdk::observers::{CheckResult, Status};
+use polkameter_plugin_sdk::observers::{NodeMax, NodeSample, RunDir};
 use polkameter_plugin_sdk::{Context, StateCheckInput};
 use std::fmt::Write as _;
 use std::path::Path;
@@ -133,7 +135,7 @@ pub async fn run(
 	follower::start(
 		client.clone(),
 		url.clone(),
-		client.normal_limit().await?,
+		crate::load::follower::normal_limit(&client).await?,
 		blocks_tx,
 		follow.clone(),
 	);
@@ -322,14 +324,14 @@ fn prepared_source(
 pub fn report(
 	dir: &RunDir,
 	measured: Measured,
-	plugin_checks: &[polkameter_plugin_sdk::observers::checks::CheckResult],
+	plugin_checks: &[polkameter_plugin_sdk::observers::CheckResult],
 	policy: ExitPolicy,
 	redactor: &Redactor,
 ) -> Result<Exit> {
 	dir.write_json(PLUGIN_CHECKS, &redactor.json(&plugin_checks)?)?;
 	let Measured { summary, finals, mode } = measured;
 	// Every text is redacted before summary.md and summary.json are written or printed.
-	let checks = polkameter_plugin_sdk::observers::checks::report::write_redacted(
+	let checks = crate::engine::checks::report::write_redacted(
 		dir,
 		summary.clone(),
 		&finals,
@@ -452,7 +454,7 @@ fn exit_code(mode: Mode, summary: &Summary, checks: &[CheckResult], policy: Exit
 	let mut smoke = Vec::new();
 	if mode == Mode::Smoke {
 		smoke.clone_from(&summary.problems);
-		smoke.extend(polkameter_plugin_sdk::observers::checks::smoke_gaps(checks));
+		smoke.extend(crate::engine::checks::smoke_gaps(checks));
 	}
 	for e in &smoke {
 		diag!("smoke: {e}");
@@ -572,13 +574,13 @@ pub fn check(dir: &Path, redactor: &Redactor) -> anyhow::Result<()> {
 	let summary: Summary =
 		serde_json::from_str(&std::fs::read_to_string(dir.join("summary.json"))?)?;
 	let finals: Vec<FinalStep> = run.read_jsonl("steps.jsonl")?;
-	let plugin_checks: Vec<polkameter_plugin_sdk::observers::checks::CheckResult> =
+	let plugin_checks: Vec<polkameter_plugin_sdk::observers::CheckResult> =
 		match std::fs::read_to_string(dir.join(PLUGIN_CHECKS)) {
 			Ok(text) => serde_json::from_str(&text)?,
 			Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
 			Err(e) => return Err(e.into()),
 		};
-	polkameter_plugin_sdk::observers::checks::report::write_redacted(
+	crate::engine::checks::report::write_redacted(
 		&run,
 		summary,
 		&finals,
@@ -603,7 +605,7 @@ impl PluginState {
 		&self,
 		included: &[TxHash],
 		at: [u8; 32],
-	) -> Result<polkameter_plugin_sdk::observers::files::summary::StateSample, ChainError> {
+	) -> Result<polkameter_plugin_sdk::observers::summary::StateSample, ChainError> {
 		let read = |detail: String| ChainError::Read { what: "plugin state check", detail };
 		let input = StateCheckInput {
 			target: self.target.clone(),
@@ -625,7 +627,7 @@ impl PluginState {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use polkameter_plugin_sdk::observers::checks::{CheckResult, Status, Verdict};
+	use polkameter_plugin_sdk::observers::{CheckResult, Status, Verdict};
 
 	#[test]
 	fn the_same_transaction_spelled_twice_is_a_duplicate() {
@@ -677,7 +679,7 @@ mod tests {
 	/// Mode × check status × required or optional × monitor problem × load stop × policy → exit.
 	#[test]
 	fn the_exit_code_follows_the_mode_the_verdict_and_the_policy() {
-		use polkameter_plugin_sdk::observers::files::summary::Stop;
+		use polkameter_plugin_sdk::observers::summary::Stop;
 		for mode in [Mode::Stress, Mode::Smoke] {
 			for status in [Status::Pass, Status::Warn, Status::Fail, Status::NoResult] {
 				for (optional, problem, stop) in [false, true]

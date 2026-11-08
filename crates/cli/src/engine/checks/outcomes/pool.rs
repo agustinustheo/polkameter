@@ -1,11 +1,13 @@
 //! Transaction pool (outcomes.md): silent loss, stuck pool, clean refusals, pool work.
 
-use crate::observers::files::{num, registry::Outcome, to_fixed};
+use polkameter_plugin_sdk::observers::{
+	CounterReset, Label, Phase, RunData, Status, Verdict, Window, num, quantile, to_fixed,
+};
 use serde::Serialize;
 
-use crate::observers::checks::{
-	Check, LIMITS, Status, Verdict,
-	data::{COLLATOR, CounterReset, END_REASON, Label, Phase, RunData, Window, add_to, quantile},
+use crate::engine::checks::{
+	COLLATOR, Check, END_REASON, Outcome, add_to,
+	limits::LIMITS,
 	outcomes::{also_missing, failed_scrapes, gaps, no_data},
 };
 
@@ -129,7 +131,7 @@ fn refusals_clean(d: &RunData) -> Result<Verdict, CounterReset> {
 	}
 	let no_code = by_reason.iter().filter(|(r, _)| r == NO_CODE).fold(0.0, |a, x| a + x.1);
 	let total = by_reason.iter().fold(0.0, |a, x| a + x.1);
-	let hung = d.summary.stop.rule == crate::observers::files::summary::Rule::PoolIntake;
+	let hung = d.summary.stop.rule == polkameter_plugin_sdk::observers::summary::Rule::PoolIntake;
 	let reasons = if by_reason.is_empty() {
 		"none".to_owned()
 	} else {

@@ -12,7 +12,7 @@ use crate::load::runner::RunEvent;
 use crate::redact::{Redactor, diag, records};
 use anyhow::Context as _;
 use polkameter_plugin_sdk::chain::Client;
-use polkameter_plugin_sdk::observers::files::{Problems, RunDir};
+use polkameter_plugin_sdk::observers::{Problems, RunDir};
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;

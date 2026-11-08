@@ -8,10 +8,8 @@ use std::{
 	time::Duration,
 };
 
-use polkameter_plugin_sdk::chain::{Client, tx_hash};
-use polkameter_plugin_sdk::observers::files::summary::{
-	Finality, Loss, LostTx, NodePool, StateSample,
-};
+use polkameter_plugin_sdk::chain::{ChainError, Client, tx_hash};
+use polkameter_plugin_sdk::observers::summary::{Finality, Loss, LostTx, NodePool, StateSample};
 use serde::Serialize;
 
 use crate::engine::measurement::PluginState;
@@ -52,7 +50,7 @@ pub async fn loss_check(
 	// after listing it. A tx can leave the pool while we walk, but cannot disappear
 	// between a late pool snapshot and an earlier chain cutoff. The reads are awaited in
 	// this order, never joined concurrently.
-	let ready = client.pending().await.map(|hashes| hashes.into_iter().collect::<HashSet<_>>());
+	let ready = pending(client).await.map(|hashes| hashes.into_iter().collect::<HashSet<_>>());
 	let ready = ready.map_err(|e| notes.push(format!("the pool could not be listed: {e}"))).ok();
 	let cutoff = client.best_number().await.map(|number| number.max(run.last_ours_block));
 	let cutoff = cutoff
@@ -368,6 +366,19 @@ async fn wait_finalized(
 		}
 		tokio::time::sleep(Duration::from_secs(2)).await;
 	}
+}
+
+/// Hashes of the ready txs in the node's pool.
+async fn pending(client: &Client) -> Result<Vec<[u8; 32]>, ChainError> {
+	let list: Vec<String> =
+		client.request("author_pendingExtrinsics", subxt_rpcs::rpc_params![]).await?;
+	list.iter()
+		.map(|x| {
+			hex::decode(x.trim_start_matches("0x"))
+				.map(|b| tx_hash(&b))
+				.map_err(|e| ChainError::Read { what: "pending hex", detail: e.to_string() })
+		})
+		.collect()
 }
 
 #[cfg(test)]

@@ -1,14 +1,15 @@
 //! Block production (outcomes.md): why blocks end, and build time against the authoring deadline.
 
-use crate::observers::files::registry::Outcome;
+use polkameter_plugin_sdk::observers::{
+	CounterReset, Label, RunData, Status, Verdict, count_above, quantile,
+};
 use serde::Serialize;
 
-use crate::observers::checks::{
-	Check, LIMITS, Status, Verdict,
-	data::{
-		COLLATOR, CounterReset, END_REASON, Label, RunData, count_above, quantile, reasons_text,
-	},
+use crate::engine::checks::{
+	COLLATOR, Check, END_REASON, Outcome, end_reasons,
+	limits::LIMITS,
 	outcomes::{also_missing, failed_scrapes, gaps, long_enough, no_data},
+	reasons_text,
 };
 
 const BUILD_TIME: &str = "substrate_proposer_block_constructed";
@@ -41,7 +42,7 @@ fn why_blocks_end(d: &RunData) -> Result<Verdict, CounterReset> {
 			missing.push(gap);
 			continue;
 		}
-		match d.end_reasons(w) {
+		match end_reasons(d, w) {
 			Ok(reasons) => windows.push(Reasons { reasons, window: w.label }),
 			Err(reset) => missing.push(format!("{}: a node restarted: {reset}", w.label)),
 		}

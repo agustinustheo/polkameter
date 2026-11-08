@@ -18,12 +18,14 @@
 //!
 //! The ramp also ends without a failure on: rate cap, budget used up, generator limit, smoke error.
 
-use polkameter_plugin_sdk::observers::files::{
-	FinalStep, Millis,
+use polkameter_plugin_sdk::observers::{
+	Millis,
 	summary::{BreakingPoint, Class, FailureMode, Loss, Rule, Stop},
 	to_fixed,
 };
 use serde::Serialize;
+
+use crate::load::steps::FinalStep;
 
 use crate::load::{
 	source::QueueSource,

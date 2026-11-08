@@ -25,7 +25,7 @@ pub fn warning(directory: Option<&Path>, message: &str, redactor: &Redactor) -> 
 	let message = redactor.text(&format!("JUnit report: {message}"));
 	eprintln!("{} warning: {}", crate::PRODUCT_NAME, single_line(&message));
 	let event = serde_json::json!({"event":"warning", "message":message,
-		"timestamp":polkameter_plugin_sdk::observers::files::now_ms(), "version":2});
+		"timestamp":polkameter_plugin_sdk::observers::now_ms(), "version":2});
 	if let Some(directory) = directory {
 		let _ = (|| -> Result<()> {
 			let mut file =
@@ -252,7 +252,7 @@ fn load_suite(timing: &LoadTiming, summary: &Value) -> Suite {
 /// Why an INCONCLUSIVE verdict is inconclusive, by the rules that set it; `None` when the summary
 /// cannot be read as one.
 fn inconclusive_reason(summary: &Value) -> Option<String> {
-	use polkameter_plugin_sdk::observers::{checks::CheckResult, files::summary::Summary};
+	use polkameter_plugin_sdk::observers::{CheckResult, summary::Summary};
 	let checks: Vec<CheckResult> = serde_json::from_value(summary["checks"].clone()).ok()?;
 	let summary: Summary = serde_json::from_value(summary.clone()).ok()?;
 	Some(crate::engine::measurement::verdict_reason(&summary, &checks))
