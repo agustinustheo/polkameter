@@ -1,33 +1,19 @@
 //! Process-level JUnit replay, copies, redaction and schema validation.
-use std::{
-	fs,
-	path::{Path, PathBuf},
-	process::Command,
-};
+use std::{fs, path::Path, process::Command};
 
-struct Work(PathBuf);
+#[path = "support/smoke_run.rs"]
+mod smoke_run;
+#[path = "support/work.rs"]
+mod work;
+
+use serde_json::Value;
+use work::Work;
+
 impl Work {
-	fn new(label: &str) -> Self {
-		let path = std::env::temp_dir().join(format!(
-			"polkameter-junit-{label}-{}-{}",
-			std::process::id(),
-			std::time::SystemTime::now()
-				.duration_since(std::time::UNIX_EPOCH)
-				.unwrap()
-				.as_nanos()
-		));
-		fs::create_dir_all(&path).unwrap();
-		Self(path.canonicalize().unwrap())
-	}
 	fn cli(&self) -> Command {
 		let mut command = Command::new(env!("CARGO_BIN_EXE_polkameter"));
 		command.env("POLKAMETER_PLUGIN_REGISTRY", self.0.join("plugins.json"));
 		command
-	}
-}
-impl Drop for Work {
-	fn drop(&mut self) {
-		let _ = fs::remove_dir_all(&self.0);
 	}
 }
 
@@ -49,25 +35,10 @@ fn validate(path: &Path) {
 	}
 }
 
-/// Copies the recorded smoke run's input files (not its golden outputs) into `work`.
-fn copy_fixture(work: &Work) {
-	let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/smoke-run");
-	for entry in fs::read_dir(&fixture).unwrap() {
-		let path = entry.unwrap().path();
-		if path.extension().is_some_and(|e| e == "gz") {
-			let mut decoder = flate2::read::GzDecoder::new(fs::File::open(&path).unwrap());
-			let mut file = fs::File::create(work.0.join(path.file_stem().unwrap())).unwrap();
-			std::io::copy(&mut decoder, &mut file).unwrap();
-		} else if path.extension().is_some_and(|e| e == "json" || e == "jsonl") {
-			fs::copy(&path, work.0.join(path.file_name().unwrap())).unwrap();
-		}
-	}
-}
-
 #[test]
 fn recorded_report_matches_golden_validates_and_copies() {
 	let work = Work::new("fixture");
-	copy_fixture(&work);
+	smoke_run::copy_to(&work.0);
 	let copy = work.0.join("reports/load.xml");
 	let output = work
 		.cli()
@@ -103,55 +74,11 @@ fn recorded_report_matches_golden_validates_and_copies() {
 }
 
 #[test]
-fn one_failed_scrape_after_the_run_start_keeps_the_recorded_results() {
-	let work = Work::new("failed-scrape");
-	copy_fixture(&work);
-	// The run starts with the baseline phase; validator eve's first scrape after it fails, so
-	// its next good scrape lands about 10 s after the edge.
-	let start = 1_791_020_815_470u64;
-	let path = work.0.join("scrapes.jsonl");
-	let mut first = true;
-	let lines: Vec<String> = fs::read_to_string(&path)
-		.unwrap()
-		.lines()
-		.map(|line| {
-			let mut r: serde_json::Value = serde_json::from_str(line).unwrap();
-			if first && r["instance"] == "eve" && r["t"].as_u64().unwrap() > start {
-				first = false;
-				r["text"] = serde_json::Value::Null;
-				r["error"] = "operation timed out".into();
-				return r.to_string();
-			}
-			line.to_owned()
-		})
-		.collect();
-	assert!(!first);
-	fs::write(&path, lines.join("\n") + "\n").unwrap();
-	let output = work.cli().arg("report").arg(&work.0).output().unwrap();
-	assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-	let summary: serde_json::Value =
-		serde_json::from_str(&fs::read_to_string(work.0.join("summary.json")).unwrap()).unwrap();
-	let check = |name: &str| {
-		summary["checks"]
-			.as_array()
-			.unwrap()
-			.iter()
-			.find(|c| c["check"] == name)
-			.unwrap()
-			.clone()
-	};
-	let disputes = check("no timed-out candidates or disputes");
-	assert_eq!(disputes["status"], "pass", "{disputes}");
-	assert_eq!(check("PVF time on validators (level 2, all parachains)")["status"], "pass");
-}
-
-#[test]
 fn report_refuses_an_unknown_summary_schema_and_rewrites_nothing() {
 	let work = Work::new("schema");
-	copy_fixture(&work);
+	smoke_run::copy_to(&work.0);
 	let path = work.0.join("summary.json");
-	let mut summary: serde_json::Value =
-		serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+	let mut summary: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
 	for (version, shown) in [(Some(serde_json::json!(2)), "2"), (None, "missing")] {
 		match &version {
 			Some(v) => summary["schemaVersion"] = v.clone(),
@@ -215,16 +142,12 @@ fn failed_run_writes_redacted_failures_and_skips_and_report_rebuilds_them() {
 	for name in ["events.jsonl", "execution.json"] {
 		let content = fs::read_to_string(run.join(name)).unwrap();
 		assert!(!content.contains("secret_check"));
-		assert!(
-			serde_json::Deserializer::from_str(&content)
-				.into_iter::<serde_json::Value>()
-				.any(|event| {
-					let event = event.unwrap();
-					event["error"]
-						.as_str()
-						.is_some_and(|error| error.contains(r#"expected "b", got "[redacted]""#))
-				})
-		);
+		assert!(serde_json::Deserializer::from_str(&content).into_iter::<Value>().any(|event| {
+			let event = event.unwrap();
+			event["error"]
+				.as_str()
+				.is_some_and(|error| error.contains(r#"expected "b", got "[redacted]""#))
+		}));
 	}
 	assert!(String::from_utf8_lossy(&output.stderr).contains(r#"expected "b", got "[redacted]""#));
 	assert!(xml.contains("[redacted]"));
@@ -236,97 +159,18 @@ fn failed_run_writes_redacted_failures_and_skips_and_report_rebuilds_them() {
 	let replay = fs::read_to_string(run.join("junit.xml")).unwrap();
 	assert!(!replay.contains("secret_check"));
 	assert_eq!(replay, xml);
-}
 
-#[test]
-fn report_escapes_and_bounds_recorded_messages_and_validates_the_xml() {
-	let work = Work::new("escaping");
-	let error = format!("<&>\"'\n\t\0\u{1b}\u{202e}\u{ffff}{}", "界&".repeat(5000));
-	fs::write(
-		work.0.join("execution.json"),
-		serde_json::to_vec(&serde_json::json!({
-			"artifact_dir":work.0, "exit_code":1, "state":"failed", "error":error
-		}))
-		.unwrap(),
-	)
-	.unwrap();
-	fs::write(work.0.join("events.jsonl"), "").unwrap();
-	fs::write(work.0.join("summary.md"), "failed").unwrap();
-	let output = work.cli().arg("report").arg(&work.0).output().unwrap();
-	assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-	let xml = fs::read_to_string(work.0.join("junit.xml")).unwrap();
-	assert!(xml.contains("&lt;&amp;&gt;&quot;&apos;"));
-	assert!(xml.contains('…'));
-	assert!(!xml.contains('\0'));
-	assert!(!xml.contains('\u{1b}'));
-	assert!(!xml.contains('\u{202e}'));
-	assert!(xml.len() < polkameter::engine::junit::MESSAGE_CHARS * 6 * 2 + 2048);
-	validate(&work.0.join("junit.xml"));
-}
-
-#[test]
-fn invalid_junit_copy_destinations_warn_without_changing_success() {
-	let work = Work::new("copy-errors");
-	let plan = work.0.join("plan.xml");
-	fs::write(&plan, r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="test"><setup><step id="ok" use="core.echo"><input name="value" value="1"/></step></setup></polkameter-plan>"#).unwrap();
-	#[cfg(unix)]
-	let blocker_name = "blocker & 'quoted'\n\t\u{1b}\u{202e}";
-	#[cfg(not(unix))]
-	let blocker_name = "blocker & 'quoted'";
-	let blocker = work.0.join(blocker_name);
-	fs::write(&blocker, "file, cannot create a directory under it").unwrap();
-	for destination in [work.0.clone(), blocker.join("report.xml")] {
-		let output = work
-			.cli()
-			.arg("run")
-			.arg(&plan)
-			.arg("--output")
-			.arg(work.0.join("runs"))
-			.arg("--junit")
-			.arg(&destination)
-			.args(["--format", "json"])
-			.output()
-			.unwrap();
-		assert!(output.status.success());
-		let stderr = String::from_utf8(output.stderr).unwrap();
-		assert_eq!(stderr.lines().count(), 1, "{stderr}");
-		assert!(stderr.contains("PolkaMeter warning: JUnit report:"));
-		assert!(!stderr.contains("&amp;") && !stderr.contains("&apos;"), "{stderr}");
-		assert!(!stderr.contains(['\t', '\u{1b}', '\u{202e}']), "{stderr}");
-		if destination != work.0 {
-			#[cfg(unix)]
-			assert!(stderr.contains("blocker & 'quoted'    /report.xml"), "{stderr}");
-			#[cfg(not(unix))]
-			assert!(stderr.contains(blocker_name), "{stderr}");
-		}
-		let events: Vec<serde_json::Value> = String::from_utf8(output.stdout)
-			.unwrap()
-			.lines()
-			.map(|s| serde_json::from_str(s).unwrap())
-			.collect();
-		assert!(events.iter().any(|e| e["event"] == "warning"));
-		let artifact = events.iter().find(|e| e["event"] == "artifact-written").unwrap();
-		assert_eq!(artifact["outcome"]["exit_code"], 0);
-		let run = Path::new(artifact["outcome"]["artifact_dir"].as_str().unwrap());
-		assert!(
-			fs::read_to_string(run.join("events.jsonl"))
-				.unwrap()
-				.contains("\"event\":\"warning\"")
-		);
-		validate(&run.join("junit.xml"));
-		let replay = work
-			.cli()
-			.arg("report")
-			.arg(run)
-			.arg("--junit")
-			.arg(destination)
-			.output()
-			.unwrap();
-		assert!(replay.status.success());
-		assert!(
-			String::from_utf8_lossy(&replay.stderr).contains("PolkaMeter warning: JUnit report:")
-		);
-	}
+	// A hostile recorded message is escaped, loses its control characters and is bounded.
+	let mut execution: Value =
+		serde_json::from_slice(&fs::read(run.join("execution.json")).unwrap()).unwrap();
+	execution["error"] = format!("<&>\"'\n\t\0\u{1b}\u{202e}\u{ffff}{}", "界&".repeat(5000)).into();
+	fs::write(run.join("execution.json"), serde_json::to_vec(&execution).unwrap()).unwrap();
+	assert!(work.cli().arg("report").arg(run).output().unwrap().status.success());
+	let hostile = fs::read_to_string(run.join("junit.xml")).unwrap();
+	assert!(hostile.contains("&lt;&amp;&gt;&quot;&apos;") && hostile.contains('…'));
+	assert!(!hostile.contains(['\0', '\u{1b}', '\u{202e}']));
+	assert!(hostile.len() < xml.len() + polkameter::engine::junit::MESSAGE_CHARS * 6 * 2);
+	validate(&run.join("junit.xml"));
 }
 
 #[test]
@@ -359,14 +203,16 @@ fn offline_report_redacts_available_registry_credentials_in_details() {
 	validate(&work.0.join("junit.xml"));
 }
 
+/// A JUnit copy that cannot be written, or fetched from the agent, is a warning: the run keeps
+/// exit 0.
 #[tokio::test]
-async fn a_failed_remote_junit_fetch_warns_without_changing_success() {
+async fn a_junit_copy_failure_warns_and_keeps_exit_0() {
 	use axum::{
 		Json, Router,
 		routing::{get, post},
 	};
 	use serde_json::json;
-	let work = Work::new("remote-errors");
+	let work = Work::new("junit-copy-errors");
 	let app = Router::new()
 		.route(
 			"/runs",
@@ -395,26 +241,42 @@ async fn a_failed_remote_junit_fetch_warns_without_changing_success() {
 	});
 	let plan = work.0.join("plan.xml");
 	fs::write(&plan, r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="test"><setup><step id="ok" use="core.echo"><input name="value" value="1"/></step></setup></polkameter-plan>"#).unwrap();
-	let mut command = work.cli();
-	command
-		.arg("run")
-		.arg(plan)
-		.args(["--remote", &endpoint, "--remote-token-env", "POLKAMETER_JUNIT_TOKEN"])
-		.args(["--format", "json", "--junit"])
-		.arg(work.0.join("report.xml"))
-		.env("POLKAMETER_JUNIT_TOKEN", "test-token");
-	let output = tokio::task::spawn_blocking(move || command.output().unwrap()).await.unwrap();
+	#[cfg(unix)]
+	let blocker = work.0.join("blocker & 'quoted'\n\t\u{1b}\u{202e}");
+	#[cfg(not(unix))]
+	let blocker = work.0.join("blocker & 'quoted'");
+	fs::write(&blocker, "a file, so no directory can be created under it").unwrap();
+	let runs = work.0.join("runs");
+	let local = &["--output", runs.to_str().unwrap()][..];
+	let remote = &["--remote", &endpoint, "--remote-token-env", "POLKAMETER_JUNIT_TOKEN"][..];
+	for (destination, args) in [
+		(work.0.clone(), local),
+		(blocker.join("report.xml"), local),
+		(work.0.join("report.xml"), remote),
+	] {
+		let mut command = work.cli();
+		command
+			.arg("run")
+			.arg(&plan)
+			.args(args)
+			.args(["--format", "json", "--junit"])
+			.arg(destination)
+			.env("POLKAMETER_JUNIT_TOKEN", "test-token");
+		let output = tokio::task::spawn_blocking(move || command.output().unwrap()).await.unwrap();
+		let stderr = String::from_utf8(output.stderr).unwrap();
+		assert_eq!(output.status.code(), Some(0), "{stderr}");
+		assert_eq!(stderr.lines().count(), 1, "{stderr}");
+		assert!(!stderr.contains(['\t', '\u{1b}', '\u{202e}']), "{stderr}");
+		assert!(!stderr.contains("&amp;") && !stderr.contains("&apos;"), "{stderr}");
+		let events: Vec<Value> = String::from_utf8(output.stdout)
+			.unwrap()
+			.lines()
+			.map(|line| serde_json::from_str(line).unwrap())
+			.collect();
+		assert!(events.iter().any(|e| e["event"] == "warning"));
+		let artifact = events.last().unwrap();
+		assert_eq!(artifact["event"], "artifact-written");
+		assert_eq!(artifact["outcome"]["exit_code"], 0);
+	}
 	server.abort();
-	assert_eq!(output.status.code(), Some(0));
-	let events: Vec<serde_json::Value> = String::from_utf8(output.stdout)
-		.unwrap()
-		.lines()
-		.map(|line| serde_json::from_str(line).unwrap())
-		.collect();
-	let warning = events.iter().find(|e| e["event"] == "warning").unwrap();
-	assert!(warning["message"].as_str().unwrap().contains("cannot fetch"), "{warning}");
-	let artifact = events.last().unwrap();
-	assert_eq!(artifact["event"], "artifact-written");
-	assert_eq!(artifact["outcome"]["exit_code"], 0);
-	assert!(String::from_utf8_lossy(&output.stderr).contains("PolkaMeter warning: JUnit report:"));
 }

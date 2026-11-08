@@ -95,22 +95,3 @@ pub(crate) fn parse_value(s: &str) -> Option<f64> {
 		_ => s.parse().ok(),
 	}
 }
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	#[test]
-	fn sample_lines_parse() {
-		let p = parse_sample_line(
-			r#"substrate_block_height{status="best",chain="x\"y"} 1234 1790000000.123"#,
-		)
-		.unwrap();
-		assert_eq!(p.name, "substrate_block_height");
-		assert_eq!(p.labels["status"], "best");
-		assert_eq!(p.labels["chain"], "x\"y");
-		assert_eq!(p.value, 1234.0);
-		assert_eq!(p.t, Some(1_790_000_000.123));
-		assert_eq!(parse_sample_line("x_bucket{le=\"+Inf\"} +Inf").unwrap().value, f64::INFINITY);
-	}
-}

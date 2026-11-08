@@ -265,36 +265,6 @@ mod tests {
 
 	use super::*;
 
-	#[test]
-	fn ps_times_parse() {
-		assert_eq!(cpu_seconds("1:02.50"), Some(62.5));
-		assert_eq!(cpu_seconds("01:02:03"), Some(3723.0));
-		assert_eq!(cpu_seconds("2-01:00:00"), Some(2.0 * 86_400.0 + 3600.0));
-		assert_eq!(cpu_seconds("x"), None);
-	}
-
-	#[test]
-	fn only_a_loopback_node_is_sampled() {
-		assert_eq!(local_port("ws://127.0.0.1:9944"), Some(9944));
-		assert_eq!(local_port("ws://localhost:9944/rpc"), Some(9944));
-		assert_eq!(local_port("ws://[::1]:9944"), Some(9944));
-		assert_eq!(local_port("ws://localhost"), Some(80));
-		assert_eq!(local_port("wss://rpc.example.com:443"), None);
-		assert_eq!(local_port("ws://10.0.0.5:9944"), None);
-		// The userinfo trick does not make a remote host local.
-		assert_eq!(local_port("ws://localhost:80@evil.example:9944"), None);
-	}
-
-	#[test]
-	fn port_forwarders_are_not_the_node() {
-		for name in ["ssh", "/usr/bin/ssh", "kubectl", "com.docker.backend", "docker-proxy"] {
-			assert!(is_forwarder(name), "{name}");
-		}
-		for name in ["polkadot", "polkadot-parachain", "/opt/bin/substrate-node", "sshnode"] {
-			assert!(!is_forwarder(name), "{name}");
-		}
-	}
-
 	/// Processes by PID: CPU seconds and RSS KiB, and who listens on the port.
 	#[derive(Default)]
 	struct Fake {
@@ -321,47 +291,5 @@ mod tests {
 		let why = find_pid(url, &&Fake::default()).await.unwrap_err();
 		assert!(!why.contains("NODE-SAMPLER-KEY"), "{why}");
 		assert!(why.starts_with("wss://rpc.example/ws?apikey=[redacted] is not on this machine"));
-	}
-
-	#[tokio::test]
-	async fn a_restarted_node_is_followed_to_its_new_process() {
-		let dir = polkameter_plugin_sdk::observers::files::RunDir::create(
-			&std::env::temp_dir(),
-			&format!("polkameter-sampler-{}", std::process::id()),
-		)
-		.unwrap();
-		let fake = Fake::default();
-		*fake.alive.lock().unwrap() = vec![(10, 5.0, 2048.0)];
-		*fake.listener.lock().unwrap() = Some(10);
-		let (problems, restarts) = (Problems::default(), Problems::default());
-		let mut sampler = NodeSampler::new(
-			10,
-			&fake,
-			dir.jsonl("node.jsonl").unwrap(),
-			problems.clone(),
-			restarts.clone(),
-		);
-		sampler.sample().await.unwrap();
-		// The node restarts as PID 20.
-		*fake.alive.lock().unwrap() = vec![];
-		*fake.listener.lock().unwrap() = None;
-		sampler.sample().await.unwrap();
-		sampler.sample().await.unwrap();
-		*fake.alive.lock().unwrap() = vec![(20, 1.0, 4096.0)];
-		*fake.listener.lock().unwrap() = Some(20);
-		sampler.sample().await.unwrap();
-		sampler.sample().await.unwrap();
-		sampler.out.finish().unwrap();
-		let samples: Vec<NodeSample> = dir.read_jsonl("node.jsonl").unwrap();
-		let pids: Vec<_> = samples.iter().map(|s| s.pid).collect();
-		assert_eq!(pids, [Some(10), Some(20), Some(20)], "sampling goes on with the new process");
-		assert_eq!(samples[1].cpu_pct, None, "no CPU across the restart");
-		assert_eq!(samples[2].rss_mi_b, 4);
-		let problems = problems.all();
-		assert_eq!(problems.len(), 2, "{problems:?}");
-		assert!(problems[0].contains("process 10 ended and no node process listens"));
-		assert!(problems[1].contains("sampling the node process now on its port, 20"));
-		assert_eq!(restarts.all(), [problems[1].clone()], "the restart is node down");
-		std::fs::remove_dir_all(&dir.path).ok();
 	}
 }

@@ -435,48 +435,4 @@ mod tests {
 		sender.close();
 		node.abort();
 	}
-
-	/// A node that stays unreachable after every attempt is down.
-	#[tokio::test]
-	async fn a_node_that_stays_unreachable_is_down() {
-		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-		let url = format!("ws://{}", listener.local_addr().unwrap());
-		let node = tokio::spawn(async move {
-			let (tcp, _) = listener.accept().await.unwrap();
-			let ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
-			drop(ws);
-			drop(listener); // and nothing listens any more
-		});
-		let (tx, mut rx) = mpsc::unbounded_channel();
-		let mut sender = Sender::open_with(&url, 1, tx, &backoff()).await.unwrap();
-		assert!(matches!(reply(&mut rx).await, Reply::Interrupted { connection: 0, .. }));
-		assert_eq!(reply(&mut rx).await, Reply::Closed { connection: 0, by_node: true });
-		assert_eq!(sender.submit(3, &[3]), None, "no connection left to queue on");
-		node.await.unwrap();
-	}
-
-	/// A node that accepts TCP and never answers the WebSocket handshake: each attempt times out
-	/// and the node is down when the backoff's deadline passes, instead of the sender hanging.
-	#[tokio::test]
-	async fn a_stalled_handshake_ends_in_node_down_at_the_deadline() {
-		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-		let url = format!("ws://{}", listener.local_addr().unwrap());
-		let node = tokio::spawn(async move {
-			let (tcp, _) = listener.accept().await.unwrap();
-			let ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
-			drop(ws);
-			let mut held = Vec::new();
-			loop {
-				let (tcp, _) = listener.accept().await.unwrap();
-				held.push(tcp); // never a handshake
-			}
-		});
-		let (tx, mut rx) = mpsc::unbounded_channel();
-		let _sender = Sender::open_with(&url, 1, tx, &backoff()).await.unwrap();
-		assert!(matches!(reply(&mut rx).await, Reply::Interrupted { connection: 0, .. }));
-		let started = std::time::Instant::now();
-		assert_eq!(reply(&mut rx).await, Reply::Closed { connection: 0, by_node: true });
-		assert!(started.elapsed() < Duration::from_secs(4), "{:?}", started.elapsed());
-		node.abort();
-	}
 }

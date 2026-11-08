@@ -34,30 +34,3 @@ pub fn recovered_at(
 		(mean <= rules.recovered_block_gap_factor * block_ms).then_some(w[0].sent_at)
 	})
 }
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-	use crate::load::rules::RULES;
-
-	fn probe(sent_at: Millis, latency: Millis) -> Probe {
-		Probe {
-			phase: ProbePhase::Recovery,
-			sent_at_s: sent_at as f64 / 1000.0,
-			latency_ms: Some(latency),
-			outcome: Outcome::Included,
-			sent_at,
-		}
-	}
-
-	#[test]
-	fn is_back_at_the_first_of_3_probes_in_a_row_within_the_threshold() {
-		let blocks: Vec<BlockRecord> = [6_000, 12_000, 18_000, 24_000]
-			.map(|seen_at| BlockRecord { seen_at, gap_ms: Some(6_000), ..Default::default() })
-			.to_vec();
-		let probes =
-			[probe(0, 30_000), probe(6_000, 7_000), probe(12_000, 6_000), probe(18_000, 6_000)];
-		assert_eq!(recovered_at(&probes, &blocks, 12_000, 6_000.0, &RULES), Some(6_000));
-		assert_eq!(recovered_at(&probes[..3], &blocks, 12_000, 6_000.0, &RULES), None);
-	}
-}

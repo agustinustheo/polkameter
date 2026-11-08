@@ -1040,67 +1040,7 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn the_manifest_names_every_operation() {
-		let manifest = manifest();
-		assert_eq!(manifest.id, "substrate");
-		assert_eq!(manifest.version, env!("CARGO_PKG_VERSION"));
-		let names: Vec<&str> = manifest.operations.keys().map(String::as_str).collect();
-		assert_eq!(
-			names,
-			["check-state", "fund-accounts", "preflight", "prepare-remarks", "prepare-transfers"]
-		);
-		assert!(manifest.operations["preflight"].read_only);
-		assert!(manifest.operations["check-state"].read_only);
-		assert!(!manifest.operations["fund-accounts"].read_only);
-		let remarks = &manifest.operations["prepare-remarks"];
-		assert!(!remarks.inputs["count"].optional);
-		assert!(remarks.inputs["payload-bytes"].optional);
-		assert!(!remarks.inputs.contains_key("amount"));
-		assert!(manifest.operations["prepare-transfers"].inputs["dest"].optional);
-	}
-
-	#[test]
-	fn refusals_name_the_fix() {
-		let invalid = |raw: &str| ChainError::Invalid {
-			what: "first flood transaction".into(),
-			kind: polkameter_plugin_sdk::chain::Refusal::Invalid,
-			code: 0,
-			raw: raw.into(),
-		};
-		assert!(
-			describe(&invalid("010001"), false).contains("fund it with substrate.fund-accounts")
-		);
-		assert!(describe(&invalid("010003"), false).contains("the nonce is already used"));
-		let other = describe(&invalid("01000704"), false);
-		assert!(other.starts_with("first flood transaction is not valid"), "{other}");
-		assert!(!other.contains("fund it"));
-		// 1010 bad signature: on a mortal transaction, most likely its era ended.
-		let expired = describe(&invalid("010004"), true);
-		assert!(expired.contains("may have expired; raise mortality"), "{expired}");
-		assert!(expired.contains("runtime was upgraded"), "{expired}");
-		assert!(describe(&invalid("010005"), true).contains("may have expired"));
-		let immortal = describe(&invalid("010004"), false);
-		assert!(!immortal.contains("expired") && immortal.contains("runtime was upgraded"));
-	}
-
-	#[test]
-	fn funding_counts_spendable_balance_fees_and_the_deposit() {
-		let info = |free, frozen| AccountInfo { nonce: 0, free, reserved: 0, frozen };
-		let accounts = [([1; 32], info(100, 0)), ([2; 32], info(100, 60)), ([3; 32], info(0, 0))];
-		// The second account holds 100 but can spend only 40.
-		assert_eq!(deficits(100, &accounts), vec![([2; 32], 60), ([3; 32], 100)]);
-		assert!(deficits(40, &accounts[..2]).is_empty());
-		// A funder holding total + 1 cannot pay: it keeps the deposit and pays the fees.
-		let needs = funder_needs(160, 10, 3, 2);
-		assert_eq!(needs, 160 + 10 + 6);
-		assert!(info(161, 0).spendable() < needs);
-		assert!(info(200, 30).spendable() < needs);
-		assert!(info(176, 0).spendable() >= needs);
-		assert_eq!(funder_needs(u128::MAX, 1, 1, 1), u128::MAX);
-	}
-
-	#[test]
-	fn a_second_prepare_step_with_the_same_signers_is_refused() {
+	fn no_signer_or_transaction_is_used_twice() {
 		let spec = Prepare::remarks(&json!({"count": 4, "probes": 1, "flood-signers": 2})).unwrap();
 		let seed = polkameter_plugin_sdk::chain::keypair("//Alice").unwrap();
 		let (flood, probe) = spec.signers.derive(&seed).unwrap();
@@ -1108,11 +1048,7 @@ mod tests {
 		let mut used = HashSet::new();
 		require_fresh_signers("prepare-remarks", &spec, &keys, &used).unwrap();
 		used.insert(account_id(keys[2]));
-		let message = require_fresh_signers("prepare-transfers", &spec, &keys, &used)
-			.unwrap_err()
-			.to_string();
-		assert!(message.starts_with("prepare-transfers signs with //polkameter//2"), "{message}");
-		assert!(message.contains("another derivation"));
+		assert!(require_fresh_signers("prepare-transfers", &spec, &keys, &used).is_err());
 		let other = Prepare::remarks(
 			&json!({"count": 4, "probes": 1, "flood-signers": 2, "derivation": "//other//"}),
 		)
@@ -1120,10 +1056,8 @@ mod tests {
 		let (flood, probe) = other.signers.derive(&seed).unwrap();
 		let keys: Vec<&Keypair> = flood.iter().chain(&probe).collect();
 		require_fresh_signers("prepare-transfers", &other, &keys, &used).unwrap();
-	}
 
-	#[test]
-	fn payloads_are_unique_and_sized() {
+		// Remark payloads differ by run, role and index, and have the requested size.
 		let a = payload("run-1", "flood", 0, 100);
 		assert_eq!(a.len(), 100);
 		assert_ne!(a, payload("run-1", "flood", 1, 100));

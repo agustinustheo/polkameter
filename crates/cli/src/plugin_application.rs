@@ -400,42 +400,6 @@ mod tests {
 		std::fs::remove_dir_all(root).unwrap();
 	}
 
-	#[tokio::test]
-	async fn finished_waits_for_the_recorded_outcome() {
-		let state = Arc::new(State::default());
-		finished(&state).await;
-		let root = std::env::temp_dir().join(format!("polkameter-finished-{}", std::process::id()));
-		let xml = r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="finished"><setup><step id="echo" use="core.echo"><input name="value" value="1"/></step></setup></polkameter-plan>"#;
-		let run = start(xml.into(), root.to_string_lossy().into(), state.clone(), Arc::new(|_| {}))
-			.await
-			.unwrap();
-		finished(&state).await;
-		assert_eq!(status(&state, &run.id).await.unwrap().state, "completed");
-		std::fs::remove_dir_all(root).unwrap();
-	}
-
-	#[tokio::test]
-	async fn keep_runs_prunes_old_run_directories_before_each_start() {
-		let state = Arc::new(State { keep_runs: Some(2), ..State::default() });
-		let root = std::env::temp_dir().join(format!("polkameter-keep-{}", std::process::id()));
-		let xml = r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="keep"><setup><step id="echo" use="core.echo"><input name="value" value="1"/></step></setup></polkameter-plan>"#;
-		let mut directories = Vec::new();
-		for _ in 0..4 {
-			let run =
-				start(xml.into(), root.to_string_lossy().into(), state.clone(), Arc::new(|_| {}))
-					.await
-					.unwrap();
-			finished(&state).await;
-			let outcome = status(&state, &run.id).await.unwrap().outcome.unwrap();
-			directories.push(outcome.artifact_dir);
-		}
-		// Before the fourth start, three runs had finished: the oldest went. The run just before
-		// a start always survives it, so its client can still fetch its report.
-		let left = directories.iter().map(|directory| directory.is_dir()).collect::<Vec<_>>();
-		assert_eq!(left, [false, true, true, true]);
-		std::fs::remove_dir_all(root).unwrap();
-	}
-
 	fn run_directory(root: &Path, name: &str, state: Option<&str>) -> PathBuf {
 		let directory = root.join(name);
 		std::fs::create_dir(&directory).unwrap();

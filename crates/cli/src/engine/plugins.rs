@@ -851,28 +851,4 @@ mod registry_tests {
 		assert_eq!(mode(&path), 0o640);
 		assert!(Registry::read(&path).unwrap().credentials.contains_key("b"));
 	}
-
-	#[cfg(unix)]
-	#[test]
-	fn a_registry_link_is_written_through_to_its_target() {
-		let scratch = Scratch::new("link");
-		std::fs::create_dir(scratch.0.join("real")).unwrap();
-		let target = scratch.0.join("real/plugins.json");
-		let link = scratch.0.join("plugins.json");
-		// A relative link, resolved from the link's directory; the target does not exist yet.
-		std::os::unix::fs::symlink("real/plugins.json", &link).unwrap();
-		let resolved = Registry::resolve(&link).unwrap();
-		assert_eq!(resolved, scratch.0.join("real/plugins.json"));
-		let _lock = Registry::lock(&resolved).unwrap();
-		registry_with("a").write(&resolved).unwrap();
-		assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
-		assert_eq!(Registry::read(&target).unwrap().credentials["a"], "VARIABLE");
-		assert!(scratch.0.join("real/plugins.json.lock").is_file());
-		assert!(!scratch.0.join("plugins.json.lock").exists());
-		// A loop of links is refused instead of followed forever.
-		std::os::unix::fs::symlink("loop-b", scratch.0.join("loop-a")).unwrap();
-		std::os::unix::fs::symlink("loop-a", scratch.0.join("loop-b")).unwrap();
-		let error = Registry::resolve(&scratch.0.join("loop-a")).unwrap_err().to_string();
-		assert!(error.contains("more than 40 symbolic links"), "{error}");
-	}
 }

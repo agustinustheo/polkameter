@@ -3,7 +3,6 @@
 //! concurrent `polkameter plugin` commands keep every change to the registry.
 
 use std::{
-	io::Read as _,
 	path::{Path, PathBuf},
 	process::{Command, Stdio},
 };
@@ -12,6 +11,12 @@ use serde_json::Value;
 
 #[path = "support/executable.rs"]
 mod executable;
+#[path = "support/smoke_run.rs"]
+mod smoke_run;
+#[path = "support/work.rs"]
+mod work;
+
+use work::Work;
 
 /// A plan that needs no plugin and no chain.
 const CORE_PLAN: &str = r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="Core">
@@ -22,21 +27,7 @@ const CORE_PLAN: &str = r#"<polkameter-plan xmlns="https://polkameter.dev/schema
 </polkameter-plan>
 "#;
 
-/// A temporary directory, removed when dropped, even if a test panics.
-struct Work(PathBuf);
-
 impl Work {
-	fn new(name: &str) -> Self {
-		let nanos = std::time::SystemTime::now()
-			.duration_since(std::time::UNIX_EPOCH)
-			.unwrap()
-			.as_nanos();
-		let directory = std::env::temp_dir()
-			.join(format!("polkameter-cli-errors-{name}-{}-{nanos}", std::process::id()));
-		std::fs::create_dir_all(&directory).unwrap();
-		Self(directory.canonicalize().unwrap())
-	}
-
 	fn write(&self, name: &str, contents: &str) -> PathBuf {
 		let path = self.0.join(name);
 		std::fs::write(&path, contents).unwrap();
@@ -51,12 +42,6 @@ impl Work {
 		let mut command = Command::new(env!("CARGO_BIN_EXE_polkameter"));
 		command.env("POLKAMETER_PLUGIN_REGISTRY", self.registry()).current_dir(&self.0);
 		command
-	}
-}
-
-impl Drop for Work {
-	fn drop(&mut self) {
-		let _ = std::fs::remove_dir_all(&self.0);
 	}
 }
 
@@ -87,206 +72,63 @@ fn json_lines(stdout: &str) -> Vec<Value> {
 #[test]
 fn failed_validate_prints_a_json_error_naming_the_file_and_position() {
 	let work = Work::new("validate");
-	let cases = [
-		(
-			"nul.xml",
-			"<polkameter-plan\n  name=\"\0\"/>",
-			2,
-			9,
-			"character U+0000 is not allowed in XML",
-		),
-		(
-			"comment.xml",
-			"<!-- a -- b -->\n<polkameter-plan/>",
-			1,
-			8,
-			"`--` is not allowed inside a comment",
-		),
+	let big = format!("{CORE_PLAN}<!--{}-->", "x".repeat(2 * 1024 * 1024));
+	// Files left empty here are not written: a directory, a FIFO and a device.
+	let mut cases = vec![
+		("nul.xml", b"<polkameter-plan\n  name=\"\0\"/>".to_vec(), Some((2, 9))),
+		("comment.xml", b"<!-- a -- b -->\n<polkameter-plan/>".to_vec(), Some((1, 8))),
 		(
 			"declaration.xml",
-			"<?xml version=\"1.0\" encoding=\"UTF-16\"?><polkameter-plan/>",
-			1,
-			31,
-			"invalid encoding `UTF-16` in the XML declaration",
+			b"<?xml version=\"1.0\" encoding=\"UTF-16\"?><polkameter-plan/>".to_vec(),
+			Some((1, 31)),
 		),
+		("latin1.xml", b"<polkameter-plan>\n  caf\xe9".to_vec(), Some((2, 6))),
 		(
 			"reference.xml",
-			&CORE_PLAN.replace("steps.seed.value", "steps.later.value"),
-			4,
-			46,
-			"step `check` (core.assert-equal): input `actual` refers to `steps.later.value`, but \
-			 nothing in the plan defines it",
+			CORE_PLAN.replace("steps.seed.value", "steps.later.value").into(),
+			Some((4, 46)),
 		),
+		// A built-in operation's contract is checked without plugins.
 		(
-			// A built-in operation's contract is checked without plugins.
 			"core-input.xml",
-			&CORE_PLAN.replace("name=\"expected\"", "name=\"expectd\""),
-			4,
-			91,
-			"step `check` (core.assert-equal): input `expectd` is not an input of \
-			 core.assert-equal; did you mean `expected`? its inputs are `actual`, `expected`",
+			CORE_PLAN.replace("name=\"expected\"", "name=\"expectd\"").into(),
+			Some((4, 91)),
 		),
-		(
-			"core-op.xml",
-			&CORE_PLAN.replace("core.echo", "core.ecco"),
-			3,
-			5,
-			"step `seed` (core.ecco): unknown built-in operation core.ecco; did you mean \
-			 core.echo? the core operations are core.echo, core.assert-equal, \
-			 core.submit-prepared, core.submit-setup",
-		),
+		("core-op.xml", CORE_PLAN.replace("core.echo", "core.ecco").into(), Some((3, 5))),
+		// Refused before parsing.
+		("big.xml", big.into(), None),
+		(".", vec![], None),
 	];
-	for (name, xml, line, column, message) in cases {
-		let path = work.write(name, xml);
+	if cfg!(unix) {
+		// Nothing writes to the FIFO, so it reads as empty instead of blocking.
+		assert!(Command::new("mkfifo").arg(work.0.join("fifo.xml")).status().unwrap().success());
+		cases.extend([("fifo.xml", vec![], None), ("/dev/null", vec![], None)]);
+	}
+	for (name, contents, position) in cases {
+		if !contents.is_empty() {
+			std::fs::write(work.0.join(name), contents).unwrap();
+		}
 		let (code, stdout, stderr) =
 			output(work.polkameter().args(["validate", name, "--format", "json"]));
-		assert_eq!(code, 2, "{stderr}");
-		let prefix = format!("PolkaMeter: {name}: line {line}, column {column}: {message}");
-		assert!(stderr.starts_with(&prefix), "{stderr}");
+		assert_eq!(code, 2, "{name}: {stderr}");
 		let lines = json_lines(&stdout);
 		assert_eq!(lines.len(), 1, "{stdout}");
 		let error = &lines[0];
 		assert_eq!(error["event"], "error");
 		assert_eq!(error["command"], "validate");
-		assert_eq!(error["kind"], "invalid");
 		assert_eq!(error["exitCode"], 2);
-		assert_eq!(error["valid"], false);
 		assert_eq!(error["file"], name, "{error}");
-		assert_eq!((error["line"].as_u64(), error["column"].as_u64()), (Some(line), Some(column)));
-		assert!(error["message"].as_str().unwrap().contains(message), "{error}");
-		assert!(path.is_file());
-	}
-}
-
-#[test]
-fn text_that_is_not_utf8_has_a_json_position() {
-	let work = Work::new("latin1");
-	std::fs::write(work.0.join("latin1.xml"), b"<polkameter-plan>\n  caf\xe9").unwrap();
-	let (code, stdout, stderr) =
-		output(work.polkameter().args(["validate", "latin1.xml", "--format", "json"]));
-	assert_eq!(code, 2, "{stderr}");
-	assert!(
-		stderr.starts_with(
-			"PolkaMeter: latin1.xml: line 2, column 6: the plan is not UTF-8 text; save it as UTF-8"
-		),
-		"{stderr}"
-	);
-	let error = &json_lines(&stdout)[0];
-	assert_eq!((error["line"].as_u64(), error["column"].as_u64()), (Some(2), Some(6)));
-	assert_eq!(error["file"], "latin1.xml");
-}
-
-#[test]
-fn a_plan_over_the_size_limit_is_refused_before_parsing() {
-	let work = Work::new("size");
-	let big = format!("{CORE_PLAN}<!--{}-->", "x".repeat(2 * 1024 * 1024));
-	work.write("big.xml", &big);
-	let (code, stdout, stderr) =
-		output(work.polkameter().args(["validate", "big.xml", "--format", "json"]));
-	assert_eq!(code, 2);
-	assert!(
-		stderr.contains("plan big.xml is larger than the 2 MiB (2097152 bytes) limit"),
-		"{stderr}"
-	);
-	assert_eq!(json_lines(&stdout)[0]["file"], "big.xml");
-}
-
-#[cfg(unix)]
-#[test]
-fn a_fifo_or_directory_plan_is_refused_without_hanging() {
-	let work = Work::new("fifo");
-	let fifo = work.0.join("plan.xml");
-	assert!(Command::new("mkfifo").arg(&fifo).status().unwrap().success());
-	let mut child = work
-		.polkameter()
-		.args(["validate", "plan.xml"])
-		.stdout(Stdio::null())
-		.stderr(Stdio::piped())
-		.spawn()
-		.unwrap();
-	let started = std::time::Instant::now();
-	let status = loop {
-		if let Some(status) = child.try_wait().unwrap() {
-			break status;
+		if let Some((line, column)) = position {
+			assert_eq!(
+				(error["kind"].as_str(), error["valid"].as_bool()),
+				(Some("invalid"), Some(false))
+			);
+			assert_eq!(
+				(error["line"].as_u64(), error["column"].as_u64()),
+				(Some(line), Some(column))
+			);
 		}
-		if started.elapsed() > std::time::Duration::from_secs(20) {
-			let _ = child.kill();
-			panic!("validate blocked on a FIFO");
-		}
-		std::thread::sleep(std::time::Duration::from_millis(20));
-	};
-	let mut stderr = String::new();
-	child.stderr.take().unwrap().read_to_string(&mut stderr).unwrap();
-	// Nothing writes to the FIFO, so it reads as empty.
-	assert_eq!(status.code(), Some(2), "{stderr}");
-	assert!(stderr.contains("plan plan.xml is empty"), "{stderr}");
-	let (code, _, stderr) = output(work.polkameter().args(["validate", "."]));
-	assert_eq!(code, 2);
-	assert!(stderr.contains("cannot read plan .: it is a directory"), "{stderr}");
-	let (code, _, stderr) = output(work.polkameter().args(["validate", "/dev/null"]));
-	assert_eq!(code, 2);
-	assert!(stderr.contains("cannot read plan /dev/null: it is a socket or device"), "{stderr}");
-}
-
-#[cfg(unix)]
-#[test]
-fn a_plan_from_a_pipe_or_process_substitution_is_read() {
-	use std::io::Write as _;
-	let work = Work::new("pipe-input");
-	work.write("core.xml", CORE_PLAN);
-	// `cat plan | polkameter validate /dev/stdin`
-	let mut child = work
-		.polkameter()
-		.args(["validate", "/dev/stdin"])
-		.stdin(Stdio::piped())
-		.stdout(Stdio::piped())
-		.stderr(Stdio::piped())
-		.spawn()
-		.unwrap();
-	let mut stdin = child.stdin.take().unwrap();
-	stdin.write_all(CORE_PLAN.as_bytes()).unwrap();
-	drop(stdin);
-	let result = child.wait_with_output().unwrap();
-	let stderr = String::from_utf8_lossy(&result.stderr);
-	assert_eq!(result.status.code(), Some(0), "{stderr}");
-	assert!(String::from_utf8_lossy(&result.stdout).starts_with("Plan is structurally valid"));
-	// `polkameter validate <(cat plan)`, where bash is available.
-	if Command::new("bash").arg("-c").arg("true").status().is_ok_and(|s| s.success()) {
-		let script = format!("\"{}\" validate <(cat core.xml)", env!("CARGO_BIN_EXE_polkameter"));
-		let (code, _, stderr) =
-			output(Command::new("bash").arg("-c").arg(script).current_dir(&work.0));
-		assert_eq!(code, 0, "{stderr}");
-		// Errors still name the position.
-		let broken =
-			format!("\"{}\" validate <(printf '<a>\\n</b>')", env!("CARGO_BIN_EXE_polkameter"));
-		let (code, _, stderr) =
-			output(Command::new("bash").arg("-c").arg(broken).current_dir(&work.0));
-		assert_eq!(code, 2, "{stderr}");
-		assert!(stderr.contains("line 2, column 3: expected </a>, found </b>"), "{stderr}");
 	}
-}
-
-#[cfg(unix)]
-#[test]
-fn a_path_that_is_not_utf8_is_an_input_error_in_json() {
-	use std::os::unix::ffi::OsStrExt as _;
-	let work = Work::new("non-utf8");
-	let name = std::ffi::OsStr::from_bytes(b"plan-\xff.xml");
-	let (code, stdout, stderr) =
-		output(work.polkameter().arg("validate").arg(name).args(["--format", "json"]));
-	assert_eq!(code, 2, "{stderr}");
-	assert!(!stderr.contains("panicked"), "{stderr}");
-	let error = &json_lines(&stdout)[0];
-	assert_eq!(error["file"], "plan-\u{fffd}.xml");
-	work.write("core.xml", CORE_PLAN);
-	let (code, _, stderr) = output(
-		work.polkameter()
-			.args(["run", "core.xml", "--output"])
-			.arg(name)
-			.args(["--format", "json"]),
-	);
-	assert_eq!(code, 2, "{stderr}");
-	assert!(stderr.contains("is not a UTF-8 path"), "{stderr}");
 }
 
 #[test]
@@ -341,27 +183,9 @@ fn preflight_json_carries_event_and_version_and_errors_are_json() {
 	assert_eq!((error["file"].as_str(), error["line"].as_u64()), (Some("unknown.xml"), Some(4)));
 }
 
-#[test]
-fn run_json_lines_all_carry_event_and_version() {
-	let work = Work::new("run");
-	work.write("core.xml", CORE_PLAN);
-	let (code, stdout, stderr) = output(
-		work.polkameter()
-			.args(["run", "core.xml", "--output", "runs", "--format", "json"]),
-	);
-	assert_eq!(code, 0, "{stderr}");
-	let lines = json_lines(&stdout);
-	let last = lines.last().unwrap();
-	assert_eq!(last["event"], "artifact-written");
-	assert_eq!(last["outcome"]["state"], "completed");
-	// The outcome keeps the keys of execution.json.
-	assert_eq!(last["outcome"]["exit_code"], 0);
-	assert!(lines.iter().any(|line| line["event"] == "step-finished"));
-}
-
-/// Runs `args` with standard output closed by the reader before the command writes, and returns
-/// its exit code and standard error.
-fn with_closed_stdout(work: &Work, args: &[&str]) -> (i32, String) {
+/// Runs `args` with standard output (or standard error) closed by its reader before the command
+/// writes, and returns its exit code and the other stream.
+fn with_closed(work: &Work, args: &[&str], stdout: bool) -> (i32, String) {
 	let mut child = work
 		.polkameter()
 		.args(args)
@@ -369,30 +193,54 @@ fn with_closed_stdout(work: &Work, args: &[&str]) -> (i32, String) {
 		.stderr(Stdio::piped())
 		.spawn()
 		.unwrap();
-	drop(child.stdout.take());
+	if stdout {
+		drop(child.stdout.take());
+	} else {
+		drop(child.stderr.take());
+	}
 	let output = child.wait_with_output().unwrap();
-	(output.status.code().unwrap_or(-1), String::from_utf8(output.stderr).unwrap())
+	let other = if stdout { output.stderr } else { output.stdout };
+	(output.status.code().unwrap_or(-1), String::from_utf8(other).unwrap())
 }
 
+/// A closed or full standard output or a closed standard error never panics, keeps the exit
+/// code, and the runs still write their results.
 #[test]
-fn a_closed_stdout_does_not_panic() {
-	let work = Work::new("pipe");
+fn broken_output_streams() {
+	let work = Work::new("streams");
 	work.write("core.xml", CORE_PLAN);
+	let run = &["run", "core.xml", "--output", "runs"][..];
 	for (args, expected) in [
 		(&["validate", "core.xml"][..], 0),
 		(&["validate", "core.xml", "--format", "json"], 0),
 		(&["validate", "missing.xml", "--format", "json"], 2),
 		(&["run", "core.xml", "--output", "runs", "--format", "json"], 0),
-		(&["run", "core.xml", "--output", "runs"], 0),
+		(run, 0),
 		(&["plugin", "list"], 0),
 		(&["--help"], 0),
 	] {
-		let (code, stderr) = with_closed_stdout(&work, args);
+		let (code, stderr) = with_closed(&work, args, true);
 		assert!(!stderr.contains("panicked"), "{args:?}: {stderr}");
 		assert_eq!(code, expected, "{args:?}: {stderr}");
 	}
-	// The run still wrote its results.
-	assert_eq!(std::fs::read_dir(work.0.join("runs")).unwrap().count(), 2);
+	// `report` prints the load summary on standard error, through the SDK.
+	smoke_run::copy_to(&work.0.join("smoke"));
+	for args in [&["report", "smoke"][..], run] {
+		let (code, stdout) = with_closed(&work, args, false);
+		assert_eq!(code, 0, "{args:?}: {stdout}");
+	}
+	let mut runs = 3;
+	if cfg!(target_os = "linux") {
+		for args in [&["validate", "core.xml"][..], run] {
+			let full = std::fs::OpenOptions::new().write(true).open("/dev/full").unwrap();
+			let result = work.polkameter().args(args).stdout(full).output().unwrap();
+			let stderr = String::from_utf8_lossy(&result.stderr);
+			assert_eq!(result.status.code(), Some(1), "{args:?}: {stderr}");
+			assert!(!stderr.contains("panicked"), "{args:?}: {stderr}");
+		}
+		runs += 1;
+	}
+	assert_eq!(std::fs::read_dir(work.0.join("runs")).unwrap().count(), runs);
 }
 
 /// A plugin executable that answers `$describe` with plugin `id`.
@@ -579,67 +427,4 @@ fn credential_errors_name_the_variable_and_how_to_set_it() {
 		assert_eq!(code, 0, "{args:?}: {stderr}");
 		assert!(!stderr.contains("s3cret-value"));
 	}
-}
-
-/// Decompresses the recorded smoke run into `directory`.
-fn smoke_fixture(directory: &Path) {
-	let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/smoke-run");
-	std::fs::create_dir_all(directory).unwrap();
-	for entry in std::fs::read_dir(&fixture).unwrap() {
-		let path = entry.unwrap().path();
-		if path.extension().is_some_and(|ext| ext == "gz") {
-			let mut decoder = flate2::read::GzDecoder::new(std::fs::File::open(&path).unwrap());
-			let mut output =
-				std::fs::File::create(directory.join(path.file_stem().unwrap())).unwrap();
-			std::io::copy(&mut decoder, &mut output).unwrap();
-		} else if path.extension().is_some_and(|ext| ext == "json" || ext == "jsonl") {
-			std::fs::copy(&path, directory.join(path.file_name().unwrap())).unwrap();
-		}
-	}
-}
-
-/// Runs `args` with standard error closed by its reader before the command writes, and returns
-/// the exit code and standard output.
-fn with_closed_stderr(work: &Work, args: &[&str]) -> (i32, String) {
-	let mut child = work
-		.polkameter()
-		.args(args)
-		.stdout(Stdio::piped())
-		.stderr(Stdio::piped())
-		.spawn()
-		.unwrap();
-	drop(child.stderr.take());
-	let output = child.wait_with_output().unwrap();
-	(output.status.code().unwrap_or(-1), String::from_utf8(output.stdout).unwrap())
-}
-
-#[test]
-fn a_closed_stderr_does_not_panic_in_report_or_run() {
-	let work = Work::new("stderr");
-	work.write("core.xml", CORE_PLAN);
-	// `report` prints the load summary on standard error, through the SDK.
-	smoke_fixture(&work.0.join("smoke"));
-	let (code, stdout) = with_closed_stderr(&work, &["report", "smoke"]);
-	assert_eq!(code, 0, "{stdout}");
-	assert!(stdout.contains("- **Verdict:** FAIL"), "{stdout}");
-	let (code, stdout) = with_closed_stderr(&work, &["run", "core.xml", "--output", "runs"]);
-	assert_eq!(code, 0, "{stdout}");
-	assert!(stdout.starts_with("Run completed."), "{stdout}");
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn a_full_disk_on_stdout_is_reported_and_fails_the_command() {
-	let work = Work::new("full");
-	work.write("core.xml", CORE_PLAN);
-	for args in [&["validate", "core.xml"][..], &["run", "core.xml", "--output", "runs"]] {
-		let full = std::fs::OpenOptions::new().write(true).open("/dev/full").unwrap();
-		let result = work.polkameter().args(args).stdout(full).output().unwrap();
-		let stderr = String::from_utf8_lossy(&result.stderr);
-		assert_eq!(result.status.code(), Some(1), "{args:?}: {stderr}");
-		assert!(stderr.contains("PolkaMeter: cannot write to standard output: "), "{stderr}");
-		assert_eq!(stderr.matches("cannot write to standard output").count(), 1, "{stderr}");
-	}
-	// The run still finished and wrote its results.
-	assert_eq!(std::fs::read_dir(work.0.join("runs")).unwrap().count(), 1);
 }

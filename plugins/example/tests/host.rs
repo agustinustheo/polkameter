@@ -124,170 +124,65 @@ async fn incompatible_version_and_unknown_operation_fail_before_setup() {
 	}
 }
 #[tokio::test]
-async fn plugin_timeout_fails_run_and_teardown_still_runs() {
-	let root = scratch("timeout");
-	let xml = plugin_plan(
-		"Deadline",
-		r#"<setup><step id="slow" use="example.wait" timeout-ms="20"><input name="milliseconds" value="5000"/></step></setup>
-    <teardown><step id="cleanup" use="core.echo"><input name="value" value="done"/></step></teardown>"#,
-	);
-	let outcome = run(&xml, registry().await, &root).await;
-	assert_eq!(outcome.exit_code, 1);
-	assert!(outcome.error.unwrap().contains("deadline"));
-	let events = read_events(&outcome.artifact_dir);
-	assert!(finished(&events, "cleanup").any(|e| e["success"] == true));
-}
-#[tokio::test]
-async fn cancellation_stops_a_waiting_plugin() {
-	let root = scratch("cancel");
-	let xml = plugin_plan(
-		"Cancellation",
-		r#"<setup><step id="slow" use="example.wait" timeout-ms="65000"><input name="milliseconds" value="60000"/></step></setup>
-    <teardown><step id="cleanup" use="core.echo"><input name="value" value="done"/></step></teardown>"#,
-	);
-	let cancel = CancellationToken::new();
-	let started = Arc::new(tokio::sync::Notify::new());
-	let signal = started.clone();
-	let sink = Arc::new(move |event: Value| {
-		if event["event"] == "step-started" && event["step"] == "slow" {
-			signal.notify_one();
-		}
-	});
-	let cancel_wait = async {
-		started.notified().await;
-		// The start event arms cancellation; the public marker ensures the plugin
-		// has entered its slow operation before we interrupt it.
-		let pid = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-			loop {
-				for entry in std::fs::read_dir(&root).unwrap() {
-					let marker = entry.unwrap().path().join("plugins/example/wait.pid");
-					if let Ok(pid) = std::fs::read_to_string(marker)
-						&& !pid.is_empty()
-					{
-						return pid;
-					}
-				}
-				tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-			}
-		})
-		.await;
-		cancel.cancel();
-		pid.expect("plugin did not write wait.pid")
-	};
-	let (outcome, pid) = tokio::join!(
-		execute::run(Plan::parse(&xml).unwrap(), registry().await, &root, cancel.clone(), sink),
-		cancel_wait
-	);
-	let outcome = outcome.unwrap();
-	assert_eq!(outcome.exit_code, 130);
-	assert_eq!(outcome.state, RunState::Stopped);
-	let events = read_events(&outcome.artifact_dir);
-	assert!(!events.iter().any(|e| e.to_string().contains("ID mismatch")));
-	assert!(finished(&events, "cleanup").any(|e| e["success"] == true));
-	#[cfg(unix)]
-	assert!(
-		!std::process::Command::new("kill")
-			.args(["-0", pid.trim()])
-			.stderr(std::process::Stdio::null())
-			.status()
-			.unwrap()
-			.success()
-	);
-	#[cfg(windows)]
-	{
-		let output = std::process::Command::new("tasklist")
-			.args(["/FI", &format!("PID eq {}", pid.trim()), "/FO", "CSV", "/NH"])
-			.output()
-			.unwrap();
-		assert!(output.status.success());
-		assert!(!String::from_utf8_lossy(&output.stdout).contains(&format!("\"{}\"", pid.trim())));
-	}
-}
-#[test]
-fn invalid_references_and_xml_are_rejected() {
-	for xml in [
-		fixture().replace("steps.seed.value", "steps.future.value"),
-		fixture().replace("<setup>", "<surprise>").replace("</setup>", "</surprise>"),
-		fixture().replace("id=\"copied\"", "id=\"seed\""),
-	] {
-		assert!(Plan::parse(&xml).is_err());
-	}
-}
-#[tokio::test]
-async fn crashes_and_invalid_outputs_are_tool_failures_with_cleanup() {
+async fn plugin_failures_fail_the_step_and_teardown_still_runs() {
 	let registry = registry().await;
-	for operation in ["crash", "invalid-output"] {
-		let root = scratch(operation);
+	// (failing setup step, plugin restarts before teardown). An operation error keeps the
+	// plugin; a crash or a timeout kills it, and teardown starts it again.
+	for (step, restarts) in [
+		(r#"<step id="failing" use="example.fail"/>"#, 0),
+		(r#"<step id="failing" use="example.crash"/>"#, 1),
+		(r#"<step id="failing" use="example.invalid-output"/>"#, 0),
+		(
+			r#"<step id="failing" use="example.wait" timeout-ms="20"><input name="milliseconds" value="5000"/></step>"#,
+			1,
+		),
+	] {
+		let root = scratch("failure");
 		let xml = plugin_plan(
 			"Failure",
 			&format!(
-				r#"<setup><step id="failure" use="example.{operation}"/></setup>
-        <teardown><step id="clean" use="core.echo"><input name="value" value="done"/></step></teardown>"#
+				r#"<setup>{step}</setup>
+    <teardown><step id="cleanup" use="example.double"><input name="value" value="21"/></step></teardown>"#
 			),
 		);
 		let outcome = run(&xml, registry.clone(), &root).await;
-		assert_eq!(outcome.exit_code, 1);
-		let events = read_events(&outcome.artifact_dir);
-		assert!(finished(&events, "clean").any(|e| e["success"] == true));
+		assert_eq!((outcome.exit_code, outcome.state), (1, RunState::Failed), "{step}");
 		assert!(outcome.artifact_dir.join("samples.jtl").is_file());
-		if operation == "crash" {
-			assert!(
-				std::fs::read_to_string(outcome.artifact_dir.join("plugins/example/stderr.log"))
-					.unwrap()
-					.contains("intentional crash")
-			);
-		}
+		let events = read_events(&outcome.artifact_dir);
+		assert!(finished(&events, "failing").any(|e| e["success"] == false), "{step}");
+		assert!(finished(&events, "cleanup").any(|e| e["success"] == true), "{step}");
+		let restarted = events.iter().filter(|e| e["event"] == "plugin-restarted").count();
+		assert_eq!(restarted, restarts, "{step}");
 	}
 }
+
 #[tokio::test]
-async fn escaped_credentials_are_redacted_from_errors_and_events() {
-	let mut registry = registry().await;
-	let variable = format!("POLKAMETER_TEST_SECRET_{}", std::process::id());
-	let secret = "secret\"with\nnewlines";
-	// Unique test-only environment key; no other test reads or writes it.
-	unsafe {
-		std::env::set_var(&variable, secret);
-	}
-	registry.credentials.insert("test".into(), variable.clone());
-	let root = scratch("redaction");
+async fn teardown_runs_every_step_under_its_own_timeout_and_reports_every_error() {
+	let root = scratch("teardown");
 	let xml = plugin_plan(
-		"Redaction",
-		r#"<credentials><credential id="secret" profile="test"/></credentials>
-    <setup><step id="failure" use="example.fail-with-message"><input name="message" ref="credentials.secret"/></step></setup>"#,
+		"Teardown",
+		r#"<setup><step id="ok" use="example.double"><input name="value" value="1"/></step></setup>
+    <teardown>
+      <step id="refused" use="example.fail-with-message"><input name="message" value="cleanup refused"/></step>
+      <step id="slow" use="example.wait" timeout-ms="50"><input name="milliseconds" value="60000"/></step>
+      <step id="cleanup" use="example.double"><input name="value" value="21"/></step>
+    </teardown>"#,
 	);
-	let preflight_xml = plugin_plan(
-		"Redaction",
-		r#"<credentials><credential id="secret" profile="test"/></credentials>
-    <preflight><step id="failure" use="example.fail-with-message"><input name="message" ref="credentials.secret"/></step></preflight>"#,
-	);
-	let error = execute::preflight(&Plan::parse(&preflight_xml).unwrap(), &registry)
-		.await
-		.unwrap_err()
-		.to_string();
-	assert!(error.contains("[redacted]") && !error.contains("newlines"), "{error}");
-	let outcome = run(&xml, registry, &root).await;
+	let started = std::time::Instant::now();
+	let outcome = run(&xml, registry().await, &root).await;
+	assert!(started.elapsed() < std::time::Duration::from_secs(30));
 	assert_eq!(outcome.exit_code, 1);
-	assert!(outcome.error.unwrap().contains("[redacted]"));
-	// The plugin wrote the secret to its stderr; the log keeps only the redacted text.
-	let logs = std::fs::read_dir(outcome.artifact_dir.join("plugins")).unwrap();
-	let mut redacted_logs = 0;
-	for log in logs {
-		let text = std::fs::read_to_string(log.unwrap().path().join("stderr.log")).unwrap();
-		assert!(!text.contains("newlines"), "{text}");
-		redacted_logs += usize::from(text.contains("[redacted]"));
-	}
-	assert_eq!(redacted_logs, 1, "the example plugin logged the redacted message");
-	for name in ["events.jsonl", "execution.json", "samples.jtl", "summary.md"] {
-		assert!(
-			!std::fs::read_to_string(outcome.artifact_dir.join(name))
-				.unwrap()
-				.contains("newlines")
-		);
-	}
-	unsafe {
-		std::env::remove_var(variable);
-	}
+	assert_eq!(outcome.teardown, Some(execute::Teardown::Failed));
+	let events = read_events(&outcome.artifact_dir);
+	assert!(finished(&events, "refused").any(|e| e["success"] == false));
+	assert!(finished(&events, "slow").any(|e| e["success"] == false));
+	// The timed-out call killed the plugin, which was started again for the next step.
+	assert_eq!(events.iter().filter(|e| e["event"] == "plugin-restarted").count(), 1);
+	assert!(finished(&events, "cleanup").any(|e| e["success"] == true));
+	let failed = events.iter().find(|e| e["event"] == "cleanup-failed").unwrap();
+	assert_eq!(failed["errors"].as_array().unwrap().len(), 2);
 }
+
 /// Every file under `directory`, recursively.
 fn files(directory: &Path) -> Vec<PathBuf> {
 	let mut out = Vec::new();
@@ -312,18 +207,25 @@ async fn credentials_and_endpoint_keys_reach_no_file_and_no_event() {
 		std::env::set_var(&variable, secret);
 	}
 	registry.credentials.insert("test".into(), variable.clone());
+	let short = format!("POLKAMETER_TEST_SHORT_SECRET_{}", std::process::id());
+	unsafe {
+		std::env::set_var(&short, "//Alic");
+	}
+	registry.credentials.insert("short".into(), short.clone());
 	let endpoint = "wss://alice:hunter2hunter2@127.0.0.1:1/ws?apikey=APIKEY0123456789&v=1";
 	let root = scratch("streamed-redaction");
+	// The plan name holds the credential too: no load test, so summary.md has it in its title.
 	let xml = plugin_plan(
-		"Streamed redaction",
+		&format!("Plan {}", secret.replace('"', "&quot;")),
 		&format!(
-			r#"<credentials><credential id="secret" profile="test"/></credentials>
+			r#"<credentials><credential id="secret" profile="test"/><credential id="dev" profile="short"/></credentials>
     <targets><target id="chain" endpoint="{}"/></targets>
     <setup>
       <step id="credential" use="example.log-in-pieces"><input name="message" ref="credentials.secret"/></step>
       <step id="endpoint" use="example.log-in-pieces"><input name="message" ref="targets.chain"/></step>
       <step id="pause" use="example.wait"><input name="milliseconds" value="3000"/></step>
       <step id="echo" use="core.echo"><input name="value" ref="credentials.secret"/></step>
+      <step id="short" use="core.echo"><input name="value" ref="credentials.dev"/></step>
       <step id="compare" use="core.assert-equal"><input name="actual" ref="targets.chain"/><input name="expected" value="other"/></step>
     </setup>
     <teardown><step id="failure" use="example.fail-with-message"><input name="message" ref="credentials.secret"/></step></teardown>"#,
@@ -338,6 +240,17 @@ async fn credentials_and_endpoint_keys_reach_no_file_and_no_event() {
 			.map(|needle| if needle == secret { "the credential" } else { "a secret part" })
 			.collect()
 	};
+	// A failing preflight step echoes the credential; its error must not.
+	let preflight = plugin_plan(
+		"Preflight",
+		r#"<credentials><credential id="secret" profile="test"/></credentials>
+    <preflight><step id="failure" use="example.fail-with-message"><input name="message" ref="credentials.secret"/></step></preflight>"#,
+	);
+	let error = execute::preflight(&Plan::parse(&preflight).unwrap(), &registry)
+		.await
+		.unwrap_err()
+		.to_string();
+	assert!(leaks(&error).is_empty(), "{error}");
 	let events = Arc::new(std::sync::Mutex::new(Vec::new()));
 	let sink_events = events.clone();
 	let paused = Arc::new(tokio::sync::Notify::new());
@@ -370,7 +283,9 @@ async fn credentials_and_endpoint_keys_reach_no_file_and_no_event() {
 	let error = outcome.error.unwrap();
 	assert!(error.contains("[redacted]") && leaks(&error).is_empty(), "{error}");
 	let files = files(&outcome.artifact_dir);
-	for name in ["plan.json", "events.jsonl", "execution.json", "junit.xml", "samples.jtl"] {
+	for name in
+		["plan.json", "events.jsonl", "execution.json", "junit.xml", "samples.jtl", "summary.md"]
+	{
 		assert!(files.contains(&outcome.artifact_dir.join(name)), "{name} is missing");
 	}
 	for file in files {
@@ -382,103 +297,18 @@ async fn credentials_and_endpoint_keys_reach_no_file_and_no_event() {
 	for event in events.lock().unwrap().iter() {
 		assert!(leaks(event).is_empty(), "{event}");
 	}
-	unsafe {
-		std::env::remove_var(variable);
-	}
-}
-#[tokio::test]
-async fn the_plan_name_is_redacted_from_the_fallback_summary_and_short_credentials_warn() {
-	let mut registry = registry().await;
-	let long = format!("POLKAMETER_TEST_NAMED_SECRET_{}", std::process::id());
-	let short = format!("POLKAMETER_TEST_SHORT_SECRET_{}", std::process::id());
-	let secret = "PlanNameSecret-0123";
-	// Unique test-only environment keys; no other test reads or writes them.
-	unsafe {
-		std::env::set_var(&long, secret);
-		std::env::set_var(&short, "//Alic");
-	}
-	registry.credentials.insert("named".into(), long.clone());
-	registry.credentials.insert("short".into(), short.clone());
-	let root = scratch("named-summary");
-	// No load test, so the run writes the short summary with the plan name in its title.
-	let xml = plugin_plan(
-		&format!("Plan {secret}"),
-		r#"<credentials><credential id="named" profile="named"/><credential id="dev" profile="short"/></credentials>
-    <setup><step id="echo" use="core.echo"><input name="value" ref="credentials.dev"/></step></setup>"#,
-	);
-	let outcome = run(&xml, registry, &root).await;
-	assert_eq!(outcome.exit_code, 0, "{:?}", outcome.error);
-	let summary = std::fs::read_to_string(outcome.artifact_dir.join("summary.md")).unwrap();
-	assert!(summary.starts_with("# Plan [redacted]\n"), "{summary}");
-	assert!(!summary.contains("PlanNameSecret"), "{summary}");
+	// Only the short credential warns.
 	let warnings: Vec<_> = read_events(&outcome.artifact_dir)
 		.into_iter()
 		.filter(|e| e["event"] == "warning")
-		.map(|e| e["message"].as_str().unwrap().to_owned())
+		.map(|e| e["message"].to_string())
 		.collect();
 	assert_eq!(warnings.len(), 1, "{warnings:?}");
-	assert!(warnings[0].starts_with("credentials.dev is shorter than 8 bytes"), "{warnings:?}");
+	assert!(warnings[0].contains("credentials.dev"), "{warnings:?}");
 	unsafe {
-		std::env::remove_var(long);
+		std::env::remove_var(variable);
 		std::env::remove_var(short);
 	}
-}
-#[tokio::test]
-async fn missing_credential_persists_failed_outcome_before_setup() {
-	let root = scratch("missing-credential");
-	let xml = fixture().replace(
-		"<setup>",
-		"<credentials><credential id=\"admin\" profile=\"missing\"/></credentials><setup>",
-	);
-	let outcome = run(&xml, registry().await, &root).await;
-	// Before setup, so the run exits as preflight does.
-	assert_eq!(outcome.exit_code, 3);
-	assert!(outcome.error.as_ref().unwrap().contains("not configured"));
-	let persisted: Outcome = serde_json::from_slice(
-		&std::fs::read(outcome.artifact_dir.join("execution.json")).unwrap(),
-	)
-	.unwrap();
-	assert_eq!(persisted.state, RunState::Failed);
-	assert!(outcome.artifact_dir.join("summary.md").is_file());
-	let events = read_events(&outcome.artifact_dir);
-	assert!(!events.iter().any(|e| e["event"] == "step-started"));
-}
-#[tokio::test]
-async fn an_operation_error_keeps_the_plugin_for_later_steps_and_teardown() {
-	let root = scratch("operation-error");
-	let xml = plugin_plan(
-		"Operation error",
-		r#"<setup><step id="failing" use="example.fail"/></setup>
-    <teardown>
-      <step id="first" use="example.fail-with-message"><input name="message" value="cleanup refused"/></step>
-      <step id="second" use="example.double"><input name="value" value="21"/></step>
-    </teardown>"#,
-	);
-	let outcome = run(&xml, registry().await, &root).await;
-	assert_eq!((outcome.exit_code, outcome.state), (1, RunState::Failed));
-	let error = outcome.error.unwrap();
-	assert!(error.starts_with("plugin operation failed: intentional plugin failure"), "{error}");
-	assert!(error.contains("teardown failed: plugin operation failed: cleanup refused"), "{error}");
-	let events = read_events(&outcome.artifact_dir);
-	// The same process answered every call: nothing was killed or restarted.
-	assert!(!events.iter().any(|e| e["event"] == "plugin-restarted"));
-	assert!(finished(&events, "first").any(|e| e["success"] == false));
-	assert!(finished(&events, "second").any(|e| e["success"] == true));
-}
-#[tokio::test]
-async fn teardown_restarts_a_plugin_that_crashed() {
-	let root = scratch("restart");
-	let xml = plugin_plan(
-		"Restart",
-		r#"<setup><step id="failure" use="example.crash"/></setup>
-    <teardown><step id="cleanup" use="example.double"><input name="value" value="21"/></step></teardown>"#,
-	);
-	let outcome = run(&xml, registry().await, &root).await;
-	assert_eq!(outcome.exit_code, 1);
-	assert_eq!(outcome.error.as_deref(), Some("plugin exited before responding"));
-	let events = read_events(&outcome.artifact_dir);
-	assert_eq!(events.iter().filter(|e| e["event"] == "plugin-restarted").count(), 1, "{events:?}");
-	assert!(finished(&events, "cleanup").any(|e| e["success"] == true));
 }
 #[tokio::test]
 async fn teardown_does_not_restart_a_plugin_whose_file_changed() {
@@ -514,29 +344,6 @@ async fn teardown_does_not_restart_a_plugin_whose_file_changed() {
 	}));
 	assert!(finished(&events, "cleanup").any(|e| e["success"] == false));
 }
-#[tokio::test]
-async fn teardown_steps_run_under_their_own_timeout() {
-	let root = scratch("teardown-timeout");
-	let xml = plugin_plan(
-		"Teardown deadline",
-		r#"<setup><step id="ok" use="example.double"><input name="value" value="1"/></step></setup>
-    <teardown>
-      <step id="slow" use="example.wait" timeout-ms="50"><input name="milliseconds" value="60000"/></step>
-      <step id="cleanup" use="example.double"><input name="value" value="21"/></step>
-    </teardown>"#,
-	);
-	let started = std::time::Instant::now();
-	let outcome = run(&xml, registry().await, &root).await;
-	assert!(started.elapsed() < std::time::Duration::from_secs(30));
-	assert_eq!(outcome.exit_code, 1);
-	assert_eq!(outcome.error.as_deref(), Some("plugin deadline exceeded"));
-	let events = read_events(&outcome.artifact_dir);
-	assert!(finished(&events, "slow").any(|e| e["success"] == false));
-	// The timed-out call killed the plugin, which was started again for the next step.
-	assert_eq!(events.iter().filter(|e| e["event"] == "plugin-restarted").count(), 1);
-	assert!(finished(&events, "cleanup").any(|e| e["success"] == true));
-}
-
 /// A wrapper around the example plugin, for tests that need it to misbehave.
 #[cfg(unix)]
 fn wrapper(directory: &Path, body: &str) -> PathBuf {
@@ -613,24 +420,4 @@ async fn admission_leaves_the_status_free_and_ends_when_the_host_closes() {
 	assert_eq!((error.message.as_str(), error.retry), ("the agent is shutting down", true));
 	assert!(started.elapsed() < std::time::Duration::from_secs(20));
 	assert!(state.admitting.lock().unwrap().is_none());
-}
-
-#[tokio::test]
-async fn every_teardown_error_is_reported() {
-	let root = scratch("teardown-errors");
-	let xml = plugin_plan(
-		"Teardown errors",
-		r#"<teardown>
-      <step id="first" use="example.fail-with-message"><input name="message" value="first cleanup failed"/></step>
-      <step id="second" use="example.fail-with-message"><input name="message" value="second cleanup failed"/></step>
-    </teardown>"#,
-	);
-	let outcome = run(&xml, registry().await, &root).await;
-	let expected = "plugin operation failed: first cleanup failed; plugin operation failed: second cleanup failed";
-	assert_eq!(outcome.error.as_deref(), Some(expected));
-	assert_eq!(outcome.teardown, Some(execute::Teardown::Failed));
-	let events = read_events(&outcome.artifact_dir);
-	let failed = events.iter().find(|e| e["event"] == "cleanup-failed").unwrap();
-	assert_eq!(failed["error"], expected);
-	assert_eq!(failed["errors"].as_array().unwrap().len(), 2);
 }

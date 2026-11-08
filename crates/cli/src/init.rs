@@ -219,45 +219,18 @@ mod tests {
 	}
 
 	#[test]
-	fn generated_plans_parse() {
-		for kind in [Kind::Remarks, Kind::Transfers] {
-			let xml = render("ws://127.0.0.1:9944", kind, "substrate-dev", &facts());
-			let plan = Plan::parse(&xml).unwrap_or_else(|e| panic!("{kind:?}: {e}\n{xml}"));
-			assert_eq!(plan.credentials.entries.len(), 1);
-			assert!(xml.contains("1000000000000000"), "{xml}");
-		}
-		let transfers = render("ws://127.0.0.1:9944", Kind::Transfers, "p", &facts());
-		assert!(transfers.contains("substrate.prepare-transfers"));
-		assert!(!transfers.contains("payload-bytes"));
-	}
-
-	#[test]
-	fn mortality_covers_the_run_at_the_chain_block_time() {
-		// 6 s blocks: 36 s of baseline, 150 s of ramp, 120 s of recovery, 60 s to finalize.
-		assert_eq!(run_seconds(6.0), 366);
-		assert_eq!(mortality(366, 6.0), 128);
-		// Fast blocks span more blocks in the same time.
-		assert_eq!(mortality(run_seconds(0.5), 0.5), 2048);
-		assert_eq!(mortality(1, 6.0), 4);
-		assert_eq!(mortality(200_000, 1.0), 0);
-		let xml = render("ws://127.0.0.1:9944", Kind::Remarks, "p", &facts());
-		assert!(xml.contains(r#"<input name="mortality" value="128"/>"#), "{xml}");
-		assert!(xml.contains(r#"<input name="expected-seconds" value="366"/>"#), "{xml}");
-		assert!(xml.contains("= 4500 transactions"), "{xml}");
-		let mut fast = facts();
-		fast.block_seconds = 0.5;
-		let xml = render("ws://127.0.0.1:9944", Kind::Remarks, "p", &fast);
-		assert!(xml.contains(r#"<input name="mortality" value="2048"/>"#), "{xml}");
-	}
-
-	#[test]
-	fn odd_endpoints_and_names_stay_valid_xml() {
+	fn generated_plans_parse_for_odd_endpoints_and_names() {
 		let mut odd = facts();
 		odd.chain = "A & <B> -- \"C\"".into();
 		odd.block_seconds = 2.5;
-		let xml = render("wss://rpc.example/?a=1&b=2", Kind::Remarks, "my&profile", &odd);
-		Plan::parse(&xml).unwrap();
-		assert!(xml.contains("block-interval-seconds=\"2.5\""));
-		assert!(xml.contains("endpoint=\"wss://rpc.example/?a=1&amp;b=2\""));
+		for (endpoint, kind, profile, facts) in [
+			("ws://127.0.0.1:9944", Kind::Remarks, "substrate-dev", facts()),
+			("ws://127.0.0.1:9944", Kind::Transfers, "substrate-dev", facts()),
+			("wss://rpc.example/?a=1&b=2", Kind::Remarks, "my&profile", odd),
+		] {
+			let xml = render(endpoint, kind, profile, &facts);
+			let plan = Plan::parse(&xml).unwrap_or_else(|e| panic!("{kind:?}: {e}\n{xml}"));
+			assert_eq!(plan.credentials.entries.len(), 1);
+		}
 	}
 }

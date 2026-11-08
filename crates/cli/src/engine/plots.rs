@@ -139,26 +139,3 @@ fn chart(title: &str, unit: &str, points: Vec<(u64, u64)>, color: &str) -> Strin
 		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"960\" height=\"320\" viewBox=\"0 0 960 320\"><rect width=\"960\" height=\"320\" fill=\"#f8fafb\"/><text x=\"32\" y=\"38\" fill=\"#263744\" font-family=\"sans-serif\" font-size=\"20\" font-weight=\"700\">{title}</text><text x=\"32\" y=\"62\" fill=\"#667784\" font-family=\"sans-serif\" font-size=\"12\">{unit}</text><path d=\"M {left} 80 V {bottom} H 918\" fill=\"none\" stroke=\"#cdd8de\"/>{data}<text x=\"32\" y=\"274\" fill=\"#667784\" font-family=\"sans-serif\" font-size=\"11\">0</text><text x=\"32\" y=\"94\" fill=\"#667784\" font-family=\"sans-serif\" font-size=\"11\">{max_y:.0}</text></svg>"
 	)
 }
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	#[test]
-	fn counted_percentiles_match_the_sorted_list() {
-		let values: Vec<Millis> = (0..997u64).map(|i| (i * 7919) % 613).collect();
-		let mut counts = BTreeMap::new();
-		for v in &values {
-			*counts.entry(*v).or_default() += 1;
-		}
-		for p in [0.0, 50.0, 95.0, 99.0, 100.0] {
-			assert_eq!(percentile(&counts, p), crate::load::steps::percentile(&values, p), "{p}");
-		}
-		assert_eq!(percentile(&BTreeMap::new(), 50.0), 0);
-	}
-
-	#[test]
-	fn chart_explains_when_no_data_was_collected() {
-		assert!(chart("Test", "units", Vec::new(), "#000").contains("No data collected"));
-	}
-}

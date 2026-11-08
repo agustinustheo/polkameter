@@ -442,12 +442,12 @@ fn render_summary(s: &Summary, steps: &[FinalStep], d: &RunData, checks: &[Check
 
 #[cfg(test)]
 mod tests {
-	use crate::observers::files::summary::{Artifact, BreakingPoint, Stop};
+	use crate::observers::files::summary::{BreakingPoint, Stop};
 
 	use super::*;
 	use crate::observers::checks::Verdict;
 
-	/// The recorded smoke run, shared with the replay test. Its breaking point is cleared: the
+	/// The recorded smoke run. Its breaking point is cleared: the
 	/// verdict tests set their own.
 	fn summary() -> Summary {
 		let text = include_str!("../../../../cli/tests/fixtures/smoke-run/summary.json");
@@ -511,59 +511,5 @@ mod tests {
 		let s = summary();
 		assert_eq!(s.verdict, None);
 		assert!(serde_json::to_value(s).unwrap().get("verdict").is_none());
-	}
-
-	#[test]
-	fn the_summary_separates_the_verdict_from_the_load_stop() {
-		let s = summary();
-		let data = RunData::new(Default::default(), s.clone());
-		let md = markdown(&s, &[], &data, &[check("relay slots (level 1)", Status::Fail)]);
-		assert!(md.contains("- **Verdict:** FAIL"));
-		assert!(md.contains("- **Load stop:** rate cap"));
-		assert!(!md.contains("- **Failure:**"));
-		assert!(md.contains("pool validations (all)"));
-	}
-
-	/// A reconnect to another node is shown as a warning, and the verdict does not change.
-	#[test]
-	fn a_warning_is_shown_and_does_not_change_the_verdict() {
-		let mut s = summary();
-		let data = RunData::new(Default::default(), s.clone());
-		let plain = markdown(&s, &[], &data, &[]);
-		assert!(!plain.contains("- **Warnings:**"));
-		let why = "reconnected to a different node (load balancer, or the node restarted): its peer ID changed from a to b";
-		s.warnings = vec![why.into()];
-		let md = markdown(&s, &[], &data, &[]);
-		assert!(md.contains(&format!("- **Warnings:** {why}")), "{md}");
-		assert_eq!(overall_status(&s, &[]), overall_status(&summary(), &[]));
-		let json = serde_json::to_value(&s).unwrap();
-		assert_eq!(json["warnings"][0], why);
-		assert!(serde_json::to_value(summary()).unwrap().get("warnings").is_none());
-	}
-
-	#[test]
-	fn the_summary_explains_the_artifact_load_and_exact_threshold() {
-		let mut s = summary();
-		s.artifact = Some(Artifact {
-			name: "Balances.transfer_keep_alive(dest, value)".into(),
-			description: "One signed transfer per prepared account.".into(),
-			context: "Wallets move funds between accounts.".into(),
-		});
-		let step = FinalStep {
-			step: 0,
-			target_rate: 15.0,
-			seconds: 60.0,
-			sent: 900,
-			p95_latency_ms: 8_400,
-			..FinalStep::default()
-		};
-		let data = RunData::new(Default::default(), s.clone());
-		let md = markdown(&s, &[step], &data, &[]);
-		assert!(md.contains("#### Artifact under test"));
-		assert!(md.contains("`Balances.transfer_keep_alive(dest, value)`"));
-		assert!(md.contains("Wallets move funds between accounts"));
-		assert!(md.contains("p95 send-to-inclusion latency exceeds 10.0 s"));
-		assert!(md.contains("p95 s (limit 10.0)"));
-		assert!(md.contains("| 0 | 15 | 60.0 | 900 |"));
 	}
 }

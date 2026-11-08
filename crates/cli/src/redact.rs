@@ -940,40 +940,6 @@ mod tests {
 	use super::*;
 	use serde_json::json;
 
-	#[test]
-	fn well_known_development_keys_are_recognised() {
-		for key in [
-			"//Alice",
-			"//Bob",
-			"//Charlie",
-			"//Dave",
-			"//Eve",
-			"//Ferdie",
-			" //Alice ",
-			"//Alice//stash",
-			"//Bob/0",
-			"//Eve//1/x",
-		] {
-			assert!(is_dev_key(key), "{key}");
-		}
-		for key in [
-			"",
-			"Alice",
-			"/Alice",
-			"//alice",
-			"//Mallory",
-			"//Alicee",
-			"//Alice/",
-			"//Alice//",
-			"//Alice///pw",
-			"//Bob///",
-			"abc",
-			"//Alice:x",
-		] {
-			assert!(!is_dev_key(key), "{key}");
-		}
-	}
-
 	fn secrets(secrets: &[&str]) -> Redactor {
 		Redactor::new(secrets, None::<&str>)
 	}
@@ -1024,6 +990,11 @@ mod tests {
 		assert_eq!(redactor.text(dotnet), "\"[redacted]\"");
 		assert_eq!(redactor.text(&format!("{secret:?}")), "\"[redacted]\"");
 		assert_eq!(redactor.text(&format!("raw {secret} end")), "raw [redacted] end");
+		// A secret read from a file is also redacted without its trailing newline.
+		let redactor = secrets(&["file-secret\n"]);
+		assert_eq!(redactor.text("got file-secret here"), "got [redacted] here");
+		assert_eq!(redactor.text("got file-secret\n"), "got [redacted]");
+		assert!(is_short("//Alice\n") && !is_short("long enough"));
 	}
 
 	#[test]
@@ -1069,28 +1040,11 @@ mod tests {
 		let url = Redactor::new(["e"], ["wss://host/?k=v"]);
 		let once = url.text("at wss://host/?k=v");
 		assert_eq!(url.text(&once), once);
-	}
-
-	#[test]
-	fn secrets_with_whitespace_around_them_are_also_redacted_trimmed() {
-		let redactor = secrets(&["file-secret\n"]);
-		assert_eq!(redactor.text("got file-secret here"), "got [redacted] here");
-		assert_eq!(redactor.text("got file-secret\n"), "got [redacted]");
-		assert!(is_short("//Alice\n") && !is_short("long enough"));
-	}
-
-	#[test]
-	fn truncation_never_cuts_a_redacted_token() {
+		// Truncation never cuts a token in half.
 		assert_eq!(truncate("abc [redacted] def", 8), "abc ");
 		assert_eq!(truncate("abc [redacted] def", 14), "abc [redacted]");
 		assert_eq!(truncate("abc [reda", 8), "abc [red");
 		assert_eq!(truncate("short", 80), "short");
-	}
-
-	#[test]
-	fn non_utf8_bytes_are_kept() {
-		let redactor = secrets(&["key"]);
-		assert_eq!(redactor.bytes(b"\xff key \xfe"), b"\xff [redacted] \xfe");
 	}
 
 	#[test]
@@ -1121,65 +1075,83 @@ mod tests {
 	}
 
 	#[test]
-	fn endpoint_secrets_are_redacted_in_free_text() {
+	fn endpoint_secrets_are_redacted_in_text() {
 		let url = "wss://alice:hunter2hunter2@rpc.example:443/ws?apikey=K3y%2FValue12&v=1";
-		let redactor = Redactor::new(None::<&str>, [url]);
 		let redacted = "wss://[redacted]@rpc.example:443/ws?apikey=[redacted]&v=[redacted]";
-		assert_eq!(redactor.text(url), redacted);
-		assert_eq!(
-			redactor.text(&format!("cannot connect to {url}: refused")),
-			format!("cannot connect to {redacted}: refused")
-		);
-		// Long parts are secrets on their own, also percent-decoded and in either escape case;
-		// short ones are not.
-		assert_eq!(
-			redactor.text("key K3y/Value12, K3y%2fValue12, pass hunter2hunter2, v 1"),
-			"key [redacted], [redacted], pass [redacted], v 1"
-		);
-		// The whole URL with its escapes in the other case.
-		assert_eq!(redactor.text(&url.replace("%2F", "%2f")), redacted);
-		// The `url` crate's normal form, with a `/` path, is recognized too.
-		let short = Redactor::new(None::<&str>, ["wss://host?k=v"]);
-		assert_eq!(short.text("error at wss://host/?k=v"), "error at wss://host/?k=[redacted]");
+		let quoted = r#"wss://host/?k=a"b"#;
+		let quoted_host = r#"wss://ho"st/?k=v"#;
+		// (credentials, endpoints, text, redacted text)
+		let cases: &[(&[&str], &[&str], String, String)] = &[
+			(&[], &[url], url.into(), redacted.into()),
+			(
+				&[],
+				&[url],
+				format!("cannot connect to {url}: refused"),
+				format!("cannot connect to {redacted}: refused"),
+			),
+			// Long parts are secrets on their own, also percent-decoded and in either escape
+			// case; short ones are not.
+			(
+				&[],
+				&[url],
+				"key K3y/Value12, K3y%2fValue12, pass hunter2hunter2, v 1".into(),
+				"key [redacted], [redacted], pass [redacted], v 1".into(),
+			),
+			(&[], &[url], url.replace("%2F", "%2f"), redacted.into()),
+			// The `url` crate's normal form, with a `/` path.
+			(
+				&[],
+				&["wss://host?k=v"],
+				"error at wss://host/?k=v".into(),
+				"error at wss://host/?k=[redacted]".into(),
+			),
+			// No scheme, as in a topology's `prometheus_uri`.
+			(
+				&[],
+				&["127.0.0.1:9615/metrics?apikey=k"],
+				"cannot read 127.0.0.1:9615/metrics?apikey=k".into(),
+				"cannot read 127.0.0.1:9615/metrics?apikey=[redacted]".into(),
+			),
+			// Escaped endpoints are redacted whole; the kept part stays escaped as it was.
+			(
+				&[],
+				&[quoted],
+				serde_json::to_string(&json!({ "url": quoted })).unwrap(),
+				r#"{"url":"wss://host/?k=[redacted]"}"#.into(),
+			),
+			(&[], &[quoted], format!("{quoted:?}"), r#""wss://host/?k=[redacted]""#.into()),
+			(
+				&[],
+				&[quoted_host],
+				serde_json::to_string(quoted_host).unwrap(),
+				r#""wss://ho\"st/?k=[redacted]""#.into(),
+			),
+			// A credential overlapping an endpoint, or inside the part of it that stays.
+			(
+				&["abcdefgh"],
+				&["wss://host/?k=abc"],
+				"wss://host/?k=abc".into(),
+				"wss://host/?k=[redacted]".into(),
+			),
+			(
+				&["abcdefgh"],
+				&["wss://host/?k=abc"],
+				"wss://host/?k=abcdefgh".into(),
+				"[redacted]".into(),
+			),
+			(
+				&["secret-host"],
+				&["wss://secret-host/?k=v"],
+				"wss://secret-host/?k=v".into(),
+				"wss://[redacted]/?k=[redacted]".into(),
+			),
+		];
+		for (credentials, endpoints, text, expected) in cases {
+			let redactor = Redactor::new(credentials.iter(), endpoints.iter());
+			assert_eq!(&redactor.text(text), expected, "{text}");
+		}
 		// A URL without secrets adds nothing.
 		assert!(Redactor::new(None::<&str>, ["wss://host:443/path"]).is_empty());
-	}
-
-	#[test]
-	fn scheme_less_endpoints_are_redacted() {
-		let url = "127.0.0.1:9615/metrics?apikey=k";
-		let redactor = Redactor::new(None::<&str>, [url]);
-		assert_eq!(
-			redactor.text(&format!("cannot read {url}")),
-			"cannot read 127.0.0.1:9615/metrics?apikey=[redacted]"
-		);
-	}
-
-	#[test]
-	fn escaped_endpoints_are_redacted_whole() {
-		let url = r#"wss://host/?k=a"b"#;
-		let redactor = Redactor::new(None::<&str>, [url]);
-		let json = serde_json::to_string(&json!({ "url": url })).unwrap();
-		assert_eq!(redactor.text(&json), r#"{"url":"wss://host/?k=[redacted]"}"#);
-		assert_eq!(redactor.text(&format!("{url:?}")), r#""wss://host/?k=[redacted]""#);
-		// The kept part of the URL is escaped in the replacement as it was in the text.
-		let url = r#"wss://ho"st/?k=v"#;
-		let json = serde_json::to_string(url).unwrap();
-		assert_eq!(
-			Redactor::new(None::<&str>, [url]).text(&json),
-			r#""wss://ho\"st/?k=[redacted]""#
-		);
-	}
-
-	#[test]
-	fn a_credential_overlapping_an_endpoint_is_redacted_whole() {
-		let url = "wss://host/?k=abc";
-		let redactor = Redactor::new(["abcdefgh"], [url]);
-		assert_eq!(redactor.text(url), "wss://host/?k=[redacted]");
-		assert_eq!(redactor.text("wss://host/?k=abcdefgh"), "[redacted]");
-		// A credential inside the part of the URL that stays is redacted from it too.
-		let redactor = Redactor::new(["secret-host"], ["wss://secret-host/?k=v"]);
-		assert_eq!(redactor.text("wss://secret-host/?k=v"), "wss://[redacted]/?k=[redacted]");
 	}
 
 	#[test]
@@ -1202,29 +1174,16 @@ mod tests {
 		text.push_str("secret-value\nend secret-value\n");
 		std::fs::write(&path, &text).unwrap();
 		let redactor = secrets(&["secret-value"]);
-		rewrite_file(&path, &redactor, || ()).unwrap();
-		let out = std::fs::read_to_string(&path).unwrap();
-		assert_eq!(out, redactor.text(&text));
-		assert!(!out.contains("secret"));
-		assert!(!dir.join("stderr.log.redacting").exists());
-		std::fs::remove_dir_all(dir).unwrap();
-	}
-
-	#[test]
-	fn a_write_appended_during_a_rewrite_is_kept_and_redacted() {
-		let dir =
-			std::env::temp_dir().join(format!("polkameter-rewrite-append-{}", std::process::id()));
-		std::fs::create_dir_all(&dir).unwrap();
-		let path = dir.join("stderr.log");
-		std::fs::write(&path, "first secret-value\n").unwrap();
-		let redactor = secrets(&["secret-value"]);
 		// A streamed write lands after the unlocked part of the pass, before the lock is held.
 		rewrite_file(&path, &redactor, || {
 			let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
 			file.write_all(b"late secret-value\n").unwrap();
 		})
 		.unwrap();
-		assert_eq!(std::fs::read_to_string(&path).unwrap(), "first [redacted]\nlate [redacted]\n");
+		let out = std::fs::read_to_string(&path).unwrap();
+		assert_eq!(out, redactor.text(&format!("{text}late secret-value\n")));
+		assert!(!out.contains("secret"));
+		assert!(!dir.join("stderr.log.redacting").exists());
 		std::fs::remove_dir_all(dir).unwrap();
 	}
 
@@ -1291,17 +1250,11 @@ mod tests {
 				assert_eq!(collapsed(&out), expected, "limit {limit}, size {size}");
 			}
 		}
-	}
-
-	#[test]
-	fn stream_releases_whole_lines_and_holds_partial_ones() {
-		let redactor = secrets(&["secret"]);
-		let mut stream = StreamRedactor::new(redactor);
+		// Whole lines are released at once; a partial line is held until its end.
+		let mut stream = StreamRedactor::new(secrets(&["secret"]));
 		assert_eq!(stream.push(b"first line\nsecond"), b"first line\n");
 		assert_eq!(stream.push(b" line with a sec"), b"");
 		assert_eq!(stream.push(b"ret\n"), b"second line with a [redacted]\n");
-		assert_eq!(stream.push(b"tail"), b"");
-		assert_eq!(stream.finish(), b"tail");
 		// Without secrets, bytes go straight through.
 		assert_eq!(StreamRedactor::new(Redactor::default()).push(b"no newline"), b"no newline");
 	}

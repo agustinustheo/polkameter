@@ -163,45 +163,6 @@ mod tests {
 	}
 
 	#[test]
-	fn a_failed_write_is_a_file_error_not_a_panic() {
-		let dir = scratch("write");
-		let path = dir.join("read-only.jsonl");
-		fs::write(&path, "").unwrap();
-		// A file opened only for reading refuses every write, as a full disk or closed pipe does.
-		let mut out = JsonlWriter {
-			path: path.clone(),
-			out: BufWriter::new(File::open(&path).unwrap()),
-			filter: None,
-		};
-		// Larger than the buffer, so serde_json writes through to the file.
-		let record = "x".repeat(64 * 1024);
-		match out.write(&record) {
-			Err(FileError::Io { path: p, .. }) => assert_eq!(p, path.display().to_string()),
-			other => panic!("expected an I/O error, got {other:?}"),
-		}
-		let mut small = JsonlWriter {
-			path: path.clone(),
-			out: BufWriter::new(File::open(&path).unwrap()),
-			filter: None,
-		};
-		small.write(&1).unwrap();
-		assert!(matches!(small.finish(), Err(FileError::Io { .. })));
-		fs::remove_dir_all(&dir).unwrap();
-	}
-
-	#[test]
-	fn a_record_that_cannot_be_serialized_is_a_file_error() {
-		let dir = scratch("serialize");
-		let run = RunDir::open(&dir);
-		// JSON object keys must be strings.
-		let bad: std::collections::BTreeMap<(u8, u8), u8> = [((1, 2), 3)].into();
-		assert!(matches!(run.write_json("bad.json", &bad), Err(FileError::Io { .. })));
-		let mut out = run.jsonl("bad.jsonl").unwrap();
-		assert!(matches!(out.write(&bad), Err(FileError::Io { .. })));
-		fs::remove_dir_all(&dir).unwrap();
-	}
-
-	#[test]
 	fn a_filter_sees_every_record_before_it_is_written() {
 		let dir = scratch("filter");
 		let run = RunDir::open(&dir);

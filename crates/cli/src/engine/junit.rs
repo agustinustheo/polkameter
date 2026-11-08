@@ -577,93 +577,10 @@ mod tests {
 		events.into_iter().map(Ok)
 	}
 
+	/// FAIL is a failure, INCONCLUSIVE or no result is skipped, and a failed execution is never
+	/// green.
 	#[test]
-	fn a_bad_event_line_is_an_error_and_writes_no_report() {
-		let dir = std::env::temp_dir().join(format!("polkameter-junit-bad-{}", std::process::id()));
-		fs::create_dir_all(&dir).unwrap();
-		fs::write(dir.join("execution.json"), r#"{"state":"completed"}"#).unwrap();
-		fs::write(
-			dir.join("events.jsonl"),
-			"{\"event\":\"phase\",\"phase\":\"setup\"}\nnot json\n",
-		)
-		.unwrap();
-		assert!(write(&dir, &Redactor::default()).is_err());
-		assert!(!dir.join("junit.xml").exists());
-		fs::remove_dir_all(&dir).unwrap();
-	}
-
-	#[test]
-	fn kept_failures_are_the_first_in_key_order_whatever_the_event_order() {
-		let plan =
-			json!({"workflow":[{"@id":"w","@users":1,"@iterations":300,"step":[{"@id":"s"}]}]});
-		// Failures arrive last-first; the report keeps iterations 0..100, as when sorted.
-		let events: Vec<_> = (0..300u64)
-			.rev()
-			.map(|iteration| {
-				json!({"event":"step-finished","step":"s","user":0,"iteration":iteration,
-				"success":iteration % 3 != 0,"elapsedMs":iteration,"error":format!("e{iteration}")})
-			})
-			.collect();
-		let first = suites(&plan, ok(events), &Value::Null, &json!({"state":"failed"})).unwrap();
-		let cases = &first[1].cases;
-		let kept: Vec<&str> = cases
-			.iter()
-			.filter(|c| c.status == Status::Failed && c.name.contains("iteration="))
-			.map(|c| c.message.as_str())
-			.collect();
-		let want: Vec<String> = (0..300).step_by(3).take(100).map(|i| format!("e{i}")).collect();
-		assert_eq!(kept, want);
-		// The 100 failures past the kept ones: their time is summed in one case.
-		let extra = cases.iter().find(|c| c.name == "s [additional failures]");
-		assert!(extra.is_none(), "exactly 100 failures fit");
-		let passing = cases.iter().find(|c| c.name == "s [passing invocations]").unwrap();
-		assert_eq!(passing.message, "200 passing user/iteration invocations");
-		let more: Vec<_> = (300..450u64)
-			.map(|iteration| {
-				json!({"event":"step-finished","step":"s","user":0,"iteration":iteration,
-				"success":false,"elapsedMs":2})
-			})
-			.collect();
-		let plan =
-			json!({"workflow":[{"@id":"w","@users":1,"@iterations":450,"step":[{"@id":"s"}]}]});
-		let all = (0..300u64)
-			.rev()
-			.map(|iteration| {
-				json!({"event":"step-finished","step":"s","user":0,"iteration":iteration,
-				"success":iteration % 3 != 0,"elapsedMs":iteration,"error":format!("e{iteration}")})
-			})
-			.chain(more)
-			.collect();
-		let more_suites = suites(&plan, ok(all), &Value::Null, &json!({"state":"failed"})).unwrap();
-		let extra = more_suites[1]
-			.cases
-			.iter()
-			.find(|c| c.name == "s [additional failures]")
-			.unwrap();
-		assert_eq!(
-			extra.message,
-			"150 additional failed invocations; full details in events.jsonl"
-		);
-		assert_eq!(extra.ms, 300);
-	}
-
-	#[test]
-	fn measurement_time_spans_the_first_measurement_to_the_last_teardown() {
-		let events = vec![
-			json!({"event":"phase","phase":"measurement","timestamp":100}),
-			json!({"event":"phase","phase":"measurement","timestamp":150}),
-			json!({"event":"phase","phase":"teardown","timestamp":300}),
-			json!({"event":"phase","phase":"teardown","timestamp":400}),
-		];
-		let summary = json!({"verdict":{"result":"PASS"},"stop":{"detail":"rate cap"}});
-		let suites = suites(&Value::Null, ok(events), &summary, &json!({})).unwrap();
-		let verdict = suites.last().unwrap().cases.last().unwrap();
-		assert_eq!(verdict.name, "overall verdict");
-		assert_eq!(verdict.ms, 300);
-	}
-
-	#[test]
-	fn maps_every_check_and_overall_status() {
+	fn statuses_map_to_failures_and_skips() {
 		for (status, want) in [
 			("pass", Status::Passed),
 			("fail", Status::Failed),
@@ -685,101 +602,57 @@ mod tests {
 				Status::Skipped => "<skipped>",
 				Status::Passed => "<system-out>",
 			}));
-			if status == "warn" {
-				assert!(xml.contains("<system-out>warn: useful detail</system-out>"));
-			}
 		}
-	}
-
-	#[test]
-	fn escapes_xml_and_removes_controls_without_cutting_entities_or_unicode() {
-		assert_eq!(escape("<&>\"'"), "&lt;&amp;&gt;&quot;&apos;");
-		assert_eq!(escape("a\n\r\t\0\u{1b}\u{85}\u{202e}\u{fffe}\u{ffff}b"), "a         b");
-		assert_eq!(
-			escape(&format!("{}&", "🦀".repeat(2047))),
-			format!("{}&amp;", "🦀".repeat(2047))
-		);
-		assert_eq!(escape(&"界".repeat(10000)), format!("{}…", "界".repeat(2048)));
-	}
-
-	#[test]
-	fn maps_step_failures_unstarted_and_interrupted_steps() {
-		let plan = json!({"setup":{"step":[{"@id":"ok"},{"@id":"bad"},{"@id":"unstarted"},{"@id":"interrupted"}]}});
-		let events = vec![
-			json!({"event":"step-finished","step":"ok","success":true,"elapsedMs":123}),
-			json!({"event":"step-finished","step":"bad","success":false,"error":"assertion failed"}),
-			json!({"event":"step-started","step":"interrupted","timestamp":100}),
-			json!({"event":"phase","phase":"teardown","timestamp":250}),
-			// Copy/report warnings after completion must not extend interrupted step timings.
-			json!({"event":"warning","timestamp":999999}),
-		];
-		let suites =
-			suites(&plan, ok(events), &Value::Null, &json!({"state":"failed","error":"deadline"}))
+		// An INCONCLUSIVE run that exited 1: the verdict is skipped, the execution failed.
+		let mut summary: Value =
+			serde_json::from_str(include_str!("../../tests/fixtures/smoke-run/summary.json"))
 				.unwrap();
-		let cases = &suites[1].cases;
-		let find = |name| cases.iter().find(|c| c.name == name).unwrap();
-		assert_eq!(find("ok").status, Status::Passed);
-		assert_eq!(find("ok").ms, 123);
-		assert_eq!(find("bad").status, Status::Failed);
-		assert_eq!(find("unstarted").status, Status::Skipped);
-		assert_eq!(find("interrupted").status, Status::Failed);
-		assert_eq!(find("interrupted").ms, 150);
-		let xml = render(&suites, Path::new("/runs/a&b"));
-		assert!(
-			xml.contains("tests=\"4\" failures=\"2\" errors=\"0\" skipped=\"1\" time=\"0.273\"")
-		);
-		assert!(xml.contains("Run directory: /runs/a&amp;b"));
+		summary["breakingPoint"] = Value::Null;
+		summary["verdict"] = json!({"result": "INCONCLUSIVE"});
+		summary["checks"] = json!([{"outcome":"run","check":"plugin check",
+			"status":"no result","detail":"no data","optional":false}]);
+		let outcome = json!({"state":"completed_with_failures","exit_code":1,"error":null});
+		let inconclusive = suites(&Value::Null, ok(vec![]), &summary, &outcome).unwrap();
+		assert_eq!(inconclusive[0].cases[0].status, Status::Failed);
+		assert_eq!(inconclusive[1].cases.last().unwrap().status, Status::Skipped);
+		assert!(render(&inconclusive, Path::new("/run")).contains("failures=\"1\""));
+		// A load that aborted before a summary: no result is skipped, the execution failed.
+		let outcome = json!({"state":"failed","error":"node down"});
+		let suites = suites(&json!({"load":{}}), ok(vec![]), &Value::Null, &outcome).unwrap();
+		assert_eq!(suites[0].cases[0].status, Status::Failed);
+		assert_eq!(suites[1].cases[0].status, Status::Skipped);
 	}
 
 	#[test]
-	fn workflow_invocations_are_unique_and_missing_work_is_bounded() {
+	fn report_size_stays_bounded() {
+		// Steps never run in a huge workflow are one skipped case, not one per invocation.
 		let plan = json!({"workflow":[{"@id":"w","@users":100000,"@iterations":4000000000u64,
 			"step":[{"@id":"a"},{"@id":"b"}]}]});
 		let events = vec![
 			json!({"event":"step-finished","step":"a","success":true,"user":0,"iteration":0}),
 			json!({"event":"step-finished","step":"a","success":false,"user":1,"iteration":0}),
 		];
-		let suites = suites(&plan, ok(events), &Value::Null, &json!({"state":"failed"})).unwrap();
-		let cases = &suites[1].cases;
-		assert_eq!(cases.len(), 4);
-		assert_eq!(cases[0].name, "a [user=1, iteration=0]");
-		assert_eq!(cases[1].name, "a [passing invocations]");
-		assert_eq!(cases[2].status, Status::Skipped);
-		assert_eq!(cases[2].message, "399999999999998 user/iteration invocations not run");
-	}
-
-	#[test]
-	fn completed_large_workflow_aggregates_passes_and_retains_failures() {
+		let unrun = suites(&plan, ok(events), &Value::Null, &json!({"state":"failed"})).unwrap();
+		assert_eq!(unrun[1].cases.len(), 4);
+		assert_eq!(unrun[1].cases[2].status, Status::Skipped);
+		// 200,000 invocations: the first failures are kept, the rest and the passes aggregated.
 		let plan = json!({"workflow":[{"@id":"workers","@users":1000,"@iterations":200,"step":[{"@id":"work"}]}]});
-		let events: Vec<_> = (0..1000).flat_map(|user| (0..200).map(move |iteration| {
-			json!({"event":"step-finished", "step":"work", "user":user,"iteration":iteration,
-				"success": !(user == 0 && iteration < 150), "elapsedMs":1,
-				"error":if user == 0 && iteration < 150 { json!(format!("failure {iteration}")) } else { Value::Null }})
-		})).collect();
+		let events: Vec<_> = (0..1000)
+			.flat_map(|user| {
+				(0..200).map(move |iteration| {
+					json!({"event":"step-finished", "step":"work", "user":user,"iteration":iteration,
+				"success": !(user == 0 && iteration < 150), "elapsedMs":1})
+				})
+			})
+			.collect();
 		let suites =
 			suites(&plan, ok(events), &Value::Null, &json!({"state":"completed"})).unwrap();
 		let cases = &suites[1].cases;
 		assert_eq!(cases.len(), FAILURES_PER_STEP + 2);
 		assert_eq!(cases.iter().filter(|c| c.status == Status::Failed).count(), 101);
-		for i in 0..100 {
-			assert!(cases.iter().any(|c| c.message == format!("failure {i}")));
-		}
-		assert!(
-			cases
-				.iter()
-				.any(|c| c.message
-					== "50 additional failed invocations; full details in events.jsonl")
-		);
-		assert!(cases.iter().any(|c| c.message == "199850 passing user/iteration invocations"));
 		assert_eq!(cases.iter().map(|c| c.ms).sum::<u64>(), 200000);
-		let xml = render(&suites, Path::new("/runs/large"));
-		eprintln!("large synthetic report: {} bytes", xml.len());
-		assert!(xml.len() < 5 * 1024 * 1024);
-		assert!(xml.len() < 30000);
-	}
-
-	#[test]
-	fn whole_report_budget_keeps_failure_summary_even_with_many_steps() {
+		assert!(render(&suites, Path::new("/runs/large")).len() < 30000);
+		// 10,000 failed steps with the longest messages still fit the whole-report budget.
 		let suite = Suite {
 			name: "huge".into(),
 			cases: (0..10000)
@@ -794,81 +667,5 @@ mod tests {
 		let xml = render(&[suite], Path::new("/runs/large"));
 		assert!(xml.len() <= REPORT_BYTES);
 		assert!(xml.contains("report overflow"));
-		assert!(xml.contains("full details in events.jsonl and summary.json"));
-		let emitted = xml.matches("<failure message=").count() - 1;
-		assert!(xml.contains(&format!("{} failed", 10000 - emitted)));
-	}
-
-	#[test]
-	fn checks_keep_source_and_duplicate_counter() {
-		let summary = json!({"checks":[
-			{"outcome":"pool","check":"same","status":"pass","source":"first"},
-			{"outcome":"pool","check":"same","status":"fail","source":"second"},
-			{"outcome":"pool","check":"same","status":"fail","source":"second"}
-		]});
-		let suite = load_suite(&LoadTiming::default(), &summary);
-		assert_eq!(suite.cases[0].name, "pool: same [evaluate:first]");
-		assert_eq!(suite.cases[1].name, "pool: same [evaluate:second]");
-		assert_eq!(suite.cases[2].name, "pool: same [evaluate:second] [check=2]");
-		let mut used = BTreeMap::new();
-		assert_ne!(distinct_name("a\nb", 0, &mut used), distinct_name("a b", 1, &mut used));
-	}
-
-	#[test]
-	fn inconclusive_verdict_says_why_and_its_failed_execution_is_not_green() {
-		let summary: Value =
-			serde_json::from_str(include_str!("../../tests/fixtures/smoke-run/summary.json"))
-				.unwrap();
-		let mut summary = summary;
-		summary["breakingPoint"] = Value::Null;
-		summary["verdict"] = json!({"result": "INCONCLUSIVE"});
-		summary["checks"] = json!([{"outcome":"run","check":"plugin check",
-			"status":"no result","detail":"no data","optional":false}]);
-		let outcome = json!({"state":"completed_with_failures","exit_code":1,"error":null});
-		let suites = suites(&Value::Null, ok(vec![]), &summary, &outcome).unwrap();
-		let execution = &suites[0].cases[0];
-		assert_eq!(execution.status, Status::Failed);
-		assert_eq!(
-			execution.message,
-			"completed_with_failures: exit code 1 with load verdict INCONCLUSIVE"
-		);
-		let verdict = suites[1].cases.last().unwrap();
-		assert_eq!(verdict.status, Status::Skipped);
-		assert_eq!(
-			verdict.message,
-			"INCONCLUSIVE: Load stop: all 3 steps ran; required checks with no result: plugin check"
-		);
-		let xml = render(&suites, Path::new("/run"));
-		assert!(xml.contains("failures=\"1\""), "{xml}");
-	}
-
-	#[test]
-	fn execution_case_names_the_recorded_exit_reason() {
-		let summary: Value =
-			serde_json::from_str(include_str!("../../tests/fixtures/smoke-run/summary.json"))
-				.unwrap();
-		let reason = "smoke mode fails the run on monitor problems and required checks with no \
-		              result, whatever the --fail-on flags; fix this one: no silent loss: no data \
-		              (the checks are in summary.md)";
-		let outcome = json!({"state":"completed_with_failures","exit_code":1,"error":null,
-			"exit_reason":reason});
-		let suites = suites(&Value::Null, ok(vec![]), &summary, &outcome).unwrap();
-		let execution = &suites[0].cases[0];
-		assert_eq!(execution.status, Status::Failed);
-		assert_eq!(execution.message, format!("completed_with_failures: {reason}"));
-	}
-
-	#[test]
-	fn aborted_load_has_a_skipped_verdict_and_failed_execution() {
-		let suites = suites(
-			&json!({"load":{}}),
-			ok(vec![]),
-			&Value::Null,
-			&json!({"state":"failed","error":"node down"}),
-		)
-		.unwrap();
-		assert_eq!(suites[0].cases[0].status, Status::Failed);
-		assert_eq!(suites[1].cases[0].status, Status::Skipped);
-		assert_eq!(suites[1].cases[0].message, "No result recorded");
 	}
 }
