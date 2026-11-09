@@ -45,42 +45,15 @@ pub fn serde_name(variant: impl serde::Serialize) -> String {
 /// neither reverses nor stretches the intervals a run measures, and every timestamp in the run's
 /// files is the process's start time plus monotonic elapsed time.
 pub fn now_ms() -> Millis {
-	static CLOCK: std::sync::OnceLock<EpochClock> = std::sync::OnceLock::new();
-	CLOCK.get_or_init(|| EpochClock::new(wall_ms())).now()
-}
-
-/// The wall clock now, in milliseconds since the Unix epoch. It can jump either way; use
-/// [`now_ms`] for anything that measures time. The load tool compares the two to see a machine
-/// that slept.
-pub fn wall_ms() -> Millis {
-	std::time::SystemTime::now()
-		.duration_since(std::time::UNIX_EPOCH)
-		.map_or(0, |d| d.as_millis() as Millis)
-}
-
-/// Epoch milliseconds from a monotonic clock: the wall time at the start, plus the time elapsed
-/// since on the monotonic clock (tokio's, so a test with paused time drives it too).
-#[derive(Debug, Clone, Copy)]
-pub struct EpochClock {
-	start: tokio::time::Instant,
-	epoch: Millis,
-}
-
-impl EpochClock {
-	/// A clock that reads `epoch` now.
-	pub fn new(epoch: Millis) -> Self {
-		Self { start: tokio::time::Instant::now(), epoch }
-	}
-
-	/// Epoch milliseconds now.
-	pub fn now(&self) -> Millis {
-		self.at(tokio::time::Instant::now())
-	}
-
-	/// Epoch milliseconds at `instant` (the start for an instant before it).
-	pub fn at(&self, instant: tokio::time::Instant) -> Millis {
-		self.epoch + instant.saturating_duration_since(self.start).as_millis() as Millis
-	}
+	// The monotonic clock is tokio's, so a test with paused time drives it too.
+	static START: std::sync::OnceLock<(tokio::time::Instant, Millis)> = std::sync::OnceLock::new();
+	let (start, epoch) = *START.get_or_init(|| {
+		let wall = std::time::SystemTime::now()
+			.duration_since(std::time::UNIX_EPOCH)
+			.map_or(0, |d| d.as_millis() as Millis);
+		(tokio::time::Instant::now(), wall)
+	});
+	epoch + tokio::time::Instant::now().saturating_duration_since(start).as_millis() as Millis
 }
 
 /// A file of the run could not be read or written: an error of our tools, so the run stops.
