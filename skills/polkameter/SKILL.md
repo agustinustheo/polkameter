@@ -14,7 +14,7 @@ Docs: https://agustinustheodorus.com/polkameter/ (LLM index: https://agustinusth
 1. Install. Check what is there:
 
    ```sh
-   polkameter --version                  # needs 0.3.0 or newer
+   polkameter --version                  # needs 0.4.0 or newer
    command -v polkameter-substrate-plugin
    ```
 
@@ -25,7 +25,7 @@ Docs: https://agustinustheodorus.com/polkameter/ (LLM index: https://agustinusth
    export PATH="$HOME/.local/bin:$PATH"
    ```
 
-   `cargo install --locked polkameter` alone never installs the plugin. Register the plugin after every install, upgrade or rebuild:
+   `cargo install --locked polkameter` alone never installs the plugin; [Install](https://agustinustheodorus.com/polkameter/install.html) has the cargo command for it. Register the plugin after every install, upgrade or rebuild:
 
    ```sh
    polkameter plugin install "$(command -v polkameter-substrate-plugin)"
@@ -34,7 +34,7 @@ Docs: https://agustinustheodorus.com/polkameter/ (LLM index: https://agustinusth
 2. Get a chain. Use the user's node if one is running (`ws://127.0.0.1:9944` is typical). Otherwise fetch the dev chain script, from the tag that matches `polkameter --version`, into the repository root:
 
    ```sh
-   curl -fsSLO https://raw.githubusercontent.com/agustinustheo/polkameter/v0.3.0/scripts/dev-chain.sh
+   curl -fsSLO https://raw.githubusercontent.com/agustinustheo/polkameter/v0.4.0/scripts/dev-chain.sh
    bash dev-chain.sh start      # waits about 2 minutes for 21 blocks
    ```
 
@@ -46,7 +46,7 @@ Docs: https://agustinustheodorus.com/polkameter/ (LLM index: https://agustinusth
 
    Without a reachable chain, copy [templates/substrate-remarks.polkameter.xml](templates/substrate-remarks.polkameter.xml) and edit the endpoint, `block-interval-seconds` and the funding amount.
 
-   Keep the plan's `<plugin id="substrate" version="...">` equal to `polkameter --version`, here and in CI. Then check the plan:
+   Keep the plan's `<plugin id="substrate" version="...">`, the `dev-chain.sh` tag and the CI `version` equal to `polkameter --version` ([Versions](https://agustinustheodorus.com/polkameter/install.html#versions)). Then check the plan:
    - The prepare step's `count` is at least the sum of rate times seconds over the load.
    - The fund and prepare steps use the same `flood-signers`, `probe-signers` and `derivation`.
    - A mortal prepare step (`mortality` above 0) has `expected-seconds` at least as long as the run after it.
@@ -69,22 +69,10 @@ Docs: https://agustinustheodorus.com/polkameter/ (LLM index: https://agustinusth
    polkameter run plans/load.polkameter.xml --output runs
    ```
 
-   The `Run <state>. Artifacts: <run directory>` line names the run directory. Read `summary.md` there: `Verdict`, `Failure onset` (the breaking point, the first rate step that failed a limit), `Max sustained` and `Loss check`. If the failure onset says `no measure violated`, no step failed and the run did not find a limit. Raise the ramp's rates, the prepare step's `count` and, for a longer run, `expected-seconds`. Copy the numbers exactly.
+   The `Run <state>. Artifacts: <run directory>` line names the run directory. Read `summary.md` there: `Verdict`, `Failure onset` (the first rate step that failed a limit), `Max sustained` and `Loss check`. Copy the numbers exactly. If the failure onset says `no measure violated`, the run did not find a limit. Raise the `<ramp>` rates, the prepare step's `count` above the sum of rate times seconds and, for a longer run, `expected-seconds`.
 
-6. Add CI. Copy [templates/github-workflow.yml](templates/github-workflow.yml) to `.github/workflows/load-test.yml`, or [templates/gitlab-ci.yml](templates/gitlab-ci.yml) into `.gitlab-ci.yml`. Commit `dev-chain.sh` at the repository root and [templates/substrate-remarks-ci.polkameter.xml](templates/substrate-remarks-ci.polkameter.xml) as `plans/substrate-remarks-ci.polkameter.xml`. Both jobs run the short plan and fail on a `FAIL` verdict. Keep the job's CLI version equal to the plan's `<plugin version>`.
+6. Add CI. Copy [templates/github-workflow.yml](templates/github-workflow.yml) to `.github/workflows/load-test.yml`, or [templates/gitlab-ci.yml](templates/gitlab-ci.yml) into `.gitlab-ci.yml`. Commit `dev-chain.sh` at the repository root and [templates/substrate-remarks-ci.polkameter.xml](templates/substrate-remarks-ci.polkameter.xml) as `plans/substrate-remarks-ci.polkameter.xml`. Both jobs run the short plan and fail on a `FAIL` verdict.
 
 ## Fixing common failures
 
-| Message | Fix |
-| --- | --- |
-| `plugin substrate is not installed on this host` | Run `polkameter plugin install "$(command -v polkameter-substrate-plugin)"`, after step 1 |
-| `plugin substrate version mismatch` or `checksum mismatch` | Reinstall the plugin. Set the plan's `<plugin version>` to the version `polkameter plugin list` shows |
-| `measured block interval ... differs from configured` | Set `block-interval-seconds` to the measured value |
-| `insufficient probe reserve` | Pass `<input name="probes" ref="run.probeBudget"/>` to the prepare step |
-| `the signer cannot pay the fees` | Give `fund-accounts` the prepare step's signer inputs, raise its `amount`, or fund the seed account |
-| `Nothing was sent; fund the funder` | Fund the funder, or lower `amount` or the number of signers. A rerun spends nothing |
-| `less than expected-seconds` or `may have expired; raise mortality` | Raise the prepare step's `mortality` to the suggested value, or set it to `0` |
-| `an earlier prepare step of this run also signs with` | Give the second prepare step another `derivation` and its own `fund-accounts` step |
-| Load stop `all N prepared transactions sent` | Raise the prepare step's `count` above the sum of rate times seconds |
-| `uses profile ..., which is not configured on this host`, or a variable that `is not set` or `is empty` | Map the profile with `polkameter plugin credential` and export its variable |
-
+Most messages name their fix. Otherwise, look the message up in [Troubleshooting](https://agustinustheodorus.com/polkameter/troubleshooting.html). For a load that ended early, see [What to do about INCONCLUSIVE](https://agustinustheodorus.com/polkameter/reading-results.html#what-to-do-about-inconclusive).

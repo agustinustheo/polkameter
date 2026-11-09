@@ -1,6 +1,8 @@
 # Install
 
-Each method below installs the `polkameter` CLI on Linux (x86-64 or ARM64) or macOS (Apple silicon or Intel). On Windows, use WSL. The install script and the release archives also install the [substrate plugin](substrate-plugin.md), `polkameter-substrate-plugin`. `cargo binstall` and `cargo install` do not.
+PolkaMeter runs on Linux (x86-64 or ARM64) and macOS (Apple silicon or Intel). On Windows, use WSL.
+
+A load test on a standard runtime needs the CLI, `polkameter`, and the [substrate plugin](substrate-plugin.md), `polkameter-substrate-plugin`. The install script and the release archives install both. Cargo needs a second command for the plugin. Whichever you use, finish with [Register the plugin](#register-the-plugin).
 
 ## Use the install script
 
@@ -12,53 +14,47 @@ export PATH="$HOME/.local/bin:$PATH"
 polkameter --version
 ```
 
-The script needs `curl`, `tar`, and `sha256sum` or `shasum`. It checks the archive's SHA-256 checksum before it installs anything.
+The script needs `curl`, `tar`, and `sha256sum` or `shasum`. It checks the archive's SHA-256 checksum before it installs anything. If `gh` is signed in, it also checks the build attestation, GitHub's proof that the release workflow built the archive. Set `POLKAMETER_VERIFY_ATTESTATION=1` to require that check.
 
-### Choose a version or directory
-
-Pass a version, such as `0.3.0`, to install that release instead of the latest one. Set `POLKAMETER_INSTALL_DIR` to change the directory. The default is `~/.local/bin`.
+To install a given release, pass its version. Set `POLKAMETER_INSTALL_DIR` to change the directory from `~/.local/bin`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh |
-  POLKAMETER_INSTALL_DIR="$HOME/bin" sh -s -- <version>
+  POLKAMETER_INSTALL_DIR="$HOME/bin" sh -s -- 0.4.0
 ```
 
-If `gh` is signed in, the script also checks GitHub build provenance. Set `POLKAMETER_VERIFY_ATTESTATION=1` to require it.
+## Use cargo
 
-## Use cargo binstall
-
-With [cargo-binstall](https://github.com/cargo-bins/cargo-binstall), download the prebuilt CLI:
+[cargo-binstall](https://github.com/cargo-bins/cargo-binstall) downloads the prebuilt CLI. `cargo install` builds it, with Rust 1.93 or newer, in 10 minutes or more. The substrate plugin isn't on crates.io, so cargo builds it from the release tag. Both go to `~/.cargo/bin`:
 
 ```sh
-cargo binstall polkameter
+cargo binstall polkameter --version 0.4.0    # or: cargo install --locked polkameter --version 0.4.0
+cargo install --locked --git https://github.com/agustinustheo/polkameter --tag v0.4.0 polkameter-substrate-plugin
 ```
-
-Add `--version <version>` to select a release.
-
-## Build from source
-
-Use Rust 1.93 or newer:
-
-```sh
-cargo install --locked polkameter
-```
-
-This installs only the CLI, in `~/.cargo/bin`. A source build can take 10 minutes or more. Install the plugins your plan uses with [`polkameter plugin install`](cli.md#plugin).
 
 ## Download release archives
 
-Download the archive for your operating system and processor from [GitHub releases](https://github.com/agustinustheo/polkameter/releases). Download the matching `.sha256` file too.
+Download `polkameter-<version>-<target>.tar.gz` and its `.sha256` file from [GitHub releases](https://github.com/agustinustheo/polkameter/releases). The targets are `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin` (Intel) and `aarch64-apple-darwin` (Apple silicon). Linux builds need glibc 2.35 or newer, as in Ubuntu 22.04 and Debian 12. macOS builds need macOS 11 or newer.
 
-| System | Target | Format |
-| --- | --- | --- |
-| Linux x86-64 | `x86_64-unknown-linux-gnu` | `.tar.gz` |
-| Linux ARM64 | `aarch64-unknown-linux-gnu` | `.tar.gz` |
-| macOS Intel | `x86_64-apple-darwin` | `.tar.gz` |
-| macOS Apple silicon | `aarch64-apple-darwin` | `.tar.gz` |
+Check the archive, then extract both executables:
 
-The archive is named `polkameter-<version>-<target>`, such as `polkameter-0.3.0-x86_64-unknown-linux-gnu.tar.gz`. It holds `polkameter` and `polkameter-substrate-plugin`. Linux builds need glibc 2.35 or newer, as in Ubuntu 22.04 and Debian 12. macOS builds need macOS 11 or newer.
+```sh
+sha256sum -c polkameter-0.4.0-<target>.tar.gz.sha256    # on macOS: shasum -a 256 -c
+mkdir -p ~/.local/bin
+tar -xzf polkameter-0.4.0-<target>.tar.gz -C ~/.local/bin polkameter polkameter-substrate-plugin
+export PATH="$HOME/.local/bin:$PATH"
+```
 
-Check the archive before you extract it:
+## Register the plugin
 
-- On Linux, run `sha256sum -c <archive-filename>.sha256`.
-- On macOS, run `shasum -a 256 -c <archive-filename>.sha256`.
+PolkaMeter runs only registered plugins. Register the substrate plugin now, and again after every upgrade or rebuild:
+
+```sh
+polkameter plugin install "$(command -v polkameter-substrate-plugin)"
+```
+
+[`plugin install`](cli.md#plugin) explains the registry.
+
+## Versions
+
+Use one release everywhere. The plan's `<plugin id="substrate" version="…">` must equal the installed plugin's version, which is the CLI's version, `polkameter --version`. Fetch `dev-chain.sh` and the example plans from that release's tag, such as `v0.4.0`. In CI, set the action's `version` input to it too.

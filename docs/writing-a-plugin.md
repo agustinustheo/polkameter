@@ -1,8 +1,8 @@
 # Writing a plugin
 
-Let's write a plugin with one operation, `greet`, install it and run a plan that calls it. You don't need a chain for this.
+Let's write a plugin with one operation, `greet`, install it and run a [plan](plans.md) that calls it. An operation is a named call that a plan step makes. You don't need a chain for this.
 
-PolkaMeter doesn't know your runtime. Your plugin builds the transactions for your chain, and PolkaMeter sends them and measures what happens. A plugin is a separate program, so you can keep it in your own repository and install it without rebuilding PolkaMeter.
+PolkaMeter doesn't know your runtime. Your plugin builds the transactions for your chain, and PolkaMeter sends them and measures what happens. A plugin is a separate program. You keep it in your own repository and install it without rebuilding PolkaMeter.
 
 Before you start, [install PolkaMeter](install.md) so `polkameter` is on your `PATH`. You also need Rust 1.93 or newer.
 
@@ -26,7 +26,7 @@ rust-version = "1.93"
 
 [dependencies]
 anyhow = "1"
-polkameter-plugin-sdk = "0.3"
+polkameter-plugin-sdk = "0.4"
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 ```
@@ -86,7 +86,9 @@ async fn main() -> Result<()> {
 
 `manifest` says what the plugin offers. `greet` takes a string, `name`, and returns a string, `greeting`. `invoke` runs the requested operation. `serve` reads requests and writes replies.
 
-Write your logs to standard error, because standard output carries only replies. `.read_only()` marks an operation that changes nothing on a chain, so a plan can use it in `<preflight>`.
+Write your logs to standard error, because standard output carries only replies.
+
+`.read_only()` marks an operation that changes nothing on a chain, so a plan can use it in `<preflight>`.
 
 The SDK checks every request against the manifest before `invoke` runs. If a plan passes a number for `name`, the plugin replies `value does not match String`, and your code never runs.
 
@@ -105,7 +107,7 @@ polkameter plugin install target/debug/hello-plugin
 Installed plugin hello 0.1.0 (1 operation) from ~/hello-plugin/target/debug/hello-plugin
 ```
 
-Install reads the manifest and records the plugin's ID, version and a hash of the executable `target/debug/hello-plugin`. [`plugin install`](cli.md#plugin) explains the registry and when to reinstall.
+Install reads the manifest. It records the plugin's ID, version and a hash of `target/debug/hello-plugin` in the registry, so PolkaMeter can refuse the file if it changes. [`plugin install`](cli.md#plugin) says when to reinstall.
 
 ## Write a plan that calls it
 
@@ -123,7 +125,7 @@ Save this as `hello.polkameter.xml` in the `hello-plugin` directory:
 </polkameter-plan>
 ```
 
-- `<plugins>` names the plugin and its version. The version must match the one you installed.
+- `<plugin>` names the plugin, its version, which must match the one you installed, and the plugin protocol version, `1`.
 - The first step calls `hello.greet`. Later steps read its output as `steps.greet.greeting`.
 - `core.assert-equal` fails the run if `actual` and `expected` differ.
 
@@ -144,7 +146,7 @@ Phase: teardown
 Run completed. Artifacts: ~/hello-plugin/runs/run-1792254908788-10278-1
 ```
 
-Each run writes a new run directory under `--output`. [Run directory](results.md) lists the files a run writes.
+Teardown always runs, even with no teardown steps. Each run writes a new run directory under `--output`. [Run directory](results.md) lists its files.
 
 Now let's break it. Copy the plan to `wrong.polkameter.xml` and change `expected` to `Hello, Ferris!`. Run the copy and print its exit code:
 
@@ -160,15 +162,15 @@ PolkaMeter: run failed: assertion verified failed: expected "Hello, Ferris!", go
 1
 ```
 
-The run stops at the failed assertion. The message quotes string values and shows numbers and booleans bare. `execution.json` keeps the full error.
+The run stops at the failed assertion. `execution.json` keeps the full error.
 
 ## Plugins that drive load
 
-A load plugin prepares the flood and probe transactions before the load. It can also check the chain state afterwards, and record extra series for its own checks. [PreparedTx and the load contract](plugins.md#preparedtx-and-the-load-contract) gives the contract, and [The plugin SDK crate](plugins.md#the-plugin-sdk-crate) shows the `chain` and `observers` features you'll need.
+A load plugin prepares the [flood and probe](plans.md#load) transactions before the load. It can also check the chain state afterwards. [PreparedTx and the load contract](plugins.md#preparedtx-and-the-load-contract) gives the contract. The SDK's `chain` feature, in [The plugin SDK crate](plugins.md#the-plugin-sdk-crate), signs and submits transactions.
 
-Before you write one, write down the load: the call, the signer, the number of transactions, and what each one needs from the chain. Check the runtime identity (genesis hash, spec version and transaction version) before the load starts. Then stale transactions stop the run rather than get sent. Keep secrets in credential profiles, not in the plugin's output.
+Before you write one, write down the load: the call, the signer, the number of transactions, and what each one needs from the chain. In a preflight operation, check the runtime identity: genesis hash, spec version and transaction version. Then transactions signed for another runtime stop the run before they are sent. Keep secrets in credential profiles, not in the plugin's output.
 
-A load plan names your plugin's prepare operations. Replace `my-runtime` and the operation names with your plugin's names:
+A load plan calls your plugin's operations that prepare the transactions. Replace `my-runtime`, the operation names and the output name `transactions` with your plugin's names:
 
 ```xml
 <polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="First load" timeout-ms="3600000">
@@ -189,4 +191,4 @@ A load plan names your plugin's prepare operations. Replace `my-runtime` and the
 
 The [substrate plugin](https://github.com/agustinustheo/polkameter/tree/main/plugins/substrate) is a complete load plugin. The [example plugin](https://github.com/agustinustheo/polkameter/blob/main/plugins/example/src/main.rs) is smaller.
 
-Run it as in [Getting started](getting-started.md).
+Install your plugin and run the plan as in [Getting started](getting-started.md), against a dev chain with your runtime.

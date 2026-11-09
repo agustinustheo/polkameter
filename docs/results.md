@@ -1,18 +1,18 @@
 # Run directory
 
-Each run writes a new directory in `--output`, named `run-<milliseconds>-<pid>-<sequence>`. A run never reuses a directory. A plan with a `<load>` element is a load test. Other plans write fewer files.
+Each run writes a new directory in `--output`, named `run-<milliseconds>-<pid>-<sequence>`. A run never reuses a directory. A [load test](plans.md#load), a plan with `<load>`, writes more files than other plans.
 
 ## Files in every run
 
 | File | Contents |
 | --- | --- |
 | `execution.json` | How the run ended. |
-| `junit.xml` | Test report for CI. See [junit.xml](#junitxml). |
+| `junit.xml` | [Test report for CI](#junitxml). |
 | `summary.md` | No load test: plan name, state, and the error or `All configured steps completed.` Load test: the full report. |
 | `events.jsonl` | Every event, one JSON object per line. |
 | `plan.json` | The plan as parsed. |
 | `resolved-plan.json` | Plugin manifests and registry records, `<monitors>` settings, CLI version and BLAKE2 hash. |
-| `samples.jtl` | One CSV row per step, and per transaction in a load test. See [samples.jtl](#samplesjtl). |
+| `samples.jtl` | [One CSV row per plan step](#samplesjtl), and per transaction in a load test. |
 | `plugins/<id>/stderr.log` | Standard error of each plugin that started. |
 
 ## Redaction
@@ -35,21 +35,19 @@ PolkaMeter doesn't redact:
 
 ## Files in a load test
 
-| File | Contents | Needs |
-| --- | --- | --- |
-| `calibration.json` | Configured and measured block interval. | |
-| `summary.json` | The summary as data. | |
-| `steps.jsonl` | Per rate step: target rate, sent, included, refused, p50 and p95 latency, block gaps, node CPU and memory. See [Which step does a number belong to?](reading-results.md#which-step-does-a-number-belong-to) | |
-| `load.jsonl` | The load tool's `polkameter_*` metrics. | |
-| `blocks.jsonl` | Each best block, and the gap since the previous one. The gap is `null` for the first block after a reconnect. | |
-| `transactions.jsonl` | Each sent flood transaction and its [status](reading-results.md#did-transactions-get-lost). | |
-| `lost.jsonl` | The first 1000 lost transactions. `loss.lost` holds the full count. Empty if none. | |
-| `plugin-checks.json` | Checks from evaluate steps. Empty if none. | |
-| `resolved-targets.json` | Scrape targets resolved from the topology, and its hash. | `<monitors>` |
-| `scrapes.jsonl` | Raw `/metrics` per node. `error` if a node did not answer. | `<monitors>` |
-| `chain.jsonl` | The relay recorder's series for the observed parachain. | `<monitors>` |
-| `node.jsonl` | Node CPU and memory during the load, and the process ID sampled. | A node on this machine. See [node: … no CPU or memory recorded](troubleshooting.md#node--no-cpu-or-memory-recorded). |
-| `plugins/<id>/series.jsonl`, `metrics.json` | A plugin's series and metric declarations. | A plugin that records metrics |
+| File | Contents |
+| --- | --- |
+| `calibration.json` | Configured and measured block interval. |
+| `summary.json` | The summary as data. |
+| `steps.jsonl` | Per rate step: target rate, sent, included, refused, p50 and p95 latency, block gaps, node CPU and memory. |
+| `load.jsonl` | PolkaMeter's own `polkameter_*` metrics. |
+| `blocks.jsonl` | Each best block, and the gap since the previous one. The gap is `null` for the first block after a reconnect. |
+| `transactions.jsonl` | Each sent flood transaction and its [status](reading-results.md#did-transactions-get-lost). |
+| `lost.jsonl` | The first 1000 lost transactions. `loss.lost` holds the full count. |
+| `plugin-checks.json` | Checks from evaluate steps. |
+| `node.jsonl` | [Node CPU and memory](troubleshooting.md#node--no-cpu-or-memory-recorded) during the load, for a node on this machine. |
+| `resolved-targets.json`, `scrapes.jsonl`, `chain.jsonl` | With `<monitors>`: each node's metrics URL, the raw metrics read from it, and the relay chain's record of the parachain. |
+| `plugins/<id>/series.jsonl`, `metrics.json` | Extra data a plugin recorded. |
 
 ## execution.json
 
@@ -72,7 +70,7 @@ PolkaMeter writes `execution.json` after teardown. When you stop a run, it write
 
 ## junit.xml
 
-`junit.xml` is a test report that CI systems such as GitLab, Jenkins and GitHub test-report actions can display. Every run tries to write it after teardown, also when the run failed or was stopped.
+CI systems such as GitLab, Jenkins and GitHub test-report actions can display `junit.xml`. Every run tries to write it after teardown, also when the run failed or was stopped.
 
 | Recorded result | JUnit test case |
 | --- | --- |
@@ -84,45 +82,45 @@ The JUnit report doesn't change the exit code.
 
 ## summary.json
 
-The measurement writes `summary.json` first, so plugin checks can read it. The report then adds the checks and the verdict, and writes `summary.md`. A plan without `<load>` writes no `summary.json` and has no verdict. `execution.json` has no verdict.
+A load test writes `summary.json` before the evaluate steps, so plugin checks can read it. The report then adds the checks and the verdict, and writes `summary.md`. A plan without `<load>` writes no `summary.json` and has no verdict.
 
 | Key | Holds |
 | --- | --- |
 | `schemaVersion` | Layout version, `1`. |
 | `verdict` | `result`: `PASS`, `WARN`, `FAIL` or `INCONCLUSIVE`. |
 | `stop` | `rule`, `detail`, `step`, `class`. |
-| `breakingPoint` | `step`, `targetRate`, `measure` (`included`, `latency` or `refused`), `detail`. `null` if none. |
-| `maxSustained` | `step`, `targetRate`, `includedPerS` of the step before the breaking point, or of the last step if there is no breaking point. `null` if the first step breaks a limit. |
+| `breakingPoint` | The failure onset: `step`, `targetRate`, `measure` (`included`, `latency` or `refused`), `detail`. `null` if none. |
+| `maxSustained` | `step`, `targetRate`, `includedPerS` of the [max sustained](reading-results.md#how-much-load-did-the-chain-take) rate step. `null` if the first rate step fails a limit. |
 | `loss` | Transaction counts. See [Did transactions get lost?](reading-results.md#did-transactions-get-lost) |
 | `checks` | `outcome`, `check`, `status`, `detail`, and `numbers` if any. `"optional": true` on optional checks. |
 
-The SDK type [`Summary`](https://docs.rs/polkameter-plugin-sdk/latest/polkameter_plugin_sdk/observers/files/summary/struct.Summary.html) documents the other keys.
+The plugin SDK's [`Summary`](https://docs.rs/polkameter-plugin-sdk/latest/polkameter_plugin_sdk/observers/summary/struct.Summary.html) type documents the other keys.
 
 ## Outcome checks
 
-Checks run on the recorded data, in this order. A check whose metric the node does not export returns `no result`.
+Checks run on the recorded data, in this order. The `block production`, `pvf` and `pool work leaves time for blocks` checks read node metrics, so they need `<monitors>`. PVF is the parachain validation function that relay chain validators run.
 
 | Outcome: check | Measures | Status |
 | --- | --- | --- |
 | block production: why blocks end | Why each block ended: weight, size, deadline, or no more transactions. | `info`. `no result` if the collator recorded no block. |
 | block production: build time within the authoring deadline | Build time against 2 s. | `warn`: a block over 2.5 s, or p95 at 2.5 s. `fail`: over 5% of blocks above 2.5 s. |
-| pvf: relay slots (level 1) | Slots missed above idle: not built, not backed, timed out. | `fail`: a window misses more than one slot above idle. |
+| pvf: relay slots (level 1) | Relay chain slots the parachain missed, beyond those it misses when idle. | `fail`: a window misses more than one slot above idle. |
 | pvf: no timed-out candidates or disputes | Timed-out candidates and relay disputes. | `fail` if any. |
 | pvf: PVF time on validators (level 2, all parachains) | Validation time. | `warn`: a validation over 2 s, or an invalid result. |
-| pvf: collation funnel | Expired collations, and mean backing-to-inclusion time. | `warn`: any expired, or mean over 1.5 relay blocks. |
+| pvf: collation funnel | Expired parachain block candidates, and mean backing-to-inclusion time. | `warn`: any expired, or mean over 1.5 relay blocks. |
 | pool: no silent loss | Accepted transactions in no block, without error. | `fail`: confirmed loss. Otherwise `no result` when evidence or the requested state check is missing. |
 | pool: the burst drains | Probes in time, backlog drained, no empty block while more than 10 transactions waited. | `fail` unless all three hold. |
 | pool: refusals are clean | Refusals by error code. | `fail`: a refusal without an error code. `warn`: the run stopped on pool intake. |
 | pool: pool work leaves time for blocks | Pool maintenance p95, and validation backlog. | `fail`: p95 over half the block interval. `warn`: over 1000 waiting for validation. |
 | run: monitors recorded everything | Monitor problems, and time when blocks were not observed. | `warn` if any problem. `no result` if blocks went unobserved for longer than `stall-ms` in total. |
 
-A check measures each window: a rate step, or recovery. A window has no data when a node's metrics are stale at its edges, a node restarted in it, or nothing was recorded. The detail names the window and the cause. A failure or warning in any window decides the status. Otherwise a window without data makes the check `no result`.
+A check measures each window: a rate step, or recovery. A failure or warning in any window decides the status. Otherwise a window without data, such as one in which a node restarted, makes the check `no result`. The detail names the window and the cause.
 
-If the plan does not monitor what a check reads, the check is `no result` with a detail that starts `not applicable:`. Plugin checks come after the built-in ones and count toward the verdict the same way.
+Plugin checks come after the built-in ones and count toward the verdict the same way.
 
 ## samples.jtl
 
-`samples.jtl` uses JMeter's CSV columns so JMeter report tools can read it. JMeter is a load-testing tool for websites. The file has one header row, then 13 columns.
+`samples.jtl` uses the CSV columns of JMeter, a common load-testing tool, so JMeter's report tools can chart a run. The file has one header row, then 13 columns.
 
 | Column | Step rows | Transaction rows (load test) |
 | --- | --- | --- |
@@ -156,9 +154,6 @@ Each event has a `timestamp` in milliseconds and `version` `2`. PolkaMeter redac
 
 `polkameter report <run directory>` rebuilds the reports from the recorded data and prints `summary.md`. It needs `execution.json` and `summary.md`.
 
-| Plan | Rewrites |
-| --- | --- |
-| Without `<load>` | `junit.xml` and `samples.jtl` |
-| With `<load>` | Also the checks, `summary.json` and `summary.md` |
+It rewrites `junit.xml` and `samples.jtl`, and in a load test also the checks, `summary.json` and `summary.md`.
 
 The result comes only from the files. So you can copy a run directory to another machine and report it there.

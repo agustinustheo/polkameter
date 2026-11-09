@@ -1,6 +1,6 @@
 # PolkaMeter
 
-> PolkaMeter is a Rust CLI for load and stress tests on Polkadot SDK chains. XML plans select rates, plugins prepare transactions, and load reports give a verdict (PASS, WARN, FAIL or INCONCLUSIVE). Results include samples in JMeter's CSV format. The substrate plugin loads chains with the standard System and Balances pallets and compatible signing types without custom code.
+> PolkaMeter is a Rust CLI for load and stress tests on Polkadot SDK chains. XML plans set the rates, plugins prepare transactions, and a load test ends with a verdict (PASS, WARN, FAIL or INCONCLUSIVE). Results include samples in JMeter's CSV format. The substrate plugin loads chains with the standard System and Balances pallets and compatible signing types without custom code.
 
 ## Tutorials
 
@@ -9,10 +9,10 @@
 
 ## How-to guides
 
-- [Install](https://agustinustheodorus.com/polkameter/install.html): every install method
+- [Install](https://agustinustheodorus.com/polkameter/install.html): every install method, supported platforms and version pinning
 - [Run in CI](https://agustinustheodorus.com/polkameter/ci.html): the GitHub Action, GitLab CI and other CI systems
-- [Read the results](https://agustinustheodorus.com/polkameter/reading-results.html): verdict, breaking point, max sustained rate, loss check, stop rules
-- [Use PolkaMeter with an AI assistant](https://agustinustheodorus.com/polkameter/ai-assistants.html): the Agent Skill
+- [Read the results](https://agustinustheodorus.com/polkameter/reading-results.html): verdict, failure onset, max sustained rate, loss check, recovery, stop rules
+- [Use PolkaMeter with an AI assistant](https://agustinustheodorus.com/polkameter/ai-assistants.html): the PolkaMeter skill
 - [Troubleshooting](https://agustinustheodorus.com/polkameter/troubleshooting.html): common errors and fixes
 
 ## Reference
@@ -26,5 +26,5 @@
 ## Optional
 
 - [Source repository](https://github.com/agustinustheo/polkameter): the code and example plans in `examples/`
-- [Agent Skill](https://github.com/agustinustheo/polkameter/tree/main/skills/polkameter): SKILL.md, plan and CI templates
+- [PolkaMeter skill](https://github.com/agustinustheo/polkameter/tree/main/skills/polkameter): SKILL.md, plan and CI templates
 - [AGENTS.md](https://github.com/agustinustheo/polkameter/blob/main/AGENTS.md): build and test commands for contributors

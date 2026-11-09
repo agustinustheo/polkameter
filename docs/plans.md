@@ -1,6 +1,6 @@
 # Plan reference
 
-A plan is an XML file that lists the test steps and settings. A plan never contains a secret, an executable path or a topology path. Set those on the run host with [`polkameter plugin`](cli.md#plugin).
+A plan is an XML file that lists the test's steps and settings. It never holds a secret or a file path. Those live on the run host, set with [`polkameter plugin`](cli.md#plugin).
 
 ## Example
 
@@ -50,15 +50,16 @@ In the tables below, the Default column gives the default value, `required`, or 
 
 The root element. Its `name` appears in the report.
 
-Children, in any order: `plugins`, `targets`, `credentials`, `preflight`, `setup`, `load`, `monitors`, `thresholds`, `evaluate`, `teardown`. Each appears at most once. Steps in a phase run in their written order. The run uses this phase order, whatever the order in the XML:
+Children, in any order: `plugins`, `targets`, `credentials`, `preflight`, `setup`, `load`, `monitors`, `thresholds`, `evaluate`, `teardown`. Each appears at most once. Whatever their order in the XML, a run goes through these phases. `run` prints each as a `Phase:` line:
 
-1. Preflight: PolkaMeter checks the installed plugins against the plan and runs the preflight steps. For a load test, it also compares the block interval with the chain's.
-2. Setup: setup steps run once. They usually prepare the transactions for the load.
-3. Load, in a load test only: the baseline, the rate steps, recovery, the wait for finality and the loss check.
-4. Evaluate: evaluate steps run, and plugins can return checks from them.
-5. Checks and verdict, in a load test only.
-6. Teardown: teardown steps run even after a failure in setup or later. A run that fails in preflight sent nothing, so it skips teardown.
-7. Report: the run writes its outcome and `samples.jtl`.
+1. `preflight`: checks the installed plugins against the plan and runs the preflight steps. For a load test, it also compares the block interval with the chain's.
+2. `setup`: setup steps run once, usually to prepare the load's transactions.
+3. In a load test, `measurement`, then `baseline` (probes before the flood), `load` (the rate steps), `recovery`, and `reconciliation` (the wait for finality and the loss check).
+4. Evaluate steps run, with no phase line of their own.
+5. `checks`, in a load test: the outcome checks and the verdict.
+6. `teardown`: teardown steps run even after a failure in setup or later. A run that fails in preflight sent nothing, so it skips teardown.
+
+Steps in a phase run in their written order. Last, the run writes its reports.
 
 | Attribute | Type | Default | Limits | Meaning |
 | --- | --- | --- | --- | --- |
@@ -68,9 +69,9 @@ Children, in any order: `plugins`, `targets`, `credentials`, `preflight`, `setup
 | `mode` | string | `stress` | `stress` or `smoke` | See below |
 | `timeout-ms` | integer | `3600000` | above 0 | The run deadline. See below |
 
-Stress mode records monitor problems and continues unless a stop rule ends the load. Smoke mode stops the load on a monitor problem and has [stricter exit rules](cli.md#run).
+Stress mode records monitor problems, such as a node that stops answering, and goes on unless a [stop rule](reading-results.md#stop-rules) ends the load. Smoke mode stops the load at the first monitor problem and has [stricter exit rules](cli.md#run), for a quick check that must catch any problem.
 
-`timeout-ms` limits plugin startup and the test phases, including load checks and summary generation. Teardown and the final artifact writing run outside that deadline. A run that reaches it ends as `failed` and exits `1`, or `3` if it was still in preflight. See [exit codes](cli.md#exit-codes).
+`timeout-ms` limits everything before teardown. A run that reaches it fails and exits `1`, or `3` in preflight.
 
 ### plugins, targets, credentials
 
@@ -104,17 +105,16 @@ Declares one plugin. The version and protocol must match the installed plugin.
 
 Each holds zero or more `step` elements.
 
-- `preflight` steps check the chain before the run. They can use only read-only operations.
-- `setup` steps run once, before the load.
-- `evaluate` steps run after the load and before the report. An operation that returns `checks` adds them to the report. See [Observers and checks](plugins.md#observers-and-checks).
-- `teardown` steps clean up at the end, also after a failure or a stop. Every step runs, even if an earlier one fails.
+- `preflight` steps can use only read-only operations.
+- An `evaluate` step whose operation returns `checks` adds them to the report. See [Observers and checks](plugins.md#observers-and-checks).
+- `teardown` steps clean up, also after a failure or a stop. Every one runs, even if an earlier one fails.
 
 
 ### load
 
 Makes the plan a load test against one target. A load test sends transactions at chosen rates and measures how the chain responds.
 
-The load uses two lists of prepared transactions. Flood transactions supply the main load at the target rate. A probe transaction measures the time from submission to inclusion, before and after the flood. The baseline measures probe latency before the flood starts. The two lists must not share a transaction.
+It sends two lists of prepared transactions, which must not share a transaction. Flood transactions are the main load, sent at the target rate. Probe transactions time submission to inclusion, one per block: the baseline probes before the flood, and the recovery probes after it.
 
 Children: `rate` (one or more) or one `ramp`. Give one or the other.
 
@@ -132,7 +132,7 @@ Children: `rate` (one or more) or one `ramp`. Give one or the other.
 
 Preflight measures the block time. If it differs from `block-interval-seconds` by more than 25%, the run stops before setup.
 
-The probe budget is the baseline probes, plus one probe per block of the recovery window, plus 10 spare. The recovery part rounds up to a whole block. With the defaults, the budget is 5 + 900 / 6 + 10 = 165 probes. With fewer probes, the run fails with `insufficient probe reserve`.
+The probe budget is the baseline probes, plus one probe per block of the recovery window, plus 10 spare. With the defaults, the budget is 5 + 900 / 6 + 10 = 165 probes. With fewer probes, the run fails with `insufficient probe reserve`.
 
 ### rate
 
@@ -141,29 +141,29 @@ A rate step sends flood transactions at one target rate for a set time. A plan h
 | Attribute | Type | Default | Limits | Meaning |
 | --- | --- | --- | --- | --- |
 | `tx-per-second` | number | required | finite; at least 0 | Target rate, in transactions per second |
-| `seconds` | integer | required | at least 1 | Step duration |
+| `seconds` | integer | required | at least 1 | Rate step duration |
 
 ### ramp
 
-A ramp changes the target rate between rate steps. Each step uses a fixed target rate. The first step uses `start`. Each later step adds `step` or multiplies by `growth`.
+A ramp sets the target rate of each rate step. The first uses `start`. Each later one adds the `step` attribute or multiplies by `growth`.
 
 | Attribute | Type | Default | Limits | Meaning |
 | --- | --- | --- | --- | --- |
 | `start` | number | required | finite; above 0 | The first target rate |
-| `step` | number | one of `step` or `growth` | finite | Added to the rate at each step. No rate can fall below 0 |
-| `growth` | number | one of `step` or `growth` | finite; above 0 | Multiplies the rate at each step |
+| `step` | number | one of `step` or `growth` | finite | Added to the rate at each rate step. No rate can fall below 0 |
+| `growth` | number | one of `step` or `growth` | finite; above 0 | Multiplies the rate at each rate step |
 | `steps` | integer | required | 1 to 10000 | Number of rate steps |
-| `seconds` | integer | required | at least 1 | Duration of each step |
+| `seconds` | integer | required | at least 1 | Duration of each rate step |
 
 ### monitors
 
-Watches the chain during the load. It records the chain, scrapes the listed metrics and records [node CPU and memory](troubleshooting.md#node--no-cpu-or-memory-recorded). It needs a `<load>`.
+Watches a Zombienet test network during the load. It records the relay chain's view of the parachain, reads the listed metrics from each node and records [node CPU and memory](troubleshooting.md#node--no-cpu-or-memory-recorded). It needs a `<load>`.
 
 Children: `metric`, zero or more.
 
 | Attribute | Type | Default | Limits | Meaning |
 | --- | --- | --- | --- | --- |
-| `topology` | string | required | an alias from `polkameter plugin topology` | The topology alias on this host |
+| `topology` | string | required | a name from `polkameter plugin topology` | The network's `zombie.json` on this host |
 | `relay-target` | identifier | required | a declared target | The relay chain endpoint |
 | `para-id` | integer | required | 0 to 4294967295 | The parachain to scrape and check |
 
@@ -180,7 +180,7 @@ If a node does not have a required metric, the run stops before setup. If no nod
 
 ### thresholds
 
-Sets the limits for breaking points, load stops, recovery and finality. Each value replaces its default. The run writes the effective values to `summary.json` under `rules`. [Stop rules](reading-results.md#stop-rules) explains each rule.
+Sets the limits for the failure onset, the stop rules, recovery and finality. Each value replaces its default. [Stop rules](reading-results.md#stop-rules) explains each rule.
 
 | Attribute | Type | Default | Limits | Governs |
 | --- | --- | --- | --- | --- |
@@ -193,13 +193,13 @@ Sets the limits for breaking points, load stops, recovery and finality. Each val
 | `max-block-gap-factor` | number | `2.0` | above 0 | Mean block gap, as a multiple of `block-interval-seconds` |
 | `stall-ms` | integer | `30000` | above 0 | Time without a new best block |
 | `finality-stall-ms` | integer | `60000` | above 0 | Time without a new finalized block |
-| `probes-in-a-row` | integer | `3` | above 0 | Recovery probes in a row that must meet the latency limit |
+| `probes-in-a-row` | integer | `3` | above 0 | Recovery probes in a row that must be [in time](reading-results.md#did-the-chain-recover) |
 | `recovered-block-gap-factor` | number | `1.5` | above 0 | Mean block gap that counts as recovered |
 | `finality-wait-ms` | integer | `180000` | above 0 | Wait for finality after the last block with a run transaction |
 
 ### step
 
-One call to a plugin operation or a built-in operation. Children: `input`, zero or more.
+A plan step: one call to a plugin operation or a built-in operation. It isn't a [rate step](#rate). Children: `input`, zero or more.
 
 | Attribute | Type | Default | Limits | Meaning |
 | --- | --- | --- | --- | --- |
@@ -245,16 +245,15 @@ For quotes inside a JSON literal, use XML escapes, for example `value="[&quot;a&
 
 ## Validation rules
 
-The [XSD schema](https://github.com/agustinustheo/polkameter/blob/main/schemas/polkameter-plan.xsd) catches most mistakes in an editor. `polkameter validate` checks the rest.
+The [XSD schema](https://github.com/agustinustheo/polkameter/blob/main/schemas/polkameter-plan.xsd) lets an XML editor catch most mistakes. `polkameter validate` checks the rest.
 
 The plan file must be UTF-8 and at most 2 MiB. Also:
 
 | Item | Limit |
 | --- | --- |
-| XML | No DOCTYPE, CDATA, processing instructions or text inside elements. At most 16 levels deep |
+| XML | No DOCTYPE, CDATA, text inside elements or processing instructions. The XML declaration and comments are fine. At most 16 levels deep |
 | Elements and attributes | No unknown names. Every required attribute is present |
 | IDs | Unique per kind. Step IDs are unique in the whole plan |
-| Rate steps | At most 10000 in the plan |
 | Transaction lists | At most 100000 transactions. Each transaction's bytes match its hash |
 
-A plan error exits `2`. Errors about an element or invalid text can include a line and column. File-access and size errors may have no position.
+A plan error exits `2`, usually with a line and column.

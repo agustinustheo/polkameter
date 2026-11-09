@@ -4,7 +4,7 @@ A plugin is a separate executable that supplies operations the plan can call. Th
 
 ## Manifest
 
-`$describe` returns the manifest. The host checks it at install and at run start.
+The manifest says what a plugin offers. PolkaMeter, the host, asks for it with the `$describe` request at install and at run start.
 
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
@@ -102,11 +102,11 @@ Checks read the observer's series with the labels `job="plugin"` and `instance=<
 
 ## The plugin SDK crate
 
-A plugin depends on one crate, `polkameter-plugin-sdk` ([crates.io](https://crates.io/crates/polkameter-plugin-sdk), [API documentation](https://docs.rs/polkameter-plugin-sdk/0.3)).
+A plugin depends on one crate, `polkameter-plugin-sdk` ([crates.io](https://crates.io/crates/polkameter-plugin-sdk), [API documentation](https://docs.rs/polkameter-plugin-sdk/0.4)).
 
 ```toml
 [dependencies]
-polkameter-plugin-sdk = { version = "0.3", features = ["observers"] }
+polkameter-plugin-sdk = { version = "0.4", features = ["observers"] }
 ```
 
 The default features give the plugin protocol: `Plugin`, `serve`, the manifest types, `Artifact` and `PreparedTx`. The default build does not depend on subxt, so it builds faster.
