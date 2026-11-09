@@ -371,7 +371,7 @@ async fn wait_finalized(
 /// Hashes of the ready txs in the node's pool.
 async fn pending(client: &Client) -> Result<Vec<[u8; 32]>, ChainError> {
 	let list: Vec<String> =
-		client.request("author_pendingExtrinsics", subxt_rpcs::rpc_params![]).await?;
+		client.request("author_pendingExtrinsics", subxt::rpcs::rpc_params![]).await?;
 	list.iter()
 		.map(|x| {
 			hex::decode(x.trim_start_matches("0x"))

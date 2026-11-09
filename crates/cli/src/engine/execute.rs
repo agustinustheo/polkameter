@@ -623,7 +623,7 @@ async fn timestamps(client: &Client, number: u32) -> Result<Vec<u64>, ChainError
 	let mut stamps = Vec::new();
 	for n in (number.saturating_sub(60)..=number).rev() {
 		let hash: Option<subxt::utils::H256> =
-			client.request("chain_getBlockHash", subxt_rpcs::rpc_params![n]).await?;
+			client.request("chain_getBlockHash", subxt::rpcs::rpc_params![n]).await?;
 		let Some(hash) = hash else { break };
 		stamps.push(
 			fetch::<(), u64>(&client.at(hash.0).await?, "Timestamp", "Now", ())

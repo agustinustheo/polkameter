@@ -261,7 +261,7 @@ pub async fn run(
 		params: serde_json::json!({ "plan": plan, "connections": load.connections }),
 		budget: format!("{} flood transactions and {} reserved probes", flood.len(), probes.len()),
 		setup_seconds,
-		extra: serde_json::json!({"genesis":hex::encode(chain.genesis),"transactionVersion":chain.tx_version,"nodeVersion":client.request::<String>("system_version",subxt_rpcs::rpc_params![]).await.ok()}),
+		extra: serde_json::json!({"genesis":hex::encode(chain.genesis),"transactionVersion":chain.tx_version,"nodeVersion":client.request::<String>("system_version",subxt::rpcs::rpc_params![]).await.ok()}),
 		rules: serde_json::to_value(configured_rules)?,
 		failure_modes: rules::failure_modes(&stop, &loss, &finals),
 		stop,
