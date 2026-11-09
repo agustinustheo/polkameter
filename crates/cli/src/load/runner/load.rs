@@ -8,7 +8,7 @@ use tokio::time::Instant;
 use super::{Io, RunError, RunEvent, RunOptions, Ticks, live, node_down};
 use crate::load::{
 	now_ms,
-	rules::{check_step, live_failure, measure_violation, secs},
+	rules::{check_step, live_failure, measure_violation, rate, secs},
 	steps::final_step,
 	submit::Submit,
 	tracker::Tracker,
@@ -111,10 +111,10 @@ async fn send_step<S: Submit>(
 fn log_step<S: Submit>(t: &Tracker<S>) {
 	let f = final_step(t.steps.last().expect("started"));
 	crate::redact::diag!(
-		"step {} prepared: target {} tx/s, sent {:.0} tx/s, {} blocks, {:.1} tx/s included, reply p95 {}, {} replies pending, backlog {}",
+		"step {} prepared: target {} tx/s, sent {} tx/s, {} blocks, {:.1} tx/s included, reply p95 {}, {} replies pending, backlog {}",
 		f.step,
 		f.target_rate,
-		f.sent_per_s,
+		rate(f.sent_per_s),
 		f.blocks.blocks,
 		f.included_per_s,
 		f.p95_reply_ms.map_or("no time".into(), |ms| format!("{} s", secs(ms as f64))),

@@ -408,16 +408,7 @@ where
 		));
 	}
 	diag!("{}", loss_line(&loss));
-	let c = &loss.on_chain;
-	diag!(
-		"loss check on the finalized chain (blocks {}-{}): {} included, {} the tracker missed, {} only on a fork, {} moved",
-		c.blocks.0,
-		c.blocks.1,
-		c.included,
-		c.missed,
-		c.only_on_fork,
-		c.moved
-	);
+	diag!("loss check {}", crate::engine::checks::report::on_chain_text(&loss.on_chain));
 	(loss, lost)
 }
 
@@ -470,6 +461,9 @@ pub struct Exit {
 	/// Why `code` is 1: the smoke problems or the verdict and the flag that failed the run.
 	/// `execution.json` keeps it as `exit_reason`.
 	pub reason: Option<String>,
+	/// `code` is 1 only because the verdict is INCONCLUSIVE: nothing failed, and the run ends
+	/// `completed_inconclusive`, not `completed_with_failures`.
+	pub inconclusive: bool,
 }
 
 /// The run's exit, by its mode, verdict and exit policy. Smoke problems are printed as found.
@@ -483,7 +477,9 @@ fn exit_code(mode: Mode, summary: &Summary, checks: &[CheckResult], policy: Fail
 		diag!("smoke: {e}");
 	}
 	let reason = exit_reason(summary, checks, policy, &smoke);
-	Exit { code: i32::from(reason.is_some()), reason }
+	let inconclusive = smoke.is_empty()
+		&& matches!(verdict_failure(summary, checks, policy), Some(("INCONCLUSIVE", _)));
+	Exit { code: i32::from(reason.is_some()), reason, inconclusive }
 }
 
 /// Why the run exits 1, or `None` when it exits 0. A flag is blamed only when it decides the exit:
@@ -732,6 +728,9 @@ mod tests {
 						);
 						assert_eq!(exit.code, i32::from(by_policy || by_smoke), "{case}");
 						assert_eq!(exit.reason.is_some(), exit.code == 1, "{case}");
+						let inconclusive =
+							by_policy && !by_smoke && verdict == OverallStatus::Inconclusive;
+						assert_eq!(exit.inconclusive, inconclusive, "{case}");
 					}
 				}
 			}

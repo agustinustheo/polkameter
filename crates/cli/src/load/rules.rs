@@ -7,7 +7,7 @@
 //!
 //! Failures. The first one ends the ramp:
 //!   pool refuses    > 10% of a step's submits refused                         graceful
-//!   pool intake     p95 submit reply > 5 s, or the node stops reading submits graceful
+//!   pool intake     p95 submit reply > 5 s, or submits stop going out          graceful
 //!   slow blocks     blocks arrive 2x slower than at the start (wall clock)    hard
 //!   stall           no new best block for 30 s of observed time               hard
 //!   finality stall  no new finalized block for 60 s, same                      hard
@@ -80,6 +80,12 @@ fn pct(ratio: f64) -> String {
 /// Seconds, one decimal (see [`to_fixed`] for the rounding).
 pub fn secs(ms: impl Into<f64>) -> String {
 	to_fixed(ms.into() / 1000.0, 1)
+}
+
+/// A rate in tx/s to two decimals, without trailing zeros: `0.05`, `1.9`, `600`. Never rounded
+/// to a whole number, which could show a rate under the 95% rule as the target itself.
+pub fn rate(per_s: f64) -> String {
+	polkameter_plugin_sdk::observers::num((per_s * 100.0).round() / 100.0)
 }
 
 /// The first response measure a finished step violates: (measure, detail).
@@ -229,12 +235,15 @@ pub fn check_step(
 		}
 	}
 	let step = Some(cur.step);
+	// PolkaMeter sees only the replies on its connection: the node or the network between may
+	// hold them, and it cannot tell which.
+	const WHO: &str = "the node, or the network between PolkaMeter and the node";
 	if let Some(p95) = cur.p95_reply_ms.filter(|p95| *p95 > rules.max_submit_reply_ms) {
 		return Some(Stop::new(
 			Rule::PoolIntake,
 			step,
 			format!(
-				"p95 submit reply {} s: the node takes that long to check and accept a tx",
+				"p95 submit reply {} s: {WHO}, takes that long to answer a submit",
 				secs(p95 as f64)
 			),
 		));
@@ -243,17 +252,19 @@ pub fn check_step(
 		return Some(Stop::new(
 			Rule::PoolIntake,
 			step,
-			format!("a submit waited {} s for a reply", secs(cur.max_oldest_pending_ms as f64)),
+			format!(
+				"a submit waited {} s for a reply from {WHO}",
+				secs(cur.max_oldest_pending_ms as f64)
+			),
 		));
 	}
 	let slow_send = cur.send_ratio < rules.min_send_ratio;
-	// The node stopped reading only with bytes still unsent to it; time spent reconnecting is not
-	// counted as backpressure (it is `disconnected_ticks`).
+	// Reading stopped only with bytes still unsent on an open connection; time spent
+	// reconnecting is not counted as backpressure (it is `disconnected_ticks`).
 	if slow_send && cur.backpressure_ticks > 0 && unsent_kib > 0 {
 		let detail = format!(
-			"the node stopped reading submits ({unsent_kib} KiB unsent); sent {} of {} tx/s",
-			to_fixed(cur.sent_per_s, 0),
-			cur.target_rate
+			"submits stopped going out: {unsent_kib} KiB unsent on an open connection, which {WHO} stopped reading; {}",
+			sent(&cur, rules)
 		);
 		return Some(Stop::new(Rule::PoolIntake, step, detail));
 	}
@@ -277,9 +288,8 @@ pub fn check_step(
 			Rule::GeneratorLimit,
 			step,
 			format!(
-				"sent {} of {} tx/s{}",
-				to_fixed(cur.sent_per_s, 0),
-				cur.target_rate,
+				"{}{}",
+				sent(&cur, rules),
 				if reconnecting {
 					"; every RPC connection was down for part of the step, reconnecting"
 				} else {
@@ -288,6 +298,17 @@ pub fn check_step(
 			),
 		)
 	})
+}
+
+/// "sent 1.9 tx/s, 94.8% of the 2 tx/s target (95% needed)".
+fn sent(f: &FinalStep, rules: &Rules) -> String {
+	format!(
+		"sent {} tx/s, {} of the {} tx/s target ({} needed)",
+		rate(f.sent_per_s),
+		pct(f.send_ratio),
+		rate(f.target_rate),
+		pct(rules.min_send_ratio)
+	)
 }
 
 /// From the final numbers, after recovery: the first step that violated a measure.
@@ -304,7 +325,8 @@ pub fn breaking_point(finals: &[FinalStep], rules: &Rules) -> Option<BreakingPoi
 }
 
 /// What the steps' latency leaves out, for the run's warnings: txs seen late, after PolkaMeter
-/// was paused or while it caught up after a reconnect.
+/// was paused or while it caught up after a reconnect. It says nothing about whose fault the
+/// reconnect was: a node that restarted is node down on its own.
 pub fn untimed_warning(finals: &[FinalStep]) -> Option<String> {
 	let steps: Vec<String> = finals
 		.iter()
@@ -313,7 +335,7 @@ pub fn untimed_warning(finals: &[FinalStep]) -> Option<String> {
 		.collect();
 	(!steps.is_empty()).then(|| {
 		format!(
-			"latency leaves out included txs {} could not time, because it was paused or reconnecting to the node ({}): their time is not the chain's",
+			"latency leaves out included txs {} could not time ({}): it was paused, or reconnecting to the node, when they were sent or included",
 			crate::PRODUCT_NAME,
 			steps.join(", ")
 		)
@@ -463,6 +485,33 @@ mod tests {
 				assert_eq!(stop.class, Some(Class::Hard));
 			}
 		}
+	}
+
+	/// A stop detail says what PolkaMeter knows: the precise rate against the 95% rule, never
+	/// one rounded to the target; "pool intake" names the node or the network between; the
+	/// untimed warning does not say whose fault the time was.
+	#[test]
+	fn stop_details_say_only_what_polkameter_knows() {
+		let sent = |target_rate, seconds: u64, sent| {
+			let st = step(0, |s| {
+				(s.target_rate, s.ended_at, s.sent, s.included) =
+					(target_rate, seconds * 1000, sent, sent);
+				s.heads = seconds / 6;
+			});
+			check_step(&[st], &source(), 0, 6_000.0, &RULES, false).unwrap().detail
+		};
+		assert_eq!(sent(0.1, 30, 1), "sent 0.03 tx/s, 33.3% of the 0.1 tx/s target (95.0% needed)");
+		assert_eq!(
+			sent(2.0, 100, 189),
+			"sent 1.89 tx/s, 94.5% of the 2 tx/s target (95.0% needed)"
+		);
+		let slow = step(0, |s| s.reply_ms = vec![6_000]);
+		let stop = check_step(&[slow], &source(), 0, 6_000.0, &RULES, false).unwrap();
+		assert_eq!(stop.rule, Rule::PoolIntake);
+		assert!(stop.detail.contains("the node, or the network between"), "{}", stop.detail);
+		let untimed = final_step(&step(0, |s| s.untimed = 3));
+		let warning = untimed_warning(&[untimed]).unwrap();
+		assert!(!warning.contains("not the chain's"), "{warning}");
 	}
 
 	#[test]

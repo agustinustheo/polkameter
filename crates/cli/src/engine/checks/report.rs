@@ -250,6 +250,18 @@ fn baseline_line(s: &Summary) -> String {
 	}
 }
 
+/// The walk of the finalized chain, or why it did not run. Blocks start at 1 at the least, so
+/// `(0, 0)` is a walk that never ran.
+pub fn on_chain_text(c: &polkameter_plugin_sdk::observers::summary::OnChain) -> String {
+	if c.blocks == (0, 0) {
+		return "the finalized chain was not walked, so nothing was counted on it".into();
+	}
+	format!(
+		"on the finalized chain (blocks {}-{}): {} included; {} the tracker missed (in a block that replaced one it read), {} only on a fork block, {} moved to another block",
+		c.blocks.0, c.blocks.1, c.included, c.missed, c.only_on_fork, c.moved
+	)
+}
+
 fn loss_line(s: &Summary) -> String {
 	let l = &s.loss;
 	let mut out = format!(
@@ -270,10 +282,8 @@ fn loss_line(s: &Summary) -> String {
 		out += &format!(" ({n})");
 	}
 	let c = &l.on_chain;
-	out += &format!(
-		". On the finalized chain (blocks {}-{}): {} included; {} the tracker missed (in a block that replaced one it read), {} only on a fork block, {} moved to another block",
-		c.blocks.0, c.blocks.1, c.included, c.missed, c.only_on_fork, c.moved
-	);
+	let walk = on_chain_text(c);
+	out += &format!(". {}{}", walk[..1].to_uppercase(), &walk[1..]);
 	if let Some(st) = &l.state {
 		out += &format!(
 			". State check: {} of {} {}",
@@ -514,6 +524,16 @@ mod tests {
 					.contains(&format!("- **Verdict:** {}", serde_name(want)))
 			);
 		}
+	}
+
+	/// A walk of the finalized chain that never ran says so, not "blocks 0-0".
+	#[test]
+	fn a_walk_that_did_not_run_has_no_blocks() {
+		let mut s = summary();
+		s.loss.on_chain = Default::default();
+		let line = loss_line(&s);
+		assert!(!line.contains("blocks 0-0"), "{line}");
+		assert!(line.contains("The finalized chain was not walked"), "{line}");
 	}
 
 	#[test]

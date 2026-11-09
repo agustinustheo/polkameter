@@ -453,7 +453,7 @@ fn write_artifact_written(plan: &Path, outcome: &Outcome) {
 /// `plan.xml: line 4, …`. A run that failed before setup says so: it exits 3 and submitted
 /// nothing.
 fn failure_reason(plan: &Path, outcome: &Outcome) -> Option<String> {
-	if outcome.state == RunState::CompletedWithFailures {
+	if matches!(outcome.state, RunState::CompletedWithFailures | RunState::CompletedInconclusive) {
 		return Some(crate::engine::junit::single_line(outcome.exit_reason.as_deref()?));
 	}
 	if outcome.state != RunState::Failed {

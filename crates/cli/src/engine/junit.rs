@@ -261,7 +261,9 @@ fn inconclusive_reason(summary: &Value) -> Option<String> {
 /// flag), else, for a recording from before 0.3.0, its exit code and load verdict.
 fn execution_detail(summary: &Value, outcome: &Value) -> String {
 	let error = text(outcome, "error");
-	if !error.is_empty() || text(outcome, "state") != "completed_with_failures" {
+	if !error.is_empty()
+		|| !matches!(text(outcome, "state"), "completed_with_failures" | "completed_inconclusive")
+	{
 		return error.into();
 	}
 	let reason = text(outcome, "exit_reason");
@@ -294,7 +296,9 @@ fn add_section(
 
 fn mapped_case(name: String, status: &str, detail: &str) -> Case {
 	let state = match status {
-		"fail" | "FAIL" | "failed" | "completed_with_failures" => Status::Failed,
+		"fail" | "FAIL" | "failed" | "completed_with_failures" | "completed_inconclusive" => {
+			Status::Failed
+		},
 		"pass" | "PASS" | "warn" | "WARN" | "info" | "completed" => Status::Passed,
 		_ => Status::Skipped,
 	};
