@@ -764,7 +764,6 @@ pub async fn run_stoppable(
 		registry: &registry,
 		context,
 		directory,
-		cancel: stop.cancel.clone(),
 		stop,
 		log,
 		started: Instant::now(),
@@ -779,7 +778,7 @@ pub async fn run_stoppable(
 	let result = tokio::select! {
 		biased;
 		result = &mut execute => result,
-		() = run.cancel.cancelled() => {
+		() = run.stop.cancel.cancelled() => {
 			run.stopping();
 			execute.await
 		},
@@ -797,7 +796,6 @@ struct Run<'a> {
 	registry: &'a Registry,
 	context: Context,
 	directory: PathBuf,
-	cancel: CancellationToken,
 	stop: Stop,
 	log: Log,
 	started: Instant,
@@ -877,7 +875,7 @@ impl Run<'_> {
 	}
 
 	async fn start_plugins(&self) -> Result<Plugins> {
-		cancellable(&self.cancel, async {
+		cancellable(&self.stop.cancel, async {
 			tokio::time::timeout(
 				Duration::from_millis(self.plan.timeout_ms),
 				Plugins::start(
@@ -905,7 +903,7 @@ impl Run<'_> {
 	async fn bounded(&self, body: impl Future<Output = Result<i32>>) -> Result<i32> {
 		let budget =
 			Duration::from_millis(self.plan.timeout_ms).saturating_sub(self.started.elapsed());
-		cancellable(&self.cancel, async {
+		cancellable(&self.stop.cancel, async {
 			tokio::time::timeout(budget, body)
 				.await
 				.unwrap_or_else(|_| Err(anyhow::anyhow!("whole-run deadline exceeded")))
@@ -1021,7 +1019,7 @@ impl Run<'_> {
 		plugins: &Plugins,
 		values: &mut Values,
 	) -> Result<()> {
-		execute_steps(steps, plugins, values, &self.context, &self.cancel, &self.log).await
+		execute_steps(steps, plugins, values, &self.context, &self.stop.cancel, &self.log).await
 	}
 
 	/// Teardown runs even after a failure or cancellation, and runs every step even after one
@@ -1098,14 +1096,14 @@ impl Run<'_> {
 		let redacted = redact_plugin_logs(&self.directory, &self.log.redactor);
 		let (exit_code, state, error) = match result {
 			// A stop is honoured even when it came after the phases, during teardown.
-			Ok(_) if self.cancel.is_cancelled() => (
+			Ok(_) if self.stop.cancel.is_cancelled() => (
 				self.stop.exit_code(),
 				RunState::Stopped,
 				Some(anyhow::anyhow!("run stopped during teardown")),
 			),
 			Ok(0) => (0, RunState::Completed, None),
 			Ok(code) => (code, RunState::CompletedWithFailures, None),
-			Err(error) if self.cancel.is_cancelled() => {
+			Err(error) if self.stop.cancel.is_cancelled() => {
 				(self.stop.exit_code(), RunState::Stopped, Some(error))
 			},
 			Err(error) if self.before_setup() => {
