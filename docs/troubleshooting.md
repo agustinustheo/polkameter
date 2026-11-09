@@ -35,19 +35,19 @@ A check before the setup phase failed, so the run submitted nothing. It can be a
 
 Find the reason after `run failed before setup:` on this page. Run `polkameter preflight <plan>` to check the fix without a run.
 
-### verdict INCONCLUSIVE: …; exit 1 because of --fail-on-inconclusive
+### verdict INCONCLUSIVE: …; exit 1 …
 
 ```text
-PolkaMeter: verdict INCONCLUSIVE: required checks with no result: no silent loss; exit 1 because of --fail-on-inconclusive (the checks are in summary.md)
+PolkaMeter: verdict INCONCLUSIVE: required checks with no result: no silent loss; exit 1 ...
 ```
 
-The run finished, but the verdict is `INCONCLUSIVE`, and `--fail-on-inconclusive` makes that exit `1`. The GitHub Action passes the flag by default. A `verdict FAIL: …` line works the same way with `--fail-on-verdict`. A smoke-mode monitor problem or missing required check result exits `1` regardless of the flags. Other verdict failures still name the flag.
+The run finished, but the verdict is `INCONCLUSIVE`. By default, `polkameter run` and the GitHub Action exit `1` on it. A `verdict FAIL: …` line works the same way.
 
-See [What to do about INCONCLUSIVE](reading-results.md#what-to-do-about-inconclusive). To let the job pass meanwhile, drop the flag or set `fail-on: verdict` on the action step. For smoke mode, fix the problem the `smoke:` lines name, or run the plan in stress mode.
+See [What to do about INCONCLUSIVE](reading-results.md#what-to-do-about-inconclusive). To let the job pass meanwhile, pass `--fail-on verdict`, or set `fail-on: verdict` on the action step.
 
 ### teardown failed: teardown was interrupted by a forced stop
 
-The run was stopped. Then a second signal arrived, or teardown took longer than `--shutdown-grace`. Teardown did not finish, so cleanup on the chain can be incomplete. CI systems often send SIGINT and SIGTERM a few seconds apart.
+The run was stopped. Then a second signal arrived, or teardown took longer than `--shutdown-grace`. Teardown did not finish, so cleanup on the chain can be incomplete.
 
 Raise `--shutdown-grace` to cover your teardown steps. See [Stop a run](cli.md#stop-a-run). Check the chain for state that teardown would have removed.
 
@@ -60,10 +60,6 @@ Plan errors start with the plan file and, when known, a line and column: `PolkaM
 The XML is not well formed. Here, `<setup>` is never closed.
 
 Go to the line and column where the element was opened. Close it in the right place.
-
-### plan \<plan> is UTF-16 text; save it as UTF-8, the encoding PolkaMeter reads
-
-Some Windows editors and PowerShell's `>` write UTF-16. In PowerShell, use `Set-Content -Encoding utf8`.
 
 ### plan \<plan> is empty; if it comes from a pipe or FIFO, check that the command writing it succeeded
 
@@ -81,7 +77,7 @@ Give a value of the expected kind. For text that looks like a number, quote it a
 
 ### assertion \<id> failed
 
-A `core.assert-equal` step found that `actual` and `expected` differ. A failed assertion before setup exits `3`. A failed assertion in setup or later exits `1`.
+A `core.assert-equal` step found that `actual` and `expected` differ.
 
 Correct `expected`, or fix the value that the step computes. The message names the step.
 
@@ -91,7 +87,7 @@ Correct `expected`, or fix the value that the step computes. The message names t
 PolkaMeter: cannot read run directory target/no-such-run: No such file or directory (os error 2)
 ```
 
-The path after `cannot read` does not exist. The message says what PolkaMeter wanted: a `plan`, a `plugin executable` or a `run directory`.
+The path after `cannot read` does not exist.
 
 Check the path. For `report`, pass the `run-…` directory that holds `execution.json`.
 
@@ -101,15 +97,7 @@ Plugin errors point at the plan's `<plugin>` element. `preflight` and `run` exit
 
 ### \<plan>: line …: plugin \<id> is not installed on this host; run `polkameter plugin install <path-to-executable>` (registry …)
 
-The registry in parentheses has no plugin with that ID. `validate` does not check installs.
-
-Run `polkameter plugin install <path-to-executable>` on this host. If the registry path is not the one you installed into, set `POLKAMETER_PLUGIN_REGISTRY` on every step that runs `polkameter`.
-
-### \<plan>: line …: plugin \<id> checksum mismatch: if you rebuilt it, run `polkameter plugin install …` again. …
-
-The executable changed after `plugin install`, usually because you rebuilt it.
-
-Install the plugin again after every rebuild. A checksum or version mismatch stops `run` before setup and exits `3`.
+If the registry in parentheses is not the one you installed into, set `POLKAMETER_PLUGIN_REGISTRY` on every step that runs `polkameter`.
 
 ### plugin registry \<path> is not a valid registry: …
 
@@ -139,15 +127,25 @@ Preflight could not measure the block interval.
 
 Read the cause after the calibration message and check the endpoint. Check the `<target endpoint="ws://…">` value, and that the node is running and reachable.
 
-### Node CPU and memory are not recorded
+### node: … no CPU or memory recorded
 
-PolkaMeter samples only a node process on its own machine. See [Node CPU and memory](how-it-works.md#node-cpu-and-memory).
+PolkaMeter can only sample a node that runs on the same machine. It samples the process in `POLKAMETER_NODE_PID`, or the process listening on the RPC port of a loopback URL (`localhost`, `127.0.0.1` or `::1`).
+
+If the sampled process ends during the run, the node probably restarted. PolkaMeter finds the new process on the port, records the restart under problems and samples the new process. A restart during the load stops it on node down. With `POLKAMETER_NODE_PID` and a URL that isn't loopback, PolkaMeter can't find a restarted node again.
 
 ### blocks: RPC connection lost (…); reconnected after \<seconds> s, nothing observed meanwhile
 
-A connection to the node dropped, often at a proxy idle timeout, and PolkaMeter reconnected. If it happens often, raise the proxy's or load balancer's idle timeout above the run's length. See [Why a dropped connection is not a chain failure](how-it-works.md#why-a-dropped-connection-is-not-a-chain-failure).
+A connection to the node dropped, often at a proxy idle timeout, and PolkaMeter reconnected. If it happens often, raise the proxy's or load balancer's idle timeout above the run's length.
 
-### generator limit: the machine was suspended for \<seconds> s
+PolkaMeter talks to the node over WebSocket connections: one to follow blocks and several to send. PolkaMeter tries to reconnect, for up to 15 s.
+
+While the block follower is away, PolkaMeter can't see blocks. That time is left out of the stall and finality stall rules, and it's listed under problems. Every other second since the last new block still counts. So a stall can't hide behind reconnects, and a reconnect can't cause one. If blocks went unseen for longer than the stall limit in total, the "monitors recorded everything" check has no result, and the verdict can't be PASS.
+
+After a sending connection drops, PolkaMeter can resend a transaction whose reply is missing. The node may never have read it. Loss accounting still counts it once.
+
+[Stop rules](reading-results.md#stop-rules) says when the node counts as down.
+
+### generator limit: the machine was suspended for \<seconds> s; the numbers after this are not the chain's
 
 The machine running PolkaMeter slept, or its VM was paused, during the load. The chain went on without load, so the numbers after it are not the chain's.
 
@@ -155,15 +153,15 @@ Keep the machine awake during the run. On a CI runner, check for host maintenanc
 
 ### run failed: insufficient probe reserve
 
-The output that `probes-ref` names holds fewer transactions than the baseline and recovery probes need. With the defaults, the run needs 165.
+The output that `probes-ref` names holds fewer transactions than the baseline and recovery probes need.
 
-Pass `ref="run.probeBudget"` as the plugin's probe count, as [Run a load test](load-test.md#write-a-plan) shows. [`<load>`](plans.md#load) gives the formula.
+Pass `ref="run.probeBudget"` as the plugin's probe count. [`<load>`](plans.md#load) gives the formula.
 
 ### run failed: duplicate transaction in flood/probe sources
 
 The same transaction appears in both the flood and the probes, or twice in one list.
 
-Use separate prepared transactions for the flood and probes, for example from a signer the flood does not use. After a connection drops, the load sender can resend a transaction whose reply is missing. The ledger still counts it once.
+Use separate prepared transactions for the flood and probes, for example from a signer the flood does not use.
 
 ### The node refuses transactions
 

@@ -50,33 +50,17 @@ Phase: preflight
 Run completed. Artifacts: ~/polkameter/runs/run-1792255021142-12303-1
 ```
 
-Phase lines go to standard error. The last line goes to standard output and names the run directory.
+Phase lines go to standard error. The `Run …` line goes to standard output and names the run directory.
 
-If the run fails, PolkaMeter prints the reason on standard error and keeps the run directory. `execution.json` holds the full text. Here, a plugin process exited during a step:
+If the run fails, PolkaMeter prints the reason on standard error and keeps the run directory. `execution.json` holds the full text. A run that fails before its setup phase submitted nothing. It prints `run failed before setup:`, skips teardown and exits `3`. [Troubleshooting](troubleshooting.md) lists failure reasons.
 
-```text
-Phase: preflight
-Phase: setup
-Phase: teardown
-Run failed. Artifacts: ~/polkameter/runs/run-1792994214466-72728-1
-PolkaMeter: run failed: plugin exited before responding (details in ~/polkameter/runs/run-1792994214466-72728-1/execution.json)
-```
-
-A run that fails before its setup phase submitted nothing. It prints `run failed before setup:`, skips teardown and exits `3`:
+By default, a `FAIL` or `INCONCLUSIVE` [verdict](reading-results.md#did-it-pass) exits `1`. `--fail-on` picks the verdicts that exit `1`: `verdict-or-inconclusive` (the default), `verdict` (only `FAIL`) or `error` (none, so only a failed run exits `1`). `WARN` never changes the exit code. The verdict acts after the report and teardown, and a line on standard error names the reason:
 
 ```text
-Phase: preflight
-Run failed. Artifacts: ~/polkameter/runs/run-1793948741238-14878-1
-PolkaMeter: run failed before setup: plan.polkameter.xml: line 2, column 16: credential `sudo` (profile `sudo`) reads environment variable SUDO_SEED_X (from --credential-env), which is not set; set SUDO_SEED_X on the step that runs polkameter, or pass the variable that holds it to --credential-env (details in ~/polkameter/runs/run-1793948741238-14878-1/execution.json)
+PolkaMeter: verdict INCONCLUSIVE: required checks with no result: no silent loss; exit 1 ...
 ```
 
-By default, the [verdict](reading-results.md#did-it-pass) of a stress-mode load test does not change the exit code. Add `--fail-on-verdict` to exit `1` on `FAIL`. Add `--fail-on-inconclusive` to exit `1` on `INCONCLUSIVE`. `WARN` never changes the exit code. Both flags act after the report and teardown, and a line on standard error names the reason:
-
-```text
-PolkaMeter: verdict INCONCLUSIVE: required checks with no result: no silent loss; exit 1 because of --fail-on-inconclusive (the checks are in summary.md)
-```
-
-In smoke mode, a monitor problem or a required check with no result exits `1`, whatever these flags say. Other verdict failures still follow the flags. `execution.json` keeps the reason line as [`exit_reason`](results.md#executionjson).
+In smoke mode, a monitor problem or a required check with no result exits `1`, whatever `--fail-on` says. `execution.json` keeps the reason line as [`exit_reason`](results.md#executionjson).
 
 ### Stop a run
 
@@ -92,37 +76,23 @@ Run stopped. Artifacts: ~/polkameter/runs/run-1793933833255-39334-1
 
 Teardown after a signal gets `--shutdown-grace` seconds, 20 by default. A second signal, or the end of that period, interrupts teardown. The `teardown` field in `execution.json` is then `interrupted` instead of `completed`. If the process is killed before it writes the outcome, `state` stays `stopping`. So exit code `130` or `143` alone does not prove that teardown ran.
 
-After a forced stop, PolkaMeter waits at most 10 seconds for the outcome. Set `--shutdown-grace` to the time between SIGTERM and SIGKILL, minus 10 seconds:
+After a forced stop, PolkaMeter waits at most 10 seconds for the outcome. Set `--shutdown-grace` to the time between SIGTERM and SIGKILL, minus 10 seconds.
 
-| Where | SIGTERM to SIGKILL | `--shutdown-grace` |
-| --- | --- | --- |
-| Kubernetes (`terminationGracePeriodSeconds`) | 30 s by default | `20` (the default) |
-| GitLab Runner | Depends on the executor | That time minus 10 |
-| `docker stop` | 10 s by default | `0`, or raise `docker stop --timeout` |
-| GitHub Actions cancellation | SIGINT, SIGTERM 7.5 s later, SIGKILL 2.5 s after that | The SIGTERM interrupts teardown |
-
-> **Warning:** SIGKILL cannot be handled. In a container, run PolkaMeter under an init process (`docker run --init`), so that signals reach it.
+> **Warning:** SIGKILL cannot be handled. In a container, run PolkaMeter under an init process, so that signals reach it.
 
 ## report
 
-Rebuilds a run's checks, `summary.json`, `summary.md`, `junit.xml` and `samples.jtl` from its files. It does not run the plan. See [Rebuilding a report](results.md#rebuilding-a-report).
+Rebuilds a run's reports from its files. It does not run the plan. See [Rebuilding a report](results.md#rebuilding-a-report).
 
 ```sh
 polkameter report runs/run-1792255021142-12303-1
-```
-
-```text
-# Plugin data flow
-
-Status: completed
-...
 ```
 
 `report` exits `0` when the rebuild succeeds, even if the run failed. Read the `Status:` line or the `state` in `execution.json`. If `summary.json` has no `schemaVersion`, or one other than `1`, `report` changes no file and exits `2`.
 
 ## plugin
 
-Installs plugins and records this host's credential profiles and topologies. A plan names these things. The host holds the values. The registry is a JSON file; [Environment variables](#environment-variables) gives its path. A failed `plugin` subcommand exits `2`. `plugin install` prints one line. The other subcommands print JSON.
+Installs plugins and records this host's credential profiles and topologies. A plan names these things. The host holds the values. The registry is a JSON file; [Environment variables](#environment-variables) gives its path. A failed `plugin` subcommand exits `2`. `plugin list` and `plugin inspect` print JSON. The others print one line.
 
 | Command | Effect |
 | --- | --- |
@@ -144,43 +114,26 @@ Installed plugin example 0.1.0 (7 operations) from ~/polkameter/target/debug/pol
 
 A credential profile maps a plan's credential name to an environment variable on the run host. The registry stores the variable's name, not its value. PolkaMeter reads the variable when a run starts. An unmapped profile, or an unset or empty variable, makes `preflight` and `run` exit `3`.
 
-```sh
-polkameter plugin credential sudo SUDO_SEED
-polkameter plugin list
-```
-
-```json
-{
-  "credentials": {
-    "sudo": "SUDO_SEED"
-  },
-  "plugins": {
-    "example": {
-      "blake2": "2167d642faa16293c70c23a1aa10faef6b570aad31f24184d40d41727614e789",
-      ...
-```
-
-
 ## Exit codes
 
-The exit code tells the calling process how the command ended. Code `0` alone does not mean a `PASS` verdict.
+The exit code tells the calling process how the command ended. [Did it pass?](reading-results.md#did-it-pass) says how the verdict relates to it.
 
 | Code | Meaning |
 | --- | --- |
 | `0` | The command succeeded, or the run ended `completed`. |
-| `1` | The run failed in setup or later, or ended `completed_with_failures`. A selected verdict flag, a smoke-mode check, `report` or writing the output also failed. |
+| `1` | The run failed in setup or later, or ended `completed_with_failures`. A verdict that `--fail-on` selects, a smoke-mode check, `report` or writing the output also failed. |
 | `2` | Invalid input or usage: an invalid plan, a bad flag, a corrupt registry, a failed `plugin` subcommand, or a `summary.json` that `report` cannot rewrite. |
 | `3` | Preflight checks failed, or `init` could not prepare the plan. A `run` that exits `3` submitted nothing and skipped teardown. |
 | `130` | Stopped by SIGINT. |
 | `143` | Stopped by SIGTERM. |
 
-A stopped run usually ran its teardown, but check [`teardown`](#stop-a-run) in `execution.json`. Run `polkameter preflight <plan>` to find exit-`3` problems without a run directory.
+Run `polkameter preflight <plan>` to find exit-`3` problems without a run directory.
 
 ## Environment variables
 
 | Variable | Effect |
 | --- | --- |
 | `POLKAMETER_PLUGIN_REGISTRY` | Path of the plugin registry. Default: `~/.config/polkameter/plugins.json`. `USERPROFILE` replaces `HOME` when `HOME` is not set. |
-| `POLKAMETER_NODE_PID` | The node's process ID, for CPU and memory in a load test. See [Node CPU and memory](how-it-works.md#node-cpu-and-memory). |
+| `POLKAMETER_NODE_PID` | The node's process ID, for CPU and memory in a load test. See [node: … no CPU or memory recorded](troubleshooting.md#node--no-cpu-or-memory-recorded). |
 
 Plugins start with a cleared environment. Only `PATH`, `TMPDIR`, `TEMP`, `SYSTEMROOT`, `SSL_CERT_FILE` and `SSL_CERT_DIR` pass through. A plugin gets credential values only as step inputs.

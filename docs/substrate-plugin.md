@@ -1,59 +1,16 @@
 # The substrate plugin
 
-The substrate plugin signs `System.remark` or `Balances.transfer_keep_alive` transactions from accounts derived from one seed. It funds those accounts and checks the chain's state after the run. It reads the runtime's metadata, so you need no plugin code.
+The substrate plugin signs `System.remark` or `Balances.transfer_keep_alive` transactions from accounts derived from one seed. It funds those accounts and checks the chain's state after the run. It reads the runtime's metadata, so you need no plugin code. Its version is the PolkaMeter version it ships with. The plan's `<plugin version>` must match it.
 
-The plugin needs the standard `System` and `Balances` pallets, compatible sr25519 account and signature types, and supported transaction extensions. [Limits](#limits) gives the details. [Stress-test a local dev chain](dev-chain.md) runs it end to end.
+The plugin needs the standard `System` and `Balances` pallets, compatible sr25519 account and signature types, and supported transaction extensions. [Limits](#limits) gives the details. [Getting started](getting-started.md) runs it end to end.
 
 ## Example
 
-The plan below funds 16 flood signers and one signer per probe from the seed account, signs 5,000 remarks and sends them at rising rates. [`examples/substrate-remarks.polkameter.xml`](https://github.com/agustinustheo/polkameter/blob/main/examples/substrate-remarks.polkameter.xml) is the complete file.
-
-```xml
-<plugins><plugin id="substrate" version="0.3.0" protocol="1"/></plugins>
-<targets><target id="chain" endpoint="ws://127.0.0.1:9944"/></targets>
-<credentials><credential id="seed" profile="substrate-dev"/></credentials>
-<setup>
-  <step id="fund" use="substrate.fund-accounts" timeout-ms="300000">
-    <input name="target" ref="targets.chain"/>
-    <input name="seed" ref="credentials.seed"/>
-    <input name="flood-signers" value="16"/>
-    <input name="probes" ref="run.probeBudget"/>
-    <input name="amount" value="1000000000000000"/>
-  </step>
-  <step id="prepare" use="substrate.prepare-remarks" timeout-ms="300000">
-    <input name="target" ref="targets.chain"/>
-    <input name="seed" ref="credentials.seed"/>
-    <input name="flood-signers" value="16"/>
-    <input name="count" value="5000"/>
-    <input name="probes" ref="run.probeBudget"/>
-  </step>
-</setup>
-<load target="chain" source-ref="steps.prepare.flood" probes-ref="steps.prepare.probes"
-      state-check="substrate.check-state" state-ref="steps.prepare.state" block-interval-seconds="6">
-  <ramp start="10" step="10" steps="5" seconds="30"/>
-</load>
-```
-
-`polkameter init --rpc <endpoint>` writes a plan like this one for your chain. See [Generate a plan](#generate-a-plan).
-
-## Install
-
-The install script, the release archives and the container install `polkameter-substrate-plugin` next to `polkameter`. `cargo install polkameter` does not. [Install](install.md) covers each method. Then register the plugin:
-
-```sh
-polkameter plugin install "$(command -v polkameter-substrate-plugin)"
-```
-
-The plugin's version is the PolkaMeter version it ships with, such as `0.3.0`. The plan's `<plugin version>` must match it.
+[`examples/substrate-remarks.polkameter.xml`](https://github.com/agustinustheo/polkameter/blob/main/examples/substrate-remarks.polkameter.xml) is a complete plan, and [Generate a plan](#generate-a-plan) writes one for your chain.
 
 ## Signers and secrets
 
-Every operation that signs derives its accounts from `seed`, a secret URI such as `//Alice` or `<mnemonic>//stress`. Pass it from a [credential profile](cli.md#plugin), never as a literal value:
-
-```sh
-polkameter plugin credential substrate-dev POLKAMETER_SUBSTRATE_SEED
-export POLKAMETER_SUBSTRATE_SEED='//Alice'
-```
+Every operation that signs derives its accounts from `seed`, a secret URI such as `//Alice` or `<mnemonic>//stress`. Pass it from a [credential profile](cli.md#plugin), never as a literal value.
 
 The plugin derives `flood-signers` accounts for the flood, then `probe-signers` accounts for the probes. It appends an index to `derivation` for each account. By default, each probe has its own signer, up to 1000 signers. So a probe the chain drops never holds back the next one. The two sets never share an account.
 
@@ -63,7 +20,7 @@ Use the same signer settings in the funding and prepare steps: `seed`, `derivati
 
 ## Operations
 
-Every operation takes `target`, the chain's `ws://` or `wss://` endpoint. Amounts are in the chain's smallest unit, as a whole number or as a string of digits for amounts above 2<sup>64</sup>.
+Every operation takes `target`, the chain's `ws://` or `wss://` endpoint. Amounts are in the chain's smallest unit, as a whole number or as a string of digits for amounts above 2^64.
 
 ### preflight
 
@@ -119,7 +76,7 @@ Signs the flood and the probes as `System.remark` transactions. Each payload is 
 
 The flood, the probes and the state must fit in 200 MiB of artifacts together.
 
-Mortality sets the validity period in blocks. For periods above 4096, the period can start before the signing block. `validUntil` gives the expiry block. Choose a mortality that covers the rest of the run: the baseline, the load, the recovery and the wait for finality. With `expected-seconds`, the step measures the block time and fails if the transactions would expire too soon. `polkameter init` sets both inputs.
+Mortality sets the validity period in blocks. Above 4096 blocks, the transaction stores its start block with less precision. Then the period can start a few blocks before the signing block. `validUntil` gives the expiry block. Choose a mortality that covers the rest of the run: the baseline, the load, the recovery and the wait for finality. With `expected-seconds`, the step measures the block time and fails if the transactions would expire too soon. `polkameter init` sets both inputs.
 
 It returns three artifacts: `flood` and `probes` hold the [`PreparedTx`](plugins.md#preparedtx-and-the-load-contract) lists, and `state` maps each transaction to its signer and nonce. It also returns `identity` and a `summary` with the signing block and `validUntil`.
 
@@ -144,7 +101,14 @@ It returns `checked`, `missing` and `detail`. `detail` names up to five missing 
 
 ## Generate a plan
 
-[`polkameter init`](cli.md#init) writes a plan for the substrate plugin. The plan ramps from 10 to 50 transactions per second and funds each signer with 1000 tokens. Its `mortality` covers twice the blocks the run spans. Its `expected-seconds` is the run's length after the prepare step. If you lengthen the ramp or the recovery, raise `expected-seconds`. [Stress-test a local dev chain](dev-chain.md) walks through it.
+[`polkameter init`](cli.md#init) writes a plan for the substrate plugin.
+
+- The ramp goes from 10 to 50 transactions per second.
+- Each signer gets 1000 tokens.
+- `mortality` covers twice the blocks the run spans.
+- `expected-seconds` is the run's length after the prepare step. If you lengthen the ramp or the recovery, raise it.
+
+[Getting started](getting-started.md) walks through it.
 
 ## Limits
 

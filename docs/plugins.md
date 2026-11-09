@@ -2,17 +2,6 @@
 
 A plugin is a separate executable that supplies operations the plan can call. The plan calls the plugin's operations by name. PolkaMeter sends requests through standard input and reads replies from standard output. [Writing a plugin](writing-a-plugin.md) builds one.
 
-## Example
-
-A setup step calls `hello.greet`:
-
-```xml
-<plugins><plugin id="hello" version="0.1.0" protocol="1"/></plugins>
-<setup>
-  <step id="greet" use="hello.greet"><input name="name" value="Polkadot"/></step>
-</setup>
-```
-
 ## Manifest
 
 `$describe` returns the manifest. The host checks it at install and at run start.
@@ -69,9 +58,9 @@ PolkaMeter starts one process per plugin per run and keeps it until the run ends
 - Keep each message within 8 MiB. Return an artifact reference for larger data.
 - An `Artifact` holds a version, a file path in the run directory and a BLAKE2 hash. The host checks the hash and reads at most 256 MiB. Give artifacts unique names when an operation runs more than once.
 - Standard output carries replies only. Standard error goes to `plugins/<id>/stderr.log`. The host [redacts](results.md#redaction) credentials from it as it is written. Never write credentials to it anyway.
-- The host clears the environment. It passes only `PATH`, `TMPDIR`, `TEMP`, `SYSTEMROOT`, `SSL_CERT_FILE` and `SSL_CERT_DIR`.
+- The host clears the environment. See [Environment variables](cli.md#environment-variables).
 
-An `error` reply fails the step, but the plugin keeps running. A crash, a malformed reply, a cancellation or a timeout ends the plugin process, and later steps of that phase fail. Before each teardown step, the host starts an ended plugin again and logs a `plugin-restarted` event. The host never retries an operation.
+The host never retries an operation. An `error` reply fails the step, but the plugin keeps running. A crash, a malformed reply, a cancellation or a timeout ends the plugin process. Later steps of that phase then fail. Before each teardown step, the host starts an ended plugin again and logs a `plugin-restarted` event.
 
 When the host kills a plugin, it also kills every process the plugin started.
 
@@ -79,11 +68,9 @@ When the host kills a plugin, it also kills every process the plugin started.
 
 ## Registry
 
-The registry is a JSON file, `~/.config/polkameter/plugins.json` by default. Set `POLKAMETER_PLUGIN_REGISTRY` to use another path. It stores plugins, credential profiles and topology aliases. For a credential profile it stores only the variable name. [`polkameter plugin`](cli.md#plugin) manages it.
+[`polkameter plugin`](cli.md#plugin) manages the registry.
 
-`plugin install` records the executable's hash. Install the plugin again after a rebuild.
-
-A plan names a credential profile, never the secret. The host reads the mapped variable at run start. The run fails if the variable is unset or empty. A plugin gets the value only as the input `credentials.ID`, and only in steps that reference it.
+A plugin gets a credential's value only as the input `credentials.ID`, and only in steps that reference it.
 
 ## PreparedTx and the load contract
 
@@ -101,13 +88,15 @@ A `<load>` takes two `PreparedTx` lists, inline or as an `Artifact`. `source-ref
 
 With `state-check` and `state-ref`, PolkaMeter calls the named operation on a sample of finalized flood transactions. The operation gets `target` (the WebSocket endpoint), `state`, `hashes` and `at`. `hashes` and `at` are lowercase hex without `0x`. It returns `checked`, `missing` and `detail`.
 
-[Loss accounting](results.md#loss-accounting) gives each sent flood transaction one final status. Funding transactions and probes are separate.
-
 ## Observers and checks
 
 An observer records extra series during the load. A setup step starts it and an evaluate step stops it. It writes `series.jsonl` and `metrics.json` to the plugin's directory. `metrics.json` lists `PluginMetric` values. A plugin cannot redefine a built-in metric.
 
-A check adds results to the report. Any evaluate step whose operation declares a `checks` output is a check. Each result has `outcome`, `check`, `status`, `detail`, and optional `numbers` and `optional`. `status` is `pass`, `warn`, `fail`, `info` or `no result`. To read the run's data, pass `run.directory` to the operation and build `RunData` from `read_store` and `summary.json`. In smoke mode, a check with no result fails unless it is `optional`.
+A check adds results to the report. Any evaluate step whose operation declares a `checks` output is a check. Each result has `outcome`, `check`, `status`, `detail`, and optional `numbers` and `optional`. `status` is `pass`, `warn`, `fail`, `info` or `no result`.
+
+To read the run's data, pass `run.directory` to the operation. Then build `RunData` from `read_store` and `summary.json`.
+
+In smoke mode, a check with no result fails unless it is `optional`.
 
 Checks read the observer's series with the labels `job="plugin"` and `instance=<plugin id>`. Results go to `plugin-checks.json`. `polkameter report RUN_DIRECTORY` rebuilds the summary offline.
 

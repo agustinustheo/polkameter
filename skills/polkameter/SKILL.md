@@ -5,13 +5,11 @@ description: Sets up and runs PolkaMeter load tests (stress tests) for Polkadot 
 
 # PolkaMeter
 
-PolkaMeter sends prepared transactions to a Polkadot SDK chain at controlled rates and writes a verdict: `PASS`, `WARN`, `FAIL` or `INCONCLUSIVE`. A plugin prepares the transactions. Use the substrate plugin, which ships with the CLI, when the runtime meets its [compatibility requirements](https://agustinustheodorus.com/polkameter/substrate-plugin.html#limits).
+PolkaMeter sends prepared transactions to a Polkadot SDK chain at controlled rates and writes a verdict: `PASS`, `WARN`, `FAIL` or `INCONCLUSIVE`. A plugin prepares the transactions. Use the substrate plugin, which the install script and release archives install, when the runtime meets its [compatibility requirements](https://agustinustheodorus.com/polkameter/substrate-plugin.html#limits).
 
 Docs: https://agustinustheodorus.com/polkameter/ (LLM index: https://agustinustheodorus.com/polkameter/llms.txt).
 
 ## Workflow
-
-Work through [checklist.md](checklist.md) and tick items as you go.
 
 1. Install. Check what is there:
 
@@ -33,7 +31,7 @@ Work through [checklist.md](checklist.md) and tick items as you go.
    polkameter plugin install "$(command -v polkameter-substrate-plugin)"
    ```
 
-2. Get a chain. Use the user's node if one is running (`ws://127.0.0.1:9944` is typical). Otherwise fetch the dev chain script, from the installed PolkaMeter version, into the repository root:
+2. Get a chain. Use the user's node if one is running (`ws://127.0.0.1:9944` is typical). Otherwise fetch the dev chain script, from the tag that matches `polkameter --version`, into the repository root:
 
    ```sh
    curl -fsSLO https://raw.githubusercontent.com/agustinustheo/polkameter/v0.3.0/scripts/dev-chain.sh
@@ -48,7 +46,11 @@ Work through [checklist.md](checklist.md) and tick items as you go.
 
    Without a reachable chain, copy [templates/substrate-remarks.polkameter.xml](templates/substrate-remarks.polkameter.xml) and edit the endpoint, `block-interval-seconds` and the funding amount.
 
-   Keep the plan's `<plugin id="substrate" version="...">` equal to `polkameter --version`, here and in CI.
+   Keep the plan's `<plugin id="substrate" version="...">` equal to `polkameter --version`, here and in CI. Then check the plan:
+   - The prepare step's `count` is at least the sum of rate times seconds over the load.
+   - The fund and prepare steps use the same `flood-signers`, `probe-signers` and `derivation`.
+   - A mortal prepare step (`mortality` above 0) has `expected-seconds` at least as long as the run after it.
+   - The `fund-accounts` amount covers each signer's transfers and fees.
 
 4. Map the secret. The plan names a credential profile, which maps to an environment variable. On a dev chain the funded seed is `//Alice`:
 
@@ -59,7 +61,7 @@ Work through [checklist.md](checklist.md) and tick items as you go.
 
    On a shared network, ask the user for a funded secret URI. Never write a secret into a plan, a commit or a log.
 
-5. Validate, then run. Omit `--fail-on-verdict` while exploring. Read the verdict separately from the command's exit code.
+5. Validate, then run. A `FAIL` or `INCONCLUSIVE` verdict exits `1` by default. Add `--fail-on error` while exploring. Read the verdict separately from the command's exit code.
 
    ```sh
    polkameter validate plans/load.polkameter.xml
@@ -67,9 +69,9 @@ Work through [checklist.md](checklist.md) and tick items as you go.
    polkameter run plans/load.polkameter.xml --output runs
    ```
 
-   The last line names the run directory (`Run completed. Artifacts: <run directory>`). Read `summary.md` there: `Verdict`, `Failure onset` (the breaking point, the first rate step that failed a limit), `Max sustained` and `Loss check`. If the failure onset says `no measure violated`, no step failed and the run did not find a limit. Raise the ramp's rates, the prepare step's `count` and, for a longer run, `expected-seconds`. Copy the numbers exactly.
+   The `Run <state>. Artifacts: <run directory>` line names the run directory. Read `summary.md` there: `Verdict`, `Failure onset` (the breaking point, the first rate step that failed a limit), `Max sustained` and `Loss check`. If the failure onset says `no measure violated`, no step failed and the run did not find a limit. Raise the ramp's rates, the prepare step's `count` and, for a longer run, `expected-seconds`. Copy the numbers exactly.
 
-6. Add CI. Copy [templates/github-workflow.yml](templates/github-workflow.yml) to `.github/workflows/load-test.yml`, or [templates/gitlab-ci.yml](templates/gitlab-ci.yml) into `.gitlab-ci.yml`. Commit `dev-chain.sh` at the repository root and [templates/substrate-remarks-ci.polkameter.xml](templates/substrate-remarks-ci.polkameter.xml) as `plans/substrate-remarks-ci.polkameter.xml`. Both jobs run the short plan with `--fail-on-verdict`, so a `FAIL` fails the job. Keep the job's CLI version equal to the plan's `<plugin version>`.
+6. Add CI. Copy [templates/github-workflow.yml](templates/github-workflow.yml) to `.github/workflows/load-test.yml`, or [templates/gitlab-ci.yml](templates/gitlab-ci.yml) into `.gitlab-ci.yml`. Commit `dev-chain.sh` at the repository root and [templates/substrate-remarks-ci.polkameter.xml](templates/substrate-remarks-ci.polkameter.xml) as `plans/substrate-remarks-ci.polkameter.xml`. Both jobs run the short plan and fail on a `FAIL` verdict. Keep the job's CLI version equal to the plan's `<plugin version>`.
 
 ## Fixing common failures
 

@@ -11,14 +11,11 @@ build-dir = "book"
 [output.html]
 git-repository-url = "https://github.com/agustinustheo/polkameter"
 edit-url-template = "https://github.com/agustinustheo/polkameter/edit/main/{path}"
-additional-js = ["mermaid-init.js"]
-
-[preprocessor]
-
-[preprocessor.mermaid]
-command = "mdbook-mermaid"
 
 [output.html.redirect]
 "/custom-plugins.html" = "writing-a-plugin.html"
-"/architecture.html" = "how-it-works.html"
+"/architecture.html" = "reading-results.html"
+"/how-it-works.html" = "reading-results.html"
+"/dev-chain.html" = "getting-started.html"
+"/load-test.html" = "getting-started.html"
 "/release-assets.html" = "install.html#download-release-archives"

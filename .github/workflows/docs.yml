@@ -6,14 +6,12 @@ on:
     paths:
       - book.toml
       - docs/**
-      - mermaid-init.js
       - .github/workflows/docs.yml
   pull_request:
     branches: [main]
     paths:
       - book.toml
       - docs/**
-      - mermaid-init.js
       - .github/workflows/docs.yml
   workflow_dispatch:
 
@@ -39,9 +37,6 @@ jobs:
 
       - name: Install mdBook
         run: cargo install mdbook --locked --version 0.4.52
-
-      - name: Install mdbook-mermaid
-        run: cargo install mdbook-mermaid --locked --version 0.14.0
 
       - name: Build documentation
         run: mdbook build

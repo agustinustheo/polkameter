@@ -1,6 +1,6 @@
 # Use PolkaMeter with an AI assistant
 
-Install the PolkaMeter skill, then ask your assistant to create a load test for your chain. The skill installs PolkaMeter, picks the substrate plugin or starts a plugin of your own, writes and validates a plan, runs it on a dev chain and adds a CI job.
+Install the PolkaMeter skill, then ask your assistant to create a load test for your chain. The skill installs PolkaMeter and picks the substrate plugin or starts a plugin of your own. Then it writes a plan, runs it on a dev chain and adds a CI job.
 
 ## Install the skill in Claude Code
 
@@ -33,12 +33,8 @@ The assistant loads the skill when you ask for a load test, a stress test or Pol
 Stress-test the chain my node serves at ws://127.0.0.1:9944 with PolkaMeter, and add a CI job that runs a short check on every pull request.
 ```
 
-The skill tells the assistant to copy the verdict and numbers from `summary.md`. It also tells it to keep secrets in credential profiles and to load only nodes you control.
+The skill tells the assistant to copy numbers from `summary.md`, keep secrets out of plans and load only nodes you control.
 
 ## Point an assistant at the docs
 
 [`llms.txt`](https://agustinustheodorus.com/polkameter/llms.txt) lists the documentation pages with a one-line summary each, in the [llms.txt](https://llmstxt.org/) format. Give its URL to an assistant without skill support.
-
-## Work on PolkaMeter itself
-
-[`AGENTS.md`](https://github.com/agustinustheo/polkameter/blob/main/AGENTS.md) gives an assistant the build and test commands, the repository layout and the conventions.

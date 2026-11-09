@@ -18,13 +18,28 @@ Each fact has one owner page. Other pages link to it in one sentence.
 
 | Concept | Owner |
 | --- | --- |
-| Smoke mode | `cli.md#run` |
-| Redaction | `results.md#redaction` |
-| Loss accounting and the state check | `results.md#loss-accounting` |
-| Verdict | `reading-results.md#did-it-pass` |
-| Reconnects and node sampling | `how-it-works.md#why-a-dropped-connection-is-not-a-chain-failure`, `how-it-works.md#node-cpu-and-memory` |
+| What PolkaMeter is | `README.md` |
+| Install methods, and which install the substrate plugin | `install.md` |
+| Dev chain: start, stop, own runtime, port; load only nodes you control | `getting-started.md` |
+| Plugin install, registry, reinstall after a rebuild, credential profiles | `cli.md#plugin` |
+| Smoke mode and `--fail-on` | `cli.md#run` |
+| Signals and `--shutdown-grace` | `cli.md#stop-a-run` |
 | Exit codes | `cli.md#exit-codes` |
-| Credentials | `cli.md#plugin` |
+| `init` flags; the plan `init` writes | `cli.md#init`; `substrate-plugin.md#generate-a-plan` |
+| Plan elements, flood, probes, baseline, probe budget, run phases | `plans.md` |
+| Verdict, check statuses, exit 0 is not a pass | `reading-results.md#did-it-pass` |
+| Breaking point, max sustained rate, latency | `reading-results.md` |
+| Loss statuses, state check, reorgs | `reading-results.md#did-transactions-get-lost` |
+| Recovery | `reading-results.md#did-the-chain-recover` |
+| Stop rules and failure classes | `reading-results.md#stop-rules` |
+| Run directory files, redaction, outcome checks, `report` | `results.md` |
+| Reconnects; node CPU and memory | `troubleshooting.md` entries `blocks: RPC connection lost` and `node: … no CPU or memory recorded` |
+| The action, `fail-on`, version pins, CI jobs, CI secrets | `ci.md` |
+| Plugin protocol, SDK, 0.2 to 0.3 migration | `plugins.md` |
+| Substrate operations, signers, limits | `substrate-plugin.md` |
+| The skill, marketplace install, `llms.txt` | `ai-assistants.md` |
+
+The install script block also appears in `README.md` and `getting-started.md`. The skill's `SKILL.md` keeps its own workflow and fix table.
 
 Use `--help` for flags, `action.yml` for action inputs and rustdoc for SDK symbols. Do not copy their tables.
 
@@ -42,29 +57,25 @@ Replace or remove prose before you add more. A page over budget needs a cut else
 
 | Page | Budget (words) |
 | --- | ---: |
-| `docs/README.md` | 190 |
-| `docs/getting-started.md` | 550 |
-| `docs/dev-chain.md` | 1,640 |
-| `docs/writing-a-plugin.md` | 940 |
-| `docs/install.md` | 640 |
-| `docs/load-test.md` | 590 |
-| `docs/reading-results.md` | 1,450 |
-| `docs/ci.md` | 1,490 |
-| `docs/ai-assistants.md` | 330 |
-| `docs/troubleshooting.md` | 2,170 |
-| `docs/plans.md` | 3,050 |
-| `docs/cli.md` | 2,050 |
-| `docs/results.md` | 3,310 |
-| `docs/plugins.md` | 1,700 |
-| `docs/substrate-plugin.md` | 1,930 |
-| `docs/how-it-works.md` | 1,160 |
-| `docs/STYLE.md` | 580 |
-| `docs/SUMMARY.md` | 90 |
-| `docs/llms.txt` | 380 |
-| `README.md` | 1,090 |
-| `crates/plugin-sdk/README.md` | 240 |
-| `skills/polkameter/SKILL.md` | 970 |
-| `skills/polkameter/checklist.md` | 490 |
-| `AGENTS.md` | 870 |
-| `CHANGELOG.md` | 730 |
-| `RELEASING.md` | 810 |
+| `docs/README.md` | 110 |
+| `docs/getting-started.md` | 1,000 |
+| `docs/writing-a-plugin.md` | 900 |
+| `docs/install.md` | 380 |
+| `docs/ci.md` | 1,150 |
+| `docs/reading-results.md` | 1,700 |
+| `docs/ai-assistants.md` | 280 |
+| `docs/troubleshooting.md` | 1,800 |
+| `docs/plans.md` | 2,550 |
+| `docs/cli.md` | 1,150 |
+| `docs/results.md` | 1,900 |
+| `docs/plugins.md` | 1,300 |
+| `docs/substrate-plugin.md` | 1,600 |
+| `docs/STYLE.md` | 700 |
+| `docs/SUMMARY.md` | 60 |
+| `docs/llms.txt` | 230 |
+| `README.md` | 380 |
+| `crates/plugin-sdk/README.md` | 110 |
+| `skills/polkameter/SKILL.md` | 900 |
+| `AGENTS.md` | 600 |
+| `CHANGELOG.md` | 880 |
+| `RELEASING.md` | 620 |

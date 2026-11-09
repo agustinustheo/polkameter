@@ -4,34 +4,7 @@ A plan is an XML file that lists the test steps and settings. A plan never conta
 
 ## Example
 
-This plan runs without a chain. It is `examples/plugin-data-flow.polkameter.xml`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="Plugin data flow" timeout-ms="30000">
-  <plugins><plugin id="example" version="0.1.0" protocol="1"/></plugins>
-  <setup>
-    <step id="seed" use="example.double"><input name="value" value="21"/></step>
-    <step id="copied" use="core.echo"><input name="value" ref="steps.seed.value"/></step>
-    <step id="computed" use="example.double"><input name="value" ref="steps.copied.value"/></step>
-    <step id="verified" use="core.assert-equal">
-      <input name="actual" ref="steps.computed.value"/><input name="expected" value="84"/>
-    </step>
-  </setup>
-</polkameter-plan>
-```
-
-```sh
-polkameter validate examples/plugin-data-flow.polkameter.xml
-```
-
-```text
-Plan is structurally valid. Preflight checks the installed plugins.
-```
-
-[Getting started](getting-started.md) walks through this plan.
-
-The next example adds targets, credentials, a load test, monitors and thresholds. Its plugin, operations and endpoints are placeholders. It passes `validate`, but it cannot run until you replace them:
+This example has targets, credentials, a load test, monitors and thresholds. Its plugin, operations and endpoints are placeholders. It passes `validate`, but it cannot run until you replace them:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -67,7 +40,7 @@ The next example adds targets, credentials, a load test, monitors and thresholds
 </polkameter-plan>
 ```
 
-`prepare` runs in setup, so the load can read its outputs `flood`, `probes` and `expected`. `<thresholds>` changes the inclusion and latency limits; exceeding them records a breaking point without stopping the load.
+`prepare` runs in setup, so the load can read its outputs `flood`, `probes` and `expected`. `<thresholds>` changes the inclusion and latency limits.
 
 In the tables below, the Default column gives the default value, `required`, or the rule that makes the attribute required. An ID uses ASCII letters, digits, `-` and `_`. A reference is a value from [References](#references).
 
@@ -77,7 +50,15 @@ In the tables below, the Default column gives the default value, `required`, or 
 
 The root element. Its `name` appears in the report.
 
-Children, in any order: `plugins`, `targets`, `credentials`, `preflight`, `setup`, `load`, `monitors`, `thresholds`, `evaluate`, `teardown`. Each appears at most once. The run always uses that phase order, whatever the order in the XML. Steps in a phase run in their written order.
+Children, in any order: `plugins`, `targets`, `credentials`, `preflight`, `setup`, `load`, `monitors`, `thresholds`, `evaluate`, `teardown`. Each appears at most once. Steps in a phase run in their written order. The run uses this phase order, whatever the order in the XML:
+
+1. Preflight: PolkaMeter checks the installed plugins against the plan and runs the preflight steps. For a load test, it also compares the block interval with the chain's.
+2. Setup: setup steps run once. They usually prepare the transactions for the load.
+3. Load, in a load test only: the baseline, the rate steps, recovery, the wait for finality and the loss check.
+4. Evaluate: evaluate steps run, and plugins can return checks from them.
+5. Checks and verdict, in a load test only.
+6. Teardown: teardown steps run even after a failure in setup or later. A run that fails in preflight sent nothing, so it skips teardown.
+7. Report: the run writes its outcome and `samples.jtl`.
 
 | Attribute | Type | Default | Limits | Meaning |
 | --- | --- | --- | --- | --- |
@@ -119,8 +100,6 @@ Declares one plugin. The version and protocol must match the installed plugin.
 | `id` | identifier | required | unique | Referenced as `credentials.ID` |
 | `profile` | string | required | not empty | A [credential profile](cli.md#plugin) on the run host |
 
-PolkaMeter reads the secret on the host when the run starts. It [redacts](results.md#redaction) the secret from its output.
-
 ### preflight, setup, evaluate, teardown
 
 Each holds zero or more `step` elements.
@@ -128,12 +107,12 @@ Each holds zero or more `step` elements.
 - `preflight` steps check the chain before the run. They can use only read-only operations.
 - `setup` steps run once, before the load.
 - `evaluate` steps run after the load and before the report. An operation that returns `checks` adds them to the report. See [Observers and checks](plugins.md#observers-and-checks).
-- `teardown` steps clean up at the end, also after a failure or a stop. Every step runs, even if an earlier one fails. After SIGINT or SIGTERM, `--shutdown-grace` also limits teardown. See [Stop a run](cli.md#stop-a-run).
+- `teardown` steps clean up at the end, also after a failure or a stop. Every step runs, even if an earlier one fails.
 
 
 ### load
 
-Makes the plan a load test against one target. A load test sends transactions at chosen rates and measures how the chain responds. [How a run works](how-it-works.md) describes the phases.
+Makes the plan a load test against one target. A load test sends transactions at chosen rates and measures how the chain responds.
 
 The load uses two lists of prepared transactions. Flood transactions supply the main load at the target rate. A probe transaction measures the time from submission to inclusion, before and after the flood. The baseline measures probe latency before the flood starts. The two lists must not share a transaction.
 
@@ -178,7 +157,7 @@ A ramp changes the target rate between rate steps. Each step uses a fixed target
 
 ### monitors
 
-Watches the chain during the load. It records the chain, scrapes the listed metrics and records [node CPU and memory](how-it-works.md#node-cpu-and-memory). It needs a `<load>`.
+Watches the chain during the load. It records the chain, scrapes the listed metrics and records [node CPU and memory](troubleshooting.md#node--no-cpu-or-memory-recorded). It needs a `<load>`.
 
 Children: `metric`, zero or more.
 
@@ -201,7 +180,7 @@ If a node does not have a required metric, the run stops before setup. If no nod
 
 ### thresholds
 
-Sets the limits for breaking points, load stops, recovery and finality. Each value replaces its default. The run writes the effective values to `summary.json` under `rules`. [Stop rules and thresholds](results.md#stop-rules-and-thresholds) explains each rule.
+Sets the limits for breaking points, load stops, recovery and finality. Each value replaces its default. The run writes the effective values to `summary.json` under `rules`. [Stop rules](reading-results.md#stop-rules) explains each rule.
 
 | Attribute | Type | Default | Limits | Governs |
 | --- | --- | --- | --- | --- |
@@ -211,7 +190,7 @@ Sets the limits for breaking points, load stops, recovery and finality. Each val
 | `pool-refuses-ratio` | number | `0.1` | above 0, at most 1 | Refused share that ends the ramp gracefully |
 | `max-submit-reply-ms` | integer | `5000` | above 0 | p95 submission reply time |
 | `min-send-ratio` | number | `0.95` | above 0, at most 1 | Share of the target rate PolkaMeter must send |
-| `max-block-gap-factor` | number | `2.0` | above 0 | Mean block gap, as a multiple of the starting interval |
+| `max-block-gap-factor` | number | `2.0` | above 0 | Mean block gap, as a multiple of `block-interval-seconds` |
 | `stall-ms` | integer | `30000` | above 0 | Time without a new best block |
 | `finality-stall-ms` | integer | `60000` | above 0 | Time without a new finalized block |
 | `probes-in-a-row` | integer | `3` | above 0 | Recovery probes in a row that must meet the latency limit |
@@ -266,9 +245,9 @@ For quotes inside a JSON literal, use XML escapes, for example `value="[&quot;a&
 
 ## Validation rules
 
-`polkameter validate` parses the plan and checks its structure, references and `core` steps. `polkameter preflight` also checks the installed plugins and the chain. The [XSD schema](https://github.com/agustinustheo/polkameter/blob/main/schemas/polkameter-plan.xsd) catches most mistakes in an editor. `polkameter validate` checks the rest.
+The [XSD schema](https://github.com/agustinustheo/polkameter/blob/main/schemas/polkameter-plan.xsd) catches most mistakes in an editor. `polkameter validate` checks the rest.
 
-The plan file must be a UTF-8 file or pipe of at most 2 MiB. The XML declaration needs `version` 1.x. Its `encoding` can be UTF-8, or US-ASCII or ISO-8859-1 when the whole plan is ASCII. Other declaration attributes are ignored. Also:
+The plan file must be UTF-8 and at most 2 MiB. Also:
 
 | Item | Limit |
 | --- | --- |
