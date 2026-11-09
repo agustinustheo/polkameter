@@ -125,7 +125,7 @@ Set the load's `block-interval-seconds` to the measured value, or let [`polkamet
 
 PolkaMeter reads a node's CPU and memory from the operating system, so it can only sample a node on the same machine. It samples the process in `POLKAMETER_NODE_PID`, or the process listening on the RPC port of a local URL (`localhost`, `127.0.0.1` or `::1`).
 
-If the node restarts, PolkaMeter samples the new process on that port. A restart during the load stops the load on the node down rule. With `POLKAMETER_NODE_PID` and a URL that isn't local, PolkaMeter can't find a restarted node again.
+If that process ends, PolkaMeter samples the process now on that port. It can be a proxy, so PolkaMeter doesn't take it as a node restart. [Whose fault is it](reading-results.md#whose-fault-is-it) says how it tells one. With `POLKAMETER_NODE_PID` and a URL that isn't local, PolkaMeter can't find a restarted node again.
 
 ### blocks: RPC connection lost (…); reconnected after \<seconds> s, nothing observed meanwhile
 

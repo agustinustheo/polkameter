@@ -122,7 +122,7 @@ A credential profile maps a plan's credential name to an environment variable on
 | Code | Meaning |
 | --- | --- |
 | `0` | The command succeeded, or the run ended `completed`. |
-| `1` | The run failed in setup or later. Or it ended `completed_with_failures`, and `--fail-on` or smoke mode makes that an error. Or `report`, or writing the output, failed. |
+| `1` | The run failed in setup or later. Or it ended `completed_with_failures` or `completed_inconclusive`, and `--fail-on` or smoke mode makes that an error. Or `report`, or writing the output, failed. |
 | `2` | Invalid input or usage: an invalid plan, a bad flag, a corrupt registry, a failed `plugin` subcommand, or a `summary.json` that `report` cannot rewrite. |
 | `3` | Preflight checks failed, or `init` could not prepare the plan. A `run` that exits `3` submitted nothing and skipped teardown. |
 | `130` | Stopped by SIGINT. |
