@@ -1,7 +1,7 @@
 # Load-test a dev chain with PolkaMeter's substrate plugin on every pull request.
 # Save this file as .github/workflows/load-test.yml. Commit these files at your repository root:
 #   dev-chain.sh, from the same PolkaMeter version:
-#     curl -fsSLO https://raw.githubusercontent.com/agustinustheo/polkameter/v0.4.1/scripts/dev-chain.sh
+#     curl -fsSLO https://raw.githubusercontent.com/agustinustheo/polkameter/v0.4.2/scripts/dev-chain.sh
 #   plans/substrate-remarks-ci.polkameter.xml, the short CI plan from the skill's templates.
 # Keep the version input below equal to the plan's <plugin id="substrate" version="...">.
 name: load-test
@@ -31,7 +31,7 @@ jobs:
         # @v0 is the action; version pins the CLI and the substrate plugin it installs.
         uses: agustinustheo/polkameter@v0
         with:
-          version: 0.4.1
+          version: 0.4.2
           plan: plans/substrate-remarks-ci.polkameter.xml
           plugins: polkameter-substrate-plugin
           credentials: substrate-dev=POLKAMETER_SUBSTRATE_SEED
