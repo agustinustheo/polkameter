@@ -7,7 +7,7 @@ A load test writes its answers to `summary.md` in the run directory, the `run-*`
 Look at the `Verdict:` line in `summary.md`, or `verdict.result` in `summary.json`. The first rule that matches decides it:
 
 - FAIL: a rate step failed a limit (the [failure onset](#how-much-load-did-the-chain-take)), the load ended on a graceful or hard [stop rule](#stop-rules), a transaction was [lost or failed](#did-transactions-get-lost), or a check failed.
-- INCONCLUSIVE: nothing failed, but the load ended before its last rate step, or a required check has no result.
+- INCONCLUSIVE: nothing failed, but the load ended before its last rate step finished, or a required check has no result.
 - WARN: every rate step ran and a check warned.
 - PASS: every rate step ran, and no check failed, warned or lacks a result.
 
@@ -56,7 +56,7 @@ A transaction counts in the rate step that sent it, even when a later block incl
 
 ## How slow did it get?
 
-The p50 and p95 columns measure the time from submission to inclusion in a best block, the newest block the node knows, which isn't final yet. p50 is the median. p95 is the time that 95% of the included transactions stayed within.
+The p50 and p95 columns measure the time from submission to inclusion in a best block, the newest block the node knows. p50 is the median. p95 is the time that 95% of the included transactions stayed within.
 
 The `reply p95` column, and the `step` lines that `run` prints, show how long the node took to answer a submission. In the remarks run it stayed at 0.0 s, even at 600 tx/s. So the node accepted the transactions quickly, but full blocks made them wait.
 
@@ -75,7 +75,7 @@ After the load, PolkaMeter gives each sent flood transaction the first status in
 | `finalized` | In a finalized block. Its call can still have failed. |
 | `in_pool` | Still waiting in the node's pool for a block. |
 | `refused` | The node rejected the submission. |
-| `lost` | Accepted or in a best block, but in no finalized block and not in the pool. |
+| `lost` | Accepted or in a best block, but in no finalized block and not in the ready pool. |
 | `unverified` | In a best block, but PolkaMeter could not verify finality. |
 | `unknown` | Not enough evidence for another status. |
 
