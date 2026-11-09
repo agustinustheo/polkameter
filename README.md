@@ -34,11 +34,11 @@ A load test ends with a [verdict](https://agustinustheodorus.com/polkameter/read
 
 - A GitHub Action runs a plan and fails the job on a `FAIL` or `INCONCLUSIVE` verdict.
 - The [substrate plugin](https://agustinustheodorus.com/polkameter/substrate-plugin.html#limits) loads standard runtimes, so you write no plugin code.
-- It raises the rate one rate step at a time until the chain fails a limit, such as latency. Then it checks how fast the chain recovers.
+- It raises the rate one rate step at a time. A rate step sends transactions at one rate for a set time. PolkaMeter records the first rate step that fails a limit, such as latency, and the load goes on. Then it checks how fast the chain recovers.
 
 ## Install
 
-The install script checks and installs the CLI and the substrate plugin in `~/.local/bin`:
+The install script puts the CLI and the substrate plugin in `~/.local/bin` and checks their checksums:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh | sh
@@ -50,7 +50,7 @@ polkameter --version
 
 ## Next steps
 
-- [Getting started](https://agustinustheodorus.com/polkameter/getting-started.html) starts a local dev chain and loads it until it fails a limit.
+- [Getting started](https://agustinustheodorus.com/polkameter/getting-started.html) starts a local dev chain and loads it past a limit.
 - [Run in CI](https://agustinustheodorus.com/polkameter/ci.html) runs a short load test on every pull request.
 - [Use PolkaMeter with an AI assistant](https://agustinustheodorus.com/polkameter/ai-assistants.html) sets it up for you.
 - [Writing a plugin](https://agustinustheodorus.com/polkameter/writing-a-plugin.html) covers runtimes the substrate plugin doesn't fit.

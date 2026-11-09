@@ -86,7 +86,7 @@ async fn main() -> Result<()> {
 
 `manifest` says what the plugin offers. `greet` takes a string, `name`, and returns a string, `greeting`. `invoke` runs the requested operation. `serve` reads requests and writes replies.
 
-Write your logs to standard error, because standard output carries only replies.
+Write your logs to standard error. Standard output carries only replies.
 
 `.read_only()` marks an operation that changes nothing on a chain, so a plan can use it in `<preflight>`.
 
@@ -107,7 +107,7 @@ polkameter plugin install target/debug/hello-plugin
 Installed plugin hello 0.1.0 (1 operation) from ~/hello-plugin/target/debug/hello-plugin
 ```
 
-Install reads the manifest. It records the plugin's ID, version and a hash of `target/debug/hello-plugin` in the registry, so PolkaMeter can refuse the file if it changes. [`plugin install`](cli.md#plugin) says when to reinstall.
+Install reads the manifest. It records the plugin's ID, version and a hash of `target/debug/hello-plugin` in the registry. If the file changes later, PolkaMeter refuses to run it. [`plugin install`](cli.md#plugin) says when to reinstall.
 
 ## Write a plan that calls it
 
@@ -125,7 +125,7 @@ Save this as `hello.polkameter.xml` in the `hello-plugin` directory:
 </polkameter-plan>
 ```
 
-- `<plugin>` names the plugin, its version, which must match the one you installed, and the plugin protocol version, `1`.
+- `<plugin>` gives the plugin's ID, its version and the plugin protocol version, `1`. The version must match the plugin you installed.
 - The first step calls `hello.greet`. Later steps read its output as `steps.greet.greeting`.
 - `core.assert-equal` fails the run if `actual` and `expected` differ.
 
@@ -146,7 +146,7 @@ Phase: teardown
 Run completed. Artifacts: ~/hello-plugin/runs/run-1792254908788-10278-1
 ```
 
-Teardown always runs, even with no teardown steps. Each run writes a new run directory under `--output`. [Run directory](results.md) lists its files.
+The teardown phase runs even with no teardown steps. Only a run that fails before setup skips it. Each run writes a new run directory under `--output`. [Run directory](results.md) lists its files.
 
 Now let's break it. Copy the plan to `wrong.polkameter.xml` and change `expected` to `Hello, Ferris!`. Run the copy and print its exit code:
 
@@ -166,9 +166,9 @@ The run stops at the failed assertion. `execution.json` keeps the full error.
 
 ## Plugins that drive load
 
-A load plugin prepares the [flood and probe](plans.md#load) transactions before the load. It can also check the chain state afterwards. [PreparedTx and the load contract](plugins.md#preparedtx-and-the-load-contract) gives the contract. The SDK's `chain` feature, in [The plugin SDK crate](plugins.md#the-plugin-sdk-crate), signs and submits transactions.
+A load plugin prepares the [flood and probe](plans.md#load) transactions before the load. It can also check the chain state afterwards. [PreparedTx and the load contract](plugins.md#preparedtx-and-the-load-contract) says what the plugin must return. The SDK's `chain` feature, in [The plugin SDK crate](plugins.md#the-plugin-sdk-crate), signs and submits transactions.
 
-Before you write one, write down the load: the call, the signer, the number of transactions, and what each one needs from the chain. In a preflight operation, check the runtime identity: genesis hash, spec version and transaction version. Then transactions signed for another runtime stop the run before they are sent. Keep secrets in credential profiles, not in the plugin's output.
+Before you write one, write down the load: the call, the signer, the number of transactions, and what each one needs from the chain. In a preflight operation, check the runtime identity: genesis hash, spec version and transaction version. Then the run stops before it sends transactions signed for another runtime. Keep secrets in credential profiles, not in the plugin's output.
 
 A load plan calls your plugin's operations that prepare the transactions. Replace `my-runtime`, the operation names and the output name `transactions` with your plugin's names:
 

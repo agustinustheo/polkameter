@@ -1,6 +1,6 @@
 # Run in CI
 
-The PolkaMeter action runs a plan in a GitHub Actions job on a Linux or macOS runner. It installs the CLI and the substrate plugin, registers your plugins, maps your credentials and runs the plan. Then it uploads the run's reports. For other CI systems, see [GitLab CI](#gitlab-ci) and [Other CI systems](#other-ci-systems).
+The PolkaMeter action runs a plan in a GitHub Actions job on a Linux or macOS runner. It installs the CLI and the substrate plugin, registers your plugins, maps your credential profiles to environment variables and runs the plan. Then it uploads the run's reports. For other CI systems, see [GitLab CI](#gitlab-ci) and [Other CI systems](#other-ci-systems).
 
 ## Test a dev chain on every pull request
 
@@ -16,7 +16,7 @@ mkdir -p plans
 curl -fsSL -o plans/substrate-remarks-ci.polkameter.xml https://raw.githubusercontent.com/agustinustheo/polkameter/v0.4.0/examples/substrate-remarks-ci.polkameter.xml
 ```
 
-`@v0` moves to each new 0.x release. `version` pins the CLI, so keep it on the same release as the files above. [Versions](install.md#versions) gives the rule.
+`@v0` always points at the newest 0.x action. The `version` input pins the CLI, so keep it on the same release as the files above. [Versions](install.md#versions) gives the rule.
 
 ```yaml
 name: load-test
@@ -63,7 +63,7 @@ jobs:
 
 ## Load your own node
 
-Save this as `.github/workflows/load-test.yml`. Replace `<plugin-package>`, `<plugin-binary>`, `<plan>` and `<profile>` with your plugin's Cargo package and executable, your plan's path and the plan's credential profile:
+Save this as `.github/workflows/load-test.yml`. Replace `<plugin-package>` with your plugin's Cargo package, `<plugin-binary>` with its executable, `<plan>` with your plan's path and `<profile>` with the plan's credential profile:
 
 ```yaml
 name: load-test
@@ -92,9 +92,9 @@ With the substrate plugin, drop the build step and set `plugins: polkameter-subs
 
 ## Secrets
 
-Inputs show up in the workflow file and the logs. So `credentials` holds only profile and variable names, and the secret goes in the step's `env:` block from `secrets`.
+Inputs show up in the workflow file and the logs. So `credentials` holds only names: profiles and variables. The secret itself goes in the step's `env:` block, from `secrets`.
 
-The `credentials` input maps a plan's [credential profile](cli.md#plugin) to an environment variable. A plugin gets the value only in plan steps that reference the credential. The files PolkaMeter writes and the job summary show `[redacted]` in place of the value. [Redaction](results.md#redaction) lists what is and is not covered.
+The `credentials` input maps a plan's [credential profile](cli.md#plugin) to an environment variable. A plugin gets the value only in plan steps that reference the credential. PolkaMeter writes `[redacted]` in place of the value in its files and the job summary. [Redaction](results.md#redaction) lists what is and is not covered.
 
 Don't run plans with secrets on `pull_request_target` or for pull requests from forks. Those runs would hand your secrets to code from the pull request.
 
@@ -110,9 +110,9 @@ The `fail-on` input decides which [verdicts](reading-results.md#did-it-pass) als
 | `verdict` | passes | passes | fails | passes |
 | `error` | passes | passes | passes | passes |
 
-A run that fails, such as on a plan error or a failed setup step, fails the job under every policy. A plan without a load test has no verdict.
+A failed run isn't a FAIL verdict. A run fails when PolkaMeter can't finish it, such as on a plan error or a failed setup step. That fails the job under every `fail-on` value. A plan without a load test has no verdict.
 
-A ramp that pushes the chain past its limit usually ends FAIL. To keep that job green and read the verdict instead, set `fail-on: error`. A later step can read the outputs even when the action failed:
+A ramp that pushes the chain past its limit usually ends FAIL. To keep that job green and still read the verdict, set `fail-on: error`. A later step can read the outputs even when the action failed:
 
 ```yaml
       - name: Show the load verdict

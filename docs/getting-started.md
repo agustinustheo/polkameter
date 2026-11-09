@@ -2,7 +2,7 @@
 
 Let's start a local dev chain and raise the transaction rate until the chain fails one of the test's limits. We'll use the [substrate plugin](substrate-plugin.md), so you don't write any plugin code.
 
-The dev chain is one `polkadot-omni-node` in dev mode, running the parachain template runtime. It makes a block every 6 seconds, each block is final at once, and `//Alice` holds funds.
+The dev chain is one `polkadot-omni-node` in dev mode, running the parachain template runtime. It makes a block every 6 seconds. Each block is finalized at once, so the chain never replaces it. `//Alice` has funds.
 
 You need `bash` and `curl`. The dev chain script pins node builds for Linux x86-64 and macOS on Apple silicon only. Run every command below in the same directory, such as your chain's repository.
 
@@ -14,7 +14,7 @@ export PATH="$HOME/.local/bin:$PATH"
 polkameter --version
 ```
 
-This page pins release 0.4.0 everywhere, as [Versions](install.md#versions) asks. [Install](install.md) has other methods.
+Every command on this page uses release 0.4.0, as [Versions](install.md#versions) asks. [Install](install.md) has other methods.
 
 ## 2. Start a dev chain
 
@@ -32,7 +32,7 @@ dev-chain: ready at ws://127.0.0.1:9944, block 21, 6000 ms blocks
 
 The first start downloads the node and runtime, about 155 MB, into `.polkameter/dev-chain/bin` and checks their SHA-256 sums. Add `.polkameter/` to your `.gitignore`. Later starts reuse the downloads, but each start is a new chain: `start` deletes the previous chain data.
 
-`start` returns after 21 blocks, about two minutes, because PolkaMeter's preflight checks measure the block time over 20 blocks.
+`start` waits for 21 blocks, about two minutes. PolkaMeter's preflight checks measure the block time over 20 blocks, so the chain needs them first.
 
 ## 3. Register the plugin and the seed
 
@@ -47,13 +47,13 @@ Installed plugin substrate 0.4.0 (5 operations) from ~/.local/bin/polkameter-sub
 Credential profile substrate-dev reads POLKAMETER_SUBSTRATE_SEED.
 ```
 
-A plan never holds a secret. It names a credential profile, here `substrate-dev`, and the second command maps that profile to the variable that holds the seed.
+A plan never holds a secret. It names a [credential profile](cli.md#plugin), here `substrate-dev`. A profile is a name for an environment variable on your machine. The second command points `substrate-dev` at the variable that holds the seed.
 
 ## 4. Run a load test
 
-A load test sends two kinds of transactions. The flood is the main load, sent at the target rate. Probes are single transactions that time how long inclusion takes, before and after the flood.
+A load test sends two kinds of [transactions](plans.md#load). The flood is the main load. PolkaMeter sends it at the target rate. A probe is a single transaction that measures how long it takes to get into a block. Probes go before and after the flood.
 
-[`examples/substrate-remarks.polkameter.xml`](https://github.com/agustinustheo/polkameter/blob/v0.4.0/examples/substrate-remarks.polkameter.xml) funds 16 flood accounts and one account per probe. It signs 65,000 `System.remark` transactions. Then it sends them in six rate steps of 30 seconds, from 100 to 600 transactions per second (tx/s):
+[`examples/substrate-remarks.polkameter.xml`](https://github.com/agustinustheo/polkameter/blob/v0.4.0/examples/substrate-remarks.polkameter.xml) funds 16 flood accounts and one account per probe. It signs 65,000 `System.remark` transactions. Then it sends about 63,000 of them in six [rate steps](plans.md#rate) of 30 seconds, from 100 to 600 transactions per second (tx/s). The rest are spare:
 
 ```sh
 mkdir -p plans
@@ -80,7 +80,7 @@ PolkaMeter: verdict FAIL: step 5 broke its latency measure (p95 send -> best blo
 1
 ```
 
-Rate steps count from 0. The FAIL and the exit code `1` are what we wanted: the last rate step pushed the chain past a limit. While you explore, add `--fail-on error` to exit `1` only when the run itself breaks.
+Rate steps count from 0. The FAIL and the exit code `1` are what we wanted: the last rate step pushed the chain past a limit. While you explore, add `--fail-on error`. Then the verdict never fails the command. Only an error in the run does.
 
 Open `summary.md` in the run directory that the `Run …` line names:
 
@@ -91,11 +91,11 @@ Open `summary.md` in the run directory that the `Run …` line names:
 - **Load stop:** rate cap: all 6 steps ran
 ```
 
-The failure onset is the first rate step that failed a limit. In step 5, 95% of the transactions reached a block within 12.9 s, and the limit is 10 s. So the chain sustained 500 tx/s. [Read the results](reading-results.md) explains every line.
+The failure onset is the first rate step that failed a limit. In step 5, 95% of the transactions got into a block within 12.9 s, but the limit is 10 s. So step 4, at 500 tx/s, is the max sustained rate. [Read the results](reading-results.md) explains every line.
 
 ## 5. Generate a plan for your chain
 
-`polkameter init` checks the chain at an endpoint and writes a plan for it. The plan's signed transactions stay valid long enough for the run:
+`polkameter init` checks the chain at an endpoint and writes a plan for it. It also makes the signed transactions stay valid until the run ends:
 
 ```sh
 polkameter init --rpc ws://127.0.0.1:9944 --output plans/init.polkameter.xml
@@ -109,13 +109,13 @@ Plan is structurally valid. Preflight checks the installed plugins.
 Preflight passed.
 ```
 
-`Custom` is the chain name the node reports. The plan ramps from 10 to 50 tx/s, which the dev chain keeps up with. To find its limit, open `plans/init.polkameter.xml` and change the `<ramp>` element to this:
+`Custom` is the chain name the node reports. The plan's rate steps go from 10 to 50 tx/s. The dev chain keeps up with that. To find its limit, open `plans/init.polkameter.xml` and change the `<ramp>` element to this:
 
 ```xml
 <ramp start="200" step="100" steps="5" seconds="30"/>
 ```
 
-It sends up to 60,000 transactions, so set the prepare step's count above that, to `<input name="count" value="65000"/>`. Then run it again:
+This ramp sends up to 60,000 transactions. The prepare step must sign more than that, so set its count to `<input name="count" value="65000"/>`. Then run it again:
 
 ```sh
 polkameter run plans/init.polkameter.xml --output runs
@@ -133,7 +133,7 @@ Stop the dev chain (step 7). Then start it with your runtime's `*.compact.compre
 POLKAMETER_DEV_RUNTIME=<path-to-your-runtime>.compact.compressed.wasm bash dev-chain.sh start
 ```
 
-The runtime must run on `polkadot-omni-node`, so it's a parachain runtime with Aura, like the parachain template. Its genesis preset, the starting state, must fund `//Alice` and be named `development`, or the name in `POLKAMETER_DEV_PRESET`. Then generate and run a plan for it as in step 5.
+The runtime must be a parachain runtime with Aura, like the parachain template, so that `polkadot-omni-node` can run it. Its genesis preset, the starting state, must fund `//Alice`. Name the preset `development`, or set `POLKAMETER_DEV_PRESET` to its name. Then generate and run a plan for it as in step 5.
 
 ## 7. Stop the chain
 

@@ -1,6 +1,6 @@
 # Plugin reference
 
-A plugin is a separate executable that supplies operations the plan can call. The plan calls the plugin's operations by name. PolkaMeter sends requests through standard input and reads replies from standard output. [Writing a plugin](writing-a-plugin.md) builds one.
+A plugin is a separate executable. It supplies operations that a plan calls by name. PolkaMeter sends requests through standard input and reads replies from standard output. [Writing a plugin](writing-a-plugin.md) builds one.
 
 ## Manifest
 
@@ -48,9 +48,9 @@ The host checks inputs before the call and outputs when the plugin replies. A mi
 
 ## Protocol
 
-The plugin protocol exchanges one JSON message per line over standard input and output. A request carries `operation`, `inputs` and `context`. The reply repeats the request `id` and contains exactly one of `result` or `error`.
+PolkaMeter and a plugin talk through the plugin protocol: one JSON message per line, over the plugin's standard input and output. A request carries `operation`, `inputs` and `context`. The reply repeats the request `id` and contains exactly one of `result` or `error`.
 
-PolkaMeter starts one process per plugin per run and keeps it until the run ends. Calls to each plugin are serialized. The `Context` holds `run_id` and `artifact_dir`.
+PolkaMeter starts one process per plugin per run and keeps it until the run ends. PolkaMeter sends each plugin one call at a time. The `Context` holds `run_id` and `artifact_dir`.
 
 `$describe` must return the manifest within 10 seconds. `$shutdown` returns `{}`. The plugin must then exit within 1 second, or the host kills it.
 
@@ -70,7 +70,7 @@ When the host kills a plugin, it also kills every process the plugin started.
 
 [`polkameter plugin`](cli.md#plugin) manages the registry.
 
-A plugin gets a credential's value only as the input `credentials.ID`, and only in steps that reference it.
+A plugin gets a credential's value only through a step input with `ref="credentials.ID"`, and only in that step.
 
 ## PreparedTx and the load contract
 
@@ -90,7 +90,7 @@ With `state-check` and `state-ref`, PolkaMeter calls the named operation on a sa
 
 ## Observers and checks
 
-An observer records extra series during the load. A setup step starts it and an evaluate step stops it. It writes `series.jsonl` and `metrics.json` to the plugin's directory. `metrics.json` lists `PluginMetric` values. A plugin cannot redefine a built-in metric.
+An observer records extra time series, values over time, during the load. A setup step starts it and an evaluate step stops it. It writes `series.jsonl` and `metrics.json` to the plugin's directory. `metrics.json` lists `PluginMetric` values. A plugin cannot redefine a built-in metric.
 
 A check adds results to the report. Any evaluate step whose operation declares a `checks` output is a check. Each result has `outcome`, `check`, `status`, `detail`, and optional `numbers` and `optional`. `status` is `pass`, `warn`, `fail`, `info` or `no result`.
 
@@ -115,7 +115,7 @@ The `chain` feature reads runtime metadata and storage, and signs and submits tr
 
 The `observers` feature records series, reads run data and builds check results. It turns on `chain` too.
 
-Hidden items may change in any release. The `polkameter` crate is the CLI, not a library for plugins.
+Items hidden from the API documentation can change in any release. The `polkameter` crate is the CLI, not a library for plugins.
 
 The chain, monitor, check and file code derives from the stress tool in [paritytech/polkadot-pop-e2e](https://github.com/paritytech/polkadot-pop-e2e), under Apache-2.0.
 
@@ -137,4 +137,4 @@ Version 0.3 merges the old plugin crates into `polkameter-plugin-sdk`. Replace t
 
 `polkameter-engine` and `polkameter-load` have no replacement. They are part of the `polkameter` CLI.
 
-`CheckResult` has a new field, `source`. PolkaMeter sets it to the evaluate step's ID, so a plugin that builds a `CheckResult` sets `source: None`.
+`CheckResult` has a new field, `source`. PolkaMeter fills it with the evaluate step's ID, so a plugin sets `source: None`.

@@ -10,7 +10,7 @@ Writes a load plan for the [substrate plugin](substrate-plugin.md) from a live c
 polkameter init --rpc ENDPOINT [--kind remarks|transfers] [--profile PROFILE] [--output PATH] [--force]
 ```
 
-`--kind remarks`, the default, loads the chain with `System.remark` calls, and `--kind transfers` with `Balances.transfer_keep_alive`. `--profile` names the [credential profile](#plugin) for the signers' seed, `substrate-dev` by default. Without `--output`, the plan goes to standard output. An unreachable chain, or a runtime without a needed call, exits `3`. An existing `--output` file without `--force` exits `2`.
+`--kind remarks`, the default, loads the chain with `System.remark` calls. `--kind transfers` uses `Balances.transfer_keep_alive`. `--profile` names the [credential profile](#plugin) for the signers' seed, `substrate-dev` by default. Without `--output`, the plan goes to standard output. An unreachable chain, or a runtime without a needed call, exits `3`. An existing `--output` file without `--force` exits `2`.
 
 ## validate
 
@@ -26,7 +26,7 @@ Plan is structurally valid. Preflight checks the installed plugins.
 
 ## preflight
 
-Starts the plan's plugins, checks the plan's operations and inputs against them, and checks that every credential's variable is set. Then it checks the chain, runs the read-only `<preflight>` steps and, for a load test, measures the block interval. It submits nothing. A failed check exits `3`. Install the plugins first with [`plugin install`](#plugin).
+Starts the plan's plugins and checks the plan's operations and inputs against them. It also checks that every credential's variable is set. Then it checks the chain and runs the read-only `<preflight>` steps. For a load test, it also measures the block interval. It submits nothing. A failed check exits `3`. Install the plugins first with [`plugin install`](#plugin).
 
 ```sh
 polkameter preflight examples/plugin-data-flow.polkameter.xml
@@ -51,7 +51,7 @@ Phase: preflight
 Run completed. Artifacts: ~/polkameter/runs/run-1792255021142-12303-1
 ```
 
-Phase lines go to standard error. The `Run …` line goes to standard output and names the run directory. `--credential-env` reads the plan's only credential from that variable instead of its profile. `preflight` takes it too.
+Phase lines go to standard error. The `Run …` line goes to standard output and names the run directory. `--credential-env` is for a plan with one credential. It reads that credential from the given variable instead of its profile. `preflight` takes it too.
 
 If the run fails, PolkaMeter prints the reason on standard error, and `execution.json` keeps the full text. A run that fails before setup submitted nothing. It prints `run failed before setup:`, skips teardown and exits `3`.
 
@@ -75,7 +75,7 @@ Phase: teardown
 Run stopped. Artifacts: ~/polkameter/runs/run-1793933833255-39334-1
 ```
 
-Teardown after a signal gets `--shutdown-grace` seconds, 20 by default. A second signal, or the end of that period, interrupts teardown. The `teardown` field in `execution.json` is then `interrupted` instead of `completed`. A process killed before it writes the outcome leaves `state` at `stopping`, so exit code `130` or `143` alone doesn't prove that teardown ran.
+Teardown after a signal gets `--shutdown-grace` seconds, 20 by default. A second signal, or the end of that period, interrupts teardown. The `teardown` field in `execution.json` is then `interrupted` instead of `completed`. If the process is killed before it writes the outcome, `state` stays `stopping`. So exit code `130` or `143` alone doesn't prove that teardown ran.
 
 PolkaMeter then needs up to 10 more seconds to write the outcome. If your CI system sends SIGKILL a set time after SIGTERM, set `--shutdown-grace` 10 seconds below that time.
 
@@ -93,7 +93,7 @@ polkameter report runs/run-1792255021142-12303-1
 
 ## plugin
 
-Installs plugins and records this host's credential profiles and topologies. A plan refers to them by name, and this host's registry holds what the names point to. The registry is a JSON file; [Environment variables](#environment-variables) gives its path. A failed `plugin` subcommand exits `2`. `plugin list` and `plugin inspect` print JSON.
+Installs plugins and records this host's credential profiles and topologies. A plan refers to them by name. This host's registry, a JSON file, says what each name points to. [Environment variables](#environment-variables) gives its path. A failed `plugin` subcommand exits `2`. `plugin list` and `plugin inspect` print JSON.
 
 | Command | Effect |
 | --- | --- |
@@ -122,7 +122,7 @@ A credential profile maps a plan's credential name to an environment variable on
 | Code | Meaning |
 | --- | --- |
 | `0` | The command succeeded, or the run ended `completed`. |
-| `1` | The run failed in setup or later. Or it ended `completed_with_failures`, on a verdict that `--fail-on` selects or a smoke-mode check. Or `report` or writing the output failed. |
+| `1` | The run failed in setup or later. Or it ended `completed_with_failures`, and `--fail-on` or smoke mode makes that an error. Or `report`, or writing the output, failed. |
 | `2` | Invalid input or usage: an invalid plan, a bad flag, a corrupt registry, a failed `plugin` subcommand, or a `summary.json` that `report` cannot rewrite. |
 | `3` | Preflight checks failed, or `init` could not prepare the plan. A `run` that exits `3` submitted nothing and skipped teardown. |
 | `130` | Stopped by SIGINT. |

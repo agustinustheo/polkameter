@@ -1,6 +1,6 @@
 # The substrate plugin
 
-The substrate plugin signs transactions from accounts derived from one seed: `System.remark`, a call that only stores a note, or `Balances.transfer_keep_alive`. It funds those accounts and checks the chain's state after the run. It reads the runtime's metadata, so you need no plugin code. Its version is the PolkaMeter version it ships with, and the plan's `<plugin version>` must match it.
+The substrate plugin signs `System.remark` calls, which only carry a note, or `Balances.transfer_keep_alive` calls. Its accounts all come from one seed. It funds those accounts and checks the chain's state after the run. It reads the runtime's metadata, so you need no plugin code. Its version is the PolkaMeter version it ships with, and the plan's `<plugin version>` must match it.
 
 The runtime needs the standard `System` and `Balances` pallets. [Limits](#limits) lists what else it needs. [Getting started](getting-started.md) runs the plugin end to end.
 
@@ -12,15 +12,15 @@ The runtime needs the standard `System` and `Balances` pallets. [Limits](#limits
 
 Every operation that signs derives its accounts from `seed`, a secret URI such as `//Alice` or `<mnemonic>//stress`. Pass it from a [credential profile](cli.md#plugin), never as a literal value.
 
-The plugin derives `flood-signers` accounts for the flood, then `probe-signers` accounts for the probes. Each account's path is `derivation` plus its index, such as `//polkameter//0`. By default, each probe has its own signer, up to 1000, so a dropped probe never holds back the next one. The two sets never share an account.
+The plugin derives `flood-signers` accounts for the flood, then `probe-signers` accounts for the probes. Each account's path is `derivation` plus its index, such as `//polkameter//0`. Each transaction carries a nonce: its signer's transaction count. The chain runs a signer's transactions in nonce order. By default, each probe has its own signer, up to 1000, so a dropped probe never holds back the next one. The two sets never share an account.
 
 Give the `fund-accounts` step and the prepare step the same `seed`, `derivation`, `flood-signers`, `probe-signers` and `probes`. Otherwise, the plugin can prepare transactions for unfunded accounts.
 
-> **Warning:** Use the seed's accounts for one run at a time. Two runs that sign with the same accounts take the same nonces, and one run's transactions replace the other's.
+> **Warning:** Use the seed's accounts for one run at a time. Two runs that sign with the same accounts use the same nonces, so one run's transactions replace the other's.
 
 ## Operations
 
-Every operation takes `target`, the chain's `ws://` or `wss://` endpoint. Amounts are in the chain's smallest unit, such as planck on Polkadot. Write them as a whole number, or as a string of digits above 2^64.
+Every operation takes `target`, the chain's `ws://` or `wss://` endpoint. Amounts are in the chain's smallest unit, such as planck on Polkadot. Write them as a whole number. From 2^64 up, write them as a string of digits.
 
 ### preflight
 
@@ -76,7 +76,7 @@ Signs the flood and the probes as `System.remark` transactions. Each payload is 
 
 The flood, the probes and the state must fit in 200 MiB of artifacts together.
 
-A mortal transaction must stay valid for the rest of the run: the baseline, the load, the recovery and the wait for finality. Set `expected-seconds` to that time, and the step fails if the transactions would expire sooner. `polkameter init` sets both inputs.
+A mortal transaction expires `mortality` blocks after it's signed. It must stay valid for the rest of the run: the baseline, the load, the recovery and the wait for finality. Set `expected-seconds` to that time, and the step fails if the transactions would expire sooner. `polkameter init` sets both inputs.
 
 It returns `flood` and `probes`, the [`PreparedTx`](plugins.md#preparedtx-and-the-load-contract) lists, and `state`, which maps each transaction to its signer and nonce. It also returns `identity` and a `summary` with the signing block and `validUntil`, the expiry block.
 
@@ -95,7 +95,7 @@ Without `dest`, each signer pays the next signer in its set, so the transfers cr
 
 ### check-state
 
-The load's [state check](plans.md#load), named by `state-check`. PolkaMeter calls it with the prepare step's `state`, the sampled transaction hashes and a finalized block. For each sampled transaction, it reads the signer's nonce at that block. It counts the transaction as missing unless the nonce moved past it. Read-only.
+The load's [state check](plans.md#load), named by `state-check`. PolkaMeter calls it with the prepare step's `state`, the sampled transaction hashes and a finalized block. For each sampled transaction, it reads the signer's nonce at that block. If that nonce is past the transaction's nonce, the transaction ran. Otherwise it counts as missing. Read-only.
 
 It returns `checked`, `missing` and `detail`. `detail` names up to five missing transactions.
 
@@ -105,7 +105,7 @@ It returns `checked`, `missing` and `detail`. `detail` names up to five missing 
 
 - The ramp goes from 10 to 50 transactions per second.
 - Each signer gets 1000 whole tokens.
-- `mortality` covers twice the blocks the run spans.
+- `mortality` is twice the blocks the run spans, rounded up to a power of two. If that's above 65,536, it's `0`, so the transactions never expire.
 - `expected-seconds` is the run's length after the prepare step. If you lengthen the ramp or the recovery, raise it.
 
 [Getting started](getting-started.md) walks through it.
