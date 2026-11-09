@@ -26,19 +26,19 @@
 
 ---
 
-PolkaMeter loads a Polkadot SDK chain with signed transactions at rising rates and tells you where it stops keeping up. You choose the transaction rates in an XML plan (`*.polkameter.xml`). A plugin prepares transactions for your runtime.
+PolkaMeter sends signed transactions to a Polkadot SDK chain at rising rates and finds where it stops keeping up. You write the test as an XML plan (`*.polkameter.xml`). A plugin builds the transactions for your runtime.
 
-A finished load test gives a verdict: `PASS`, `WARN`, `FAIL` or `INCONCLUSIVE`. Every run also ends with an exit code.
+A load test ends with a [verdict](https://agustinustheodorus.com/polkameter/reading-results.html#did-it-pass): `PASS`, `WARN`, `FAIL` or `INCONCLUSIVE`.
 
 ## Highlights
 
 - A GitHub Action runs a plan and fails the job on a `FAIL` or `INCONCLUSIVE` verdict.
 - The [substrate plugin](https://agustinustheodorus.com/polkameter/substrate-plugin.html#limits) loads standard runtimes, so you write no plugin code.
-- It raises the rate step by step until the chain breaks a limit, then checks how fast the chain recovers.
+- It raises the rate one rate step at a time until the chain fails a limit, such as latency. Then it checks how fast the chain recovers.
 
 ## Install
 
-The install script downloads the CLI and the substrate plugin for Linux or macOS, checks the checksum and installs both in `~/.local/bin`:
+The install script checks and installs the CLI and the substrate plugin in `~/.local/bin`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh | sh
@@ -46,12 +46,12 @@ export PATH="$HOME/.local/bin:$PATH"
 polkameter --version
 ```
 
-[Install](https://agustinustheodorus.com/polkameter/install.html) also covers `cargo binstall` and the release archives.
+[Install](https://agustinustheodorus.com/polkameter/install.html) covers cargo, the release archives and supported platforms.
 
 ## Next steps
 
-- [Getting started](https://agustinustheodorus.com/polkameter/getting-started.html) starts a dev chain and loads it until a limit fails.
-- [Run in CI](https://agustinustheodorus.com/polkameter/ci.html) runs the same test on every pull request.
+- [Getting started](https://agustinustheodorus.com/polkameter/getting-started.html) starts a local dev chain and loads it until it fails a limit.
+- [Run in CI](https://agustinustheodorus.com/polkameter/ci.html) runs a short load test on every pull request.
 - [Use PolkaMeter with an AI assistant](https://agustinustheodorus.com/polkameter/ai-assistants.html) sets it up for you.
 - [Writing a plugin](https://agustinustheodorus.com/polkameter/writing-a-plugin.html) covers runtimes the substrate plugin doesn't fit.
 - [Troubleshooting](https://agustinustheodorus.com/polkameter/troubleshooting.html) helps when something broke.

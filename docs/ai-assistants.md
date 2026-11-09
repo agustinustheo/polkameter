@@ -1,10 +1,10 @@
 # Use PolkaMeter with an AI assistant
 
-Install the PolkaMeter skill, then ask your assistant to create a load test for your chain. The skill installs PolkaMeter and picks the substrate plugin or starts a plugin of your own. Then it writes a plan, runs it on a dev chain and adds a CI job.
+A skill is a set of instructions an AI assistant loads for a task. Install the PolkaMeter skill, then ask your assistant to create a load test for your chain. It installs PolkaMeter and picks the substrate plugin or starts your own plugin. Then it writes a plan, runs it on a [dev chain](getting-started.md#2-start-a-dev-chain) and adds a CI job.
 
 ## Install the skill in Claude Code
 
-The PolkaMeter repository is a Claude Code plugin marketplace. In a Claude Code session, add it and install the plugin that holds the skill:
+The PolkaMeter repository is also a Claude Code plugin marketplace, a source of plugins. In a Claude Code session, add it and install the plugin that holds the skill:
 
 ```text
 /plugin marketplace add agustinustheo/polkameter
@@ -23,7 +23,7 @@ mkdir -p .claude/skills
 cp -R /tmp/polkameter/skills/polkameter .claude/skills/
 ```
 
-Copy it to `~/.claude/skills/` to use it in every project, or into another assistant's skills directory.
+Copy it to `~/.claude/skills/` to use it in every project.
 
 ## Ask for a load test
 
@@ -33,7 +33,7 @@ The assistant loads the skill when you ask for a load test, a stress test or Pol
 Stress-test the chain my node serves at ws://127.0.0.1:9944 with PolkaMeter, and add a CI job that runs a short check on every pull request.
 ```
 
-The skill tells the assistant to copy numbers from `summary.md`, keep secrets out of plans and load only nodes you control.
+The skill tells the assistant to copy numbers from `summary.md`, keep secrets out of plans, and load only nodes you control.
 
 ## Point an assistant at the docs
 

@@ -1,22 +1,22 @@
 # Run in CI
 
-The PolkaMeter action runs a plan in a GitHub Actions job. It installs the CLI, installs your plugins and credentials, and runs the plan. Then it uploads the run's reports and selected records. It supports Linux and macOS runners. For other CI systems, see [GitLab CI](#gitlab-ci) and [Other CI systems](#other-ci-systems).
+The PolkaMeter action runs a plan in a GitHub Actions job on a Linux or macOS runner. It installs the CLI and the substrate plugin, registers your plugins, maps your credentials and runs the plan. Then it uploads the run's reports. For other CI systems, see [GitLab CI](#gitlab-ci) and [Other CI systems](#other-ci-systems).
 
 ## Test a dev chain on every pull request
 
-This job starts the dev chain, runs the short CI plan with `fail-on: verdict`, and uploads the run's reports. It caches the downloads on the script's hash. Commit these files to your repository:
+This job starts the [dev chain](getting-started.md#2-start-a-dev-chain) and runs the short CI plan, a low-rate version of the Getting started plan. Commit these files to your repository:
 
 - the job as `.github/workflows/load-test.yml`
-- `dev-chain.sh` at the repository root, from the same PolkaMeter version
+- `dev-chain.sh` at the repository root
 - the CI plan as `plans/substrate-remarks-ci.polkameter.xml`
 
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/agustinustheo/polkameter/v0.3.0/scripts/dev-chain.sh
+curl -fsSLO https://raw.githubusercontent.com/agustinustheo/polkameter/v0.4.0/scripts/dev-chain.sh
 mkdir -p plans
-curl -fsSL -o plans/substrate-remarks-ci.polkameter.xml https://raw.githubusercontent.com/agustinustheo/polkameter/v0.3.0/examples/substrate-remarks-ci.polkameter.xml
+curl -fsSL -o plans/substrate-remarks-ci.polkameter.xml https://raw.githubusercontent.com/agustinustheo/polkameter/v0.4.0/examples/substrate-remarks-ci.polkameter.xml
 ```
 
-Keep the action's `version` equal to the plan's substrate plugin version, `<plugin id="substrate" version="0.3.0">`. The plugin ships with the CLI, and PolkaMeter refuses a plugin of another version.
+`@v0` moves to each new 0.x release. `version` pins the CLI, so keep it on the same release as the files above. [Versions](install.md#versions) gives the rule.
 
 ```yaml
 name: load-test
@@ -39,14 +39,14 @@ jobs:
           path: .polkameter/dev-chain/bin
           key: dev-chain-${{ runner.os }}-${{ hashFiles('dev-chain.sh') }}
       - name: Start the dev chain
+        # For your own runtime, build its wasm in an earlier step and set
+        # POLKAMETER_DEV_RUNTIME to its path in this step's env.
         run: bash dev-chain.sh start
-      # To test your own runtime instead of the template, build its wasm first and set
-      # POLKAMETER_DEV_RUNTIME to its path on the step above.
       - id: load
         # @v0 is the action; version pins the CLI and the substrate plugin it installs.
         uses: agustinustheo/polkameter@v0
         with:
-          version: 0.3.0
+          version: 0.4.0
           plan: plans/substrate-remarks-ci.polkameter.xml
           plugins: polkameter-substrate-plugin
           credentials: substrate-dev=POLKAMETER_SUBSTRATE_SEED
@@ -59,11 +59,11 @@ jobs:
         run: bash dev-chain.sh stop
 ```
 
-`plugins: polkameter-substrate-plugin` names the plugin installed with the CLI. [Getting started](getting-started.md) runs the same chain by hand.
+`plugins: polkameter-substrate-plugin` names the plugin that the action installed with the CLI. `fail-on: verdict` fails the job on a FAIL verdict. [What fails the job](#what-fails-the-job) has the other policies.
 
 ## Load your own node
 
-Save this as `.github/workflows/load-test.yml`. Replace `<plan>`, `<plugin-binary>` and `<profile>` with your plan's path, your plugin executable and the plan's credential profile:
+Save this as `.github/workflows/load-test.yml`. Replace `<plugin-package>`, `<plugin-binary>`, `<plan>` and `<profile>` with your plugin's Cargo package and executable, your plan's path and the plan's credential profile:
 
 ```yaml
 name: load-test
@@ -73,31 +73,30 @@ jobs:
   load-test:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build the plugin
+        run: cargo build --locked --release -p <plugin-package>
       - id: load
         uses: agustinustheo/polkameter@v0
         with:
+          version: 0.4.0
           plan: <plan>
-          plugins: plugins/<plugin-binary>
-          fail-on: verdict
+          plugins: target/release/<plugin-binary>
           credentials: <profile>=POLKAMETER_SETUP_SURI
+          fail-on: verdict
         env:
           POLKAMETER_SETUP_SURI: ${{ secrets.SETUP_SURI }}
 ```
 
-`@v0` installs the latest 0.x release of the CLI and checks its checksum and build attestation. To fix the version, use a full tag such as `@v0.3.0`. A branch or commit SHA needs the `version` input.
-
-Build your plugin in an earlier step with `cargo build --locked --release -p <plugin-package>` and pass `target/release/<plugin-binary>`.
-
-Most jobs set only `plan`, `plugins`, `credentials`, `fail-on` and `version`. The action's outputs include `verdict`, `exit-code` and `run-dir`. [`action.yml`](https://github.com/agustinustheo/polkameter/blob/main/action.yml) describes every input and output.
+With the substrate plugin, drop the build step and set `plugins: polkameter-substrate-plugin`. The action's outputs include `verdict`, `exit-code` and `run-dir`. [`action.yml`](https://github.com/agustinustheo/polkameter/blob/main/action.yml) describes every input and output.
 
 ## Secrets
 
-Set secrets in the step's `env:` block. Put only profile and variable names in `credentials`. Inputs are not secret.
+Inputs show up in the workflow file and the logs. So `credentials` holds only profile and variable names, and the secret goes in the step's `env:` block from `secrets`.
 
-The `credentials` input maps a plan's [credential profile](cli.md#plugin) to an environment variable. Plugins get the value only in steps that use the credential. The files PolkaMeter writes and the job summary show `[redacted]` in place of the value. [Redaction](results.md#redaction) lists what is and is not covered.
+The `credentials` input maps a plan's [credential profile](cli.md#plugin) to an environment variable. A plugin gets the value only in plan steps that reference the credential. The files PolkaMeter writes and the job summary show `[redacted]` in place of the value. [Redaction](results.md#redaction) lists what is and is not covered.
 
-Do not run plans with secrets on `pull_request_target` or for pull requests from forks.
+Don't run plans with secrets on `pull_request_target` or for pull requests from forks. Those runs would hand your secrets to code from the pull request.
 
 ## What fails the job
 
@@ -111,7 +110,7 @@ The `fail-on` input decides which [verdicts](reading-results.md#did-it-pass) als
 | `verdict` | passes | passes | fails | passes |
 | `error` | passes | passes | passes | passes |
 
-A failed run fails the job under every policy. A plan without a load test has no verdict. Smoke mode has stricter rules; see [`run`](cli.md#run).
+A run that fails, such as on a plan error or a failed setup step, fails the job under every policy. A plan without a load test has no verdict.
 
 A ramp that pushes the chain past its limit usually ends FAIL. To keep that job green and read the verdict instead, set `fail-on: error`. A later step can read the outputs even when the action failed:
 
@@ -127,11 +126,11 @@ A ramp that pushes the chain past its limit usually ends FAIL. To keep that job 
 
 ## What the job keeps
 
-The action adds the run's `summary.md` to the job summary. It uploads the run's reports and selected records as an artifact, even when the run failed. The `artifact-name` output gives the artifact's name. Files that plugins write into the run directory stay on the runner, because PolkaMeter does not redact them. If validation fails before the run starts, there is no artifact.
+The action adds the run's `summary.md` to the job summary. It uploads the run's reports and records as an artifact, even when the run failed. The `artifact-name` output gives the artifact's name. The upload leaves out files that plugins write into the run directory, because PolkaMeter doesn't redact them. If validation fails before the run starts, there is no artifact.
 
 ## GitHub test reports
 
-The run directory contains `junit.xml`, a test report that CI systems can display. To show its cases in a GitHub check, give the job `checks: write` permission:
+The run directory contains [`junit.xml`](results.md#junitxml). To show its cases in a GitHub check, give the job `checks: write` permission:
 
 ```yaml
 permissions:
@@ -157,13 +156,13 @@ The action still decides whether the job fails. `fail-on-empty: 'true'` fails th
 
 ## GitLab CI
 
-Use a Linux x86-64 runner. Add this job to `.gitlab-ci.yml`, and commit `dev-chain.sh` and the plan as for GitHub:
+Use a Linux x86-64 runner, which the dev chain script needs. Add this job to `.gitlab-ci.yml`, and commit `dev-chain.sh` and the plan as for GitHub:
 
 ```yaml
 load-test:
   image: debian:bookworm-slim
   variables:
-    POLKAMETER_VERSION: "0.3.0"
+    POLKAMETER_VERSION: "0.4.0"
     POLKAMETER_PLUGIN_REGISTRY: /tmp/polkameter-plugins.json
     # //Alice is funded on the dev chain. On a shared network, use a masked CI/CD variable.
     POLKAMETER_SUBSTRATE_SEED: //Alice
@@ -193,20 +192,15 @@ load-test:
 
 ## Other CI systems
 
-Without the action, install the CLI with the install script on Linux or macOS:
+Without the action, install the CLI and the substrate plugin with the install script, then run from the repository root. For your own plugin, build it first and install `target/release/<plugin-binary>` instead. Replace `<profile>`, `<ENV_VAR>` and `<plan>`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh | sh -s -- <version>
+curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh | sh -s -- 0.4.0
 export PATH="$HOME/.local/bin:$PATH"
-```
-
-Then run from the repository root. Replace `<plugin-binary>`, `<profile>`, `<ENV_VAR>` and `<plan>`:
-
-```sh
-polkameter plugin install target/release/<plugin-binary>
+polkameter plugin install "$HOME/.local/bin/polkameter-substrate-plugin"
 polkameter plugin credential <profile> <ENV_VAR>
 polkameter validate <plan>
 polkameter run <plan> --output polkameter-runs
 ```
 
-Set `<ENV_VAR>` in the job's environment before `run`. Use a fresh output directory for each job. Keep the whole run directory, so [`polkameter report`](cli.md#report) can rebuild the reports later. Jenkins and other systems run the same commands.
+Set `<ENV_VAR>` in the job's environment before `run`. Use a fresh output directory for each job. Keep the whole run directory, so [`polkameter report`](cli.md#report) can rebuild the reports later.
