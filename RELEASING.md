@@ -28,33 +28,25 @@ Binstall, the installer and the GitHub Action download assets by name. Keep thes
 
 Rehearse with a prerelease tag before the first release that uses a changed workflow. The tag must match the workspace version. Set the version to, for example, `0.3.0-rc.1`, run `cargo +1.93.0 check --workspace`, commit and tag `v0.3.0-rc.1`.
 
-A prerelease runs every build and attestation and publishes a GitHub prerelease. It pushes only the container's full version tag, such as `:0.3.0-rc.1`. It never moves `:latest`, `:<major>`, `:<major>.<minor>` or the `v<major>` action tag. It skips crates.io by default, because a published crate version is permanent.
+A prerelease runs every build and attestation and publishes a GitHub prerelease. It pushes only the container's full version tag, such as `:0.3.0-rc.1`. It never moves `:latest`, `:<major>`, `:<major>.<minor>` or the `v<major>` action tag. It never publishes to crates.io, because a published crate version is permanent. After the rehearsal, set the version to `0.3.0`, merge and tag.
 
-To rehearse crates.io publication too, set this variable before you push the tag, and delete it afterwards:
+## Recover from a failed release
 
-```sh
-gh variable set PUBLISH_PRERELEASE_CRATES --body true
-```
+Re-run the failed jobs in the original tag run (`gh run rerun <run-id> --failed`). The re-run reuses the builds of the jobs that passed. The crates.io job skips a crate whose version is already on crates.io, so a re-run after a partial publication publishes only the rest.
 
-A recovery dispatch can opt in with `-f prerelease-crates=true` instead. Cargo never selects a prerelease unless asked, so `0.3.0-rc.1` on crates.io doesn't affect users. After the rehearsal, set the version to `0.3.0`, merge and tag.
+The GitHub release job refuses a release that is already published, because users may have pinned its checksums. A draft left by a failed run is finished: the job uploads every asset again and publishes it. To change a published release, publish a patch release. Never move a version tag to recover a release.
 
-## Resume an existing release
-
-Re-run the failed jobs in the original tag run. Or dispatch the workflow again, and use the release tag for both `--ref` and `tag`:
+If the original run can no longer be re-run and the release is not published yet, dispatch the workflow on the release tag, and use the tag for both `--ref` and `tag`. Don't dispatch on `main`, or the attestations won't match the tag and the installers will refuse them:
 
 ```sh
 gh workflow run release.yml --ref v0.3.0 -f tag=v0.3.0
 ```
 
-Don't dispatch on `main`, or the attestations won't match the tag and the installers will refuse them. Never move a version tag to recover a release.
-
-A dispatch skips crate versions that already exist and uploads only missing assets. It never replaces a published asset, because users may have pinned its checksum. To correct a published asset, publish a patch release.
-
 ## One-time setup
 
 1. Create the GitHub environment `crates-io`. Allow version tags if you restrict deployment branches.
 2. In each existing crate's crates.io settings, configure Trusted Publishing for owner `agustinustheo`, repository `polkameter`, workflow `release.yml` and environment `crates-io`. See the [crates.io Trusted Publishing documentation](https://crates.io/docs/trusted-publishing).
-3. For a new crate, add a crates.io API token with publish-new and publish-update scopes as `CARGO_REGISTRY_TOKEN` in the GitHub environment or repository secrets. The workflow uses it only when Trusted Publishing fails.
+3. The workflow publishes only with Trusted Publishing. Publish a new crate's first version by hand, then configure Trusted Publishing for it.
 4. Allow GitHub Actions to write repository contents and GHCR packages. Make the GHCR package public after its first publication, so CI jobs can pull it without signing in.
 
 After a real release, check the downloads on all five platforms, `cargo binstall polkameter`, GHCR pulls on both architectures, `gh attestation verify` on one archive, and the moving major tag.

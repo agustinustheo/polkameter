@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish missing workspace versions in dependency order; safe to resume."""
+"""Check the release tag against the workspace version, then publish the crates that are missing."""
 
 import argparse
 import json
@@ -7,72 +7,12 @@ import os
 import re
 import subprocess
 import sys
-import time
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-API = "https://crates.io/api/v1"
-# Six attempts, with at most 15 minutes of backoff per operation.
-BACKOFF = (30, 60, 120, 240, 450)
 TOOLCHAIN = os.environ.get("RUST_VERSION", "1.93.0")
-
-
-def request_json(url, **kwargs):
-    headers = {"User-Agent": "polkameter-release", **kwargs.pop("headers", {})}
-    with urlopen(Request(url, headers=headers, **kwargs), timeout=60) as response:
-        body = response.read()
-        return json.loads(body) if body else None
-
-
-def retry(operation):
-    for attempt in range(len(BACKOFF) + 1):
-        try:
-            return operation()
-        except HTTPError as error:
-            if error.code != 429 and error.code < 500:
-                raise
-            if attempt == len(BACKOFF):
-                raise
-            delay = BACKOFF[attempt]
-            print(f"Registry HTTP {error.code}; retrying in {delay}s", flush=True)
-            time.sleep(delay)
-
-
-def published(name, version):
-    try:
-        retry(lambda: request_json(f"{API}/crates/{name}/{version}"))
-        return True
-    except HTTPError as error:
-        if error.code == 404:
-            return False
-        raise
-
-
-def publish_order(metadata):
-    members = set(metadata["workspace_members"])
-    packages = {
-        p["name"]: p for p in metadata["packages"]
-        if p["id"] in members and (p["publish"] is None or "crates-io" in p["publish"])
-    }
-    ordered, visiting, visited = [], set(), set()
-
-    def visit(name):
-        if name in visited:
-            return
-        if name in visiting:
-            raise ValueError(f"Workspace dependency cycle at {name}")
-        visiting.add(name)
-        for dependency in sorted(packages[name]["dependencies"], key=lambda d: d["name"]):
-            # Dev dependencies do not constrain registry publication order.
-            if dependency.get("path") and dependency["kind"] != "dev" and dependency["name"] in packages:
-                visit(dependency["name"])
-        visiting.remove(name)
-        visited.add(name)
-        ordered.append(packages[name])
-
-    for name in sorted(packages):
-        visit(name)
-    return ordered
+# The SDK first: polkameter depends on it.
+CRATES = ("polkameter-plugin-sdk", "polkameter")
 
 
 def release_version(metadata, tag):
@@ -86,82 +26,16 @@ def release_version(metadata, tag):
     return version
 
 
-class Credentials:
-    """Refresh short-lived OIDC credentials during long new-crate rate limits."""
-
-    def __init__(self):
-        self.token = os.environ.get("TRUSTED_PUBLISHING_TOKEN", "")
-        self.fallback = os.environ.get("CARGO_REGISTRY_TOKEN", "")
-        self.created = time.monotonic()
-        self.minted = False
-
-    def preferred_mode(self):
-        return "trusted-publishing" if self.token else "fallback-secret"
-
-    def environment(self, mode):
-        if mode == "trusted-publishing" and time.monotonic() - self.created >= 600:
-            # Same exchange as rust-lang/crates-io-auth-action; that action supplies
-            # the initial token and revokes it in its post step.
-            url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
-            url += ("&" if "?" in url else "?") + "audience=crates.io"
-            jwt = retry(lambda: request_json(url, headers={
-                "Authorization": "Bearer " + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"],
-            }))["value"]
-            result = retry(lambda: request_json(
-                f"{API}/trusted_publishing/tokens", method="POST",
-                headers={"Content-Type": "application/json"},
-                data=json.dumps({"jwt": jwt}).encode(),
-            ))
-            token = result["token"]
-            print(f"::add-mask::{token}", flush=True)
-            self.close()
-            self.token, self.created, self.minted = token, time.monotonic(), True
-        token = self.token if mode == "trusted-publishing" else self.fallback
-        if not token:
-            raise ValueError("Configure crates.io Trusted Publishing or CARGO_REGISTRY_TOKEN")
-        return {**os.environ, "CARGO_REGISTRY_TOKEN": token}
-
-    def close(self):
-        if self.minted:
-            retry(lambda: request_json(
-                f"{API}/trusted_publishing/tokens", method="DELETE",
-                headers={"Authorization": f"Bearer {self.token}"},
-            ))
-            self.minted = False
-
-
-def publish(package, credentials):
-    name, version = package["name"], package["version"]
-    # An exchanged token can cover only some crates. Reset the preferred mode
-    # for each crate so one unconfigured crate does not disable OIDC for others.
-    mode = credentials.preferred_mode()
-    for attempt in range(len(BACKOFF) + 1):
-        # Check before every attempt: also handles a successful upload whose
-        # response was lost, and resuming after another crate failed.
-        if published(name, version):
-            print(f"Skip {name}@{version}: already on crates.io", flush=True)
-            return
-        while True:
-            print(f"Publish {name}@{version} using {mode} (attempt {attempt + 1})", flush=True)
-            result = subprocess.run(
-                ["cargo", f"+{TOOLCHAIN}", "publish", "--locked", "--registry", "crates-io", "-p", name],
-                env=credentials.environment(mode), text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            )
-            print(result.stdout, end="", flush=True)
-            if result.returncode == 0 or published(name, version):
-                return
-            denied = re.search(r"\b(?:401|403)\b", result.stdout)
-            if denied and mode == "trusted-publishing" and credentials.fallback:
-                print(f"{name}: Trusted Publishing authorization denied; retrying with fallback-secret", flush=True)
-                mode = "fallback-secret"
-                continue
-            break
-        limited = re.search(r"429|rate.?limit|too many requests|try again after", result.stdout, re.I)
-        if not limited or attempt == len(BACKOFF):
-            raise RuntimeError(f"Publishing {name}@{version} failed; dispatch the same tag to resume")
-        delay = BACKOFF[attempt]
-        print(f"Rate limited; retrying in {delay}s", flush=True)
-        time.sleep(delay)
+def published(name, version):
+    request = Request(f"https://crates.io/api/v1/crates/{name}/{version}",
+                      headers={"User-Agent": "polkameter-release"})
+    try:
+        with urlopen(request, timeout=60):
+            return True
+    except HTTPError as error:
+        if error.code == 404:
+            return False
+        raise
 
 
 def main():
@@ -173,24 +47,22 @@ def main():
         "cargo", f"+{TOOLCHAIN}", "metadata", "--no-deps", "--format-version", "1", "--locked",
     ]))
     version = release_version(metadata, args.tag)
-    packages = publish_order(metadata)
-    print("Publication order: " + ", ".join(p["name"] for p in packages), flush=True)
     if args.check_only:
         if os.environ.get("GITHUB_OUTPUT"):
             with open(os.environ["GITHUB_OUTPUT"], "a") as output:
                 output.write(f"version={version}\nmajor={version.split('.')[0]}\n")
         return
-    credentials = Credentials()
-    try:
-        for package in packages:
-            publish(package, credentials)
-    finally:
-        credentials.close()
+    for name in CRATES:
+        # A re-run skips the crates that the failed run already published.
+        if published(name, version):
+            print(f"Skip {name}@{version}: already on crates.io", flush=True)
+            continue
+        subprocess.run(["cargo", f"+{TOOLCHAIN}", "publish", "--locked", "-p", name], check=True)
 
 
 if __name__ == "__main__":
     try:
         main()
-    except (ValueError, RuntimeError, HTTPError) as error:
+    except (ValueError, HTTPError, subprocess.CalledProcessError) as error:
         print(f"Error: {error}", file=sys.stderr)
         sys.exit(1)
