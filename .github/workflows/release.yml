@@ -182,13 +182,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: ${{ env.RUST_VERSION }}
+      # Without a Trusted Publishing config on crates.io, fall back to the
+      # CARGO_REGISTRY_TOKEN secret.
       - name: Obtain a Trusted Publishing token
         id: auth
+        continue-on-error: true
         uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
       - name: Publish the crates that are missing
         working-directory: release-source
         env:
-          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
         run: python3 ../scripts/publish-crates.py --tag "$RELEASE_TAG"
 
   publish:
