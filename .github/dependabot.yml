@@ -11,10 +11,6 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    ignore:
-      # The builder's Rust version follows the workspace toolchain (RUST_VERSION); take digest updates only.
-      - dependency-name: rust
-        update-types: [version-update:semver-major, version-update:semver-minor, version-update:semver-patch]
   - package-ecosystem: cargo
     directory: /
     schedule:

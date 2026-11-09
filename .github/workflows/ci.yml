@@ -205,32 +205,24 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      # Build only, so the Dockerfile is tested before a release builds and pushes it.
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          context: .
-          file: Dockerfile
-          platforms: linux/amd64
-          push: false
-          load: true
-          tags: polkameter:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # The release builds the image from its Linux binaries the same way. Ubuntu 22.04's
+      # glibc 2.35 is older than the image's 2.36. The example plugin runs in the image below.
+      - name: Build the binaries and the amd64 image
+        run: |
+          cargo +${{ env.RUST_VERSION }} build --locked --release -p polkameter -p polkameter-substrate-plugin -p polkameter-example-plugin
+          mkdir -p image/amd64
+          cp target/release/polkameter target/release/polkameter-substrate-plugin image/amd64/
+          docker build --file Dockerfile --tag polkameter:ci image
       - name: Run the image
         run: |
           docker run --rm polkameter:ci --version
           docker run --rm --entrypoint sh polkameter:ci -c 'polkameter plugin install /usr/local/bin/polkameter-substrate-plugin'
           test "$(docker run --rm --entrypoint id polkameter:ci -u)" = 10001
           docker image ls polkameter:ci --format 'Image size: {{.Size}}'
-      # The plugin runs inside the image, so build it for Linux; Ubuntu 22.04's
-      # glibc 2.35 is older than the image's 2.36.
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - name: Build the example plugin
-        run: cargo +${{ env.RUST_VERSION }} build --locked --release -p polkameter-example-plugin
       - name: Stop a running plan with docker stop
         run: |
           mkdir -m 777 stop-test

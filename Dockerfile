@@ -1,17 +1,14 @@
 # syntax=docker/dockerfile:1
-FROM rust:1.93.0-bookworm@sha256:d0a4aa3ca2e1088ac0c81690914a0d810f2eee188197034edf366ed010a2b382 AS builder
-WORKDIR /build
-COPY . .
-ENV CARGO_PROFILE_RELEASE_STRIP=symbols CARGO_PROFILE_RELEASE_DEBUG=0
-RUN cargo +1.93.0 build --locked --release -p polkameter -p polkameter-substrate-plugin --bin polkameter --bin polkameter-substrate-plugin
-
+# The build context holds the Linux release binaries in one directory per architecture:
+# amd64/ and arm64/, each with polkameter and polkameter-substrate-plugin. They link
+# against glibc 2.35 or older; bookworm has 2.36.
 FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
+ARG TARGETARCH
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates tini \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 10001 polkameter
-COPY --from=builder /build/target/release/polkameter /usr/local/bin/polkameter
-COPY --from=builder /build/target/release/polkameter-substrate-plugin /usr/local/bin/polkameter-substrate-plugin
+COPY ${TARGETARCH}/polkameter ${TARGETARCH}/polkameter-substrate-plugin /usr/local/bin/
 USER 10001:10001
 WORKDIR /home/polkameter
 # tini runs as PID 1: it forwards signals to polkameter and reaps exited plugin processes.

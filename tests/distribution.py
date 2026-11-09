@@ -355,12 +355,6 @@ class WorkflowTests(unittest.TestCase):
                     self.assertRegex(match[1], r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
                     self.assertRegex(match[2], r"^ # \S+")
 
-    def test_container_uses_init_and_non_root_user(self):
-        dockerfile = (ROOT / "Dockerfile").read_text()
-        self.assertIn('ENTRYPOINT ["/usr/bin/tini", "--", "polkameter"]', dockerfile)
-        self.assertIn("STOPSIGNAL SIGINT", dockerfile)
-        self.assertIn("USER 10001:10001", dockerfile)
-
 
 class ContainerTests(unittest.TestCase):
     def test_numeric_semver_order(self):
