@@ -1,0 +1,401 @@
+//! What PolkaMeter never blames on the chain (docs/reading-results.md). Each test makes a fault
+//! that is not the chain's, as in the faults found on a dev chain behind a TCP proxy, and checks
+//! that the run does not end on a chain failure. A control case checks that a chain that really
+//! fails still does.
+
+use std::{
+	path::Path,
+	sync::{Arc, Mutex},
+	time::Duration,
+};
+
+use futures_util::{SinkExt, StreamExt};
+use polkameter::load::{
+	Plan, QueueSource, Tx, TxHash,
+	follower::BlockEvent,
+	reconnect::{Backoff, Reconnect, reconnect},
+	rules::{RULES, breaking_point},
+	runner::{Io, Mode, RunOptions, baseline, load, recover},
+	sender::{Reply, Sender},
+	steps::final_step,
+	submit::Submit,
+	tracker::Tracker,
+};
+use polkameter_plugin_sdk::observers::{
+	BlockRecord, Phase, Problems, RunDir, now_ms,
+	summary::{Baseline, BreakingPoint, Recovery, Rule, Stop},
+};
+use tokio::{sync::mpsc, time::Instant};
+use tokio_tungstenite::tungstenite::Message;
+use tokio_util::sync::CancellationToken;
+
+/// A tracker in the load with `flood` txs, sending through `sender`, and the runner's inputs: one
+/// step of `seconds` at `rate` tx/s.
+fn runner<S: Submit>(
+	name: &str,
+	sender: S,
+	replies: mpsc::UnboundedReceiver<Reply>,
+	blocks: mpsc::UnboundedReceiver<BlockEvent>,
+	(rate, seconds): (f64, u32),
+	baseline_probes: usize,
+) -> (Tracker<S>, Io, RunOptions) {
+	let dir = RunDir::create(Path::new(env!("CARGO_TARGET_TMPDIR")), name).unwrap();
+	let tx = |n: u32| Tx::new(n.to_le_bytes().to_vec());
+	let (txs, probes) = ((0..5_000).map(tx).collect(), (5_000..5_020).map(tx).collect());
+	let mut t = Tracker::new(
+		QueueSource::new(txs, probes),
+		sender,
+		dir.jsonl("load.jsonl").unwrap(),
+		dir.jsonl("blocks.jsonl").unwrap(),
+		baseline_probes,
+		now_ms(),
+	);
+	t.set_phase(Phase::Ramp, now_ms()).unwrap();
+	let (events, _) = tokio::sync::broadcast::channel(64);
+	let io = Io {
+		replies,
+		blocks,
+		events,
+		problems: Problems::default(),
+		tool_failed: CancellationToken::new(),
+		boot: || Some(now_ms()),
+		restarts: Problems::default(),
+	};
+	let opts = RunOptions {
+		rules: RULES,
+		mode: Mode::Stress,
+		plan: Plan::ramp(rate, 0.0, seconds, 1),
+		connections: 1,
+		recovery_s: 20,
+		baseline_probes,
+		block_interval_s: 6.0,
+	};
+	(t, io, opts)
+}
+
+/// I1. A node that is back within the reconnect budget (15 s) is reconnected, also when it is
+/// back only near the end; one unreachable for the whole budget is down, and not before.
+/// (An 8 s outage was "node down" after 7.8 s: the backoff gave up when its next wait passed the
+/// deadline.)
+#[tokio::test(start_paused = true)]
+async fn i1_a_node_back_within_the_reconnect_budget_is_not_down() {
+	let stop = CancellationToken::new();
+	for back_after in [8.0, 14.9] {
+		let start = Instant::now();
+		let back = start + Duration::from_secs_f64(back_after);
+		let attempt = || async move {
+			if Instant::now() < back { Err("connection refused") } else { Ok(()) }
+		};
+		let r = reconnect(attempt, &Backoff::default(), &stop).await;
+		assert_eq!(r, Reconnect::Connected(()), "back after {back_after} s");
+		assert!(start.elapsed() <= Duration::from_secs(15), "{:?}", start.elapsed());
+	}
+	let start = Instant::now();
+	let never = || async { Err::<(), _>("connection refused") };
+	let r = reconnect(never, &Backoff::default(), &stop).await;
+	assert!(matches!(r, Reconnect::GaveUp(_)), "{r:?}");
+	assert!(start.elapsed() >= Duration::from_secs(15), "gave up after {:?}", start.elapsed());
+}
+
+/// A node that accepts every tx at once; the chain includes it in the first block made
+/// `delay_ms` after it was sent. With a [`Link`], it answers and pools each tx 2 s after it was
+/// sent instead, and the connection can drop.
+struct Node {
+	replies: mpsc::UnboundedSender<Reply>,
+	pool: Pool,
+	link: Option<Arc<Mutex<Link>>>,
+}
+
+type Pool = Arc<Mutex<Vec<(TxHash, u64)>>>;
+
+/// Sender connection 0 of a [`Node`]: the requests the node has not read yet, and whether the
+/// connection is down.
+#[derive(Default)]
+struct Link {
+	unread: Vec<(u64, TxHash, u64)>,
+	down: bool,
+}
+
+impl Submit for Node {
+	fn submit(&mut self, id: u64, bytes: &[u8]) -> Option<usize> {
+		let hash = Tx::new(bytes.to_vec()).hash;
+		if let Some(link) = &self.link {
+			let mut link = link.lock().unwrap();
+			if link.down {
+				return None;
+			}
+			link.unread.push((id, hash, now_ms()));
+			return Some(0);
+		}
+		self.pool.lock().unwrap().push((hash, now_ms()));
+		self.replies.send(Reply::Accepted { id, at: now_ms() }).ok()?;
+		Some(0)
+	}
+	fn queued_bytes(&self) -> u64 {
+		0
+	}
+	fn disconnected(&self) -> bool {
+		self.link.as_ref().is_some_and(|l| l.lock().unwrap().down)
+	}
+}
+
+/// What goes wrong in a [`chain_run`]. Seconds count from the start of the run.
+#[derive(Clone, Copy)]
+enum Fault {
+	/// PolkaMeter itself is paused for `.1` s at second `.0` (SIGSTOP, CPU starvation): every
+	/// block made meanwhile is seen only after it.
+	Paused(u64, u64),
+	/// The block follower is disconnected from second `.0` to `.1` (an RPC outage, reconnected
+	/// within the budget): the blocks made meanwhile are read after the reconnect.
+	FollowerDown(u64, u64),
+	/// The sender's connection drops at second `.0` and opens again at `.1`; what the node had
+	/// not read is sent again then, and only then reaches its pool.
+	SenderDown(u64, u64),
+	/// None: the chain includes each tx 11 s after it was sent, slower than the 10 s p95 limit.
+	SlowChain,
+}
+
+/// A chain with a block every 6 s, including what reached `pool` `delay_ms` before, and the
+/// faults of `faults` other than [`Fault::SlowChain`].
+fn chain(
+	pool: Pool,
+	link: Option<(Arc<Mutex<Link>>, mpsc::UnboundedSender<Reply>)>,
+	faults: &[Fault],
+	blocks_tx: mpsc::UnboundedSender<BlockEvent>,
+) {
+	let delay_ms = if faults.iter().any(|f| matches!(f, Fault::SlowChain)) { 11_000 } else { 0 };
+	let (mut down, mut sender_down) = (None, None);
+	for fault in faults {
+		match *fault {
+			Fault::Paused(at, seconds) => {
+				tokio::spawn(async move {
+					tokio::time::sleep(Duration::from_secs(at)).await;
+					tokio::time::advance(Duration::from_secs(seconds)).await;
+				});
+			},
+			Fault::FollowerDown(from, to) => down = Some((from, to)),
+			Fault::SenderDown(from, to) => sender_down = Some((from, to)),
+			Fault::SlowChain => {},
+		}
+	}
+	tokio::spawn(async move {
+		let start = Instant::now();
+		let (mut number, mut held) = (0, Vec::new());
+		for second in 1.. {
+			tokio::time::sleep_until(start + Duration::from_secs(second)).await;
+			let now = now_ms();
+			if let Some((link, replies)) = &link {
+				let mut l = link.lock().unwrap();
+				let (from, to) = sender_down.unwrap_or((u64::MAX, u64::MAX));
+				if second == from {
+					l.down = true;
+					let ids = l.unread.iter().map(|(id, ..)| *id).collect();
+					let _ = replies.send(Reply::Interrupted {
+						connection: 0,
+						ids,
+						reason: "reset".into(),
+					});
+				}
+				if second == to {
+					l.down = false;
+					let _ = replies
+						.send(Reply::Reconnected { connection: 0, down_ms: (to - from) * 1_000 });
+				}
+				// The node reads a request 2 s after it was sent, or at once when it is sent again.
+				let (resent, down) = (second == to, l.down);
+				let (read, unread) = l
+					.unread
+					.drain(..)
+					.partition::<Vec<_>, _>(|(.., sent)| !down && (resent || sent + 2_000 <= now));
+				l.unread = unread;
+				for (id, hash, _) in read {
+					pool.lock().unwrap().push((hash, now));
+					let _ = replies.send(Reply::Accepted { id, at: now });
+				}
+			}
+			let mut events = Vec::new();
+			if down.is_some_and(|(from, _)| from == second) {
+				events.push(BlockEvent::Disconnected { at: now, reason: "stream ended".into() });
+			}
+			if down.is_some_and(|(_, to)| to == second) {
+				events.push(BlockEvent::Reconnected { at: now });
+				events.extend(held.drain(..).flat_map(|(n, txs)| block(n, now, txs)));
+			}
+			if second % 6 == 0 {
+				number += 1;
+				let txs: Vec<(TxHash, bool)> = {
+					let mut pool = pool.lock().unwrap();
+					let (ready, later) =
+						pool.drain(..).partition::<Vec<_>, _>(|(_, sent)| sent + delay_ms <= now);
+					*pool = later;
+					ready.into_iter().map(|(hash, _)| (hash, false)).collect()
+				};
+				if down.is_some_and(|(from, to)| (from..to).contains(&second)) {
+					held.push((number, txs));
+				} else {
+					events.extend(block(number, now, txs));
+				}
+			}
+			for e in events {
+				if blocks_tx.send(e).is_err() {
+					return;
+				}
+			}
+		}
+	});
+}
+
+/// The runner on a [`chain`] with `faults`, and `baseline_probes` before the load.
+fn on_chain(
+	name: &str,
+	faults: &[Fault],
+	(rate, seconds): (f64, u32),
+	baseline_probes: usize,
+) -> (Tracker<Node>, Io, RunOptions) {
+	let (replies_tx, replies) = mpsc::unbounded_channel();
+	let (blocks_tx, blocks) = mpsc::unbounded_channel();
+	let pool = Pool::default();
+	let link = faults
+		.iter()
+		.any(|f| matches!(f, Fault::SenderDown(..)))
+		.then(|| Arc::new(Mutex::new(Link::default())));
+	let node = Node { replies: replies_tx.clone(), pool: pool.clone(), link: link.clone() };
+	chain(pool, link.map(|l| (l, replies_tx)), faults, blocks_tx);
+	let (t, io, mut opts) = runner(name, node, replies, blocks, (rate, seconds), baseline_probes);
+	opts.recovery_s = 30;
+	(t, io, opts)
+}
+
+/// One 30 s step at 20 tx/s with `fault`, then recovery so every inclusion is read: the load's
+/// stop and the failure onset.
+async fn chain_run(name: &str, fault: Fault) -> (Stop, Option<BreakingPoint>) {
+	let (mut t, mut io, opts) = on_chain(name, &[fault], (20.0, 30), 0);
+	let stop = load(&mut t, &mut io, &opts).await.unwrap();
+	recover(&mut t, &mut io, &opts, 12_000).await.unwrap();
+	let finals: Vec<_> = t.steps.iter().map(final_step).collect();
+	(stop, breaking_point(&finals, &RULES))
+}
+
+/// Block `number` as the follower reads it at `seen_at`: new best, read, finalized at once.
+fn block(number: u32, seen_at: u64, txs: Vec<(TxHash, bool)>) -> [BlockEvent; 3] {
+	let record = BlockRecord { number, seen_at, gap_ms: Some(6_000), ..Default::default() };
+	[
+		BlockEvent::Head { number, seen_at },
+		BlockEvent::Fetched { record, txs },
+		BlockEvent::Finalized { number, seen_at },
+	]
+}
+
+/// I3. PolkaMeter paused for 8 s (the chain fine) ends on "generator limit" and the txs it timed
+/// across the pause make no failure onset: the verdict is INCONCLUSIVE, not FAIL. The same for
+/// a block follower that reconnected: what it read late is not the chain's latency. A chain that
+/// really is slow still breaks the latency measure.
+#[tokio::test(start_paused = true)]
+async fn i3_time_polkameter_did_not_observe_never_makes_a_latency_failure() {
+	let (stop, onset) = chain_run("attribution-paused", Fault::Paused(10, 8)).await;
+	assert_eq!((stop.rule, stop.class), (Rule::GeneratorLimit, None), "{}", stop.detail);
+	assert_eq!(onset, None, "a pause of PolkaMeter is not the chain's latency");
+
+	let (stop, onset) = chain_run("attribution-follower", Fault::FollowerDown(9, 24)).await;
+	assert_eq!(stop.rule, Rule::RateCap, "{}", stop.detail);
+	assert_eq!(onset, None, "blocks read after a reconnect are not the chain's latency");
+
+	let (stop, onset) = chain_run("attribution-slow-chain", Fault::SlowChain).await;
+	assert_eq!(stop.rule, Rule::RateCap, "{}", stop.detail);
+	assert_eq!(onset.map(|o| o.measure), Some("latency".into()), "a slow chain still fails");
+}
+
+/// I4. The sender's connection drops for 13 s: the node had not read the txs it had unanswered,
+/// and gets them only when they are sent again. Their time to inclusion holds the outage, which
+/// is not the chain's latency, so it makes no failure onset. (It did: p95 above 10 s.)
+#[tokio::test(start_paused = true)]
+async fn i4_time_to_resend_after_a_reconnect_is_not_latency() {
+	let (stop, onset) = chain_run("attribution-resent", Fault::SenderDown(9, 22)).await;
+	assert_eq!((stop.rule, stop.class), (Rule::GeneratorLimit, None), "{}", stop.detail);
+	assert_eq!(onset, None, "a tx sent again after a reconnect is not the chain's latency");
+}
+
+/// Baseline, a 6 s load at 2 tx/s and recovery, with PolkaMeter paused at the seconds of
+/// `pauses`: the baseline and the recovery.
+async fn phases_run(name: &str, pauses: &[Fault]) -> (Baseline, Recovery) {
+	let (mut t, mut io, opts) = on_chain(name, pauses, (2.0, 6), 3);
+	let base = baseline(&mut t, &mut io, &opts).await.unwrap();
+	load(&mut t, &mut io, &opts).await.unwrap();
+	(base, recover(&mut t, &mut io, &opts, 12_000).await.unwrap())
+}
+
+/// I3 in the baseline and in recovery. Paused in the baseline, PolkaMeter does not take the
+/// probe it timed across the pause as the chain's latency. Paused in recovery, it does not
+/// report the time the pause took as the chain's recovery: the recovery is not measured. (It
+/// reported a 10 s baseline probe, and recovery after 18 s, on a chain back after 6 s.)
+#[tokio::test(start_paused = true)]
+async fn i3_a_pause_in_the_baseline_or_recovery_is_not_the_chains() {
+	let (base, r) = phases_run("attribution-phases", &[]).await;
+	assert!(base.max_ms <= 6_000, "{base:?}");
+	assert!(r.measured && r.recovered && r.seconds <= Some(6), "{r:?}");
+
+	let pauses = [Fault::Paused(8, 8), Fault::Paused(33, 15)];
+	let (base, r) = phases_run("attribution-phases-paused", &pauses).await;
+	assert!(base.max_ms <= 6_000, "the baseline probe timed across the pause: {base:?}");
+	assert!(!r.measured, "a pause in recovery is not the chain's recovery time: {r:?}");
+}
+
+/// When the fake node of [`i4_a_reconnecting_sender_is_never_pool_intake`] is unreachable.
+const OUTAGE: std::ops::Range<Duration> = Duration::from_millis(500)..Duration::from_millis(1_500);
+
+/// Answers every submit on `tcp` until the outage starts, then drops the connection.
+async fn serve(tcp: tokio::net::TcpStream, start: Instant) {
+	let Ok(mut ws) = tokio_tungstenite::accept_async(tcp).await else { return };
+	let outage = start + OUTAGE.start;
+	loop {
+		let msg = tokio::select! {
+			() = tokio::time::sleep_until(outage), if Instant::now() < outage => return,
+			msg = ws.next() => msg,
+		};
+		let Some(Ok(msg)) = msg else { return };
+		if msg.is_text() {
+			let v: serde_json::Value = serde_json::from_str(msg.to_text().unwrap()).unwrap();
+			let answer = format!(r#"{{"jsonrpc":"2.0","id":{},"result":"0x00"}}"#, v["id"]);
+			if ws.send(Message::text(answer)).await.is_err() {
+				return;
+			}
+		}
+	}
+}
+
+/// I4. The RPC connection drops for a second and reconnects (a proxy restart), with the node
+/// reading every submit: the step sends less, but the node did not stop reading submits, so
+/// this is not "pool intake". (It was, with "0 KiB unsent".)
+#[tokio::test]
+async fn i4_a_reconnecting_sender_is_never_pool_intake() {
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let url = format!("ws://{}", listener.local_addr().unwrap());
+	let start = Instant::now();
+	tokio::spawn(async move {
+		loop {
+			let (tcp, _) = listener.accept().await.unwrap();
+			// During the outage every connection is closed before its handshake.
+			if !OUTAGE.contains(&start.elapsed()) {
+				tokio::spawn(serve(tcp, start));
+			}
+		}
+	});
+	let (replies_tx, replies) = mpsc::unbounded_channel();
+	let backoff = Backoff {
+		waits: vec![Duration::from_millis(50)],
+		attempt: Duration::from_secs(1),
+		total: Duration::from_secs(15),
+	};
+	let sender = Sender::open(&url, 1, replies_tx, &backoff).await.unwrap();
+	let (_blocks_tx, blocks) = mpsc::unbounded_channel();
+	let (mut t, mut io, opts) =
+		runner("attribution-reconnect", sender, replies, blocks, (100.0, 3), 0);
+	// No blocks in 3 s: keep the stall rules quiet.
+	t.last_head.0 = now_ms() + 60_000;
+	t.last_finalized.0 = now_ms() + 60_000;
+	let stop = load(&mut t, &mut io, &opts).await.unwrap();
+	let gap = t.observation_gaps.iter().find(|g| g.what == "sender connection 0");
+	assert!(gap.is_some_and(|g| g.to.is_some()), "the connection dropped and reconnected");
+	assert_ne!(stop.rule, Rule::PoolIntake, "{}", stop.detail);
+	assert_eq!((stop.rule, stop.class), (Rule::GeneratorLimit, None), "{}", stop.detail);
+}

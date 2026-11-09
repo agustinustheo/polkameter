@@ -58,7 +58,8 @@ pub struct Baseline {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Recovery {
-	/// False when the node closed the RPC connection.
+	/// False when the node closed the RPC connection, or PolkaMeter itself was paused while it
+	/// measured (its pause is not the chain's recovery time).
 	pub measured: bool,
 	/// Probes landed in time again.
 	pub recovered: bool,

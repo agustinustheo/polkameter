@@ -119,6 +119,9 @@ jobs:
             target/debug/polkameter run "examples/$plan.polkameter.xml" --output target/dev-chain-runs --fail-on verdict
           done
           cat target/dev-chain-runs/run-*/summary.md >> "$GITHUB_STEP_SUMMARY"
+      # An 8 s RPC outage through a TCP proxy, the node fine: the run must not blame the chain.
+      - name: RPC outage is not the chain's fault
+        run: tests/rpc-outage.py target/debug/polkameter target/dev-chain-runs/rpc-outage
       - name: Stop the dev chain
         if: always()
         run: scripts/dev-chain.sh stop

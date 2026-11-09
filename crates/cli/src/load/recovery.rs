@@ -14,7 +14,15 @@ pub fn recovered_at(
 	block_ms: f64,
 	rules: &crate::load::rules::Rules,
 ) -> Option<Millis> {
-	let rec: Vec<&Probe> = probes.iter().filter(|p| p.phase == ProbePhase::Recovery).collect();
+	// A probe that landed with no latency was seen late (PolkaMeter paused, sent again after a
+	// reconnect, read as the follower caught up): no evidence either way.
+	let untimed = |p: &&Probe| {
+		p.outcome != Outcome::Pending && p.outcome != Outcome::Refused && p.latency_ms.is_none()
+	};
+	let rec: Vec<&Probe> = probes
+		.iter()
+		.filter(|p| p.phase == ProbePhase::Recovery && !untimed(p))
+		.collect();
 	let good = |p: &&Probe| {
 		p.outcome == Outcome::Included && p.latency_ms.is_some_and(|l| l <= threshold_ms)
 	};

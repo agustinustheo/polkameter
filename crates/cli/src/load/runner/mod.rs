@@ -144,6 +144,55 @@ pub(super) fn interval(ms: u64) -> tokio::time::Interval {
 	i
 }
 
+/// Why the load tool itself was paused between two ticks, if it was: `elapsed` ms passed on
+/// the run's monotonic clock, and `boot` ms on a clock that also counts sleep (`None` without
+/// one). A long monotonic gap is CPU starvation; a boot clock far ahead of the monotonic one is a
+/// machine that was suspended. The wall clock plays no part: an NTP step either way is ignored.
+pub(super) fn paused(elapsed: Millis, boot: Option<Millis>, max_gap: Millis) -> Option<String> {
+	const NOT_THE_CHAIN: &str = "the numbers after this are not the chain's";
+	if elapsed > max_gap {
+		return Some(format!(
+			"the load tool was paused for {} s (CPU starvation or a suspended machine); {NOT_THE_CHAIN}",
+			elapsed / 1000
+		));
+	}
+	let slept = boot?.saturating_sub(elapsed);
+	(slept > max_gap)
+		.then(|| format!("the machine was suspended for {} s; {NOT_THE_CHAIN}", slept / 1000))
+}
+
+/// Watches the ticks of one loop for a pause of PolkaMeter itself ([`paused`]) and tells the
+/// tracker, which leaves out the time of what it saw late.
+pub(super) struct PauseWatch {
+	last: Instant,
+	boot: Option<Millis>,
+	now: Millis,
+}
+
+impl PauseWatch {
+	pub(super) fn new(io: &Io) -> Self {
+		Self { last: Instant::now(), boot: (io.boot)(), now: now_ms() }
+	}
+
+	/// At a tick: why PolkaMeter was paused since the last one, if it was.
+	pub(super) fn tick<S: Submit>(
+		&mut self,
+		t: &mut Tracker<S>,
+		io: &Io,
+		rules: &Rules,
+	) -> Option<String> {
+		let (at, now, boot) = (Instant::now(), now_ms(), (io.boot)());
+		let elapsed = at.duration_since(self.last).as_millis() as Millis;
+		let slept = boot.zip(self.boot).map(|(b, l)| b.saturating_sub(l));
+		let why = paused(elapsed, slept, rules.max_tick_gap_ms);
+		if why.is_some() {
+			t.paused(self.now, now);
+		}
+		(self.last, self.boot, self.now) = (at, boot, now);
+		why
+	}
+}
+
 /// Why the node is down, if it is: the block follower lost it, or the process sampler saw its PID
 /// change (a local node that restarted). Both the load and recovery end on it.
 pub(super) fn node_down<S: Submit>(t: &Tracker<S>, io: &Io) -> Option<String> {
@@ -184,8 +233,12 @@ pub async fn baseline<S: Submit>(
 			(opts.baseline_probes as u64 + 10) * (opts.block_interval_s * 1000.0) as u64,
 		);
 	let mut tick = interval(200);
+	let mut watch = PauseWatch::new(io);
 	while Instant::now() < deadline {
 		if next(t, io, &mut tick).await? {
+			if let Some(why) = watch.tick(t, io, &opts.rules) {
+				crate::redact::diag!("baseline: {why}");
+			}
 			t.tick(now_ms())?;
 			if t.probes.len() >= opts.baseline_probes
 				&& t.probes.iter().all(|p| p.outcome != Outcome::Pending)
@@ -223,11 +276,17 @@ pub async fn drain<S: Submit>(
 	t: &mut Tracker<S>,
 	io: &mut Io,
 	timeout_ms: Millis,
+	rules: &Rules,
 ) -> Result<bool, RunError> {
 	let deadline = Instant::now() + Duration::from_millis(timeout_ms);
 	let mut tick = interval(100);
+	let mut watch = PauseWatch::new(io);
 	while t.last_fetched < t.last_head.1 && Instant::now() < deadline {
-		next(t, io, &mut tick).await?;
+		if next(t, io, &mut tick).await?
+			&& let Some(why) = watch.tick(t, io, rules)
+		{
+			crate::redact::diag!("drain: {why}");
+		}
 	}
 	Ok(t.last_fetched >= t.last_head.1)
 }
@@ -251,9 +310,15 @@ pub async fn recover<S: Submit>(
 	let deadline = started + Duration::from_secs(u64::from(opts.recovery_s));
 	let (mut back_at, mut drained_at, mut last_log) = (None, None, started);
 	let mut tick = interval(500);
+	// Paused here, PolkaMeter would time its own pause as the chain's recovery and drain.
+	let (mut watch, mut paused_in) = (PauseWatch::new(io), None);
 	while Instant::now() < deadline && t.closed_by_node == 0 && node_down(t, io).is_none() {
 		if !next(t, io, &mut tick).await? {
 			continue;
+		}
+		if let Some(why) = watch.tick(t, io, &opts.rules) {
+			crate::redact::diag!("recovery: {why}");
+			paused_in.get_or_insert(why);
 		}
 		let now = now_ms();
 		t.tick(now)?;
@@ -287,23 +352,25 @@ pub async fn recover<S: Submit>(
 		opts.rules.probes_in_a_row,
 		secs(threshold_ms as f64)
 	);
-	let detail = match (back_at, node_down(t, io)) {
-		(Some(_), _) => landed,
-		(None, Some(why)) => format!("node down: {why}"),
-		(None, None) if t.recovery_blocks.is_empty() => {
+	let measured = paused_in.is_none();
+	let detail = match (paused_in, back_at, node_down(t, io)) {
+		(Some(paused), ..) => paused,
+		(None, Some(_), _) => landed,
+		(None, None, Some(why)) => format!("node down: {why}"),
+		(None, None, None) if t.recovery_blocks.is_empty() => {
 			format!("no new block in {} s", opts.recovery_s)
 		},
-		(None, None) => format!("after {} s no {landed}", opts.recovery_s),
+		(None, None, None) => format!("after {} s no {landed}", opts.recovery_s),
 	};
 	let r = Recovery {
-		measured: true,
-		recovered: back_at.is_some(),
-		seconds: seconds(back_at),
+		measured,
+		recovered: measured && back_at.is_some(),
+		seconds: seconds(back_at.filter(|_| measured)),
 		detail,
 		threshold_ms,
 		backlog_at_stop,
 		backlog_at_end: t.outstanding().len() as u64,
-		drained_seconds: seconds(drained_at),
+		drained_seconds: seconds(drained_at.filter(|_| measured)),
 		drain_per_s: t.drained as f64
 			/ (now_ms().saturating_sub(stopped_at) as f64 / 1000.0).max(0.001),
 		probes: t.probes.iter().filter(|p| p.phase == ProbePhase::Recovery).cloned().collect(),

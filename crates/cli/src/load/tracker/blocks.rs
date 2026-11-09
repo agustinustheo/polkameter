@@ -18,6 +18,10 @@ impl<S: Submit> Tracker<S> {
 	pub fn on_block(&mut self, event: BlockEvent, now: Millis) -> Result<(), FileError> {
 		match event {
 			BlockEvent::Head { number, seen_at } => {
+				if let Some(lost) = self.catching_up.take() {
+					// This block and the ones filled in below it, read with it, are read late.
+					self.read_late.push((lost, seen_at));
+				}
 				self.last_head = (seen_at, number.max(self.last_head.1));
 				self.on_head(seen_at);
 				if matches!(self.phase(), Phase::Baseline | Phase::Recovery) {
@@ -39,6 +43,7 @@ impl<S: Submit> Tracker<S> {
 			},
 			BlockEvent::Reconnected { at } => {
 				let Some(from) = self.unobserved_since() else { return Ok(()) };
+				self.catching_up = Some(from);
 				// A step that ended meanwhile counted its part when it ended.
 				for st in self.steps.iter_mut().filter(|st| !st.closed) {
 					st.unobserved_ms += at.saturating_sub(from.max(st.started_at));
@@ -134,23 +139,32 @@ impl<S: Submit> Tracker<S> {
 		let Some(tx) = self.sent.remove(hash) else { return false };
 		self.last_ours_block = self.last_ours_block.max(block);
 		let latency = seen_at.saturating_sub(tx.sent_at);
+		let late = self.read_late.iter().any(|(from, to)| *from < seen_at && seen_at <= *to);
 		let step = match tx.kind {
 			Kind::Probe { index } => {
 				self.probes[index].outcome =
 					if failed { Outcome::Failed } else { Outcome::Included };
-				self.probes[index].latency_ms = Some(latency);
+				let untimed = late || self.untimed_probes.contains(&index);
+				self.probes[index].latency_ms = (!untimed).then_some(latency);
 				return true;
 			},
 			Kind::Flood { step } => step,
 		};
 		self.included_in.insert(*hash, block);
+		let mut untimed = late;
 		if let Some(flood) = self.flood.get_mut(hash) {
 			flood.inclusion_ms = Some(latency);
 			flood.failed_in_block = failed;
+			flood.untimed |= late;
+			untimed = flood.untimed;
 		}
 		let st = &mut self.steps[step];
 		st.included += 1;
-		st.latencies_ms.push(latency);
+		if untimed {
+			st.untimed += 1;
+		} else {
+			st.latencies_ms.push(latency);
+		}
 		self.load.inc(&TX_INCLUDED, [CALL], 1.0, seen_at);
 		self.load.observe(&TX_INCLUSION, [CALL], latency as f64 / 1000.0, seen_at);
 		if failed {

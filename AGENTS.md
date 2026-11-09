@@ -60,13 +60,26 @@ python3 tests/action-smoke.py
 mdbook build
 ```
 
-Tests that need a chain are `#[ignore]`d. Start the dev chain, run them, and stop it:
+Tests that need a chain are `#[ignore]`d, and `tests/rpc-outage.py` needs one too (with the substrate plugin installed and its `substrate-dev` credential profile, as in the CI dev-chain job). Start the dev chain, run them, and stop it:
 
 ```sh
 scripts/dev-chain.sh start
 POLKAMETER_DEV_CHAIN_WS=ws://127.0.0.1:9944 cargo +1.93.0 test -p polkameter-substrate-plugin --test dev_chain -- --ignored
+tests/rpc-outage.py target/debug/polkameter target/dev-chain-runs/rpc-outage
 scripts/dev-chain.sh stop
 ```
+
+## Measurement integrity
+
+PolkaMeter's core claim is that it never blames the chain for a fault of its own, of the network or of the RPC connection. [What PolkaMeter never blames on the chain](docs/reading-results.md#what-polkameter-never-blames-on-the-chain) states the rules. These tests guard them. If a change makes one fail, fix the change, not the test.
+
+| Rule | Test |
+| --- | --- |
+| 1. A disconnection shorter than 15 s is not node down | `i1_a_node_back_within_the_reconnect_budget_is_not_down` in `crates/cli/tests/attribution.rs` |
+| 2. The loss check is verified after a reconnect | `tests/rpc-outage.py`, in the CI dev-chain job: an 8 s outage through a TCP proxy |
+| 3. Time not observed never counts against the chain (baseline, load, recovery) | `i3_time_polkameter_did_not_observe_never_makes_a_latency_failure` and `i3_a_pause_in_the_baseline_or_recovery_is_not_the_chains` in `attribution.rs`; `a_pause_leaves_out_the_latency_timed_across_it_whichever_is_seen_first` in `crates/cli/tests/load_tracker.rs` |
+| 4. Reconnecting is not pool intake, and a resend has no latency | `i4_a_reconnecting_sender_is_never_pool_intake` and `i4_time_to_resend_after_a_reconnect_is_not_latency` in `attribution.rs` |
+| 5. Loss statuses partition what was sent | `statuses_partition_sent_in_every_scenario` in `crates/cli/src/load/loss.rs` |
 
 ## Conventions
 

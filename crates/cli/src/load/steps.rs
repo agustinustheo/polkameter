@@ -34,6 +34,10 @@ pub struct FinalStep {
 	pub rejected: u64,
 	/// Refused against sent.
 	pub rejected_ratio: f64,
+	/// Included txs whose latency is left out: timed across a pause of PolkaMeter, sent again
+	/// after a sender reconnect, or read as the block follower caught up after a reconnect.
+	#[serde(default)]
+	pub untimed: u64,
 	/// p50 send to best block.
 	pub p50_latency_ms: Millis,
 	/// p95 send to best block.
@@ -74,16 +78,20 @@ pub struct StepStats {
 	pub failed_in_block: u64,
 	/// Refused by the node.
 	pub rejected: u64,
-	/// Send to best block, per included tx.
+	/// Send to best block, per included tx timed while PolkaMeter observed.
 	pub latencies_ms: Vec<Millis>,
+	/// Included txs left out of `latencies_ms`: see [`FinalStep::untimed`].
+	pub untimed: u64,
 	/// Send to submit reply.
 	pub reply_ms: Vec<Millis>,
 	/// Refusals by "code message".
 	pub errors: BTreeMap<String, u64>,
 	/// Ticks where the source had no tx.
 	pub starved_ticks: u64,
-	/// Ticks where every connection was backed up.
+	/// Ticks where every open connection was backed up.
 	pub backpressure_ticks: u64,
+	/// Ticks where no connection was open: all reconnecting.
+	pub disconnected_ticks: u64,
 	/// Longest wait for a submit reply during the step.
 	pub max_oldest_pending_ms: Millis,
 	/// Blocks seen while the step ran.
@@ -157,6 +165,7 @@ pub fn final_step(st: &StepStats) -> FinalStep {
 		failed_in_block: st.failed_in_block,
 		rejected: st.rejected,
 		rejected_ratio: ratio(st.rejected, st.sent, 0.0),
+		untimed: st.untimed,
 		p50_latency_ms: percentile(&st.latencies_ms, 50.0),
 		p95_latency_ms: percentile(&st.latencies_ms, 95.0),
 		p95_reply_ms: percentile(&st.reply_ms, 95.0),

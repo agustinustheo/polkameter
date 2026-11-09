@@ -57,6 +57,10 @@ pub struct FloodTx {
 	pub inclusion_ms: Option<u64>,
 	/// Dispatch failure in the best block observation.
 	pub failed_in_block: bool,
+	/// Its time to inclusion is not known: timed across a pause of PolkaMeter, in flight on a
+	/// sender connection that dropped, or read as the block follower caught up after a
+	/// reconnect. It is left out of its step's latency.
+	pub untimed: bool,
 }
 
 #[derive(Debug)]
@@ -121,6 +125,15 @@ pub struct Tracker<S> {
 	pub warnings: Vec<String>,
 	/// When the last new best block arrived while the follower was connected, for block gaps.
 	prev_head_at: Option<Millis>,
+	/// The follower reconnected after losing the node at this time; the next new best block
+	/// ends the catch-up.
+	catching_up: Option<Millis>,
+	/// Blocks seen in these windows (from, to] were read late, as the follower caught up after
+	/// a reconnect: the time of their txs is not the chain's.
+	read_late: Vec<(Millis, Millis)>,
+	/// Probes still in flight when their time stopped being PolkaMeter's to know (a pause, a
+	/// dropped connection): when they land, they have no latency.
+	untimed_probes: std::collections::HashSet<usize>,
 	phases: Vec<(Millis, Phase)>,
 	baseline_probes: usize,
 	/// Redacts RPC refusals before they are cut to their error key.
@@ -193,6 +206,9 @@ impl<S: Submit> Tracker<S> {
 			node_down: None,
 			warnings: Vec::new(),
 			prev_head_at: None,
+			catching_up: None,
+			read_late: Vec::new(),
+			untimed_probes: Default::default(),
 			phases: vec![(now, Phase::Baseline)],
 			baseline_probes,
 			redactor: crate::redact::Redactor::default(),
@@ -292,8 +308,8 @@ impl<S: Submit> Tracker<S> {
 			.map(|g| g.from)
 	}
 
-	/// Sends one flood tx; false when it has none ready or every connection is backed up.
-	/// A tx that could not be queued goes back to the source and is the next one sent.
+	/// Sends one flood tx; false when it has none ready, every connection is backed up, or none
+	/// is open. A tx that could not be queued goes back to the source and is the next one sent.
 	pub fn send_next(&mut self, now: Millis) -> bool {
 		let Some(tx) = self.source.next_tx() else {
 			self.current().starved_ticks += 1;
@@ -302,7 +318,12 @@ impl<S: Submit> Tracker<S> {
 		let step = self.steps.len() - 1;
 		if !self.submit(tx.hash, &tx.bytes, Kind::Flood { step }, now) {
 			self.source.put_back(tx);
-			self.current().backpressure_ticks += 1;
+			// Reconnecting is not backpressure: the node was not even reached.
+			if self.sender.disconnected() {
+				self.current().disconnected_ticks += 1;
+			} else {
+				self.current().backpressure_ticks += 1;
+			}
 			return false;
 		}
 		self.current().sent += 1;
@@ -327,6 +348,36 @@ impl<S: Submit> Tracker<S> {
 		}
 		self.sent.insert(hash, Sent { kind, sent_at: now });
 		true
+	}
+
+	/// PolkaMeter itself was paused from `from` to `to` (SIGSTOP, CPU starvation, a suspend):
+	/// blocks that arrived meanwhile were read only after it. Every flood tx sent before `to` and
+	/// not seen included before `from` was timed across the pause; its latency is left out of
+	/// its step's, now or when it is seen. The same for probes: they get no latency.
+	pub fn paused(&mut self, from: Millis, to: Millis) {
+		for (i, p) in self.probes.iter_mut().enumerate().filter(|(_, p)| p.sent_at < to) {
+			match p.latency_ms {
+				_ if p.outcome == Outcome::Pending => {
+					self.untimed_probes.insert(i);
+				},
+				Some(ms) if p.sent_at + ms > from => p.latency_ms = None,
+				_ => {},
+			}
+		}
+		for tx in self.flood.values_mut().filter(|tx| !tx.untimed && tx.sent_at < to) {
+			match tx.inclusion_ms {
+				None => tx.untimed = true,
+				Some(ms) if tx.sent_at + ms > from => {
+					tx.untimed = true;
+					let st = &mut self.steps[tx.step];
+					if let Some(i) = st.latencies_ms.iter().position(|l| *l == ms) {
+						st.latencies_ms.swap_remove(i);
+						st.untimed += 1;
+					}
+				},
+				Some(_) => {},
+			}
+		}
 	}
 
 	/// Flood txs sent and not yet included or refused.
@@ -414,12 +465,27 @@ impl<S: Submit> Tracker<S> {
 
 	/// A sender connection dropped and is being opened again. Its unanswered submits (`ids`) are
 	/// sent again on the new socket, and its queued ones wait for it: none of them waits on the
-	/// node while the connection is down.
+	/// node while the connection is down. When the node got each of them, before the drop or
+	/// only after the reconnect, is unknown, so none of them is timed: a time from the first
+	/// send would add the outage to the chain's latency, and one from the resend could hide it.
 	fn on_interrupted(&mut self, connection: usize, ids: &[u64], reason: String) {
 		for (id, r) in &mut self.requests {
 			if r.connection == connection {
 				r.waiting_since = None;
 				r.resent |= ids.contains(id);
+				match r.kind {
+					Kind::Flood { .. } => {
+						if let Some(tx) =
+							self.flood.get_mut(&r.hash).filter(|tx| tx.inclusion_ms.is_none())
+						{
+							tx.untimed = true;
+						}
+					},
+					Kind::Probe { index } if self.probes[index].outcome == Outcome::Pending => {
+						self.untimed_probes.insert(index);
+					},
+					Kind::Probe { .. } => {},
+				}
 			}
 		}
 		self.observation_gaps.push(ObservationGap {

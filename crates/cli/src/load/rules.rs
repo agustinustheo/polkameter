@@ -14,7 +14,10 @@
 //!   node down       the node stayed unreachable after every reconnect attempt  hard
 //!
 //! A dropped RPC connection that opens again is an observation gap (a problem), not a failure:
-//! the stall rules count from the reconnect.
+//! the stall rules leave its time out, time with no connection open is not "pool intake", and
+//! txs seen late as the follower catches up or sent again after a sender reconnect are left out
+//! of the latency, as are txs timed across a pause of PolkaMeter itself. A pause in recovery
+//! leaves the recovery unmeasured.
 //!
 //! The ramp also ends without a failure on: rate cap, budget used up, generator limit, smoke error.
 
@@ -234,7 +237,9 @@ pub fn check_step(
 		));
 	}
 	let slow_send = cur.send_ratio < rules.min_send_ratio;
-	if slow_send && cur.backpressure_ticks > 0 {
+	// The node stopped reading only with bytes still unsent to it; time spent reconnecting is not
+	// counted as backpressure (it is `disconnected_ticks`).
+	if slow_send && cur.backpressure_ticks > 0 && unsent_kib > 0 {
 		let detail = format!(
 			"the node stopped reading submits ({unsent_kib} KiB unsent); sent {} of {} tx/s",
 			to_fixed(cur.sent_per_s, 0),
@@ -256,11 +261,21 @@ pub fn check_step(
 	if (!last && source.exhausted()) || (slow_send && cur.starved_ticks > 0) {
 		return Some(Stop::new(Rule::BudgetUsedUp, step, source.starved_reason()));
 	}
+	let reconnecting = steps.last().is_some_and(|st| st.disconnected_ticks > 0);
 	slow_send.then(|| {
 		Stop::new(
 			Rule::GeneratorLimit,
 			step,
-			format!("sent {} of {} tx/s", to_fixed(cur.sent_per_s, 0), cur.target_rate),
+			format!(
+				"sent {} of {} tx/s{}",
+				to_fixed(cur.sent_per_s, 0),
+				cur.target_rate,
+				if reconnecting {
+					"; every RPC connection was down for part of the step, reconnecting"
+				} else {
+					""
+				}
+			),
 		)
 	})
 }
@@ -275,6 +290,23 @@ pub fn breaking_point(finals: &[FinalStep], rules: &Rules) -> Option<BreakingPoi
 			measure: measure.into(),
 			detail,
 		})
+	})
+}
+
+/// What the steps' latency leaves out, for the run's warnings: txs seen late, after PolkaMeter
+/// was paused or while it caught up after a reconnect.
+pub fn untimed_warning(finals: &[FinalStep]) -> Option<String> {
+	let steps: Vec<String> = finals
+		.iter()
+		.filter(|f| f.untimed > 0)
+		.map(|f| format!("{} in step {}", f.untimed, f.step))
+		.collect();
+	(!steps.is_empty()).then(|| {
+		format!(
+			"latency leaves out included txs {} could not time, because it was paused or reconnecting to the node ({}): their time is not the chain's",
+			crate::PRODUCT_NAME,
+			steps.join(", ")
+		)
 	})
 }
 
