@@ -2,7 +2,7 @@
 
 User-visible changes in each release. The GitHub release notes list every merged pull request.
 
-## Unreleased (0.4.0)
+## 0.4.0 (2026-11-09)
 
 ### Removed
 
@@ -46,7 +46,7 @@ User-visible changes in each release. The GitHub release notes list every merged
 - The action's artifact holds only the run's reports and records, not files that plugins write. Its default name is now unique per job, attempt and step. Read it from the `artifact-name` output, or set the `artifact-name` input.
 - `polkameter run` exits `3`, not `1`, when it fails before setup, for example on a missing plugin or credential. Nothing was sent to the chain. Scripts that check for `1` must also accept `3`.
 - `plugin list` prints the whole registry: `plugins`, `credentials`, `topologies` and `capabilities`. Read `.plugins` for the old output.
-- With `--format json`, every line has `event` and `schemaVersion`, and a failed command prints an `error` line on standard output. See [Output formats](docs/cli.md#output-formats).
+- With `--format json`, every line has `event` and `schemaVersion`, and a failed command prints an `error` line on standard output.
 - Messages now start with `PolkaMeter:` and most plan, plugin and credential errors were reworded. Update scripts that match message text.
 - The plugin SDK's crates are merged into `polkameter-plugin-sdk`, with the `chain` and `observers` features. `NodeSample`, `Loss` and `OnChain` are `#[non_exhaustive]`. See [Migrating from 0.2](docs/plugins.md#migrating-from-02).
 

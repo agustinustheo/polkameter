@@ -9,7 +9,7 @@
     export POLKAMETER_SUBSTRATE_SEED=//Alice
 -->
 <polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="Substrate remarks CI" mode="stress" timeout-ms="900000">
-  <plugins><plugin id="substrate" version="0.3.0" protocol="1"/></plugins>
+  <plugins><plugin id="substrate" version="0.4.0" protocol="1"/></plugins>
   <targets><target id="chain" endpoint="ws://127.0.0.1:9944"/></targets>
   <credentials><credential id="seed" profile="substrate-dev"/></credentials>
   <preflight>
