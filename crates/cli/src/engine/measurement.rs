@@ -767,7 +767,7 @@ mod tests {
 		// A `|` is escaped in the Markdown table, so redacting only the rendered text would miss
 		// this secret.
 		let secret = "pipe|secret\"value";
-		let endpoint = "wss://rpc.example/ws?apikey=APIKEY0123456789"; // gitleaks:allow (made-up test key)
+		let endpoint = "wss://rpc.example/ws?apikey=APIKEY0123456789";
 		let redactor = Redactor::new([secret], [endpoint]);
 		let mut summary: Summary =
 			serde_json::from_str(include_str!("../../tests/fixtures/smoke-run/summary.json"))

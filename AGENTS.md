@@ -17,7 +17,7 @@ PolkaMeter is a load-testing tool for Polkadot SDK chains. The `polkameter` CLI 
 | `examples/` | Example plans. `tests/validate-plans.py` validates every `*.polkameter.xml` here | |
 | `schemas/` | The plan XSD | |
 | `docs/` | mdBook user docs. Read `docs/STYLE.md` before you edit them | |
-| `scripts/` | Release, packaging, action and dev-chain scripts | |
+| `scripts/` | Release, packaging and dev-chain scripts | |
 | `skills/polkameter` | Agent Skill for users who set up PolkaMeter. Its plan templates are copies of `examples/` | |
 | `.claude-plugin` | Claude Code marketplace and plugin manifest. The plugin is the repository root | |
 

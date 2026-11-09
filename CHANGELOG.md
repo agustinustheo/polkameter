@@ -10,6 +10,8 @@ User-visible changes in each release. The GitHub release notes list every merged
 - The desktop app.
 - The Windows release archive. On Windows, install with `cargo install --locked polkameter`.
 - The `ghcr.io/agustinustheo/polkameter` container image. Install the CLI with `install.sh` in any Linux image, as the GitLab CI template does.
+- The `polkameter.spdx.json` release asset. The build attestations still cover every archive.
+- `scripts/local-fork-run.sh`. Start the Zombienet network yourself, register its `zombie.json` with `polkameter plugin topology`, then run the plan.
 - `<workflow>`. Use `<setup>` steps, or `<load>` for load.
 - `--format json`. Read `execution.json`, `summary.json` and `events.jsonl` in the run directory. `plugin inspect` and `plugin list` still print JSON.
 - `polkameter run --junit PATH`. Read `run-*/junit.xml`.
