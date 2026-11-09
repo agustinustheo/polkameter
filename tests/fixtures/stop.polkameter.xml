@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<!-- A long setup step, so CI can stop a running container and check that the run stops cleanly. -->
-<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="Stop test" timeout-ms="600000">
-  <plugins><plugin id="example" version="0.1.0" protocol="1"/></plugins>
-  <setup>
-    <step id="wait" use="example.wait"><input name="milliseconds" value="300000"/></step>
-  </setup>
-</polkameter-plan>

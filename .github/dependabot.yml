@@ -11,14 +11,6 @@ updates:
     groups:
       github-actions:
         patterns: ["*"]
-  # Base image digests in the Dockerfile.
-  - package-ecosystem: docker
-    directory: /
-    schedule:
-      interval: monthly
-    groups:
-      docker:
-        patterns: ["*"]
   - package-ecosystem: cargo
     directory: /
     schedule:

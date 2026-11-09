@@ -8,6 +8,7 @@ User-visible changes in each release. The GitHub release notes list every merged
 
 - The remote agent: `agent serve` and `polkameter run --remote`. Run the CLI on that host instead, for example `ssh host polkameter run plan.polkameter.xml --output runs`.
 - The desktop app.
+- The `ghcr.io/agustinustheo/polkameter` container image. Install the CLI with `install.sh` in any Linux image, as the GitLab CI template does.
 - `<workflow>`. Use `<setup>` steps, or `<load>` for load.
 - `--format json`. Read `execution.json`, `summary.json` and `events.jsonl` in the run directory. `plugin inspect` and `plugin list` still print JSON.
 - `polkameter run --junit PATH`. Read `run-*/junit.xml`.

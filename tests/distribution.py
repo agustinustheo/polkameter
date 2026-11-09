@@ -14,7 +14,6 @@ import tarfile
 import tempfile
 import threading
 import unittest
-from unittest.mock import Mock, patch
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,7 +27,6 @@ def load(name, filename):
 
 
 packager = load("packager", "package-cli.py")
-promoter = load("promoter", "promote-container.py")
 TARGETS = (
     "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu",
     "x86_64-apple-darwin", "aarch64-apple-darwin", "x86_64-pc-windows-msvc",
@@ -346,61 +344,6 @@ class WorkflowTests(unittest.TestCase):
                 with self.subTest(path=path.name, uses=match[1]):
                     self.assertRegex(match[1], r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
                     self.assertRegex(match[2], r"^ # \S+")
-
-
-class ContainerTests(unittest.TestCase):
-    def test_numeric_semver_order(self):
-        self.assertGreater(promoter.stable_version("0.10.0"), promoter.stable_version("0.9.9"))
-        self.assertGreater(promoter.stable_version("1.0.0"), promoter.stable_version("0.99.99"))
-        self.assertEqual(promoter.stable_version("1.2.3+build"), (1, 2, 3))
-        for invalid in ("", "0.3.0-rc.1", "01.2.3", "latest"):
-            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
-                promoter.stable_version(invalid)
-
-    def test_prerelease_no_aliases(self):
-        with patch.object(promoter, "inspect") as inspect:
-            promoter.promote("image", "0.3.0-rc.1")
-            inspect.assert_not_called()
-        self.assertEqual(promoter.aliases("0.3.0"), ["latest", "0", "0.3"])
-
-    @staticmethod
-    def image(version, revision="commit"):
-        return {"Digest": "sha256:" + "a" * 64, "Labels": {"org.opencontainers.image.version": version, "org.opencontainers.image.revision": revision}}
-
-    def test_each_alias_compared_separately(self):
-        with patch.object(promoter, "inspect", side_effect=[self.image("0.3.1"), self.image("1.0.0"), self.image("0.4.0"), self.image("0.3.0")]), patch.object(promoter.subprocess, "run") as run:
-            promoter.promote("image", "0.3.1")
-            run.assert_called_once_with(["docker", "buildx", "imagetools", "create", "--tag", "image:0.3", "image@sha256:" + "a" * 64], check=True)
-
-    def test_equal_and_newer_aliases_preserved(self):
-        for current in ("0.3.0", "0.10.0"):
-            with patch.object(promoter, "inspect", side_effect=[self.image("0.3.0")] + [self.image(current)] * 3), patch.object(promoter.subprocess, "run") as run:
-                promoter.promote("image", "0.3.0")
-                run.assert_not_called()
-
-    def test_missing_aliases_created(self):
-        with patch.object(promoter, "inspect", side_effect=[self.image("0.3.0"), None, None, None]), patch.object(promoter.subprocess, "run") as run:
-            promoter.promote("image", "0.3.0")
-            self.assertEqual(run.call_count, 3)
-
-    def test_unknown_alias_label_fails_closed(self):
-        with patch.object(promoter, "inspect", side_effect=[self.image("0.3.0"), self.image("")]), self.assertRaises(ValueError):
-            promoter.promote("image", "0.3.0")
-
-    def test_inspect_missing_vs_error(self):
-        with patch.object(promoter.subprocess, "run", return_value=Mock(returncode=1, stderr="manifest unknown")):
-            self.assertIsNone(promoter.inspect("image:0"))
-        for message in ("unauthorized", "connection timeout", "429"):
-            with patch.object(promoter.subprocess, "run", return_value=Mock(returncode=1, stderr=message)), self.assertRaises(RuntimeError):
-                promoter.inspect("image:0")
-
-    def test_immutable_version_check(self):
-        with patch.object(promoter, "inspect", return_value=None):
-            self.assertFalse(promoter.existing_version("image", "0.3.0", "commit"))
-        with patch.object(promoter, "inspect", return_value=self.image("0.3.0")):
-            self.assertTrue(promoter.existing_version("image", "0.3.0", "commit"))
-            with self.assertRaises(ValueError):
-                promoter.existing_version("image", "0.3.0", "different-commit")
 
 
 class MetadataTests(unittest.TestCase):
