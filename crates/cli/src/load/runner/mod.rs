@@ -144,6 +144,23 @@ pub(super) fn interval(ms: u64) -> tokio::time::Interval {
 	i
 }
 
+/// Why the load tool itself was paused between two ticks, if it was: `elapsed` ms passed on
+/// the run's monotonic clock, and `boot` ms on a clock that also counts sleep (`None` without
+/// one). A long monotonic gap is CPU starvation; a boot clock far ahead of the monotonic one is a
+/// machine that was suspended. The wall clock plays no part: an NTP step either way is ignored.
+pub(super) fn paused(elapsed: Millis, boot: Option<Millis>, max_gap: Millis) -> Option<String> {
+	const NOT_THE_CHAIN: &str = "the numbers after this are not the chain's";
+	if elapsed > max_gap {
+		return Some(format!(
+			"the load tool was paused for {} s (CPU starvation or a suspended machine); {NOT_THE_CHAIN}",
+			elapsed / 1000
+		));
+	}
+	let slept = boot?.saturating_sub(elapsed);
+	(slept > max_gap)
+		.then(|| format!("the machine was suspended for {} s; {NOT_THE_CHAIN}", slept / 1000))
+}
+
 /// Why the node is down, if it is: the block follower lost it, or the process sampler saw its PID
 /// change (a local node that restarted). Both the load and recovery end on it.
 pub(super) fn node_down<S: Submit>(t: &Tracker<S>, io: &Io) -> Option<String> {
@@ -251,11 +268,20 @@ pub async fn recover<S: Submit>(
 	let deadline = started + Duration::from_secs(u64::from(opts.recovery_s));
 	let (mut back_at, mut drained_at, mut last_log) = (None, None, started);
 	let mut tick = interval(500);
+	let (mut last, mut last_boot, mut last_now) = (Instant::now(), (io.boot)(), now_ms());
 	while Instant::now() < deadline && t.closed_by_node == 0 && node_down(t, io).is_none() {
 		if !next(t, io, &mut tick).await? {
 			continue;
 		}
-		let now = now_ms();
+		let (at, now, boot) = (Instant::now(), now_ms(), (io.boot)());
+		// Paused here, the backlog's inclusions are seen late too: not the chain's latency.
+		let gap = boot.zip(last_boot).map(|(b, l)| b.saturating_sub(l));
+		let elapsed = at.duration_since(last).as_millis() as Millis;
+		if let Some(why) = paused(elapsed, gap, opts.rules.max_tick_gap_ms) {
+			crate::redact::diag!("recovery: {why}");
+			t.paused(last_now, now);
+		}
+		(last, last_boot, last_now) = (at, boot, now);
 		t.tick(now)?;
 		back_at = back_at.or_else(|| {
 			recovered_at(

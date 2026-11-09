@@ -9,6 +9,7 @@ use crate::engine::{
 	plugins::{Plugins, Registry},
 	wiring::{Chains, Monitors, monitor_targets},
 };
+use crate::load::reconnect::{Backoff, Reconnect, reconnect};
 use crate::load::runner::{Io, Mode, RunOptions, baseline, drain, load as apply_load, recover};
 use crate::load::sender::Sender;
 use crate::load::steps::FinalStep;
@@ -201,12 +202,17 @@ pub async fn run(
 	let finals = write_steps(dir, &tracker, &samples, redactor)?;
 	progress("reconciliation")?;
 	// The connection of the start may have dropped during the run (the follower and the sender
-	// reconnect on their own): the loss check reads on a live one.
+	// reconnect on their own): the loss check reads on a live one, opened again with the same
+	// backoff, so a node back within the budget still has its loss verified.
 	let client = match client.best_number().await {
 		Ok(_) => client,
 		Err(e) => {
 			diag!("loss check: the RPC connection dropped ({e}); reconnecting");
-			Client::connect(&url).await.unwrap_or(client)
+			let connect = || Client::connect(&url);
+			match reconnect(connect, &Backoff::default(), &CancellationToken::new()).await {
+				Reconnect::Connected(live) => live,
+				Reconnect::Stopped | Reconnect::GaveUp(_) => client,
+			}
 		},
 	};
 	let (loss, lost) = loss_check(
@@ -230,7 +236,8 @@ pub async fn run(
 	// A node that went down is a problem too: smoke mode exits 1 on it. A reconnect to another
 	// node is a warning only: behind a load balancer it is a healthy node.
 	let node_down = tracker.node_down.clone().map(|why| format!("node down: {why}"));
-	let warnings = tracker.warnings.clone();
+	let mut warnings = tracker.warnings.clone();
+	warnings.extend(rules::untimed_warning(&finals));
 	tracker.finish()?.close();
 	monitors.stop_chain().await?;
 	let mut problems = monitors.problems.all();

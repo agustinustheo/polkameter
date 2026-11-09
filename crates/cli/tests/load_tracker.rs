@@ -106,6 +106,36 @@ fn a_backed_up_probe_is_not_a_refusal_and_is_sent_on_the_next_block() {
 	assert_eq!(t.probes[0].outcome, Outcome::Included, "the same probe tx was sent");
 }
 
+/// PolkaMeter is paused from 10 s to 18 s. The runner sees it at its first tick after, which may
+/// come before or after the blocks read late: their txs are left out of the latency either way.
+#[test]
+fn a_pause_leaves_out_the_latency_timed_across_it_whichever_is_seen_first() {
+	for block_first in [true, false] {
+		let (a, b, c) = (tx(1), tx(2), tx(3));
+		let mut t = tracker(
+			&format!("paused-{block_first}"),
+			vec![a.clone(), b.clone(), c.clone()],
+			vec![],
+			0,
+		);
+		t.set_phase(Phase::Ramp, 0).unwrap();
+		t.start_step(0, 1.0, 0).unwrap();
+		assert!(t.send_next(0));
+		block(&mut t, 1, 6_000, Some(6_000), &[&a]);
+		assert!(t.send_next(8_000) && t.send_next(9_000), "in flight when the pause starts");
+		if block_first {
+			block(&mut t, 2, 18_000, None, &[&b]);
+			t.paused(10_000, 18_000);
+		} else {
+			t.paused(10_000, 18_000);
+			block(&mut t, 2, 18_000, None, &[&b]);
+		}
+		block(&mut t, 3, 24_000, None, &[&c]);
+		let st = &t.steps[0];
+		assert_eq!((st.included, st.untimed, st.latencies_ms.clone()), (3, 2, vec![6_000]));
+	}
+}
+
 fn head(number: u32, seen_at: u64) -> BlockEvent {
 	BlockEvent::Head { number, seen_at }
 }

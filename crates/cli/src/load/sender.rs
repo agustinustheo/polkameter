@@ -319,6 +319,10 @@ impl Submit for Sender {
 	fn queued_bytes(&self) -> u64 {
 		self.connections.iter().map(|c| c.queued.load(Ordering::Relaxed)).sum()
 	}
+
+	fn disconnected(&self) -> bool {
+		self.connections.iter().all(|c| !c.up.load(Ordering::Relaxed))
+	}
 }
 
 fn parse_reply(text: &str) -> Option<Reply> {
