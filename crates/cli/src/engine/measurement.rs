@@ -3,7 +3,7 @@
 //! have run.
 use crate::engine::checks::report::overall_status;
 use crate::engine::{
-	execute::{FailOn, RunOptions as ExitPolicy, Values, resolve, target_endpoint, transactions},
+	execute::{FailOn, Values, resolve, target_endpoint, transactions},
 	machine,
 	plan::Plan,
 	plugins::{Plugins, Registry},
@@ -325,7 +325,7 @@ pub fn report(
 	dir: &RunDir,
 	measured: Measured,
 	plugin_checks: &[polkameter_plugin_sdk::observers::CheckResult],
-	policy: ExitPolicy,
+	policy: FailOn,
 	redactor: &Redactor,
 ) -> Result<Exit> {
 	dir.write_json(PLUGIN_CHECKS, &redactor.json(&plugin_checks)?)?;
@@ -450,7 +450,7 @@ pub struct Exit {
 }
 
 /// The run's exit, by its mode, verdict and exit policy. Smoke problems are printed as found.
-fn exit_code(mode: Mode, summary: &Summary, checks: &[CheckResult], policy: ExitPolicy) -> Exit {
+fn exit_code(mode: Mode, summary: &Summary, checks: &[CheckResult], policy: FailOn) -> Exit {
 	let mut smoke = Vec::new();
 	if mode == Mode::Smoke {
 		smoke.clone_from(&summary.problems);
@@ -468,7 +468,7 @@ fn exit_code(mode: Mode, summary: &Summary, checks: &[CheckResult], policy: Exit
 fn exit_reason(
 	summary: &Summary,
 	checks: &[CheckResult],
-	policy: ExitPolicy,
+	policy: FailOn,
 	smoke: &[String],
 ) -> Option<String> {
 	let verdict = verdict_failure(summary, checks, policy);
@@ -503,14 +503,14 @@ fn exit_reason(
 fn verdict_failure(
 	summary: &Summary,
 	checks: &[CheckResult],
-	policy: ExitPolicy,
+	policy: FailOn,
 ) -> Option<(&'static str, String)> {
-	let verdict = match (overall_status(summary, checks), policy.fail_on) {
+	let verdict = match (overall_status(summary, checks), policy) {
 		(OverallStatus::Fail, FailOn::Verdict | FailOn::VerdictOrInconclusive) => "FAIL",
 		(OverallStatus::Inconclusive, FailOn::VerdictOrInconclusive) => "INCONCLUSIVE",
 		_ => return None,
 	};
-	Some((verdict, format!("--fail-on {}", policy.fail_on.name())))
+	Some((verdict, format!("--fail-on {}", policy.name())))
 }
 
 /// The first [`REASON_CHECKS`] items, then how many more.
@@ -648,11 +648,7 @@ mod tests {
 	}
 
 	/// Every exit policy.
-	const POLICIES: [ExitPolicy; 3] = [
-		ExitPolicy { fail_on: FailOn::Error },
-		ExitPolicy { fail_on: FailOn::Verdict },
-		ExitPolicy { fail_on: FailOn::VerdictOrInconclusive },
-	];
+	const POLICIES: [FailOn; 3] = [FailOn::Error, FailOn::Verdict, FailOn::VerdictOrInconclusive];
 
 	/// The recorded summary with a clean stop: the verdict follows the checks alone.
 	fn clean_summary() -> Summary {
@@ -702,10 +698,9 @@ mod tests {
 					};
 					assert_eq!(overall_status(&summary, &checks), verdict);
 					for policy in POLICIES {
-						let by_policy = (verdict == OverallStatus::Fail
-							&& policy.fail_on != FailOn::Error)
+						let by_policy = (verdict == OverallStatus::Fail && policy != FailOn::Error)
 							|| (verdict == OverallStatus::Inconclusive
-								&& policy.fail_on == FailOn::VerdictOrInconclusive);
+								&& policy == FailOn::VerdictOrInconclusive);
 						// Smoke mode fails on monitor problems and required gaps under every policy.
 						let by_smoke = mode == Mode::Smoke && (problem || gap);
 						let exit = exit_code(mode, &summary, &checks, policy);
@@ -730,7 +725,7 @@ mod tests {
 			let measured =
 				Measured { summary: recorded.clone(), finals: vec![], mode: Mode::Stress };
 			let exit = report(&dir, measured, &[], policy, &Redactor::default()).unwrap();
-			assert_eq!(exit.code, i32::from(policy.fail_on != FailOn::Error), "{policy:?}");
+			assert_eq!(exit.code, i32::from(policy != FailOn::Error), "{policy:?}");
 			let json: serde_json::Value =
 				serde_json::from_slice(&std::fs::read(root.join("summary.json")).unwrap()).unwrap();
 			assert_eq!(json["verdict"]["result"], "FAIL");
@@ -786,7 +781,7 @@ mod tests {
 		measured.write_summary(&dir, &redactor).unwrap();
 		let early = std::fs::read_to_string(root.join("summary.json")).unwrap();
 		assert!(!early.contains("APIKEY"), "{early}");
-		let exit = report(&dir, measured, &[check], ExitPolicy::default(), &redactor).unwrap();
+		let exit = report(&dir, measured, &[check], FailOn::default(), &redactor).unwrap();
 		assert_eq!(exit.code, 1);
 		let reason = exit.reason.unwrap();
 		assert!(reason.starts_with("smoke mode") && !reason.contains("APIKEY"), "{reason}");

@@ -1,5 +1,5 @@
 use polkameter::engine::{
-	execute::{self, EventSink, Outcome, RunOptions, RunState, Stop},
+	execute::{self, EventSink, FailOn, Outcome, RunState, Stop},
 	plan::Plan,
 	plugins::Registry,
 };
@@ -32,7 +32,7 @@ async fn registry() -> Registry {
 }
 /// Runs `plan` to its outcome, sending its events to `sink`.
 async fn run_plan(plan: Plan, registry: Registry, root: &Path, sink: EventSink) -> Outcome {
-	execute::run_stoppable(plan, registry, root, Stop::default(), sink, RunOptions::default())
+	execute::run_stoppable(plan, registry, root, Stop::default(), sink, FailOn::default())
 		.await
 		.unwrap()
 }

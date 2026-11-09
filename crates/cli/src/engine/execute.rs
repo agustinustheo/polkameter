@@ -92,7 +92,7 @@ impl std::fmt::Display for RunState {
 /// Event writer shared by every task of a run. Events are redacted before they are persisted
 /// and before the sink sees them.
 struct Log {
-	file: Arc<Mutex<File>>,
+	file: Mutex<File>,
 	sink: EventSink,
 	/// The run's credentials and endpoint secrets.
 	redactor: Redactor,
@@ -103,7 +103,7 @@ impl Log {
 			.create_new(true)
 			.write(true)
 			.open(directory.join("events.jsonl"))?;
-		Ok(Self { file: Arc::new(Mutex::new(file)), sink, redactor })
+		Ok(Self { file: Mutex::new(file), sink, redactor })
 	}
 	fn emit(&self, mut value: Value) -> Result<()> {
 		value["timestamp"] = json!(polkameter_plugin_sdk::observers::now_ms());
@@ -655,12 +655,6 @@ fn interval_s(stamps: &[u64]) -> Option<f64> {
 	(intervals >= MIN_INTERVALS && span > 0).then(|| span as f64 / intervals as f64 / 1000.0)
 }
 
-/// How a run exits.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct RunOptions {
-	pub fail_on: FailOn,
-}
-
 /// Which load-test verdicts make a run exit 1, besides runtime and smoke-mode failures.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum FailOn {
@@ -738,7 +732,7 @@ pub async fn run_stoppable(
 	root: &Path,
 	stop: Stop,
 	sink: EventSink,
-	options: RunOptions,
+	fail_on: FailOn,
 ) -> Result<Outcome> {
 	// A new `run-…` directory under `root`: a run never reuses one.
 	std::fs::create_dir_all(root)?;
@@ -774,7 +768,7 @@ pub async fn run_stoppable(
 		stop,
 		log,
 		started: Instant::now(),
-		options,
+		fail_on,
 		teardown: Mutex::new(None),
 		phase: Mutex::new(PREFLIGHT.to_owned()),
 		failed_in: Mutex::new(None),
@@ -807,7 +801,7 @@ struct Run<'a> {
 	stop: Stop,
 	log: Log,
 	started: Instant,
-	options: RunOptions,
+	fail_on: FailOn,
 	teardown: Mutex<Option<Teardown>>,
 	/// The phase the run is in; `preflight` until setup starts.
 	phase: Mutex<String>,
@@ -968,7 +962,7 @@ impl Run<'_> {
 					Vec::new()
 				});
 				let exit =
-					measurement::report(&dir, measured, &checks, self.options, &self.log.redactor)?;
+					measurement::report(&dir, measured, &checks, self.fail_on, &self.log.redactor)?;
 				*self.exit_reason.lock().unwrap_or_else(|e| e.into_inner()) = exit.reason;
 				exit.code
 			},
@@ -1532,7 +1526,7 @@ mod tests {
 				&root,
 				Stop::default(),
 				Arc::new(|_| {}),
-				RunOptions::default(),
+				FailOn::default(),
 			)
 			.await
 			.unwrap();

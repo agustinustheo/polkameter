@@ -11,7 +11,7 @@ use std::{
 };
 
 use crate::engine::{
-	execute::{FailOn, Outcome, RunOptions, RunState, Stop},
+	execute::{FailOn, Outcome, RunState, Stop},
 	plan::{Plan, PlanError, read_plan},
 	plugins::Registry,
 };
@@ -280,7 +280,6 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 				.map_err(|e| CliError::runtime(format!("cannot install signal handlers: {e}")))?;
 			let grace = Duration::from_secs(shutdown_grace);
 			let plan = load(&path)?;
-			let options = RunOptions { fail_on };
 			if output.to_str().is_none() {
 				return Err(CliError::invalid(format!(
 					"--output {} is not a UTF-8 path; plugins receive the run directory as text, so \
@@ -289,7 +288,7 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 				)));
 			}
 			let registry = registry(&plan, credential_env)?;
-			run(&path, plan, registry, &output, options, grace, &mut signals).await
+			run(&path, plan, registry, &output, fail_on, grace, &mut signals).await
 		},
 		Command::Report { artifact_directory } => report(artifact_directory),
 	}
@@ -396,7 +395,7 @@ async fn run(
 	plan: Plan,
 	registry: Registry,
 	output: &Path,
-	options: RunOptions,
+	fail_on: FailOn,
 	grace: Duration,
 	signals: &mut Signals,
 ) -> Result<i32, CliError> {
@@ -407,7 +406,7 @@ async fn run(
 		}
 	});
 	let work =
-		crate::engine::execute::run_stoppable(plan, registry, output, stop.clone(), sink, options);
+		crate::engine::execute::run_stoppable(plan, registry, output, stop.clone(), sink, fail_on);
 	let supervised = shutdown::supervise(
 		work,
 		signals,
