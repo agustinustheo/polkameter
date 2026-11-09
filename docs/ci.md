@@ -1,8 +1,67 @@
 # Run in CI
 
-The PolkaMeter action runs a plan in a GitHub Actions job. It installs the CLI, installs your plugins and credentials, and runs the plan. Then it uploads the run's reports and selected records. It supports Linux and macOS runners. For other CI systems, see [Other CI systems](#other-ci-systems).
+The PolkaMeter action runs a plan in a GitHub Actions job. It installs the CLI, installs your plugins and credentials, and runs the plan. Then it uploads the run's reports and selected records. It supports Linux and macOS runners. For other CI systems, see [GitLab CI](#gitlab-ci) and [Other CI systems](#other-ci-systems).
 
-## A minimal workflow
+## Test a dev chain on every pull request
+
+This job starts the dev chain, runs the short CI plan with `fail-on: verdict`, and uploads the run's reports. It caches the downloads on the script's hash. Commit these files to your repository:
+
+- the job as `.github/workflows/load-test.yml`
+- `dev-chain.sh` at the repository root, from the same PolkaMeter version
+- the CI plan as `plans/substrate-remarks-ci.polkameter.xml`
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/agustinustheo/polkameter/v0.3.0/scripts/dev-chain.sh
+mkdir -p plans
+curl -fsSL -o plans/substrate-remarks-ci.polkameter.xml https://raw.githubusercontent.com/agustinustheo/polkameter/v0.3.0/examples/substrate-remarks-ci.polkameter.xml
+```
+
+Keep the action's `version` equal to the plan's substrate plugin version, `<plugin id="substrate" version="0.3.0">`. The plugin ships with the CLI, and PolkaMeter refuses a plugin of another version.
+
+```yaml
+name: load-test
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  load-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The node and runtime are pinned in dev-chain.sh; cache them on its hash.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .polkameter/dev-chain/bin
+          key: dev-chain-${{ runner.os }}-${{ hashFiles('dev-chain.sh') }}
+      - name: Start the dev chain
+        run: bash dev-chain.sh start
+      # To test your own runtime instead of the template, build its wasm first and set
+      # POLKAMETER_DEV_RUNTIME to its path on the step above.
+      - id: load
+        # @v0 is the action; version pins the CLI and the substrate plugin it installs.
+        uses: agustinustheo/polkameter@v0
+        with:
+          version: 0.3.0
+          plan: plans/substrate-remarks-ci.polkameter.xml
+          plugins: polkameter-substrate-plugin
+          credentials: substrate-dev=POLKAMETER_SUBSTRATE_SEED
+          fail-on: verdict
+        env:
+          # //Alice is funded on the dev chain. On a shared network, use a secret instead.
+          POLKAMETER_SUBSTRATE_SEED: //Alice
+      - name: Stop the dev chain
+        if: always()
+        run: bash dev-chain.sh stop
+```
+
+`plugins: polkameter-substrate-plugin` names the plugin installed with the CLI. [Getting started](getting-started.md) runs the same chain by hand.
+
+## Load your own node
 
 Save this as `.github/workflows/load-test.yml`. Replace `<plan>`, `<plugin-binary>` and `<profile>` with your plan's path, your plugin executable and the plan's credential profile:
 
@@ -28,36 +87,9 @@ jobs:
 
 `@v0` installs the latest 0.x release of the CLI and checks its checksum and build attestation. To fix the version, use a full tag such as `@v0.3.0`. A branch or commit SHA needs the `version` input.
 
-## Build plugins
+Build your plugin in an earlier step with `cargo build --locked --release -p <plugin-package>` and pass `target/release/<plugin-binary>`.
 
-Build your plugin in an earlier step, then pass the executable in `plugins`:
-
-```yaml
-      - uses: actions/checkout@v7
-      - run: cargo build --locked --release -p <plugin-package>
-      - uses: agustinustheo/polkameter@v0
-        with:
-          plan: <plan>
-          plugins: target/release/<plugin-binary>
-```
-
-## Inputs and outputs
-
-These are the inputs most jobs set. [`action.yml`](https://github.com/agustinustheo/polkameter/blob/main/action.yml) describes all inputs and outputs.
-
-| Input | Default | Meaning |
-| --- | --- | --- |
-| `plan` | required | Path to the plan, relative to the workspace |
-| `plugins` | none | Plugin executables to install, one per line. A bare name, such as `polkameter-substrate-plugin`, is found on `PATH` |
-| `credentials` | none | Credential profiles to map, one `PROFILE=ENV_VAR` per line |
-| `fail-on` | `verdict-or-inconclusive` | Which verdicts fail the job. See [What fails the job](#what-fails-the-job) |
-| `version` | from the action's tag | The CLI release to install, such as `0.3.0` |
-
-| Output | Meaning |
-| --- | --- |
-| `verdict` | `PASS`, `WARN`, `FAIL` or `INCONCLUSIVE`. Empty if the run wrote no verdict |
-| `exit-code` | The exit code of `polkameter run` |
-| `run-dir` | The run directory, relative to the workspace |
+Most jobs set only `plan`, `plugins`, `credentials`, `fail-on` and `version`. The action's outputs include `verdict`, `exit-code` and `run-dir`. [`action.yml`](https://github.com/agustinustheo/polkameter/blob/main/action.yml) describes every input and output.
 
 ## Secrets
 
@@ -71,15 +103,15 @@ Do not run plans with secrets on `pull_request_target` or for pull requests from
 
 The job fails when `polkameter run` exits with a code other than `0`. [Exit codes](cli.md#exit-codes) lists the codes.
 
-The `fail-on` input decides which [verdicts](reading-results.md#did-it-pass) also fail the job:
+The `fail-on` input decides which [verdicts](reading-results.md#did-it-pass) also fail the job. The action passes it to [`polkameter run --fail-on`](cli.md#run), which has the same default.
 
-| `fail-on` | `PASS` | `WARN` | `FAIL` | `INCONCLUSIVE` | CLI flags |
-| --- | --- | --- | --- | --- | --- |
-| `verdict-or-inconclusive` (default) | passes | passes | fails | fails | `--fail-on-verdict --fail-on-inconclusive` |
-| `verdict` | passes | passes | fails | passes | `--fail-on-verdict` |
-| `error` | passes | passes | passes | passes | none |
+| `fail-on` | `PASS` | `WARN` | `FAIL` | `INCONCLUSIVE` |
+| --- | --- | --- | --- | --- |
+| `verdict-or-inconclusive` (default) | passes | passes | fails | fails |
+| `verdict` | passes | passes | fails | passes |
+| `error` | passes | passes | passes | passes |
 
-A failed run fails the job under every policy. A plan without a load test has no verdict. In smoke mode, monitor problems and missing required check results fail the run under every policy; see [`run`](cli.md#run). Other verdict failures still follow `fail-on`.
+A failed run fails the job under every policy. A plan without a load test has no verdict. Smoke mode has stricter rules; see [`run`](cli.md#run).
 
 A ramp that pushes the chain past its limit usually ends FAIL. To keep that job green and read the verdict instead, set `fail-on: error`. A later step can read the outputs even when the action failed:
 
@@ -123,6 +155,42 @@ Then add a report step after the `load` step:
 
 The action still decides whether the job fails. `fail-on-empty: 'true'` fails the step if `junit.xml` is missing.
 
+## GitLab CI
+
+Use a Linux x86-64 runner. Add this job to `.gitlab-ci.yml`, and commit `dev-chain.sh` and the plan as for GitHub:
+
+```yaml
+load-test:
+  image: debian:bookworm-slim
+  variables:
+    POLKAMETER_VERSION: "0.3.0"
+    POLKAMETER_PLUGIN_REGISTRY: /tmp/polkameter-plugins.json
+    # //Alice is funded on the dev chain. On a shared network, use a masked CI/CD variable.
+    POLKAMETER_SUBSTRATE_SEED: //Alice
+  cache:
+    key:
+      files: [dev-chain.sh]
+    paths: [.polkameter/dev-chain/bin]
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends ca-certificates curl
+    - curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh | sh -s -- "$POLKAMETER_VERSION"
+    - export PATH="$HOME/.local/bin:$PATH"
+  script:
+    - bash dev-chain.sh start
+    - polkameter plugin install "$HOME/.local/bin/polkameter-substrate-plugin"
+    - polkameter plugin credential substrate-dev POLKAMETER_SUBSTRATE_SEED
+    - polkameter validate plans/substrate-remarks-ci.polkameter.xml
+    - polkameter run plans/substrate-remarks-ci.polkameter.xml --output polkameter-runs --fail-on-verdict
+  after_script:
+    - bash dev-chain.sh stop
+  artifacts:
+    when: always
+    reports:
+      junit: polkameter-runs/run-*/junit.xml
+    paths:
+      - polkameter-runs/
+```
+
 ## Other CI systems
 
 Without the action, install the CLI with the install script on Linux or macOS:
@@ -132,89 +200,13 @@ curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/insta
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-On GitHub Actions, set `GH_TOKEN: ${{ github.token }}` on that step so `gh` can check build provenance. Then run from the repository root. Replace `<plugin-binary>`, `<profile>`, `<ENV_VAR>` and `<plan>`:
+Then run from the repository root. Replace `<plugin-binary>`, `<profile>`, `<ENV_VAR>` and `<plan>`:
 
-```yaml
-- run: |
-    polkameter plugin install target/release/<plugin-binary>
-    polkameter plugin credential <profile> <ENV_VAR>
-    polkameter validate <plan>
-    polkameter run <plan> --output polkameter-runs --fail-on-verdict
+```sh
+polkameter plugin install target/release/<plugin-binary>
+polkameter plugin credential <profile> <ENV_VAR>
+polkameter validate <plan>
+polkameter run <plan> --output polkameter-runs
 ```
 
-Set `<ENV_VAR>` in the job's environment before `run`. Use a fresh output directory for each job. Add `--fail-on-inconclusive` to also fail on INCONCLUSIVE, as the action does by default. Keep the whole run directory, so [`polkameter report`](cli.md#report) can rebuild the reports later.
-
-## GitLab CI
-
-Use the published container as the job's `image:`. Build the plugin in an earlier Linux job with the `rust:1.93.0-bookworm` image, and pass the executable as an artifact. Replace `<version>`, `<plugin-build-job>`, `<plugin-binary>`, `<profile>` and `<plan>`:
-
-```yaml
-load-test:
-  image:
-    name: ghcr.io/agustinustheo/polkameter:<version>
-    entrypoint: [""]
-  needs:
-    - job: <plugin-build-job>
-      artifacts: true
-  variables:
-    POLKAMETER_PLUGIN_REGISTRY: /tmp/polkameter-plugins.json
-  script:
-    - polkameter plugin install target/release/<plugin-binary>
-    - polkameter plugin credential <profile> POLKAMETER_SETUP_SURI
-    - polkameter validate <plan>
-    - polkameter run <plan> --output polkameter-runs --fail-on-verdict
-  artifacts:
-    when: always
-    reports:
-      junit: polkameter-runs/*/junit.xml
-    paths:
-      - polkameter-runs/
-```
-
-Set `POLKAMETER_SETUP_SURI` as a masked CI/CD variable. The container runs as UID `10001`, so give that user write access to the checkout.
-
-A cancelled job can kill the run before teardown ends. To stop it cleanly before the job's time limit, wrap the run in `timeout --signal=INT --kill-after=45s 50m`. The run still writes its results, and `timeout` exits `124`, which fails the job. [Stop a run](cli.md#stop-a-run) explains the signals.
-
-[Stress-test a local dev chain](dev-chain.md#run-it-in-gitlab-ci) has a complete job that starts a dev chain.
-
-## Jenkins
-
-Save this as `Jenkinsfile`. It needs a Linux or macOS agent with `curl` and Rust 1.93 or newer. Store the secret as a "Secret text" credential. Replace `<plugin-package>`, `<credential-id>`, `<version>`, `<plugin-binary>`, `<profile>` and `<plan>`:
-
-```groovy
-pipeline {
-  agent any
-  environment {
-    POLKAMETER_PLUGIN_REGISTRY = "${env.WORKSPACE}/polkameter-plugins.json"
-    POLKAMETER_SETUP_SURI = credentials('<credential-id>')
-  }
-  stages {
-    stage('Build plugin') {
-      steps {
-        sh 'cargo build --locked --release -p <plugin-package>'
-      }
-    }
-    stage('Load test') {
-      steps {
-        sh '''
-          curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh | sh -s -- <version>
-          export PATH="$HOME/.local/bin:$PATH"
-          rm -rf polkameter-runs
-          polkameter plugin install target/release/<plugin-binary>
-          polkameter plugin credential <profile> POLKAMETER_SETUP_SURI
-          polkameter validate <plan>
-          polkameter run <plan> --output polkameter-runs --fail-on-verdict
-        '''
-      }
-    }
-  }
-  post {
-    always {
-      junit testResults: 'polkameter-runs/**/junit.xml', allowEmptyResults: true
-      archiveArtifacts artifacts: 'polkameter-runs/**', allowEmptyArchive: true
-    }
-  }
-}
-```
-
-The `post { always }` block keeps the reports of failed runs too.
+Set `<ENV_VAR>` in the job's environment before `run`. Use a fresh output directory for each job. Keep the whole run directory, so [`polkameter report`](cli.md#report) can rebuild the reports later. Jenkins and other systems run the same commands.

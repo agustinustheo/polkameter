@@ -2,21 +2,17 @@
 
 > PolkaMeter is a Rust CLI for load and stress tests on Polkadot SDK chains. XML plans select rates, plugins prepare transactions, and load reports give a verdict (PASS, WARN, FAIL or INCONCLUSIVE). Results include samples in JMeter's CSV format. The substrate plugin loads chains with the standard System and Balances pallets and compatible signing types without custom code.
 
-Install the CLI and the substrate plugin with `curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh | sh`. Register the plugin with `polkameter plugin install "$(command -v polkameter-substrate-plugin)"`. `polkameter init --rpc ws://127.0.0.1:9944` writes a starter plan. Plans never hold secrets: `polkameter plugin credential PROFILE ENV_VAR` maps a credential profile to an environment variable.
+## Tutorials
 
-## Start here
-
-- [Getting started](https://agustinustheodorus.com/polkameter/getting-started.html): run the example plan, no chain needed
-- [Stress-test a local dev chain](https://agustinustheodorus.com/polkameter/dev-chain.html): start a dev chain, load it, then do the same in CI
-- [Use PolkaMeter with an AI assistant](https://agustinustheodorus.com/polkameter/ai-assistants.html): the Agent Skill
+- [Getting started](https://agustinustheodorus.com/polkameter/getting-started.html): install, start a dev chain, load it until a limit fails, and generate a plan for your chain
 - [Writing a plugin](https://agustinustheodorus.com/polkameter/writing-a-plugin.html): build, install and run a plugin with one operation
 
 ## How-to guides
 
 - [Install](https://agustinustheodorus.com/polkameter/install.html): every install method
-- [Run a load test](https://agustinustheodorus.com/polkameter/load-test.html): write, validate, preflight and run a load plan
-- [Read the results](https://agustinustheodorus.com/polkameter/reading-results.html): verdict, breaking point, max sustained rate, loss check
-- [Run in CI](https://agustinustheodorus.com/polkameter/ci.html): the GitHub Action, GitLab CI, Jenkins
+- [Run in CI](https://agustinustheodorus.com/polkameter/ci.html): the GitHub Action, GitLab CI and other CI systems
+- [Read the results](https://agustinustheodorus.com/polkameter/reading-results.html): verdict, breaking point, max sustained rate, loss check, stop rules
+- [Use PolkaMeter with an AI assistant](https://agustinustheodorus.com/polkameter/ai-assistants.html): the Agent Skill
 - [Troubleshooting](https://agustinustheodorus.com/polkameter/troubleshooting.html): common errors and fixes
 
 ## Reference
@@ -27,12 +23,8 @@ Install the CLI and the substrate plugin with `curl -fsSL https://raw.githubuser
 - [Plugin reference](https://agustinustheodorus.com/polkameter/plugins.html): plugin protocol, manifest, PreparedTx, the polkameter-plugin-sdk crate
 - [The substrate plugin](https://agustinustheodorus.com/polkameter/substrate-plugin.html): its operations, inputs and outputs
 
-## Explanation
-
-- [How a run works](https://agustinustheodorus.com/polkameter/how-it-works.html): the phases of a run and why it reports what it does
-
 ## Optional
 
 - [Source repository](https://github.com/agustinustheo/polkameter): the code and example plans in `examples/`
-- [Agent Skill](https://github.com/agustinustheo/polkameter/tree/main/skills/polkameter): SKILL.md, plan and CI templates, a setup checklist
+- [Agent Skill](https://github.com/agustinustheo/polkameter/tree/main/skills/polkameter): SKILL.md, plan and CI templates
 - [AGENTS.md](https://github.com/agustinustheo/polkameter/blob/main/AGENTS.md): build and test commands for contributors

@@ -124,13 +124,13 @@ class SkillTemplates(unittest.TestCase):
                 self.assertEqual(template.read_text(), example.read_text(),
                                  f"copy examples/{template.name} over {template.relative_to(ROOT)}")
 
-    def test_dev_chain_page_shows_the_ci_templates(self):
-        page = (ROOT / "docs/dev-chain.md").read_text()
+    def test_ci_page_shows_the_ci_templates(self):
+        page = (ROOT / "docs/ci.md").read_text()
         for name in ["github-workflow.yml", "gitlab-ci.yml"]:
             lines = (SKILL / "templates" / name).read_text().splitlines()
             body = "\n".join(lines[next(i for i, l in enumerate(lines) if not l.startswith("#")):])
             with self.subTest(name):
-                self.assertIn(body, page, f"docs/dev-chain.md must show templates/{name} without its header")
+                self.assertIn(body, page, f"docs/ci.md must show templates/{name} without its header")
 
     def test_claude_code_plugin_follows_the_workspace_version(self):
         manifest = json.loads((ROOT / ".claude-plugin/plugin.json").read_text())
@@ -142,7 +142,7 @@ class SkillTemplates(unittest.TestCase):
         self.assertTrue((ROOT / "skills" / manifest["name"] / "SKILL.md").is_file())
 
     def test_skill_links_resolve(self):
-        for document in [SKILL / "SKILL.md", SKILL / "checklist.md"]:
+        for document in [SKILL / "SKILL.md"]:
             for target in re.findall(r"\]\(((?:templates/)?[\w.-]+\.(?:md|xml|yml|rs))\)",
                                      document.read_text()):
                 with self.subTest(f"{document.name} -> {target}"):

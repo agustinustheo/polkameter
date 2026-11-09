@@ -4,7 +4,7 @@ Let's write a plugin with one operation, `greet`, install it and run a plan that
 
 PolkaMeter doesn't know your runtime. Your plugin builds the transactions for your chain, and PolkaMeter sends them and measures what happens. A plugin is a separate program, so you can keep it in your own repository and install it without rebuilding PolkaMeter.
 
-Before you start, [install PolkaMeter](getting-started.md) so `polkameter` is on your `PATH`. You also need Rust 1.93 or newer.
+Before you start, [install PolkaMeter](install.md) so `polkameter` is on your `PATH`. You also need Rust 1.93 or newer.
 
 ## Create the crate
 
@@ -105,7 +105,7 @@ polkameter plugin install target/debug/hello-plugin
 Installed plugin hello 0.1.0 (1 operation) from ~/hello-plugin/target/debug/hello-plugin
 ```
 
-Install reads the manifest and records the plugin's ID, version and a hash of the executable `target/debug/hello-plugin`. Install the plugin again after every rebuild. A checksum or version mismatch stops `run` before setup and exits `3`.
+Install reads the manifest and records the plugin's ID, version and a hash of the executable `target/debug/hello-plugin`. [`plugin install`](cli.md#plugin) explains the registry and when to reinstall.
 
 ## Write a plan that calls it
 
@@ -144,7 +144,7 @@ Phase: teardown
 Run completed. Artifacts: ~/hello-plugin/runs/run-1792254908788-10278-1
 ```
 
-Each run writes a new run directory under `--output`. Both setup steps ran once. [Run directory](results.md#the-run-directory) lists the files a run writes.
+Each run writes a new run directory under `--output`. [Run directory](results.md) lists the files a run writes.
 
 Now let's break it. Copy the plan to `wrong.polkameter.xml` and change `expected` to `Hello, Ferris!`. Run the copy and print its exit code:
 
@@ -160,14 +160,33 @@ PolkaMeter: run failed: assertion verified failed: expected "Hello, Ferris!", go
 1
 ```
 
-The run stops at the failed assertion. The message quotes string values and shows numbers and booleans bare. This assertion failure exits `1`, and `execution.json` keeps the full error.
+The run stops at the failed assertion. The message quotes string values and shows numbers and booleans bare. `execution.json` keeps the full error.
 
 ## Plugins that drive load
 
 A load plugin prepares the flood and probe transactions before the load. It can also check the chain state afterwards, and record extra series for its own checks. [PreparedTx and the load contract](plugins.md#preparedtx-and-the-load-contract) gives the contract, and [The plugin SDK crate](plugins.md#the-plugin-sdk-crate) shows the `chain` and `observers` features you'll need.
 
-Before you write one, write down the load: the call, the signer, the number of transactions, and what each one needs from the chain. Check the runtime identity (genesis hash, spec version and transaction version) before the load starts, so stale transactions stop the run rather than get sent. Keep secrets in credential profiles, not in the plugin's output.
+Before you write one, write down the load: the call, the signer, the number of transactions, and what each one needs from the chain. Check the runtime identity (genesis hash, spec version and transaction version) before the load starts. Then stale transactions stop the run rather than get sent. Keep secrets in credential profiles, not in the plugin's output.
+
+A load plan names your plugin's prepare operations. Replace `my-runtime` and the operation names with your plugin's names:
+
+```xml
+<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="First load" timeout-ms="3600000">
+  <plugins><plugin id="my-runtime" version="0.1.0" protocol="1"/></plugins>
+  <targets><target id="chain" endpoint="ws://127.0.0.1:9944"/></targets>
+  <setup>
+    <step id="flood" use="my-runtime.prepare-flood"><input name="count" value="1000"/></step>
+    <step id="probes" use="my-runtime.prepare-probes"><input name="count" ref="run.probeBudget"/></step>
+  </setup>
+  <load target="chain" source-ref="steps.flood.transactions" probes-ref="steps.probes.transactions" block-interval-seconds="6">
+    <rate tx-per-second="2" seconds="30"/>
+  </load>
+</polkameter-plan>
+```
+
+- `source-ref` points to the flood. `probes-ref` points to the probes.
+- `ref="run.probeBudget"` asks the plugin for exactly as many probes as the run needs. The [plan reference](plans.md#load) gives the formula.
 
 The [substrate plugin](https://github.com/agustinustheo/polkameter/tree/main/plugins/substrate) is a complete load plugin. The [example plugin](https://github.com/agustinustheo/polkameter/blob/main/plugins/example/src/main.rs) is smaller.
 
-When your plugin is ready, [Run a load test](load-test.md) shows how to run it.
+Run it as in [Getting started](getting-started.md).

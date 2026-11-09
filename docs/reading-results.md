@@ -1,6 +1,6 @@
 # Read the results
 
-A load test writes its answers to `summary.md` in the run directory. The examples on this page come from the remarks run in [Stress-test a local dev chain](dev-chain.md). It ramps from 100 to 600 transactions per second (tx/s), 30 seconds per rate step.
+A load test writes its answers to `summary.md` in the run directory. The examples on this page come from the remarks run in [Getting started](getting-started.md). It ramps from 100 to 600 transactions per second (tx/s), 30 seconds per rate step.
 
 ## Did it pass?
 
@@ -13,15 +13,6 @@ Look at the `Verdict:` line in `summary.md`, or `verdict.result` in `summary.jso
 
 PASS doesn't prove the chain's maximum capacity. It only says the chain met every limit at the rates you chose.
 
-Here's the result from the remarks run:
-
-```markdown
-- **Verdict:** FAIL
-- **Failure onset** (first failed load step): step 5 (600 tx/s): latency, p95 send -> best block 12.9 s
-- **Max sustained:** 500 tx/s target (step 4), 500 tx/s included
-- **Load stop:** rate cap: all 6 steps ran
-```
-
 Three separate things tell you how a run ended:
 
 | Question | Where to look | Example |
@@ -30,9 +21,9 @@ Three separate things tell you how a run ended:
 | Why did the load stop? | `Load stop:` in `summary.md`, `stop` in `summary.json` | `rate cap: all 6 steps ran` |
 | Did the command finish without an error? | The exit code, and `state` in `execution.json` | `1`, `completed_with_failures` |
 
-> **Warning:** Exit code `0` doesn't mean the test passed. By default, a run with a FAIL or INCONCLUSIVE verdict still exits `0`. Add `--fail-on-verdict` and `--fail-on-inconclusive` to make them exit `1`. [`run`](cli.md#run) explains the flags and the extra rules of smoke mode.
+> **Warning:** Exit code `0` doesn't always mean the test passed. A WARN verdict exits `0`, and so does every verdict with `--fail-on error`. [`run`](cli.md#run) explains the flag and the extra rules of smoke mode.
 
-The outcome checks table at the end of `summary.md` gives each check a status: `pass`, `warn`, `fail`, `info` or `no result`. A check never passes on data it doesn't have. Its detail says what's missing. A check for nodes the plan doesn't monitor is optional and doesn't change the verdict. [Checks](results.md#checks) lists each check.
+The outcome checks table at the end of `summary.md` gives each check a status: `pass` (no problem), `warn`, `fail`, `info` (a number to read) or `no result` (no data). A check never passes on data it doesn't have. Its detail says what's missing. A check for nodes the plan doesn't monitor is optional and doesn't change the verdict. [Outcome checks](results.md#outcome-checks) lists each check.
 
 ### What to do about INCONCLUSIVE
 
@@ -47,7 +38,7 @@ In CI, if you can't fix the cause yet, set [`fail-on: verdict`](ci.md#what-fails
 
 ## How much load did the chain take?
 
-The `Load steps` table has one row per rate step. This copy keeps the last three of six steps and a few columns:
+The `Load steps` table has one row per rate step. This excerpt shows the last three of six steps:
 
 ```markdown
 | step | target tx/s | duration s | transactions sent | sent/s | included/s | included % | p50 s | p95 s (limit 10.0) | ... | max ours/block | max ref time % | max proof % |
@@ -59,16 +50,13 @@ The `Load steps` table has one row per rate step. This copy keeps the last three
 
 The breaking point is the first rate step that fails an inclusion, latency or refusal limit. `summary.md` calls it the failure onset. Here it's step 5: its p95 was 12.9 s, above the 10 s limit. A breaking point doesn't stop the load.
 
-The max sustained rate is the target rate of the step before the first breaking point. If no step breaks a limit, it's the last step's rate. If the first step breaks a limit, there's no value. Here it's 500 tx/s. It's not the chain's absolute capacity.
+The max sustained rate is the target rate of the step before the first breaking point. If no step breaks a limit, it's the last step's rate. If the first step breaks a limit, there's no value. Here it's 500 tx/s.
 
-[Stop rules and thresholds](results.md#stop-rules-and-thresholds) lists every rule. The plan's [`<thresholds>`](plans.md#thresholds) sets the limits and lists the defaults. A dropped connection that PolkaMeter reconnects isn't a stop. [How a run works](how-it-works.md#why-a-dropped-connection-is-not-a-chain-failure) explains why.
-
+[Stop rules](#stop-rules) lists every rule. [`<thresholds>`](plans.md#thresholds) sets the limits.
 
 ## Which step does a number belong to?
 
-A transaction counts in the rate step that sent it, even when a later block includes it. Its inclusion, its latency and its share of `included/s` stay with that step. So a step's `included/s` is its own included transactions divided by the step's length. It doesn't count what the step before left in the pool.
-
-Blocks count in the step they arrive in. A block gap counts in each step it spans, for the part inside that step.
+A transaction counts in the rate step that sent it, even when a later block includes it. Its inclusion, its latency and its share of `included/s` stay with that step.
 
 ## How slow did it get?
 
@@ -78,24 +66,61 @@ The `reply p95` column is how long the node took to answer a submission. In the 
 
 ## Did transactions get lost?
 
-Loss accounting gives each sent flood transaction one final status. Funding transactions and probes are separate. The loss check line in `summary.md` gives the totals:
+The loss check line in `summary.md` gives the totals:
 
 ```markdown
 - **Loss check:** 63002 sent: 63002 finalized (0 failed after inclusion), 0 refused, 0 still ready in the pool, 0 seen in a block but not verified final, **0 lost**, 0 unknown. ...
 ```
 
-Only `lost` counts as lost. A transaction is `lost` only when PolkaMeter could read both the finalized chain and the node's pool. Without that evidence it stays `unverified` or `unknown`. So check those two counts too before you call a run loss-free. Any lost transaction makes the verdict FAIL. [Loss accounting](results.md#loss-accounting) defines each status.
+After the load, PolkaMeter gives each sent flood transaction the first status that holds. Funding transactions and probes aren't part of it.
+
+| Status | Meaning |
+| --- | --- |
+| `finalized` | In a finalized block. Dispatch can still have failed. |
+| `in_pool` | Still in the node's ready pool. |
+| `refused` | The node rejected the submission. |
+| `lost` | Accepted or in a best block, but absent from the finalized chain and the ready pool. PolkaMeter needs both sources to decide this. |
+| `unverified` | In a best block, but PolkaMeter could not verify finality. |
+| `unknown` | Not enough evidence for another status. |
+
+Finality confirms that a block belongs to the chain's permanent history. Inclusion in a best block does not. Without reading the finalized chain, a transaction that a reorg moved to another block would look lost. So anything PolkaMeter couldn't check becomes `unknown` or `unverified`. A failed read never creates a loss. Check those two counts too before you call a run loss-free. Any lost transaction makes the verdict FAIL.
 
 `lost.jsonl` lists the first 1000 lost transactions. An empty file means no confirmed loss, not proof that nothing was lost.
 
-If the plan's state check gives no result, the loss check line says `State check: no result`. [Loss accounting](results.md#loss-accounting) explains how that affects the verdict.
+The plan's state check reads a sample of the finalized transactions and checks that they changed state. If it gives no result, the loss check line says `State check: **no result** (<reason>)`, and the "no silent loss" check cannot pass. Confirmed loss still fails it, and any failure keeps the verdict FAIL. Otherwise the verdict is INCONCLUSIVE.
 
 ## Did the chain recover?
-
-Before the load, the baseline sends a few probe transactions to measure latency on a quiet chain. After the load stops, PolkaMeter sends one probe per block until enough of them land in time again. [Recovery](results.md#recovery) gives the exact criteria.
 
 ```markdown
 - **Recovery:** back 1 s after the load stopped (3 probes in a row landed within 12.0 s). Backlog at stop 5712 txs, drained after 8 s, at 317.3 tx/s.
 ```
 
-`Backlog at stop` counts transactions still waiting when the load stopped. `drained after` is how long the pool took to empty. If the chain doesn't recover within `recovery-seconds`, the run gives up. [Recovery](results.md#recovery) lists the settings.
+After the flood stops, the run sends one probe transaction per block. A probe is in time if it lands within the larger of twice the slowest baseline probe and twice the block interval.
+
+The chain has recovered when `probes-in-a-row` consecutive probes are in time and the mean block gap from then on is at most `recovered-block-gap-factor` block intervals. Probing continues until the recovery criteria are met and the backlog drains, unless the `recovery-seconds` budget or a node failure ends it. Then PolkaMeter waits up to `finality-wait-ms` for finality.
+
+`Backlog at stop` counts transactions still waiting when the load stopped. `drained after` is how long the pool took to empty.
+
+## Stop rules
+
+Breaking-point rules record a result, and the load continues. The other rules end the load. The plan's [`<thresholds>`](plans.md#thresholds) sets each limit and lists the defaults.
+
+| Rule: trigger | Kind |
+| --- | --- |
+| Included: included share below the minimum | breaking point |
+| Latency: p95 time from submission to best block above the maximum | breaking point |
+| Refused: refused share above the maximum | breaking point |
+| Pool refuses: refused share above the limit, in this step or the last | graceful |
+| Pool intake: p95 submission reply above the limit, a submission waited that long, or the node stopped reading submissions | graceful |
+| Slow blocks: mean block gap above the factor times `block-interval-seconds`. A step with no new block counts its whole length. | hard |
+| Stall: no new best block for the limit, not counting reconnect time | hard |
+| Finality stall: no new finalized block for the limit, not counting reconnect time | hard |
+| Node down: the node stayed unreachable for 15 s, a connection dropped more than 5 times in 60 s, or a local node's process restarted | hard |
+| Rate cap: every rate step ran | none |
+| Budget used up: the prepared flood transactions ran out before the last rate step finished | none |
+| Generator limit: sent share of the target rate below the minimum, or the load tool paused more than 5 s | none |
+| Smoke error: a monitor problem, in smoke mode only | none |
+
+A graceful stop means the node refuses or delays transactions but keeps producing blocks. A hard stop means block production or finality got worse for everyone. A transaction that failed after inclusion also counts as hard. A silent failure is a lost transaction, or an included one that left no state.
+
+A dropped connection that reconnects is not a stop. See [blocks: RPC connection lost](troubleshooting.md#blocks-rpc-connection-lost--reconnected-after-seconds-s-nothing-observed-meanwhile).
