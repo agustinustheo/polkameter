@@ -1,4 +1,4 @@
-//! Execution of declarative steps through the same host in every frontend.
+//! Execution of a plan's declarative steps.
 use crate::engine::monitors::Job;
 use crate::engine::{
 	artifacts, measurement,
@@ -91,9 +91,8 @@ impl std::fmt::Display for RunState {
 
 /// Event writer shared by every task of a run. Events are redacted before they are persisted
 /// and before the sink sees them.
-#[derive(Clone)]
 struct Log {
-	file: Arc<Mutex<File>>,
+	file: Mutex<File>,
 	sink: EventSink,
 	/// The run's credentials and endpoint secrets.
 	redactor: Redactor,
@@ -104,7 +103,7 @@ impl Log {
 			.create_new(true)
 			.write(true)
 			.open(directory.join("events.jsonl"))?;
-		Ok(Self { file: Arc::new(Mutex::new(file)), sink, redactor })
+		Ok(Self { file: Mutex::new(file), sink, redactor })
 	}
 	fn emit(&self, mut value: Value) -> Result<()> {
 		value["timestamp"] = json!(polkameter_plugin_sdk::observers::now_ms());
@@ -498,17 +497,14 @@ async fn with_scratch_plugins<T>(
 	result
 }
 pub async fn inspect(plan: &Plan, registry: &Registry) -> Result<Value> {
-	let mut inspected = inspect_plugins(plan, registry).await?;
-	// The targets' endpoints may hold API keys.
-	redactor(plan, registry, &[]).value(&mut inspected["targets"]);
-	Ok(inspected)
-}
-async fn inspect_plugins(plan: &Plan, registry: &Registry) -> Result<Value> {
-	with_scratch_plugins(plan, registry, "inspect", async |plugins, _, _| {
+	let mut inspected = with_scratch_plugins(plan, registry, "inspect", async |plugins, _, _| {
 		validate_contracts(plan, plugins)?;
 		Ok(json!({"valid": true, "plugins": plugins.manifests, "targets": plan.targets}))
 	})
-	.await
+	.await?;
+	// The targets' endpoints may hold API keys.
+	redactor(plan, registry, &[]).value(&mut inspected["targets"]);
+	Ok(inspected)
 }
 /// Checks the plan against its plugins, credentials and chain, and runs its `<preflight>` steps
 /// and the calibration. Never arms setup or load and writes only to its scratch directory.
@@ -623,7 +619,7 @@ async fn timestamps(client: &Client, number: u32) -> Result<Vec<u64>, ChainError
 	let mut stamps = Vec::new();
 	for n in (number.saturating_sub(60)..=number).rev() {
 		let hash: Option<subxt::utils::H256> =
-			client.request("chain_getBlockHash", subxt_rpcs::rpc_params![n]).await?;
+			client.request("chain_getBlockHash", subxt::rpcs::rpc_params![n]).await?;
 		let Some(hash) = hash else { break };
 		stamps.push(
 			fetch::<(), u64>(&client.at(hash.0).await?, "Timestamp", "Now", ())
@@ -659,12 +655,6 @@ fn interval_s(stamps: &[u64]) -> Option<f64> {
 	(intervals >= MIN_INTERVALS && span > 0).then(|| span as f64 / intervals as f64 / 1000.0)
 }
 
-/// How a run exits.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct RunOptions {
-	pub fail_on: FailOn,
-}
-
 /// Which load-test verdicts make a run exit 1, besides runtime and smoke-mode failures.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum FailOn {
@@ -688,7 +678,7 @@ impl FailOn {
 	}
 }
 
-/// Exit code of a run stopped by `Stop::request` without an explicit code (SIGINT, `/stop`).
+/// Exit code of a run stopped by `Stop::request` without an explicit code (SIGINT).
 pub const STOPPED_EXIT_CODE: i32 = 130;
 /// The teardown error of a run whose stop was forced.
 const TEARDOWN_INTERRUPTED: &str = "teardown was interrupted by a forced stop";
@@ -742,7 +732,7 @@ pub async fn run_stoppable(
 	root: &Path,
 	stop: Stop,
 	sink: EventSink,
-	options: RunOptions,
+	fail_on: FailOn,
 ) -> Result<Outcome> {
 	// A new `run-…` directory under `root`: a run never reuses one.
 	std::fs::create_dir_all(root)?;
@@ -774,11 +764,10 @@ pub async fn run_stoppable(
 		registry: &registry,
 		context,
 		directory,
-		cancel: stop.cancel.clone(),
 		stop,
 		log,
 		started: Instant::now(),
-		options,
+		fail_on,
 		teardown: Mutex::new(None),
 		phase: Mutex::new(PREFLIGHT.to_owned()),
 		failed_in: Mutex::new(None),
@@ -789,7 +778,7 @@ pub async fn run_stoppable(
 	let result = tokio::select! {
 		biased;
 		result = &mut execute => result,
-		() = run.cancel.cancelled() => {
+		() = run.stop.cancel.cancelled() => {
 			run.stopping();
 			execute.await
 		},
@@ -807,11 +796,10 @@ struct Run<'a> {
 	registry: &'a Registry,
 	context: Context,
 	directory: PathBuf,
-	cancel: CancellationToken,
 	stop: Stop,
 	log: Log,
 	started: Instant,
-	options: RunOptions,
+	fail_on: FailOn,
 	teardown: Mutex<Option<Teardown>>,
 	/// The phase the run is in; `preflight` until setup starts.
 	phase: Mutex<String>,
@@ -887,7 +875,7 @@ impl Run<'_> {
 	}
 
 	async fn start_plugins(&self) -> Result<Plugins> {
-		cancellable(&self.cancel, async {
+		cancellable(&self.stop.cancel, async {
 			tokio::time::timeout(
 				Duration::from_millis(self.plan.timeout_ms),
 				Plugins::start(
@@ -915,7 +903,7 @@ impl Run<'_> {
 	async fn bounded(&self, body: impl Future<Output = Result<i32>>) -> Result<i32> {
 		let budget =
 			Duration::from_millis(self.plan.timeout_ms).saturating_sub(self.started.elapsed());
-		cancellable(&self.cancel, async {
+		cancellable(&self.stop.cancel, async {
 			tokio::time::timeout(budget, body)
 				.await
 				.unwrap_or_else(|_| Err(anyhow::anyhow!("whole-run deadline exceeded")))
@@ -972,7 +960,7 @@ impl Run<'_> {
 					Vec::new()
 				});
 				let exit =
-					measurement::report(&dir, measured, &checks, self.options, &self.log.redactor)?;
+					measurement::report(&dir, measured, &checks, self.fail_on, &self.log.redactor)?;
 				*self.exit_reason.lock().unwrap_or_else(|e| e.into_inner()) = exit.reason;
 				exit.code
 			},
@@ -1031,7 +1019,7 @@ impl Run<'_> {
 		plugins: &Plugins,
 		values: &mut Values,
 	) -> Result<()> {
-		execute_steps(steps, plugins, values, &self.context, &self.cancel, &self.log).await
+		execute_steps(steps, plugins, values, &self.context, &self.stop.cancel, &self.log).await
 	}
 
 	/// Teardown runs even after a failure or cancellation, and runs every step even after one
@@ -1108,14 +1096,14 @@ impl Run<'_> {
 		let redacted = redact_plugin_logs(&self.directory, &self.log.redactor);
 		let (exit_code, state, error) = match result {
 			// A stop is honoured even when it came after the phases, during teardown.
-			Ok(_) if self.cancel.is_cancelled() => (
+			Ok(_) if self.stop.cancel.is_cancelled() => (
 				self.stop.exit_code(),
 				RunState::Stopped,
 				Some(anyhow::anyhow!("run stopped during teardown")),
 			),
 			Ok(0) => (0, RunState::Completed, None),
 			Ok(code) => (code, RunState::CompletedWithFailures, None),
-			Err(error) if self.cancel.is_cancelled() => {
+			Err(error) if self.stop.cancel.is_cancelled() => {
 				(self.stop.exit_code(), RunState::Stopped, Some(error))
 			},
 			Err(error) if self.before_setup() => {
@@ -1137,7 +1125,7 @@ impl Run<'_> {
 		let error_location = error
 			.as_ref()
 			.and_then(|error| error.downcast_ref::<crate::engine::plan::PlanError>())
-			.and_then(|error| error.location);
+			.map(|error| error.location);
 		let mut outcome = Outcome {
 			artifact_dir: self.context.artifact_dir.clone(),
 			exit_code,
@@ -1536,7 +1524,7 @@ mod tests {
 				&root,
 				Stop::default(),
 				Arc::new(|_| {}),
-				RunOptions::default(),
+				FailOn::default(),
 			)
 			.await
 			.unwrap();

@@ -6,15 +6,12 @@ use std::collections::BTreeMap;
 use polkameter_plugin_sdk::observers::{BlockRecord, BlockStats, Millis, NodeMax};
 use serde::{Deserialize, Serialize};
 
-/// A step's final numbers once all its txs settled (`steps.jsonl`), per lane.
+/// A step's final numbers once all its txs settled (`steps.jsonl`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FinalStep {
 	/// Step index.
 	pub step: u32,
-	/// The lane (its tx call); absent in single-lane runs of the TS tool.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub lane: Option<String>,
 	/// Target rate.
 	pub target_rate: f64,
 	/// Length, 0.1 s.
@@ -113,7 +110,7 @@ impl StepStats {
 	}
 }
 
-/// The p-th percentile (nearest rank, as TS); 0 for no values.
+/// The p-th percentile (nearest rank); 0 for no values.
 pub fn percentile(values: &[Millis], p: f64) -> Millis {
 	if values.is_empty() {
 		return 0;
@@ -144,7 +141,6 @@ pub fn final_step(st: &StepStats) -> FinalStep {
 	let ratio = |a: u64, b: u64, none: f64| if b == 0 { none } else { a as f64 / b as f64 };
 	FinalStep {
 		step: st.step,
-		lane: None,
 		target_rate: st.target_rate,
 		seconds: (seconds * 10.0).round() / 10.0,
 		sent: st.sent,

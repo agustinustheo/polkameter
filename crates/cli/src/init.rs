@@ -53,11 +53,11 @@ pub async fn inspect(rpc: &str, kind: Kind) -> Result<Facts> {
 		builder.has_call("Balances", "transfer_keep_alive"),
 		"the runtime at {rpc} has no Balances.transfer_keep_alive, which the substrate plugin uses to fund its signers"
 	);
-	let chain: String = client.request("system_chain", subxt_rpcs::rpc_params![]).await?;
+	let chain: String = client.request("system_chain", subxt::rpcs::rpc_params![]).await?;
 	let version: Value =
-		client.request("state_getRuntimeVersion", subxt_rpcs::rpc_params![]).await?;
+		client.request("state_getRuntimeVersion", subxt::rpcs::rpc_params![]).await?;
 	let properties: Value = client
-		.request("system_properties", subxt_rpcs::rpc_params![])
+		.request("system_properties", subxt::rpcs::rpc_params![])
 		.await
 		.unwrap_or_default();
 	let first = |v: &Value| if v.is_array() { v[0].clone() } else { v.clone() };

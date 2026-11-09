@@ -11,7 +11,7 @@ use std::{
 };
 
 use crate::engine::{
-	execute::{FailOn, Outcome, RunOptions, RunState, Stop},
+	execute::{FailOn, Outcome, RunState, Stop},
 	plan::{Plan, PlanError, read_plan},
 	plugins::Registry,
 };
@@ -202,13 +202,9 @@ impl CliError {
 	/// An error about plan file `path`. The message starts with the file and, when the error has
 	/// one, the line and column: `plan.xml: line 3, column 5: …`.
 	fn in_plan(kind: ErrorKind, path: &Path, error: &anyhow::Error) -> Self {
-		let (location, detail) = match error.downcast_ref::<PlanError>() {
-			Some(located) => (located.location, located.message.clone()),
-			None => (None, format!("{error:#}")),
-		};
-		let message = match location {
-			Some(location) => format!("{}: {location}: {detail}", path.display()),
-			None => format!("{}: {detail}", path.display()),
+		let message = match error.downcast_ref::<PlanError>() {
+			Some(located) => format!("{}: {located}", path.display()),
+			None => format!("{}: {error:#}", path.display()),
 		};
 		Self { kind, message }
 	}
@@ -246,7 +242,8 @@ pub fn main() -> i32 {
 			error.exit_code()
 		},
 	};
-	exit_code_after_output(code, STDOUT_FAILED.load(Ordering::Relaxed))
+	// A command that succeeded but could not write its output exits 1.
+	if code == 0 && STDOUT_FAILED.load(Ordering::Relaxed) { 1 } else { code }
 }
 
 async fn execute(cli: Cli) -> Result<i32, CliError> {
@@ -268,7 +265,7 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 			let registry = registry(&plan, credential_env)?;
 			crate::engine::execute::preflight(&plan, &registry).await.map_err(|e| {
 				// Errors about one step or element name the plan file and position.
-				if e.downcast_ref::<PlanError>().is_some_and(|e| e.location.is_some()) {
+				if e.is::<PlanError>() {
 					CliError::in_plan(ErrorKind::Preflight, &path, &e)
 				} else {
 					CliError::preflight(format!("{e:#}"))
@@ -279,10 +276,10 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 		},
 		Command::Run { plan: path, output, credential_env, fail_on, shutdown_grace } => {
 			// Before any work, so that no signal can end the process without cleanup.
-			let mut signals = install_signals()?;
+			let mut signals = Signals::install()
+				.map_err(|e| CliError::runtime(format!("cannot install signal handlers: {e}")))?;
 			let grace = Duration::from_secs(shutdown_grace);
 			let plan = load(&path)?;
-			let options = RunOptions { fail_on };
 			if output.to_str().is_none() {
 				return Err(CliError::invalid(format!(
 					"--output {} is not a UTF-8 path; plugins receive the run directory as text, so \
@@ -291,16 +288,10 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 				)));
 			}
 			let registry = registry(&plan, credential_env)?;
-			let local = LocalRun { plan, registry, output, options, grace, path };
-			run_local(local, &mut signals).await
+			run(&path, plan, registry, &output, fail_on, grace, &mut signals).await
 		},
 		Command::Report { artifact_directory } => report(artifact_directory),
 	}
-}
-
-fn install_signals() -> Result<Signals, CliError> {
-	Signals::install()
-		.map_err(|e| CliError::runtime(format!("cannot install signal handlers: {e}")))
 }
 
 /// `polkameter init`: inspects the chain, renders the plan, checks that it parses and writes it.
@@ -398,19 +389,16 @@ fn registry(plan: &Plan, credential_env: Option<String>) -> Result<Registry, Cli
 	Ok(registry)
 }
 
-/// A local run and where its results go.
-struct LocalRun {
-	/// The plan file, for messages that point into it.
-	path: PathBuf,
+/// Runs `plan` (read from `path`, for messages that point into it) into `output`.
+async fn run(
+	path: &Path,
 	plan: Plan,
 	registry: Registry,
-	output: PathBuf,
-	options: RunOptions,
+	output: &Path,
+	fail_on: FailOn,
 	grace: Duration,
-}
-
-async fn run_local(run: LocalRun, signals: &mut Signals) -> Result<i32, CliError> {
-	let LocalRun { path, plan, registry, output, options, grace } = run;
+	signals: &mut Signals,
+) -> Result<i32, CliError> {
 	let stop = Stop::default();
 	let sink = Arc::new(move |event: Value| {
 		if event["event"] == "phase" {
@@ -418,7 +406,7 @@ async fn run_local(run: LocalRun, signals: &mut Signals) -> Result<i32, CliError
 		}
 	});
 	let work =
-		crate::engine::execute::run_stoppable(plan, registry, &output, stop.clone(), sink, options);
+		crate::engine::execute::run_stoppable(plan, registry, output, stop.clone(), sink, fail_on);
 	let supervised = shutdown::supervise(
 		work,
 		signals,
@@ -446,7 +434,7 @@ async fn run_local(run: LocalRun, signals: &mut Signals) -> Result<i32, CliError
 		return Ok(signal.exit_code());
 	};
 	let outcome = result.map_err(|e| CliError::runtime(e.to_string()))?;
-	write_artifact_written(&path, &outcome);
+	write_artifact_written(path, &outcome);
 	Ok(outcome.exit_code)
 }
 
@@ -524,11 +512,10 @@ fn report(path: PathBuf) -> Result<i32, CliError> {
 	let secrets = Registry::load()
 		.map(|registry| available_secrets(&registry))
 		.unwrap_or_default();
+	let redactor = crate::redact::Redactor::new(&secrets, None::<&str>);
 	if path.join("summary.json").is_file() {
-		let redactor = crate::redact::Redactor::new(&secrets, None::<&str>);
 		crate::engine::measurement::check(&path, &redactor).map_err(runtime)?;
 	}
-	let redactor = crate::redact::Redactor::new(&secrets, None::<&str>);
 	if let Err(error) = crate::engine::junit::write(&path, &redactor) {
 		crate::engine::junit::warning(Some(&path), &error.to_string(), &redactor);
 	}
@@ -562,52 +549,29 @@ static STDOUT_FAILED: AtomicBool = AtomicBool::new(false);
 /// Writes `text` and a newline to standard output. When the reader has closed the pipe, output
 /// stops silently and the command carries on: a run still finishes, writes its results and
 /// exits with its own code. Any other failure, such as a full disk, is reported once on standard
-/// error; output stops, the command carries on, and it exits 1 instead of 0 (see
-/// [`exit_code_after_output`]).
+/// error; output stops, the command carries on, and it exits 1 instead of 0 (see [`main`]).
 fn write_stdout(text: &str) {
 	if STDOUT_CLOSED.load(Ordering::Relaxed) || STDOUT_FAILED.load(Ordering::Relaxed) {
 		return;
 	}
 	let mut stdout = std::io::stdout().lock();
-	let written = write_line(&mut stdout, text);
-	match written.map_err(|error| classify_stdout_error(&error)) {
+	let written = (|| {
+		stdout.write_all(text.as_bytes())?;
+		stdout.write_all(b"\n")?;
+		stdout.flush()
+	})();
+	match written {
 		Ok(()) => {},
-		Err(StdoutError::Closed) => STDOUT_CLOSED.store(true, Ordering::Relaxed),
-		Err(StdoutError::Failed(error)) => {
+		// The reader went away (`| head -1`): not an error.
+		Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {
+			STDOUT_CLOSED.store(true, Ordering::Relaxed);
+		},
+		Err(error) => {
 			if !STDOUT_FAILED.swap(true, Ordering::Relaxed) {
 				eprintln!("{PRODUCT_NAME}: cannot write to standard output: {error}");
 			}
 		},
 	}
-}
-
-fn write_line(out: &mut impl Write, text: &str) -> std::io::Result<()> {
-	out.write_all(text.as_bytes())?;
-	out.write_all(b"\n")?;
-	out.flush()
-}
-
-/// Why a write to standard output failed.
-#[derive(Debug, Eq, PartialEq)]
-enum StdoutError {
-	/// The reader went away (`| head -1`): not an error.
-	Closed,
-	/// Anything else, such as a full disk or a file over its size limit.
-	Failed(String),
-}
-
-fn classify_stdout_error(error: &std::io::Error) -> StdoutError {
-	if error.kind() == std::io::ErrorKind::BrokenPipe {
-		StdoutError::Closed
-	} else {
-		StdoutError::Failed(error.to_string())
-	}
-}
-
-/// The process's exit code: the command's, or 1 when it succeeded but its output could not be
-/// written.
-fn exit_code_after_output(code: i32, output_failed: bool) -> i32 {
-	if output_failed && code == 0 { 1 } else { code }
 }
 
 async fn plugin_command(command: PluginCommand) -> Result<i32, CliError> {
@@ -629,7 +593,7 @@ async fn plugin_command(command: PluginCommand) -> Result<i32, CliError> {
 			let plan = load(&scenario)?;
 			let registry = Registry::read(&path).map_err(invalid)?;
 			crate::engine::execute::inspect(&plan, &registry).await.map_err(|e| {
-				if e.downcast_ref::<PlanError>().is_some_and(|e| e.location.is_some()) {
+				if e.is::<PlanError>() {
 					CliError::in_plan(ErrorKind::Invalid, &scenario, &e)
 				} else {
 					invalid(e)

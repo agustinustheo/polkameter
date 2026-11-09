@@ -1,4 +1,4 @@
-//! Every rule of the ramp, in one place (the README's "Phases and rules" is the same list).
+//! Every rule of the ramp, in one place.
 //!
 //! Response measures. The first one a step violates is the breaking point, and the ramp goes on:
 //!   included   < 90% of a step's txs included
@@ -25,11 +25,9 @@ use polkameter_plugin_sdk::observers::{
 };
 use serde::Serialize;
 
-use crate::load::steps::FinalStep;
-
 use crate::load::{
 	source::QueueSource,
-	steps::{StepStats, final_step},
+	steps::{FinalStep, StepStats, final_step},
 };
 
 /// The thresholds.
@@ -74,7 +72,7 @@ fn pct(ratio: f64) -> String {
 	format!("{}%", to_fixed(ratio * 100.0, 1))
 }
 
-/// Seconds, one decimal, rounded as the TS tool rounds.
+/// Seconds, one decimal (see [`to_fixed`] for the rounding).
 pub fn secs(ms: impl Into<f64>) -> String {
 	to_fixed(ms.into() / 1000.0, 1)
 }
@@ -188,7 +186,7 @@ fn not_observed(ms: Millis) -> String {
 	}
 }
 
-/// The rules checked at the end of each step for one lane, on it and on the step before (settled by now).
+/// The rules checked at the end of each step, on it and on the step before (settled by now).
 ///
 /// `last` is true after the plan's last step. A flood that is empty only then was sized to the
 /// plan: every step ran, so that is the rate cap, not budget used up. A flood that ran out during
@@ -341,7 +339,7 @@ mod tests {
 	}
 
 	fn source() -> QueueSource {
-		QueueSource::new(vec![Tx::new(vec![1])], vec![], "coins")
+		QueueSource::new(vec![Tx::new(vec![1])], vec![])
 	}
 
 	#[test]
@@ -435,7 +433,7 @@ mod tests {
 			})
 		};
 		// Every tx sent at the full rate: the flood is empty at the end of the step.
-		let empty = || QueueSource::new(vec![], vec![], "coins");
+		let empty = || QueueSource::new(vec![], vec![]);
 		assert!(empty().exhausted());
 		for (steps, source, last, expected) in [
 			(short(0), source(), false, Some(Rule::GeneratorLimit)),

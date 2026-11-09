@@ -2584,7 +2584,6 @@ dependencies = [
  "serde",
  "serde_json",
  "subxt",
- "subxt-rpcs",
  "thiserror 2.0.21",
  "tokio",
  "tokio-tungstenite",

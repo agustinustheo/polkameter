@@ -12,7 +12,7 @@
 //! the same port, records the restart as a problem and samples the new one; the CPU of the first
 //! sample after a restart is not known.
 
-use std::{future::Future, time::Duration};
+use std::time::Duration;
 
 use polkameter_plugin_sdk::observers::{
 	FileError, JsonlWriter, Millis, NodeSample, Problems, now_ms,
@@ -73,15 +73,8 @@ pub fn local_port(ws_url: &str) -> Option<u16> {
 	loopback.then(|| url.port_or_known_default()).flatten()
 }
 
-/// What the sampler reads about processes; `ps` and `lsof`/`ss` in a run, a fake in tests.
-pub trait Processes: Send + Sync {
-	/// CPU seconds and resident KiB of `pid`; `None` when it is gone.
-	fn usage(&self, pid: u32) -> impl Future<Output = Option<(f64, f64)>> + Send;
-	/// The node process listening on the node's port, if there is one.
-	fn listener(&self) -> impl Future<Output = Option<u32>> + Send;
-}
-
-/// The real process table, for the node's RPC port (`None` for a remote node).
+/// The process table, through `ps` and `lsof`/`ss`, for the node's RPC port (`None` for a
+/// remote node).
 pub struct Ps {
 	port: Option<u16>,
 }
@@ -91,9 +84,8 @@ impl Ps {
 	pub fn new(ws_url: &str) -> Self {
 		Self { port: local_port(ws_url) }
 	}
-}
 
-impl Processes for Ps {
+	/// CPU seconds and resident KiB of `pid`; `None` when it is gone.
 	async fn usage(&self, pid: u32) -> Option<(f64, f64)> {
 		let out = Command::new("ps")
 			.args(["-o", "time=,rss=", "-p", &pid.to_string()])
@@ -105,6 +97,7 @@ impl Processes for Ps {
 		Some((cpu_seconds(time)?, rss.parse().ok()?))
 	}
 
+	/// The node process listening on the node's port, if there is one.
 	async fn listener(&self) -> Option<u32> {
 		let port = self.port?;
 		for pid in listening_pids(port).await {
@@ -157,7 +150,7 @@ async fn process_name(pid: u32) -> Option<String> {
 
 /// The node's PID: `POLKAMETER_NODE_PID`, or the node process listening on the port of a
 /// loopback URL. `Err` says why there is none.
-pub async fn find_pid(ws_url: &str, processes: &impl Processes) -> Result<u32, String> {
+pub async fn find_pid(ws_url: &str, processes: &Ps) -> Result<u32, String> {
 	if let Ok(pid) = std::env::var("POLKAMETER_NODE_PID") {
 		return pid.parse().map_err(|_| format!("POLKAMETER_NODE_PID={pid} is not a PID"));
 	}
@@ -174,9 +167,9 @@ pub async fn find_pid(ws_url: &str, processes: &impl Processes) -> Result<u32, S
 }
 
 /// The process sampler.
-pub struct NodeSampler<P> {
+pub struct NodeSampler {
 	pid: u32,
-	processes: P,
+	processes: Ps,
 	out: JsonlWriter,
 	problems: Problems,
 	restarts: Problems,
@@ -186,12 +179,12 @@ pub struct NodeSampler<P> {
 	lost: bool,
 }
 
-impl<P: Processes> NodeSampler<P> {
+impl NodeSampler {
 	/// Samples process `pid` into `out` (`node.jsonl`); a restart goes to `problems`, and to
 	/// `restarts`, which the load reads as node down.
 	pub fn new(
 		pid: u32,
-		processes: P,
+		processes: Ps,
 		out: JsonlWriter,
 		problems: Problems,
 		restarts: Problems,
@@ -261,26 +254,7 @@ impl<P: Processes> NodeSampler<P> {
 
 #[cfg(test)]
 mod tests {
-	use std::sync::Mutex;
-
 	use super::*;
-
-	/// Processes by PID: CPU seconds and RSS KiB, and who listens on the port.
-	#[derive(Default)]
-	struct Fake {
-		alive: Mutex<Vec<(u32, f64, f64)>>,
-		listener: Mutex<Option<u32>>,
-	}
-
-	impl Processes for &Fake {
-		async fn usage(&self, pid: u32) -> Option<(f64, f64)> {
-			let alive = self.alive.lock().unwrap();
-			alive.iter().find(|p| p.0 == pid).map(|p| (p.1, p.2))
-		}
-		async fn listener(&self) -> Option<u32> {
-			*self.listener.lock().unwrap()
-		}
-	}
 
 	#[tokio::test]
 	async fn a_remote_node_is_reported_without_its_endpoint_key() {
@@ -288,7 +262,7 @@ mod tests {
 			return;
 		}
 		let url = "wss://rpc.example/ws?apikey=NODE-SAMPLER-KEY";
-		let why = find_pid(url, &&Fake::default()).await.unwrap_err();
+		let why = find_pid(url, &Ps::new(url)).await.unwrap_err();
 		assert!(!why.contains("NODE-SAMPLER-KEY"), "{why}");
 		assert!(why.starts_with("wss://rpc.example/ws?apikey=[redacted] is not on this machine"));
 	}

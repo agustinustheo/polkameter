@@ -6,7 +6,7 @@
 //!
 //! One loop per phase over three inputs: a tick, submit replies, block events. The tracker owns
 //! every tx; this file only decides when to send and when a phase ends. Monitors hear about
-//! phases and step edges on a broadcast channel, so they can live in another process later.
+//! phases and step edges on a broadcast channel.
 
 use std::time::Duration;
 
@@ -30,9 +30,10 @@ use crate::load::{
 	sender::Reply,
 	steps::{block_stats, percentile},
 	submit::Submit,
-	tracker::{Phase, Tracker},
+	tracker::Tracker,
 };
 pub use load::load;
+use polkameter_plugin_sdk::observers::Phase;
 
 /// smoke: stop at the first problem of any part; stress: only errors of our own tools stop a run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

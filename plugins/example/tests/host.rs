@@ -1,5 +1,5 @@
 use polkameter::engine::{
-	execute::{self, EventSink, Outcome, RunOptions, RunState, Stop},
+	execute::{self, EventSink, FailOn, Outcome, RunState, Stop},
 	plan::Plan,
 	plugins::Registry,
 };
@@ -11,6 +11,8 @@ use std::{
 
 #[path = "../../../crates/cli/tests/support/executable.rs"]
 mod executable;
+#[path = "../../../crates/cli/tests/support/work.rs"]
+mod work;
 
 fn fixture() -> String {
 	include_str!("../../../examples/plugin-data-flow.polkameter.xml").into()
@@ -21,36 +23,6 @@ fn plugin_plan(name: &str, body: &str) -> String {
 		r#"<polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="{name}"><plugins><plugin id="example" version="0.1.0" protocol="1"/></plugins>{body}</polkameter-plan>"#
 	)
 }
-/// A scratch directory that is removed when the test ends, even if it fails.
-struct Scratch(PathBuf);
-impl std::ops::Deref for Scratch {
-	type Target = Path;
-	fn deref(&self) -> &Path {
-		&self.0
-	}
-}
-impl AsRef<Path> for Scratch {
-	fn as_ref(&self) -> &Path {
-		&self.0
-	}
-}
-impl Drop for Scratch {
-	fn drop(&mut self) {
-		let _ = std::fs::remove_dir_all(&self.0);
-	}
-}
-fn scratch(name: &str) -> Scratch {
-	let path = std::env::temp_dir().join(format!(
-		"polkameter-{name}-{}-{}",
-		std::process::id(),
-		std::time::SystemTime::now()
-			.duration_since(std::time::UNIX_EPOCH)
-			.unwrap()
-			.as_nanos()
-	));
-	std::fs::create_dir_all(&path).unwrap();
-	Scratch(path)
-}
 async fn registry() -> Registry {
 	let executable = Path::new(env!("CARGO_BIN_EXE_polkameter-example-plugin"));
 	let (manifest, installation) = Registry::describe(executable).await.unwrap();
@@ -60,7 +32,7 @@ async fn registry() -> Registry {
 }
 /// Runs `plan` to its outcome, sending its events to `sink`.
 async fn run_plan(plan: Plan, registry: Registry, root: &Path, sink: EventSink) -> Outcome {
-	execute::run_stoppable(plan, registry, root, Stop::default(), sink, RunOptions::default())
+	execute::run_stoppable(plan, registry, root, Stop::default(), sink, FailOn::default())
 		.await
 		.unwrap()
 }
@@ -84,8 +56,8 @@ fn finished<'a>(events: &'a [Value], step: &'a str) -> impl Iterator<Item = &'a 
 
 #[tokio::test]
 async fn independent_plugin_feeds_builtin_and_plugin_steps() {
-	let root = scratch("data-flow");
-	let outcome = run(&fixture(), registry().await, &root).await;
+	let root = work::Work::new("data-flow");
+	let outcome = run(&fixture(), registry().await, &root.0).await;
 	assert_eq!(outcome.exit_code, 0, "{:?}", outcome.error);
 	let events = read_events(&outcome.artifact_dir);
 	assert_eq!(finished(&events, "seed").count(), 1);
@@ -133,7 +105,7 @@ async fn plugin_failures_fail_the_step_and_teardown_still_runs() {
 			1,
 		),
 	] {
-		let root = scratch("failure");
+		let root = work::Work::new("failure");
 		let xml = plugin_plan(
 			"Failure",
 			&format!(
@@ -141,7 +113,7 @@ async fn plugin_failures_fail_the_step_and_teardown_still_runs() {
     <teardown><step id="cleanup" use="example.double"><input name="value" value="21"/></step></teardown>"#
 			),
 		);
-		let outcome = run(&xml, registry.clone(), &root).await;
+		let outcome = run(&xml, registry.clone(), &root.0).await;
 		assert_eq!((outcome.exit_code, outcome.state), (1, RunState::Failed), "{step}");
 		assert!(outcome.artifact_dir.join("samples.jtl").is_file());
 		let events = read_events(&outcome.artifact_dir);
@@ -154,7 +126,7 @@ async fn plugin_failures_fail_the_step_and_teardown_still_runs() {
 
 #[tokio::test]
 async fn teardown_runs_every_step_under_its_own_timeout_and_reports_every_error() {
-	let root = scratch("teardown");
+	let root = work::Work::new("teardown");
 	let xml = plugin_plan(
 		"Teardown",
 		r#"<setup><step id="ok" use="example.double"><input name="value" value="1"/></step></setup>
@@ -165,7 +137,7 @@ async fn teardown_runs_every_step_under_its_own_timeout_and_reports_every_error(
     </teardown>"#,
 	);
 	let started = std::time::Instant::now();
-	let outcome = run(&xml, registry().await, &root).await;
+	let outcome = run(&xml, registry().await, &root.0).await;
 	assert!(started.elapsed() < std::time::Duration::from_secs(30));
 	assert_eq!(outcome.exit_code, 1);
 	assert_eq!(outcome.teardown, Some(execute::Teardown::Failed));
@@ -209,7 +181,7 @@ async fn credentials_and_endpoint_keys_reach_no_file_and_no_event() {
 	}
 	registry.credentials.insert("short".into(), short.clone());
 	let endpoint = "wss://alice:hunter2hunter2@127.0.0.1:1/ws?apikey=APIKEY0123456789&v=1";
-	let root = scratch("streamed-redaction");
+	let root = work::Work::new("streamed-redaction");
 	// The plan name holds the credential too: no load test, so summary.md has it in its title.
 	let xml = plugin_plan(
 		&format!("Plan {}", secret.replace('"', "&quot;")),
@@ -306,7 +278,7 @@ async fn credentials_and_endpoint_keys_reach_no_file_and_no_event() {
 }
 #[tokio::test]
 async fn teardown_does_not_restart_a_plugin_whose_file_changed() {
-	let root = scratch("restart-changed");
+	let root = work::Work::new("restart-changed");
 	let xml = plugin_plan(
 		"Restart refused",
 		r#"<setup><step id="failure" use="example.crash"/></setup>
@@ -316,7 +288,7 @@ async fn teardown_does_not_restart_a_plugin_whose_file_changed() {
 	// Plugins::start checks the checksum, so change the record only after the run started.
 	let plan = Plan::parse(&xml).unwrap();
 	let installed = registry.plugins.get_mut("example").unwrap();
-	let copy = root.join("copied-plugin");
+	let copy = root.0.join("copied-plugin");
 	executable::copy_executable(&installed.executable, &copy);
 	installed.executable = copy.clone();
 	let tamper = copy.clone();
@@ -325,7 +297,7 @@ async fn teardown_does_not_restart_a_plugin_whose_file_changed() {
 			std::fs::write(&tamper, b"#!/bin/sh\nexit 1\n").unwrap();
 		}
 	});
-	let outcome = run_plan(plan, registry, &root, sink).await;
+	let outcome = run_plan(plan, registry, &root.0, sink).await;
 	assert_eq!(outcome.exit_code, 1);
 	let events = read_events(&outcome.artifact_dir);
 	assert!(events.iter().any(|e| {

@@ -1,5 +1,5 @@
-//! Where a lane's txs come from. A scenario builds one per lane in `prepare`; the tracker owns
-//! it, asks it for the next tx.
+//! Where the load's txs come from. The measurement builds the source from the prepared txs; the
+//! tracker owns it and asks it for the next tx.
 
 use std::sync::Arc;
 
@@ -31,20 +31,18 @@ pub struct QueueSource {
 	probes: std::vec::IntoIter<Tx>,
 	held: Option<Tx>,
 	held_probe: Option<Tx>,
-	what: &'static str,
 	total: (usize, usize),
 }
 
 impl QueueSource {
-	/// `what` names the txs for the stop detail, e.g. "prepared transactions".
-	pub fn new(flood: Vec<Tx>, probes: Vec<Tx>, what: &'static str) -> Self {
+	/// The flood txs, sent in order, and the probe txs.
+	pub fn new(flood: Vec<Tx>, probes: Vec<Tx>) -> Self {
 		let total = (flood.len(), probes.len());
 		Self {
 			flood: flood.into_iter(),
 			probes: probes.into_iter(),
 			held: None,
 			held_probe: None,
-			what,
 			total,
 		}
 	}
@@ -78,7 +76,10 @@ impl QueueSource {
 
 	/// Why `next_tx` returned nothing, for the stop detail.
 	pub fn starved_reason(&self) -> String {
-		format!("all {} {} sent ({} more kept for probes)", self.total.0, self.what, self.total.1)
+		format!(
+			"all {} prepared transactions sent ({} more kept for probes)",
+			self.total.0, self.total.1
+		)
 	}
 }
 

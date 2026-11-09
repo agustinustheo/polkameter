@@ -24,6 +24,6 @@ pub mod relay;
 pub mod scraper;
 pub mod topology;
 
-pub use polkameter_plugin_sdk::observers::{ChainSeries, MonitorError, chain_series, walker};
-pub use scraper::{Sample, Scraper, ScraperHandle};
+pub use polkameter_plugin_sdk::observers::{MonitorError, chain_series, walker};
+pub use scraper::{Scraper, ScraperHandle};
 pub use topology::{Job, Target, load_targets};
