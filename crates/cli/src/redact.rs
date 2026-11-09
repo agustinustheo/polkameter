@@ -1284,7 +1284,7 @@ mod tests {
 
 	#[test]
 	fn over_long_lines_hold_back_at_most_the_longest_secret_minus_one() {
-		let secret = "0123456789-secret"; // gitleaks:allow (made-up test credential)
+		let secret = "0123456789-secret";
 		let redactor = secrets(&[secret]);
 		let longest = secret.len();
 		let line = format!("{}{secret}{}", "x".repeat(10_000), "y".repeat(10_000)).repeat(20);

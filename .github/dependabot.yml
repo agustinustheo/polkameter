@@ -1,21 +1,25 @@
 version: 2
+# Monthly, one grouped pull request per ecosystem. Groups and ignore rules apply to
+# version updates only; Dependabot alerts and security updates are unaffected.
 updates:
   # Covers .github/workflows and the root action.yml.
   # Actions are pinned by commit SHA; Dependabot updates the SHA and its version comment.
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
-  # Base image digests in the Dockerfile.
-  - package-ecosystem: docker
-    directory: /
-    schedule:
-      interval: weekly
-    ignore:
-      # The builder's Rust version follows the workspace toolchain (RUST_VERSION); take digest updates only.
-      - dependency-name: rust
-        update-types: [version-update:semver-major, version-update:semver-minor, version-update:semver-patch]
+      interval: monthly
+    groups:
+      github-actions:
+        patterns: ["*"]
   - package-ecosystem: cargo
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
+    groups:
+      cargo:
+        patterns: ["*"]
+    # Patch updates only. For a 0.x crate such as subxt or nix, a minor update is a
+    # breaking change that needs code edits; take minor and major updates by hand.
+    ignore:
+      - dependency-name: "*"
+        update-types: [version-update:semver-minor, version-update:semver-major]

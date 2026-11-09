@@ -8,15 +8,21 @@ User-visible changes in each release. The GitHub release notes list every merged
 
 - The remote agent: `agent serve` and `polkameter run --remote`. Run the CLI on that host instead, for example `ssh host polkameter run plan.polkameter.xml --output runs`.
 - The desktop app.
+- The Windows release archive. On Windows, install with `cargo install --locked polkameter`.
+- The `ghcr.io/agustinustheo/polkameter` container image. Install the CLI with `install.sh` in any Linux image, as the GitLab CI template does.
+- The `polkameter.spdx.json` release asset. The build attestations still cover every archive.
+- `scripts/local-fork-run.sh`. Start the Zombienet network yourself, register its `zombie.json` with `polkameter plugin topology`, then run the plan.
 - `<workflow>`. Use `<setup>` steps, or `<load>` for load.
 - `--format json`. Read `execution.json`, `summary.json` and `events.jsonl` in the run directory. `plugin inspect` and `plugin list` still print JSON.
 - `polkameter run --junit PATH`. Read `run-*/junit.xml`.
+- `polkameter run --fail-on-verdict` and `--fail-on-inconclusive`. Use `--fail-on verdict` or `--fail-on verdict-or-inconclusive`.
 - `plots/*.svg`. JMeter can chart `samples.jtl`.
 - Plugin `requirements` and `polkameter plugin capability`. `<monitors>` already checks the metrics a plan needs.
 - The action's `install`, `toolchain`, `plugin-crates`, `plugin-unlocked`, `topologies` and `capabilities` inputs, and building the action from a branch. Build plugins with cargo in an earlier step and pass them in `plugins`. For topologies, set `POLKAMETER_PLUGIN_REGISTRY` and run `polkameter plugin topology` before the action. A branch or SHA ref needs `version`.
 
 ### Changed
 
+- `polkameter run` exits `1` on a `FAIL` or `INCONCLUSIVE` load verdict by default, like the action. `--fail-on error|verdict|verdict-or-inconclusive` sets the policy, the same values as the action's `fail-on` input, which passes it through, so the action's `version` input must be 0.4.0 or later. Set `--fail-on error` for the old behavior. Smoke mode still fails on monitor problems and required checks with no result under every policy.
 - The action installs PolkaMeter from the release with `install.sh`, which checks the checksum and the build attestation, and uploads the run with `actions/upload-artifact`.
 - Preflight starts the plan's plugins once, not twice.
 - Plugin SDK: the unused chain API (`chain::derive`, `chain::scale_value_reexport`, `TxBuilder::at`, `TxBuilder::has_constant`, `Client::spendable`) and `Response::into_result` are removed. The SDK no longer depends on `scale-value`, `scale-decode`, `frame-decode`, `futures-util` and `subxt-rpcs`; use subxt's re-exports.

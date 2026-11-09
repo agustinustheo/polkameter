@@ -12,12 +12,12 @@ PolkaMeter is a load-testing tool for Polkadot SDK chains. The `polkameter` CLI 
 | --- | --- | --- |
 | `crates/cli` | The `polkameter` CLI. Plan engine in `src/engine`, load runner in `src/load` | crates.io `polkameter` |
 | `crates/plugin-sdk` | `polkameter-plugin-sdk`: protocol (default), `chain` feature (RPC, reads, signing, keys), `observers` feature (run files, checks) | crates.io `polkameter-plugin-sdk` |
-| `plugins/substrate` | The substrate plugin, `polkameter-substrate-plugin`. Needs the standard `System` and `Balances` pallets and supported account and signature types | release archives and container only |
+| `plugins/substrate` | The substrate plugin, `polkameter-substrate-plugin`. Needs the standard `System` and `Balances` pallets and supported account and signature types | release archives only |
 | `plugins/example` | Example plugin for tests. No chain | no |
 | `examples/` | Example plans. `tests/validate-plans.py` validates every `*.polkameter.xml` here | |
 | `schemas/` | The plan XSD | |
 | `docs/` | mdBook user docs. Read `docs/STYLE.md` before you edit them | |
-| `scripts/` | Release, packaging, action and dev-chain scripts | |
+| `scripts/` | Release, packaging and dev-chain scripts | |
 | `skills/polkameter` | Agent Skill for users who set up PolkaMeter. Its plan templates are copies of `examples/` | |
 | `.claude-plugin` | Claude Code marketplace and plugin manifest. The plugin is the repository root | |
 

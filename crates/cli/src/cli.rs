@@ -11,7 +11,7 @@ use std::{
 };
 
 use crate::engine::{
-	execute::{Outcome, RunOptions, RunState, Stop},
+	execute::{FailOn, Outcome, RunOptions, RunState, Stop},
 	plan::{Plan, PlanError, read_plan},
 	plugins::Registry,
 };
@@ -103,14 +103,12 @@ enum Command {
 		/// Environment variable for the plan's only credential, instead of its configured profile.
 		#[arg(long, value_name = "ENV_VAR")]
 		credential_env: Option<String>,
-		/// Exit 1 when a load test's verdict is FAIL. By default, verdicts do not affect the exit
-		/// code; runtime and smoke-mode failures still exit 1. Plans without a load test are unaffected.
-		#[arg(long)]
-		fail_on_verdict: bool,
-		/// Exit 1 when a load test's verdict is INCONCLUSIVE: the load ended before its rate cap,
-		/// or a required check has no result. Combine with --fail-on-verdict to fail on both.
-		#[arg(long)]
-		fail_on_inconclusive: bool,
+		/// Which load-test verdicts exit 1: error (none), verdict (FAIL) or
+		/// verdict-or-inconclusive (FAIL or INCONCLUSIVE: the load ended before its rate cap, or a
+		/// required check has no result). Runtime and smoke-mode failures exit 1 under every
+		/// policy. Plans without a load test have no verdict.
+		#[arg(long, value_enum, value_name = "POLICY", default_value_t = FailOn::default())]
+		fail_on: FailOn,
 		/// Seconds a run gets after SIGINT or SIGTERM to finish its teardown and write its
 		/// results. A second signal, or the end of this period, interrupts teardown.
 		#[arg(long, value_name = "SECONDS", default_value_t = shutdown::DEFAULT_GRACE.as_secs())]
@@ -279,19 +277,12 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 			write_stdout("Preflight passed.");
 			Ok(0)
 		},
-		Command::Run {
-			plan: path,
-			output,
-			credential_env,
-			fail_on_verdict,
-			fail_on_inconclusive,
-			shutdown_grace,
-		} => {
+		Command::Run { plan: path, output, credential_env, fail_on, shutdown_grace } => {
 			// Before any work, so that no signal can end the process without cleanup.
 			let mut signals = install_signals()?;
 			let grace = Duration::from_secs(shutdown_grace);
 			let plan = load(&path)?;
-			let options = RunOptions { fail_on_verdict, fail_on_inconclusive };
+			let options = RunOptions { fail_on };
 			if output.to_str().is_none() {
 				return Err(CliError::invalid(format!(
 					"--output {} is not a UTF-8 path; plugins receive the run directory as text, so \
@@ -662,19 +653,23 @@ async fn plugin_command(command: PluginCommand) -> Result<i32, CliError> {
 			return Ok(0);
 		},
 		PluginCommand::Credential { profile, env } => {
+			let message = format!("Credential profile {profile} reads {env}.");
 			update_registry(&path, |registry| {
 				registry.credentials.insert(profile, env);
 			})?;
-			json!({"configured":true})
+			write_stdout(&message);
+			return Ok(0);
 		},
 		PluginCommand::Topology { name, path: topology } => {
 			let topology = topology.canonicalize().map_err(|e| {
 				CliError::invalid(format!("cannot read topology {}: {e}", topology.display()))
 			})?;
+			let message = format!("Topology {name} is {}.", topology.display());
 			update_registry(&path, |registry| {
 				registry.topologies.insert(name, topology);
 			})?;
-			json!({"configured":true})
+			write_stdout(&message);
+			return Ok(0);
 		},
 	};
 	let pretty =

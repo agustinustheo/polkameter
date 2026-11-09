@@ -64,10 +64,6 @@ jobs:
         run: |
           cargo +${{ env.RUST_VERSION }} build -p polkameter --bin polkameter
           python3 tests/validate-plans.py
-      - name: Audit dependencies
-        run: |
-          cargo install cargo-audit --locked --version 0.22.2
-          cargo audit
       - name: Distribution tests
         run: |
           shellcheck install.sh
@@ -120,7 +116,7 @@ jobs:
           target/debug/polkameter init --rpc ws://127.0.0.1:9944 --profile substrate-dev --output target/init.polkameter.xml
           target/debug/polkameter validate target/init.polkameter.xml
           for plan in substrate-remarks-ci substrate-transfers-ci; do
-            target/debug/polkameter run "examples/$plan.polkameter.xml" --output target/dev-chain-runs --fail-on-verdict
+            target/debug/polkameter run "examples/$plan.polkameter.xml" --output target/dev-chain-runs --fail-on verdict
           done
           cat target/dev-chain-runs/run-*/summary.md >> "$GITHUB_STEP_SUMMARY"
       - name: Stop the dev chain
@@ -153,12 +149,31 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: cargo +${{ env.RUST_VERSION }} build --locked --release -p polkameter-example-plugin
-      # A local action has no release tag, so it installs the latest release with install.sh.
+      # Checks runs these on Linux; this runs them with the macOS tools.
+      - name: Installer and action tests
+        if: runner.os == 'macOS'
+        run: |
+          python3 tests/distribution.py
+          python3 tests/action-smoke.py
+      # A local action has no release tag. Serve this commit's CLI as a release, so that the
+      # action's install.sh installs it and the action runs against the CLI it ships with.
+      - name: Build this commit's CLI and serve it as a release
+        id: cli
+        run: |
+          cargo +${{ env.RUST_VERSION }} build --locked --release -p polkameter -p polkameter-example-plugin
+          version=$(target/release/polkameter --version | cut -d ' ' -f 2)
+          target=$(rustc +${{ env.RUST_VERSION }} -vV | sed -n 's/^host: //p')
+          python3 scripts/package-cli.py "$version" "$target" target/release/polkameter \
+            --output "$RUNNER_TEMP/releases/download/v$version"
+          nohup python3 -m http.server 8765 --bind 127.0.0.1 --directory "$RUNNER_TEMP/releases" > /dev/null 2>&1 &
+          for _ in $(seq 20); do curl -fsI http://127.0.0.1:8765/ > /dev/null && break; sleep 0.5; done
+          # The local archive has no build attestation.
+          printf '%s\n' POLKAMETER_RELEASE_BASE_URL=http://127.0.0.1:8765 POLKAMETER_VERIFY_ATTESTATION=0 >> "$GITHUB_ENV"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: ./
         id: plan
         with:
-          version: latest
+          version: ${{ steps.cli.outputs.version }}
           plan: examples/plugin-data-flow.polkameter.xml
           plugins: target/release/polkameter-example-plugin
           fail-on: verdict
@@ -166,7 +181,7 @@ jobs:
       - uses: ./
         id: again
         with:
-          version: latest
+          version: ${{ steps.cli.outputs.version }}
           plan: examples/plugin-data-flow.polkameter.xml
           plugins: target/release/polkameter-example-plugin
           artifact-retention-days: "1"
@@ -185,78 +200,3 @@ jobs:
           test -n "$VERSION"
           test -n "$ARTIFACT_ID" && test -n "$SECOND_ARTIFACT_ID"
           test "$ARTIFACT" != "$SECOND_ARTIFACT"
-
-  distribution-macos:
-    name: Distribution (macOS)
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # The binstall contract test reads cargo metadata; nothing is compiled.
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-      - name: Installer and action tests with macOS tools
-        run: |
-          python3 tests/distribution.py
-          python3 tests/action-smoke.py
-
-  container:
-    name: Container image
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      # Build only, so the Dockerfile is tested before a release builds and pushes it.
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          file: Dockerfile
-          platforms: linux/amd64
-          push: false
-          load: true
-          tags: polkameter:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-      - name: Run the image
-        run: |
-          docker run --rm polkameter:ci --version
-          docker run --rm --entrypoint sh polkameter:ci -c 'polkameter plugin install /usr/local/bin/polkameter-substrate-plugin'
-          test "$(docker run --rm --entrypoint id polkameter:ci -u)" = 10001
-          docker image ls polkameter:ci --format 'Image size: {{.Size}}'
-      # The plugin runs inside the image, so build it for Linux; Ubuntu 22.04's
-      # glibc 2.35 is older than the image's 2.36.
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - name: Build the example plugin
-        run: cargo +${{ env.RUST_VERSION }} build --locked --release -p polkameter-example-plugin
-      - name: Stop a running plan with docker stop
-        run: |
-          mkdir -m 777 stop-test
-          cp target/release/polkameter-example-plugin tests/fixtures/stop.polkameter.xml stop-test/
-          image() {
-            docker run -v "$PWD/stop-test:/work" -w /work -e HOME=/tmp \
-              -e POLKAMETER_PLUGIN_REGISTRY=/work/plugins.json "$@"
-          }
-          image --rm polkameter:ci plugin install /work/polkameter-example-plugin
-          image -d --name stop-test polkameter:ci run /work/stop.polkameter.xml --output /work/runs
-          # Wait until the plan's long step is running.
-          for _ in $(seq 60); do
-            if compgen -G 'stop-test/runs/run-*/plugins/example/wait.pid' >/dev/null; then break; fi
-            sleep 1
-          done
-          compgen -G 'stop-test/runs/run-*/plugins/example/wait.pid'
-          start=$(date +%s)
-          docker stop --timeout 45 stop-test
-          elapsed=$(( $(date +%s) - start ))
-          echo "docker stop took ${elapsed}s"
-          docker logs stop-test
-          test "$(docker inspect --format '{{.State.ExitCode}}' stop-test)" = 130
-          test "$elapsed" -lt 30
-          run=$(echo stop-test/runs/run-*)
-          jq -e '.state == "stopped" and .exit_code == 130' "$run/execution.json"
-          tail -n 1 "$run/events.jsonl" | jq -e '.event == "completed"'
-          test -s "$run/junit.xml"
-          test -s "$run/summary.md"
-          docker rm stop-test

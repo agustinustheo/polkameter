@@ -17,7 +17,7 @@ trap 'rm -rf "$work"' EXIT
 "$cli" preflight "$plan" > /dev/null
 
 # Both verdict policies on a plan without a load test: there is no verdict to fail on.
-"$cli" run "$plan" --output "$work/local" --fail-on-verdict --fail-on-inconclusive > /dev/null
+"$cli" run "$plan" --output "$work/local" --fail-on verdict-or-inconclusive > /dev/null
 run=$(ls -d "$work"/local/run-*)
 [ ! -e "$run/summary.json" ]
 "$cli" report "$run" | grep -q '^Status: completed$'

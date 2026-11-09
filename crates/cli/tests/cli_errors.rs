@@ -201,6 +201,29 @@ fn broken_output_streams() {
 
 /// A plugin executable that answers `$describe` with plugin `id`.
 #[cfg(unix)]
+/// `--fail-on` takes one policy. A plan without a load test has no verdict, so every policy
+/// exits 0; the removed flags and unknown policies are usage errors.
+#[test]
+fn fail_on_takes_one_policy() {
+	let work = Work::new("fail-on");
+	work.write("core.xml", CORE_PLAN);
+	for (flags, expected) in [
+		(&["--fail-on", "error"][..], 0),
+		(&["--fail-on", "verdict"], 0),
+		(&["--fail-on", "verdict-or-inconclusive"], 0),
+		(&["--fail-on", "unknown"], 2),
+		(&["--fail-on-verdict"], 2),
+		(&["--fail-on-inconclusive"], 2),
+	] {
+		let output = work
+			.polkameter()
+			.args(["run", "core.xml", "--output", "runs"])
+			.args(flags)
+			.output();
+		assert_eq!(output.unwrap().status.code(), Some(expected), "{flags:?}");
+	}
+}
+
 fn script_plugin(directory: &Path, id: &str) -> PathBuf {
 	let manifest = format!(r#"{{"id":"{id}","version":"0.1.0","protocol":1,"operations":{{}}}}"#);
 	let path = directory.join(id);

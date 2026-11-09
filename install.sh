@@ -12,7 +12,7 @@ command -v curl >/dev/null 2>&1 || fail 'curl is required'
 case "$(uname -s)" in
     Linux) os=unknown-linux-gnu ;;
     Darwin) os=apple-darwin ;;
-    *) fail 'supported systems: Linux and macOS; download the Windows zip from GitHub releases' ;;
+    *) fail 'supported systems: Linux and macOS; elsewhere, install with cargo install --locked polkameter' ;;
 esac
 case "$(uname -m)" in
     x86_64|amd64) arch=x86_64 ;;

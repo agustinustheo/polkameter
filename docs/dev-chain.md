@@ -42,9 +42,7 @@ export POLKAMETER_SUBSTRATE_SEED='//Alice'
 
 ```text
 Installed plugin substrate 0.3.0 (5 operations) from ~/polkameter/target/debug/polkameter-substrate-plugin
-{
-  "configured": true
-}
+Credential profile substrate-dev reads POLKAMETER_SUBSTRATE_SEED.
 ```
 
 The second command maps the credential profile `substrate-dev` to the variable `POLKAMETER_SUBSTRATE_SEED`. The example plans use that profile. The plugin derives its signers from the seed, `//Alice` here, and funds them from it.
@@ -234,7 +232,7 @@ load-test:
     - polkameter plugin install "$HOME/.local/bin/polkameter-substrate-plugin"
     - polkameter plugin credential substrate-dev POLKAMETER_SUBSTRATE_SEED
     - polkameter validate plans/substrate-remarks-ci.polkameter.xml
-    - polkameter run plans/substrate-remarks-ci.polkameter.xml --output polkameter-runs --fail-on-verdict
+    - polkameter run plans/substrate-remarks-ci.polkameter.xml --output polkameter-runs --fail-on verdict
   after_script:
     - bash dev-chain.sh stop
   artifacts:

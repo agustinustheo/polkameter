@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   A short Balances.transfer_keep_alive test for CI, with the substrate plugin, at a low rate for
-  this dev chain. Run polkameter run with an output directory and the fail-on-verdict flag. The job fails on a FAIL
+  this dev chain. Run polkameter run with an output directory and fail-on set to verdict. The job fails on a FAIL
   verdict, for example when too few transactions are included or they take too long.
   Made for the dev chain of scripts/dev-chain.sh (6-second blocks, //Alice funded).
   The seed credential is a secret URI, such as //Alice on a dev chain:

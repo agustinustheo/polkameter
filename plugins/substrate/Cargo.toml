@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 rust-version.workspace = true
-# Shipped as an executable in the release archives and the container, not on crates.io: plugins
+# Shipped as an executable in the release archives, not on crates.io: plugins
 # depend on polkameter-plugin-sdk, and the CLI is polkameter.
 publish = false
 

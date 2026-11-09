@@ -79,6 +79,7 @@ export PATH="$PWD/target/debug:$PATH"
    $ polkameter plugin install "$(command -v polkameter-substrate-plugin)"
    Installed plugin substrate 0.3.0 (5 operations) from ~/polkameter/target/debug/polkameter-substrate-plugin
    $ polkameter plugin credential substrate-dev POLKAMETER_SUBSTRATE_SEED
+   Credential profile substrate-dev reads POLKAMETER_SUBSTRATE_SEED.
    $ export POLKAMETER_SUBSTRATE_SEED='//Alice'
    ```
 

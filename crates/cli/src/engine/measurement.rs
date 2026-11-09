@@ -3,7 +3,7 @@
 //! have run.
 use crate::engine::checks::report::overall_status;
 use crate::engine::{
-	execute::{RunOptions as ExitPolicy, Values, resolve, target_endpoint, transactions},
+	execute::{FailOn, RunOptions as ExitPolicy, Values, resolve, target_endpoint, transactions},
 	machine,
 	plan::Plan,
 	plugins::{Plugins, Registry},
@@ -85,14 +85,14 @@ pub async fn run(
 	let block_interval_s = load.block_interval_seconds;
 	let flood = transactions(&resolve(values, &load.source)?, &context.artifact_dir)?;
 	let probes = transactions(&resolve(values, &load.probes_ref)?, &context.artifact_dir)?;
+	let needed =
+		crate::load::probe_count(load.baseline_probes, load.recovery_seconds, block_interval_s);
 	anyhow::ensure!(
+		probes.len() >= needed,
+		"insufficient probe reserve: `probes-ref` {} holds {} transactions and the load needs {needed}; \
+		 pass `run.probeBudget` as the probe count of the step that prepares them",
+		load.probes_ref,
 		probes.len()
-			>= crate::load::probe_count(
-				load.baseline_probes,
-				load.recovery_seconds,
-				block_interval_s
-			),
-		"insufficient probe reserve"
 	);
 	let lane = Lane { call: "prepared", source: prepared_source(&flood, &probes)? };
 	let state_check = load
@@ -481,11 +481,11 @@ fn exit_reason(
 	}
 	let mut reason = format!(
 		"smoke mode fails the run on monitor problems and required checks with no result, \
-		 whatever the --fail-on flags; fix {}: {}",
+		 whatever --fail-on says; fix {}: {}",
 		if smoke.len() == 1 { "this one" } else { "these" },
 		listed(smoke.iter().map(String::as_str))
 	);
-	// A FAIL verdict is a separate cause: dropping --fail-on-verdict alone would not pass the run.
+	// A FAIL verdict is a separate cause: --fail-on error alone would not pass the run.
 	if let Some(("FAIL", flag)) = verdict {
 		write!(
 			reason,
@@ -498,20 +498,19 @@ fn exit_reason(
 	Some(reason)
 }
 
-/// The verdict and the flag when the exit policy fails the run on its verdict, or `None` when
+/// The verdict and the policy when the exit policy fails the run on its verdict, or `None` when
 /// it does not.
 fn verdict_failure(
 	summary: &Summary,
 	checks: &[CheckResult],
 	policy: ExitPolicy,
-) -> Option<(&'static str, &'static str)> {
-	match overall_status(summary, checks) {
-		OverallStatus::Fail if policy.fail_on_verdict => Some(("FAIL", "--fail-on-verdict")),
-		OverallStatus::Inconclusive if policy.fail_on_inconclusive => {
-			Some(("INCONCLUSIVE", "--fail-on-inconclusive"))
-		},
-		_ => None,
-	}
+) -> Option<(&'static str, String)> {
+	let verdict = match (overall_status(summary, checks), policy.fail_on) {
+		(OverallStatus::Fail, FailOn::Verdict | FailOn::VerdictOrInconclusive) => "FAIL",
+		(OverallStatus::Inconclusive, FailOn::VerdictOrInconclusive) => "INCONCLUSIVE",
+		_ => return None,
+	};
+	Some((verdict, format!("--fail-on {}", policy.fail_on.name())))
 }
 
 /// The first [`REASON_CHECKS`] items, then how many more.
@@ -648,12 +647,11 @@ mod tests {
 		}
 	}
 
-	/// Every exit policy: neither flag, `--fail-on-verdict`, `--fail-on-inconclusive`, both.
-	const POLICIES: [ExitPolicy; 4] = [
-		ExitPolicy { fail_on_verdict: false, fail_on_inconclusive: false },
-		ExitPolicy { fail_on_verdict: true, fail_on_inconclusive: false },
-		ExitPolicy { fail_on_verdict: false, fail_on_inconclusive: true },
-		ExitPolicy { fail_on_verdict: true, fail_on_inconclusive: true },
+	/// Every exit policy.
+	const POLICIES: [ExitPolicy; 3] = [
+		ExitPolicy { fail_on: FailOn::Error },
+		ExitPolicy { fail_on: FailOn::Verdict },
+		ExitPolicy { fail_on: FailOn::VerdictOrInconclusive },
 	];
 
 	/// The recorded summary with a clean stop: the verdict follows the checks alone.
@@ -704,10 +702,11 @@ mod tests {
 					};
 					assert_eq!(overall_status(&summary, &checks), verdict);
 					for policy in POLICIES {
-						let by_policy = (verdict == OverallStatus::Fail && policy.fail_on_verdict)
+						let by_policy = (verdict == OverallStatus::Fail
+							&& policy.fail_on != FailOn::Error)
 							|| (verdict == OverallStatus::Inconclusive
-								&& policy.fail_on_inconclusive);
-						// Smoke mode fails on monitor problems and required gaps whatever the flags.
+								&& policy.fail_on == FailOn::VerdictOrInconclusive);
+						// Smoke mode fails on monitor problems and required gaps under every policy.
 						let by_smoke = mode == Mode::Smoke && (problem || gap);
 						let exit = exit_code(mode, &summary, &checks, policy);
 						let case = format!(
@@ -731,7 +730,7 @@ mod tests {
 			let measured =
 				Measured { summary: recorded.clone(), finals: vec![], mode: Mode::Stress };
 			let exit = report(&dir, measured, &[], policy, &Redactor::default()).unwrap();
-			assert_eq!(exit.code, i32::from(policy.fail_on_verdict), "{policy:?}");
+			assert_eq!(exit.code, i32::from(policy.fail_on != FailOn::Error), "{policy:?}");
 			let json: serde_json::Value =
 				serde_json::from_slice(&std::fs::read(root.join("summary.json")).unwrap()).unwrap();
 			assert_eq!(json["verdict"]["result"], "FAIL");
@@ -768,7 +767,7 @@ mod tests {
 		// A `|` is escaped in the Markdown table, so redacting only the rendered text would miss
 		// this secret.
 		let secret = "pipe|secret\"value";
-		let endpoint = "wss://rpc.example/ws?apikey=APIKEY0123456789"; // gitleaks:allow (made-up test key)
+		let endpoint = "wss://rpc.example/ws?apikey=APIKEY0123456789";
 		let redactor = Redactor::new([secret], [endpoint]);
 		let mut summary: Summary =
 			serde_json::from_str(include_str!("../../tests/fixtures/smoke-run/summary.json"))

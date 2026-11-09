@@ -36,7 +36,7 @@ Copy this list into your notes. Tick each item when it is done and checked.
 
 ## CI
 
-- [ ] The job runs the short CI plan, `plans/substrate-remarks-ci.polkameter.xml`, with `fail-on: verdict` or `--fail-on-verdict`.
+- [ ] The job runs the short CI plan, `plans/substrate-remarks-ci.polkameter.xml`, with `fail-on: verdict` or `--fail-on verdict`.
 - [ ] The job pins the CLI (the action's `version:`, or `POLKAMETER_VERSION`) to the plan's `<plugin version>`.
 - [ ] `dev-chain.sh` is committed at the repository root, from the same PolkaMeter version.
 - [ ] The dev chain binaries are cached, keyed on the hash of `dev-chain.sh`.
