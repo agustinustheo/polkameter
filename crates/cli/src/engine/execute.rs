@@ -1,4 +1,4 @@
-//! Execution of declarative steps through the same host in every frontend.
+//! Execution of a plan's declarative steps.
 use crate::engine::monitors::Job;
 use crate::engine::{
 	artifacts, measurement,
@@ -91,7 +91,6 @@ impl std::fmt::Display for RunState {
 
 /// Event writer shared by every task of a run. Events are redacted before they are persisted
 /// and before the sink sees them.
-#[derive(Clone)]
 struct Log {
 	file: Arc<Mutex<File>>,
 	sink: EventSink,
@@ -688,7 +687,7 @@ impl FailOn {
 	}
 }
 
-/// Exit code of a run stopped by `Stop::request` without an explicit code (SIGINT, `/stop`).
+/// Exit code of a run stopped by `Stop::request` without an explicit code (SIGINT).
 pub const STOPPED_EXIT_CODE: i32 = 130;
 /// The teardown error of a run whose stop was forced.
 const TEARDOWN_INTERRUPTED: &str = "teardown was interrupted by a forced stop";

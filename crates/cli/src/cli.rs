@@ -524,11 +524,10 @@ fn report(path: PathBuf) -> Result<i32, CliError> {
 	let secrets = Registry::load()
 		.map(|registry| available_secrets(&registry))
 		.unwrap_or_default();
+	let redactor = crate::redact::Redactor::new(&secrets, None::<&str>);
 	if path.join("summary.json").is_file() {
-		let redactor = crate::redact::Redactor::new(&secrets, None::<&str>);
 		crate::engine::measurement::check(&path, &redactor).map_err(runtime)?;
 	}
-	let redactor = crate::redact::Redactor::new(&secrets, None::<&str>);
 	if let Err(error) = crate::engine::junit::write(&path, &redactor) {
 		crate::engine::junit::warning(Some(&path), &error.to_string(), &redactor);
 	}
