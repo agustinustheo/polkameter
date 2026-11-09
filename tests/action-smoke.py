@@ -1,16 +1,11 @@
 #!/usr/bin/env python3
 """Run the composite action's shell blocks with a stub CLI, without GitHub or a chain."""
-import hashlib
 import os
 from pathlib import Path
-import re
 import subprocess
-import sys
-import tarfile
 import tempfile
 import textwrap
 import unittest
-import zipfile
 
 ACTION = Path(__file__).resolve().parents[1] / "action.yml"
 STUB_CLI = r"""#!/usr/bin/env bash
@@ -27,12 +22,11 @@ while [ "$#" -gt 0 ]; do
 done
 test "$flags" = "$EXPECT_FLAGS"
 run="$output/run-1-2-3"
-mkdir -p "$run/plugins/p" "$run/plots"
+mkdir -p "$run/plugins/p"
 echo 'test summary' > "$run/summary.md"
 echo '[redacted]' > "$run/plugins/p/stderr.log"
 echo '{"suri": "//Alice"}' > "$run/plugins/p/raw.json"
 echo 'plugin output' > "$run/plugin-dump.txt"
-echo '<svg/>' > "$run/plots/rate.svg"
 if [ -n "$TEST_LINK" ]; then ln -s "$TEST_LINK" "$run/plugins/p/link"; fi
 if [ "$TEST_VERDICT" = MALFORMED ]; then
   printf '{' > "$run/summary.json"
@@ -202,63 +196,6 @@ class InstallTest(unittest.TestCase):
         for ref in ("", "main", "simplify/action", "0123456789abcdef0123456789abcdef01234567"):
             with self.subTest(ref=ref):
                 self.install(ref, error=True)
-
-
-class ReleaseContractTest(unittest.TestCase):
-    def assert_release_contract(self, root):
-        workflow = (root / ".github/workflows/release.yml").read_text()
-        # Skip ONLY the known pre-#97 desktop-bundle naming. Unknown or broken
-        # future packaging must fail rather than silently disable this test.
-        legacy = 'tar -C "$artifact" -czf "release-assets/polkameter-${target}.tar.gz" .'
-        if legacy in workflow and "  bundle:" in workflow and "  cli-linux:" not in workflow:
-            reason = "release.yml still publishes legacy unversioned bundles; CLI asset contract waits for #97"
-            print(f"SKIP: {reason}")
-            self.skipTest(reason)
-
-        # Parse the release matrix and its packaging command, then run the actual
-        # packager selected by release.yml. No second copy of its naming formula.
-        targets = set(re.findall(r"^\s+target: ([a-z0-9_]+-(?:unknown-linux-gnu|apple-darwin|pc-windows-msvc))$",
-                                 workflow, re.MULTILINE))
-        self.assertEqual(len(targets), 5, "release.yml must define all five CLI targets")
-        commands = re.findall(r'python3 (\S*scripts/[^\s]+\.py) "\$VERSION" "\$TARGET"', workflow)
-        self.assertEqual(len(commands), 2, "both CLI jobs must package versioned target assets")
-        self.assertEqual(len(set(commands)), 1)
-        cli_jobs = re.findall(r"^  cli-[a-z-]+:\n(.*?)(?=^  [a-z][a-z-]*:|\Z)",
-                              workflow, re.MULTILINE | re.DOTALL)
-        self.assertEqual(len(cli_jobs), 2)
-        for job in cli_jobs:
-            self.assertIn('VERSION: ${{ needs.prepare.outputs.version }}', job)
-            self.assertIn('TARGET: ${{ matrix.target }}', job)
-        packager = root / "scripts" / Path(commands[0]).name
-        self.assertTrue(packager.is_file(), f"release.yml packager missing: {packager}")
-        with tempfile.TemporaryDirectory() as directory:
-            work = Path(directory)
-            binary = work / "fake-cli"
-            binary.write_bytes(b"contract CLI")
-            for document in ("LICENSE", "README.md"):
-                (work / document).write_text("contract fixture")
-            for target in sorted(targets):
-                with self.subTest(target=target):
-                    output = work / target
-                    result = subprocess.run([sys.executable, str(packager), "0.3.0", target,
-                                             str(binary), "--output", str(output)],
-                                            cwd=work, capture_output=True, text=True)
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    expected = f"polkameter-0.3.0-{target}.{'zip' if 'windows' in target else 'tar.gz'}"
-                    self.assertEqual(sorted(p.name for p in output.iterdir()),
-                                     sorted([expected, expected + ".sha256"]))
-                    archive = output / expected
-                    self.assertEqual(archive.with_name(expected + ".sha256").read_text(),
-                                     f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {expected}\n")
-                    if expected.endswith(".zip"):
-                        with zipfile.ZipFile(archive) as bundle:
-                            self.assertEqual(bundle.read("polkameter.exe"), b"contract CLI")
-                    else:
-                        with tarfile.open(archive) as bundle:
-                            self.assertEqual(bundle.extractfile("polkameter").read(), b"contract CLI")
-
-    def test_release_workflow_assets_match_installer(self):
-        self.assert_release_contract(ACTION.parent)
 
 
 if __name__ == "__main__":

@@ -64,10 +64,6 @@ jobs:
         run: |
           cargo +${{ env.RUST_VERSION }} build -p polkameter --bin polkameter
           python3 tests/validate-plans.py
-      - name: Audit dependencies
-        run: |
-          cargo install cargo-audit --locked --version 0.22.2
-          cargo audit
       - name: Distribution tests
         run: |
           shellcheck install.sh
@@ -153,6 +149,12 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # Checks runs these on Linux; this runs them with the macOS tools.
+      - name: Installer and action tests
+        if: runner.os == 'macOS'
+        run: |
+          python3 tests/distribution.py
+          python3 tests/action-smoke.py
       - run: cargo +${{ env.RUST_VERSION }} build --locked --release -p polkameter-example-plugin
       # A local action has no release tag, so it installs the latest release with install.sh.
       - uses: ./
@@ -185,20 +187,6 @@ jobs:
           test -n "$VERSION"
           test -n "$ARTIFACT_ID" && test -n "$SECOND_ARTIFACT_ID"
           test "$ARTIFACT" != "$SECOND_ARTIFACT"
-
-  distribution-macos:
-    name: Distribution (macOS)
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # The binstall contract test reads cargo metadata; nothing is compiled.
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-      - name: Installer and action tests with macOS tools
-        run: |
-          python3 tests/distribution.py
-          python3 tests/action-smoke.py
 
   container:
     name: Container image

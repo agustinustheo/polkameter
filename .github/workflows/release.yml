@@ -124,7 +124,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-15-intel
+          # Cross-compiled on the arm64 runner: GitHub is retiring its Intel macOS image.
+          - os: macos-15
             target: x86_64-apple-darwin
           - os: macos-15
             target: aarch64-apple-darwin
@@ -146,6 +147,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: ${{ env.RUST_VERSION }}
+          targets: ${{ matrix.target }}
       - name: Build and package CLI
         working-directory: release-source
         shell: bash
@@ -155,7 +157,8 @@ jobs:
           BINARY_EXT: ${{ runner.os == 'Windows' && '.exe' || '' }}
         run: |
           cargo +${{ env.RUST_VERSION }} build --locked --release -p polkameter -p polkameter-substrate-plugin --bin polkameter --bin polkameter-substrate-plugin --target "$TARGET"
-          "target/$TARGET/release/polkameter$BINARY_EXT" --version
+          # The arm64 runner may lack Rosetta to run the x86_64 build.
+          if [ "$TARGET" != x86_64-apple-darwin ]; then "target/$TARGET/release/polkameter$BINARY_EXT" --version; fi
           python3 ../scripts/package-cli.py "$VERSION" "$TARGET" "target/$TARGET/release/polkameter$BINARY_EXT" \
             --plugin "target/$TARGET/release/polkameter-substrate-plugin$BINARY_EXT"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

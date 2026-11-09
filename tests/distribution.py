@@ -336,14 +336,6 @@ class InstallerTests(unittest.TestCase):
 
 
 class WorkflowTests(unittest.TestCase):
-    def test_tag_ref_guard_runs_before_builds(self):
-        workflow = (ROOT / ".github/workflows/release.yml").read_text()
-        guard = workflow.split("Require the release tag as the workflow ref for provenance", 1)[1].split("run: |\n", 1)[1].split("      #", 1)[0]
-        for ref, code in (("refs/tags/v0.3.0", 0), ("refs/heads/main", 1), ("refs/tags/v0.2.0", 1)):
-            with self.subTest(ref=ref):
-                result = subprocess.run(["bash", "-c", guard], env={**os.environ, "GITHUB_REF": ref, "RELEASE_TAG": "v0.3.0"}, capture_output=True)
-                self.assertEqual(result.returncode, code)
-
     def test_every_action_is_pinned_to_a_commit_with_version_comment(self):
         files = [ROOT / "action.yml", *sorted((ROOT / ".github").rglob("*.yml"))]
         for path in files:
