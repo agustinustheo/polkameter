@@ -3,6 +3,7 @@
 //!   1. baseline    a few probe txs, one per block, before any load
 //!   2. load        the plan's steps at their rates, until a failure or the end
 //!   3. recovery    no load, one probe per block, until probes land in time again
+//!   4. watch       while the loss check runs, the chain's stalls and node down still count
 //!
 //! One loop per phase over three inputs: a tick, submit replies, block events. The tracker owns
 //! every tx; this file only decides when to send and when a phase ends. Monitors hear about
@@ -12,7 +13,7 @@ use std::time::Duration;
 
 use polkameter_plugin_sdk::observers::{
 	FileError, Millis, NodeMax, Problems,
-	summary::{Baseline, Outcome, ProbePhase, Recovery},
+	summary::{Baseline, Class, Outcome, ProbePhase, Recovery, Rule, Stop},
 };
 use serde::Serialize;
 use tokio::{
@@ -26,7 +27,7 @@ mod load;
 
 use crate::load::{
 	recovery::recovered_at,
-	rules::{Rules, secs},
+	rules::{LiveState, Rules, live_failure, secs},
 	sender::Reply,
 	steps::{block_stats, percentile},
 	submit::Submit,
@@ -110,9 +111,6 @@ pub struct Io {
 	/// A clock that counts sleep ([`crate::load::clock::boot_ms`]), only to see that the
 	/// machine was suspended; a test changes it.
 	pub boot: fn() -> Option<Millis>,
-	/// Node restarts the process sampler saw (the node's PID changed): node down, in the load and
-	/// in recovery.
-	pub restarts: Problems,
 }
 
 /// No result: the network was not healthy before the load, or a raw file could not be written.
@@ -138,16 +136,15 @@ enum Event {
 	Block(BlockEvent),
 }
 
-pub(super) fn interval(ms: u64) -> tokio::time::Interval {
-	let mut i = tokio::time::interval(Duration::from_millis(ms));
-	i.set_missed_tick_behavior(MissedTickBehavior::Skip);
-	i
-}
+/// A stall of PolkaMeter's own loop longer than this, over the loop's tick period, is a pause of
+/// PolkaMeter itself: well above scheduling jitter, and far below any limit of the chain's.
+pub const STALL_MS: Millis = 1_000;
 
-/// Why the load tool itself was paused between two ticks, if it was: `elapsed` ms passed on
-/// the run's monotonic clock, and `boot` ms on a clock that also counts sleep (`None` without
-/// one). A long monotonic gap is CPU starvation; a boot clock far ahead of the monotonic one is a
-/// machine that was suspended. The wall clock plays no part: an NTP step either way is ignored.
+/// Why the load tool itself was paused longer than `max_gap` between two inputs, if it was:
+/// `elapsed` ms passed on the run's monotonic clock, and `boot` ms on a clock that also counts
+/// sleep (`None` without one). A long monotonic gap is CPU starvation; a boot clock far ahead of
+/// the monotonic one is a machine that was suspended. The wall clock plays no part: an NTP step
+/// either way is ignored.
 pub(super) fn paused(elapsed: Millis, boot: Option<Millis>, max_gap: Millis) -> Option<String> {
 	const NOT_THE_CHAIN: &str = "the numbers after this are not the chain's";
 	if elapsed > max_gap {
@@ -161,66 +158,122 @@ pub(super) fn paused(elapsed: Millis, boot: Option<Millis>, max_gap: Millis) -> 
 		.then(|| format!("the machine was suspended for {} s; {NOT_THE_CHAIN}", slept / 1000))
 }
 
-/// Watches the ticks of one loop for a pause of PolkaMeter itself ([`paused`]) and tells the
-/// tracker, which leaves out the time of what it saw late.
-pub(super) struct PauseWatch {
+/// One phase's loop: a tick every `period` ms, and the replies and block events between ticks.
+/// At every wakeup, before it hands an input to the tracker, it checks how long PolkaMeter went
+/// without one. A stall above the period plus [`STALL_MS`] is a pause of PolkaMeter itself (a
+/// stopped process, CPU starvation, a suspended machine): the tracker records it, so every time
+/// measured across it (latency, reply, block gap, stall clocks) leaves it out, whatever its
+/// length. A pause above `max_tick_gap_ms` is also returned by [`Ticks::long_pause`].
+pub(super) struct Ticks {
+	tick: tokio::time::Interval,
+	period: Millis,
 	last: Instant,
 	boot: Option<Millis>,
-	now: Millis,
+	at: Millis,
+	long: Option<String>,
 }
 
-impl PauseWatch {
-	pub(super) fn new(io: &Io) -> Self {
-		Self { last: Instant::now(), boot: (io.boot)(), now: now_ms() }
+impl Ticks {
+	pub(super) fn new(io: &Io, period: Millis) -> Self {
+		let mut tick = tokio::time::interval(Duration::from_millis(period));
+		tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+		Self { tick, period, last: Instant::now(), boot: (io.boot)(), at: now_ms(), long: None }
 	}
 
-	/// At a tick: why PolkaMeter was paused since the last one, if it was.
-	pub(super) fn tick<S: Submit>(
+	/// Waits for the next input; true for a tick. Replies and blocks go straight to the tracker.
+	pub(super) async fn next<S: Submit>(
 		&mut self,
 		t: &mut Tracker<S>,
-		io: &Io,
+		io: &mut Io,
 		rules: &Rules,
-	) -> Option<String> {
+	) -> Result<bool, RunError> {
+		let e = tokio::select! {
+			_ = self.tick.tick() => Event::Tick,
+			Some(r) = io.replies.recv() => Event::Reply(r),
+			Some(b) = io.blocks.recv() => Event::Block(b),
+		};
+		self.watch(t, io, rules);
+		match e {
+			Event::Tick if io.tool_failed.is_cancelled() => return Err(RunError::Monitor),
+			Event::Tick => return Ok(true),
+			Event::Reply(r) => t.on_reply(r),
+			Event::Block(BlockEvent::Tool(e)) => return Err(RunError::Tool(e)),
+			Event::Block(b) => t.on_block(b, now_ms())?,
+		}
+		Ok(false)
+	}
+
+	fn watch<S: Submit>(&mut self, t: &mut Tracker<S>, io: &Io, rules: &Rules) {
 		let (at, now, boot) = (Instant::now(), now_ms(), (io.boot)());
 		let elapsed = at.duration_since(self.last).as_millis() as Millis;
 		let slept = boot.zip(self.boot).map(|(b, l)| b.saturating_sub(l));
-		let why = paused(elapsed, slept, rules.max_tick_gap_ms);
-		if why.is_some() {
-			t.paused(self.now, now);
+		if elapsed.max(slept.unwrap_or(0)) > self.period + STALL_MS {
+			t.paused(self.at, now);
 		}
-		(self.last, self.boot, self.now) = (at, boot, now);
-		why
+		if let Some(why) = paused(elapsed, slept, rules.max_tick_gap_ms) {
+			self.long.get_or_insert(why);
+		}
+		(self.last, self.boot, self.at) = (at, boot, now);
+	}
+
+	/// Why PolkaMeter was paused longer than `max_tick_gap_ms` since this was last asked.
+	pub(super) fn long_pause(&mut self) -> Option<String> {
+		self.long.take()
 	}
 }
 
-/// Why the node is down, if it is: the block follower lost it, or the process sampler saw its PID
-/// change (a local node that restarted). Both the load and recovery end on it.
-pub(super) fn node_down<S: Submit>(t: &Tracker<S>, io: &Io) -> Option<String> {
-	t.node_down.clone().or_else(|| io.restarts.all().into_iter().next())
+/// Why the node is down, if it is: the block follower lost it for the reconnect budget, or saw
+/// it restart. Both the load and recovery end on it.
+pub(super) fn node_down<S: Submit>(t: &Tracker<S>) -> Option<String> {
+	t.node_down.clone()
 }
 
-/// Waits for the next input; true for a tick. Replies and blocks go straight to the tracker.
-pub(super) async fn next<S: Submit>(
-	t: &mut Tracker<S>,
-	io: &mut Io,
-	tick: &mut tokio::time::Interval,
-) -> Result<bool, RunError> {
-	let e = tokio::select! {
-		_ = tick.tick() => Event::Tick,
-		Some(r) = io.replies.recv() => Event::Reply(r),
-		Some(b) = io.blocks.recv() => Event::Block(b),
-	};
-	match e {
-		Event::Tick if io.tool_failed.is_cancelled() => return Err(RunError::Monitor),
-		Event::Tick => return Ok(true),
-		Event::Reply(r) => t.on_reply(r),
-		Event::Block(BlockEvent::Tool(e)) => return Err(RunError::Tool(e)),
-		Event::Block(b) => t.on_block(b, now_ms())?,
+/// What the live rules read, now.
+pub(super) fn live<S: Submit>(t: &Tracker<S>, io: &Io, opts: &RunOptions, step: u32) -> LiveState {
+	let now = now_ms();
+	LiveState {
+		step,
+		now,
+		closed_by_node: t.closed_by_node,
+		connections: opts.connections,
+		last_block_at: t.last_head.0,
+		last_finalized_at: t.last_finalized.0,
+		best: t.last_head.1,
+		finalized: t.last_finalized.1,
+		unobserved_since_block: t.unobserved_between(t.last_head.0, now),
+		unobserved_since_finalized: t.unobserved_between(t.last_finalized.0, now),
+		node_down: node_down(t),
+		unstable: t.unstable.clone(),
+		smoke_problems: if opts.mode == Mode::Smoke { io.problems.all() } else { Vec::new() },
 	}
-	Ok(false)
+}
+
+/// A chain failure the live rules see now (stall, finality stall, node down), unless it is the
+/// `known` stall: one that already held when the phase started, so the load already stopped on
+/// it, and the phase measures whether it ends.
+fn chain_failure<S: Submit>(
+	t: &Tracker<S>,
+	io: &Io,
+	opts: &RunOptions,
+	known: Option<Rule>,
+) -> Option<Stop> {
+	let state = LiveState { smoke_problems: Vec::new(), ..live(t, io, opts, 0) };
+	live_failure(&state, &opts.rules)
+		.filter(|stop| stop.class == Some(Class::Hard) && Some(stop.rule) != known)
+		.map(|stop| Stop { step: None, ..stop })
+}
+
+/// The stall that already holds now, if one does (see [`chain_failure`]).
+fn known_stall<S: Submit>(t: &Tracker<S>, io: &Io, opts: &RunOptions) -> Option<Rule> {
+	chain_failure(t, io, opts, None)
+		.map(|stop| stop.rule)
+		.filter(|rule| matches!(rule, Rule::Stall | Rule::FinalityStall))
 }
 
 /// 1. Probes, one per block, must all land before any load; else the network is not healthy.
+///
+/// Probes PolkaMeter could not time (it was paused, or reconnecting) give the baseline no time:
+/// `p50_ms` and `max_ms` are then `None`, never 0.
 pub async fn baseline<S: Submit>(
 	t: &mut Tracker<S>,
 	io: &mut Io,
@@ -232,13 +285,13 @@ pub async fn baseline<S: Submit>(
 		+ Duration::from_millis(
 			(opts.baseline_probes as u64 + 10) * (opts.block_interval_s * 1000.0) as u64,
 		);
-	let mut tick = interval(200);
-	let mut watch = PauseWatch::new(io);
+	let mut ticks = Ticks::new(io, 200);
 	while Instant::now() < deadline {
-		if next(t, io, &mut tick).await? {
-			if let Some(why) = watch.tick(t, io, &opts.rules) {
-				crate::redact::diag!("baseline: {why}");
-			}
+		let tick = ticks.next(t, io, &opts.rules).await?;
+		if let Some(why) = ticks.long_pause() {
+			crate::redact::diag!("baseline: {why}");
+		}
+		if tick {
 			t.tick(now_ms())?;
 			if t.probes.len() >= opts.baseline_probes
 				&& t.probes.iter().all(|p| p.outcome != Outcome::Pending)
@@ -259,13 +312,15 @@ pub async fn baseline<S: Submit>(
 	let b = Baseline {
 		probes: t.probes.len(),
 		p50_ms: percentile(&ms, 50.0),
-		max_ms: ms.iter().copied().max().unwrap_or(0),
+		max_ms: ms.iter().copied().max(),
 	};
+	let time =
+		|ms: Option<Millis>| ms.map_or("no time".into(), |ms| format!("{} s", secs(ms as f64)));
 	crate::redact::diag!(
-		"baseline: {} probes landed, p50 {} s, max {} s",
+		"baseline: {} probes landed, p50 {}, max {}",
 		b.probes,
-		secs(b.p50_ms as f64),
-		secs(b.max_ms as f64)
+		time(b.p50_ms),
+		time(b.max_ms)
 	);
 	Ok(b)
 }
@@ -279,12 +334,10 @@ pub async fn drain<S: Submit>(
 	rules: &Rules,
 ) -> Result<bool, RunError> {
 	let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-	let mut tick = interval(100);
-	let mut watch = PauseWatch::new(io);
+	let mut ticks = Ticks::new(io, 100);
 	while t.last_fetched < t.last_head.1 && Instant::now() < deadline {
-		if next(t, io, &mut tick).await?
-			&& let Some(why) = watch.tick(t, io, rules)
-		{
+		ticks.next(t, io, rules).await?;
+		if let Some(why) = ticks.long_pause() {
 			crate::redact::diag!("drain: {why}");
 		}
 	}
@@ -292,12 +345,25 @@ pub async fn drain<S: Submit>(
 }
 
 /// 3. No load, one probe per block, until probes land in time again and our backlog drained.
+///
+/// The chain's own failures end it and are measured: a stall, a finality stall or node down
+/// (one the load did not stop on already) is a recovery that is not back, whatever else
+/// PolkaMeter saw. Otherwise the recovery is measured only when PolkaMeter observed it: a pause
+/// of PolkaMeter, a dropped connection or a probe it could not time before the chain was back
+/// leaves it `not measured`, because the chain may have been back meanwhile. So does a chain not
+/// back with no `threshold_ms` (the baseline has no time): twice the block interval is the
+/// threshold then, which may be too strict to hold against the chain.
+#[allow(clippy::too_many_lines)]
 pub async fn recover<S: Submit>(
 	t: &mut Tracker<S>,
 	io: &mut Io,
 	opts: &RunOptions,
-	threshold_ms: Millis,
+	threshold_ms: Option<Millis>,
 ) -> Result<Recovery, RunError> {
+	let (threshold_ms, guessed) = match threshold_ms {
+		Some(ms) => (ms, false),
+		None => ((opts.block_interval_s * 2000.0) as Millis, true),
+	};
 	t.set_phase(Phase::Recovery, now_ms())?;
 	let _ = io.events.send(RunEvent::PhaseEdge);
 	let stopped_at = now_ms();
@@ -309,16 +375,19 @@ pub async fn recover<S: Submit>(
 	let started = Instant::now();
 	let deadline = started + Duration::from_secs(u64::from(opts.recovery_s));
 	let (mut back_at, mut drained_at, mut last_log) = (None, None, started);
-	let mut tick = interval(500);
-	// Paused here, PolkaMeter would time its own pause as the chain's recovery and drain.
-	let (mut watch, mut paused_in) = (PauseWatch::new(io), None);
-	while Instant::now() < deadline && t.closed_by_node == 0 && node_down(t, io).is_none() {
-		if !next(t, io, &mut tick).await? {
+	let mut ticks = Ticks::new(io, 500);
+	let known = known_stall(t, io, opts);
+	let mut failed = None;
+	while Instant::now() < deadline {
+		if !ticks.next(t, io, &opts.rules).await? {
 			continue;
 		}
-		if let Some(why) = watch.tick(t, io, &opts.rules) {
+		if let Some(why) = ticks.long_pause() {
 			crate::redact::diag!("recovery: {why}");
-			paused_in.get_or_insert(why);
+		}
+		if let Some(stop) = chain_failure(t, io, opts, known) {
+			failed = Some(stop);
+			break;
 		}
 		let now = now_ms();
 		t.tick(now)?;
@@ -346,22 +415,32 @@ pub async fn recover<S: Submit>(
 			);
 		}
 	}
+	let ended_at = now_ms();
 	let seconds = |at: Option<Millis>| at.map(|at| at.saturating_sub(stopped_at).div_ceil(1000));
 	let landed = format!(
 		"{} probes in a row landed within {} s",
 		opts.rules.probes_in_a_row,
 		secs(threshold_ms as f64)
 	);
-	let measured = paused_in.is_none();
-	let detail = match (paused_in, back_at, node_down(t, io)) {
-		(Some(paused), ..) => paused,
-		(None, Some(_), _) => landed,
-		(None, None, Some(why)) => format!("node down: {why}"),
+	let unobserved = t.unobserved_why(stopped_at, back_at.unwrap_or(ended_at)).or_else(|| {
+		(guessed && back_at.is_none()).then(|| {
+			format!(
+				"not back within {} s, but the baseline has no time, so that threshold is only twice the block interval",
+				secs(threshold_ms as f64)
+			)
+		})
+	});
+	let measured = failed.is_some() || unobserved.is_none();
+	let detail = match (&failed, &unobserved, back_at) {
+		(Some(stop), ..) => format!("{}: {}", stop.rule.name(), stop.detail),
+		(None, Some(why), _) => why.clone(),
+		(None, None, Some(_)) => landed,
 		(None, None, None) if t.recovery_blocks.is_empty() => {
-			format!("no new block in {} s", opts.recovery_s)
+			format!("no new block in {} s", ended_at.saturating_sub(stopped_at).div_ceil(1000))
 		},
 		(None, None, None) => format!("after {} s no {landed}", opts.recovery_s),
 	};
+	let back_at = back_at.filter(|_| failed.is_none());
 	let r = Recovery {
 		measured,
 		recovered: measured && back_at.is_some(),
@@ -384,4 +463,32 @@ pub async fn recover<S: Submit>(
 		r.backlog_at_end
 	);
 	Ok(r)
+}
+
+/// 4. While `work` runs (the loss check), follows the chain on.
+///
+/// A stall, a finality stall or node down that starts or goes on meanwhile is the chain's
+/// failure, as in the load. One that already held when it started was reported already.
+/// Returns what `work` gave, and the failure.
+pub async fn watch<S: Submit, T>(
+	t: &mut Tracker<S>,
+	io: &mut Io,
+	opts: &RunOptions,
+	work: impl std::future::Future<Output = T>,
+) -> Result<(T, Option<Stop>), RunError> {
+	let mut ticks = Ticks::new(io, 500);
+	// What already held was reported by the load or recovery.
+	let known = chain_failure(t, io, opts, None).map(|stop| stop.rule);
+	let mut failed = None;
+	tokio::pin!(work);
+	loop {
+		tokio::select! {
+			out = &mut work => return Ok((out, failed)),
+			tick = ticks.next(t, io, &opts.rules), if failed.is_none() => {
+				if tick? {
+					failed = chain_failure(t, io, opts, known);
+				}
+			},
+		}
+	}
 }

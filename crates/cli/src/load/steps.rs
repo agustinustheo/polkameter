@@ -38,12 +38,12 @@ pub struct FinalStep {
 	/// after a sender reconnect, or read as the block follower caught up after a reconnect.
 	#[serde(default)]
 	pub untimed: u64,
-	/// p50 send to best block.
-	pub p50_latency_ms: Millis,
-	/// p95 send to best block.
-	pub p95_latency_ms: Millis,
-	/// p95 submit reply.
-	pub p95_reply_ms: Millis,
+	/// p50 send to best block; `None` when no included tx was timed.
+	pub p50_latency_ms: Option<Millis>,
+	/// p95 send to best block; `None` when no included tx was timed.
+	pub p95_latency_ms: Option<Millis>,
+	/// p95 submit reply; `None` when no reply was timed.
+	pub p95_reply_ms: Option<Millis>,
 	/// Longest wait for a reply.
 	pub max_oldest_pending_ms: Millis,
 	/// Refusals by "code message".
@@ -103,30 +103,31 @@ pub struct StepStats {
 	/// The longest time without a new best block inside the step's own time: a gap that spans
 	/// a step edge counts in each step for the part inside it.
 	pub max_gap_ms: Option<Millis>,
-	/// Time the block follower was disconnected while the step ran.
+	/// Time the block follower was disconnected, or PolkaMeter paused, while the step ran.
 	pub unobserved_ms: Millis,
 }
 
 impl StepStats {
-	/// No new best block from `from` to `to`: keeps the part inside the step's time.
-	pub fn gap_portion(&mut self, from: Millis, to: Millis) {
+	/// No new best block from `from` to `to`: keeps the part inside the step's time, less
+	/// `paused`, the part of it PolkaMeter was paused in.
+	pub fn gap_portion(&mut self, from: Millis, to: Millis, paused: Millis) {
 		let end = if self.closed { to.min(self.ended_at) } else { to };
-		let part = end.saturating_sub(from.max(self.started_at));
+		let part = end.saturating_sub(from.max(self.started_at)).saturating_sub(paused);
 		if end > self.started_at && part > 0 {
 			self.max_gap_ms = Some(self.max_gap_ms.map_or(part, |m| m.max(part)));
 		}
 	}
 }
 
-/// The p-th percentile (nearest rank); 0 for no values.
-pub fn percentile(values: &[Millis], p: f64) -> Millis {
+/// The p-th percentile (nearest rank); `None` for no values: no evidence is no number.
+pub fn percentile(values: &[Millis], p: f64) -> Option<Millis> {
 	if values.is_empty() {
-		return 0;
+		return None;
 	}
 	let mut sorted = values.to_vec();
 	sorted.sort_unstable();
 	let i = ((p / 100.0) * sorted.len() as f64).floor() as usize;
-	sorted[i.min(sorted.len() - 1)]
+	Some(sorted[i.min(sorted.len() - 1)])
 }
 
 /// What a run of best blocks held.
@@ -196,9 +197,9 @@ mod tests {
 
 	#[test]
 	fn percentile_is_nearest_rank() {
-		assert_eq!(percentile(&[1, 5, 9, 100], 95.0), 100);
-		assert_eq!(percentile(&[1, 5, 9, 100], 50.0), 9);
-		assert_eq!(percentile(&[9, 1, 100, 5], 0.0), 1);
-		assert_eq!(percentile(&[], 95.0), 0);
+		assert_eq!(percentile(&[1, 5, 9, 100], 95.0), Some(100));
+		assert_eq!(percentile(&[1, 5, 9, 100], 50.0), Some(9));
+		assert_eq!(percentile(&[9, 1, 100, 5], 0.0), Some(1));
+		assert_eq!(percentile(&[], 95.0), None);
 	}
 }

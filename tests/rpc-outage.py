@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """An RPC outage that is not the chain's fault, on the dev chain.
 
-PolkaMeter runs the CI remarks plan through a TCP proxy. 5 s into the load, the proxy drops every
-connection and refuses new ones for 8 s. The node is fine all along, so the run must not blame
-it: no "node down" or "pool intake" stop, no failure onset, no FAIL verdict, and the loss check
-verifies every transaction on the finalized chain.
+PolkaMeter runs the CI remarks plan through a TCP proxy. 5 s into the load, and again as the loss
+check starts, the proxy drops every connection and refuses new ones for 8 s. The node is fine all
+along, so the run must not blame it: no "node down" or "pool intake" stop, no failure onset, no
+FAIL verdict, and the loss check reconnects and verifies every transaction on the finalized chain.
 
 Needs the dev chain (scripts/dev-chain.sh start) and the substrate plugin installed with its
 credential profile, as in the CI dev-chain job. Run it from the repository root:
@@ -65,8 +65,8 @@ class Proxy:
         self.open -= pair
 
 
-async def outage(proxy):
-    await asyncio.sleep(OUTAGE_AFTER_S)
+async def outage(proxy, after_s):
+    await asyncio.sleep(after_s)
     print(f"rpc-outage: proxy down for {OUTAGE_S} s", file=sys.stderr, flush=True)
     await proxy.down()
     await asyncio.sleep(OUTAGE_S)
@@ -87,16 +87,17 @@ async def run(polkameter, out):
     env = os.environ | {"POLKAMETER_NODE_PID": node_pid}
     args = [polkameter, "run", str(plan), "--output", str(out), "--fail-on", "error"]
     child = await asyncio.create_subprocess_exec(*args, stderr=asyncio.subprocess.PIPE, env=env)
-    fault = None
+    faults = {}
     async for line in child.stderr:
         text = line.decode(errors="replace")
         sys.stderr.write(text)
-        if fault is None and text.startswith("Phase: load"):
-            fault = asyncio.ensure_future(outage(proxy))
+        for phase, after_s in (("load", OUTAGE_AFTER_S), ("reconciliation", 0)):
+            if phase not in faults and text.startswith(f"Phase: {phase}"):
+                faults[phase] = asyncio.ensure_future(outage(proxy, after_s))
     code = await child.wait()
-    if fault is None:
-        sys.exit(f"rpc-outage: the run exited {code} before the load")
-    await fault
+    if len(faults) < 2:
+        sys.exit(f"rpc-outage: the run exited {code} before the loss check")
+    await asyncio.gather(*faults.values())
     return code
 
 

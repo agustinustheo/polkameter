@@ -45,8 +45,6 @@ pub struct Monitors {
 	pub scraper: ScraperHandle,
 	/// What the monitors could not record.
 	pub problems: Problems,
-	/// Node restarts the process sampler saw: the load stops on node down.
-	pub node_restarts: Problems,
 	/// Cancelled when a monitor fails with an error of our own: the load loop stops at once.
 	pub tool_failed: CancellationToken,
 	stop_sampling: CancellationToken,
@@ -106,7 +104,7 @@ impl Monitors {
 		redactor: &Redactor,
 	) -> Result<Self, MonitorError> {
 		let jsonl = |name: &str| dir.jsonl(name).map(|writer| records(writer, redactor));
-		let (problems, node_restarts) = (Problems::default(), Problems::default());
+		let problems = Problems::default();
 		let [failed, stop, stop_sampling, stop_chain] =
 			std::array::from_fn(|_| CancellationToken::new());
 
@@ -119,13 +117,8 @@ impl Monitors {
 		let ps = process::Ps::new(chains.node_url);
 		let sampler = match process::find_pid(chains.node_url, &ps).await {
 			Ok(pid) => {
-				let sampler = process::NodeSampler::new(
-					pid,
-					ps,
-					jsonl("node.jsonl")?,
-					problems.clone(),
-					node_restarts.clone(),
-				);
+				let sampler =
+					process::NodeSampler::new(pid, ps, jsonl("node.jsonl")?, problems.clone());
 				Some(spawn(sampler.run(stop_sampling.clone()), &failed))
 			},
 			Err(why) => {
@@ -153,7 +146,6 @@ impl Monitors {
 		Ok(Self {
 			scraper: handle,
 			problems,
-			node_restarts,
 			tool_failed: failed,
 			stop_sampling,
 			stop_chain,

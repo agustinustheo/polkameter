@@ -2,6 +2,26 @@
 
 User-visible changes in each release. The GitHub release notes list every merged pull request.
 
+## Unreleased
+
+### Fixed
+
+- A pause of PolkaMeter itself shorter than 5 s no longer counts as the chain's latency, submit reply time or block gap. Any stall of PolkaMeter's own loop of more than about 1 s now leaves out every time measured across it. A 4.9 s pause made a latency failure onset, a "pool intake" stop and slow blocks.
+- A baseline whose probes PolkaMeter timed none of now has no result, with a warning, instead of `0 ms`. `summary.json` writes `p50Ms` and `maxMs` as `null`. A recovery that is not back is then `not measured`, because its threshold can't come from the baseline.
+- A transaction PolkaMeter couldn't time has no time in the exports either: `inclusionMs` is `null` and `untimed` is `true` in `transactions.jsonl`, the inclusion histogram leaves it out, and `samples.jtl` labels it `load:step:N:untimed`. A rate step with no timed transaction shows `-` for p50 and p95, not `0.0`.
+- A finality stall or a stall while the loss check waits for finality now fails the run, as in the load. The block follower keeps following the chain until the loss check ends. A 90 s finality stall there passed.
+- Recovery now ends on a stall, a finality stall or node down, and fails, also when PolkaMeter paused in it. A recovery that PolkaMeter didn't fully observe before the chain was back (a pause, a dropped connection, an untimed probe) is `not measured`, never a failed recovery.
+- The loss check opens its connection again, with the 15 s budget, whenever a read fails. A disconnect during the loss check left transactions unverified.
+- A node restart is now node down in every phase. PolkaMeter detects it from the node's identity after a reconnect: the same peer ID with a new sync starting block. It was a warning, and the load ended on "generator limit".
+- A restarted proxy in front of the node is no longer node down. A new process on the endpoint's port is only a monitoring problem now.
+- A connection that drops more than 5 times in 60 s, with the node not restarted, now ends the load on "generator limit" with `connection unstable` in the detail, not on "node down". PolkaMeter keeps reconnecting.
+- Stop details say what PolkaMeter knows. Send rates show two decimals and the 95% rule (`sent 1.89 tx/s, 94.5% of the 2 tx/s target (95.0% needed)`), not `sent 2 of 2 tx/s`. "Pool intake" names the node or the network between. The loss check no longer says `blocks 0-0` when it couldn't walk the chain. The untimed-transactions warning no longer says their time isn't the chain's.
+- A run that exits `1` only because its verdict is INCONCLUSIVE now ends in the state `completed_inconclusive`, not `completed_with_failures`.
+
+### Changed
+
+- Plugin SDK: `Baseline::p50_ms` and `Baseline::max_ms` are `Option<Millis>`: `None` when PolkaMeter timed no probe. `summary.json` files from earlier versions still read.
+
 ## 0.4.1 (2026-11-10)
 
 ### Fixed

@@ -49,16 +49,16 @@ fn boot_suspended() -> Option<u64> {
 fn setup(
 	name: &str,
 	boot: fn() -> Option<u64>,
-	restarts: Problems,
+	restart_at: Option<u64>,
 ) -> (Tracker<FakeSender>, Io, RunOptions) {
-	setup_with(name, boot, restarts, 200)
+	setup_with(name, boot, restart_at, 200)
 }
 
 /// [`setup`] with a flood of `flood` txs.
 fn setup_with(
 	name: &str,
 	boot: fn() -> Option<u64>,
-	restarts: Problems,
+	restart_at: Option<u64>,
 	flood: u32,
 ) -> (Tracker<FakeSender>, Io, RunOptions) {
 	let dir = RunDir::create(std::path::Path::new(env!("CARGO_TARGET_TMPDIR")), name).unwrap();
@@ -77,7 +77,9 @@ fn setup_with(
 	t.last_head.0 = now_ms() + 60_000;
 	t.last_finalized.0 = now_ms() + 60_000;
 	let (blocks_tx, blocks) = tokio::sync::mpsc::unbounded_channel();
-	// A healthy chain: a new best block every 6 s.
+	// A healthy chain: a new best block every 6 s; the follower sees the node restart at
+	// `restart_at` s.
+	let restarted = blocks_tx.clone();
 	tokio::spawn(async move {
 		for number in 1.. {
 			tokio::time::sleep(std::time::Duration::from_secs(6)).await;
@@ -87,6 +89,13 @@ fn setup_with(
 			}
 		}
 	});
+	if let Some(at) = restart_at {
+		tokio::spawn(async move {
+			tokio::time::sleep(std::time::Duration::from_secs(at)).await;
+			let why = "the node restarted: same peer ID, new sync starting block".to_owned();
+			let _ = restarted.send(polkameter::load::follower::BlockEvent::Restarted(why));
+		});
+	}
 	let (events, _) = tokio::sync::broadcast::channel(64);
 	let io = Io {
 		replies,
@@ -95,7 +104,6 @@ fn setup_with(
 		problems: Problems::default(),
 		tool_failed: tokio_util::sync::CancellationToken::new(),
 		boot,
-		restarts,
 	};
 	let opts = RunOptions {
 		rules: RULES,
@@ -112,9 +120,9 @@ fn setup_with(
 async fn run(
 	name: &str,
 	boot: fn() -> Option<u64>,
-	restarts: Problems,
+	restart_at: Option<u64>,
 ) -> (Tracker<FakeSender>, polkameter_plugin_sdk::observers::summary::Stop, std::time::Duration) {
-	let (mut t, mut io, opts) = setup(name, boot, restarts);
+	let (mut t, mut io, opts) = setup(name, boot, restart_at);
 	let virtual_start = tokio::time::Instant::now();
 	let stop = load(&mut t, &mut io, &opts).await.unwrap();
 	(t, stop, virtual_start.elapsed())
@@ -123,7 +131,7 @@ async fn run(
 #[tokio::test(start_paused = true)]
 async fn steps_run_on_monotonic_time() {
 	let real = std::time::Instant::now();
-	let (t, stop, elapsed) = run("monotonic", boot_awake, Problems::default()).await;
+	let (t, stop, elapsed) = run("monotonic", boot_awake, None).await;
 	// 40 s of steps on the paused clock, in far less real time: the steps end by the monotonic
 	// clock, not the wall clock (which is never read).
 	assert!(real.elapsed() < std::time::Duration::from_secs(10), "{:?}", real.elapsed());
@@ -142,48 +150,38 @@ async fn steps_run_on_monotonic_time() {
 #[tokio::test(start_paused = true)]
 async fn a_flood_sized_to_the_plan_reaches_the_rate_cap() {
 	// What the plan sends on the paused clock, from a flood larger than it needs.
-	let (t, stop, _) = run("sized-probe", boot_awake, Problems::default()).await;
+	let (t, stop, _) = run("sized-probe", boot_awake, None).await;
 	assert_eq!(stop.rule, Rule::RateCap, "{}", stop.detail);
 	let sent: u64 = t.steps.iter().map(|s| final_step(s).sent).sum();
 	assert!((99..=100).contains(&sent), "2 tx/s for 20 s, then 3 tx/s for 20 s: {sent}");
 
-	let (mut t, mut io, opts) =
-		setup_with("sized", boot_awake, Problems::default(), u32::try_from(sent).unwrap());
+	let (mut t, mut io, opts) = setup_with("sized", boot_awake, None, u32::try_from(sent).unwrap());
 	let stop = load(&mut t, &mut io, &opts).await.unwrap();
 	assert!(t.source().exhausted(), "the flood was sized to the plan");
 	assert_eq!((stop.rule, stop.step), (Rule::RateCap, Some(1)), "{}", stop.detail);
 
-	let (mut t, mut io, opts) = setup_with("short", boot_awake, Problems::default(), 50);
+	let (mut t, mut io, opts) = setup_with("short", boot_awake, None, 50);
 	let stop = load(&mut t, &mut io, &opts).await.unwrap();
 	assert_eq!((stop.rule, stop.step), (Rule::BudgetUsedUp, Some(1)), "{}", stop.detail);
 }
 
 #[tokio::test(start_paused = true)]
 async fn a_suspended_machine_stops_the_load_as_a_generator_limit() {
-	let (_, stop, _) = run("suspended", boot_suspended, Problems::default()).await;
+	let (_, stop, _) = run("suspended", boot_suspended, None).await;
 	assert_eq!((stop.rule, stop.step), (Rule::GeneratorLimit, Some(0)), "{}", stop.detail);
 }
 
-/// The process sampler saw the node's PID change: the node restarted. That is node down in the
-/// load even though every connection reconnected, and it ends recovery early instead of waiting
-/// out its time.
+/// The follower saw the node restart: that is node down in the load even though every
+/// connection reconnected, and it ends recovery early instead of waiting out its time.
 #[tokio::test(start_paused = true)]
-async fn a_node_restart_the_sampler_saw_is_node_down_in_load_and_recovery() {
-	const RESTARTED: &str = "node: process 10 ended; sampling the node process now on its port, 20";
-	let restarts = Problems::default();
-	restarts.record(RESTARTED.into());
-	let (_, stop, _) = run("restarted", boot_awake, restarts).await;
+async fn a_node_restart_is_node_down_in_load_and_recovery() {
+	let (_, stop, _) = run("restarted", boot_awake, Some(3)).await;
 	assert_eq!((stop.rule, stop.step), (Rule::NodeDown, Some(0)), "{}", stop.detail);
 
-	let restarts = Problems::default();
-	let (mut t, mut io, mut opts) = setup("restarted-in-recovery", boot_awake, restarts.clone());
+	let (mut t, mut io, mut opts) = setup("restarted-in-recovery", boot_awake, Some(20));
 	opts.recovery_s = 120;
-	tokio::spawn(async move {
-		tokio::time::sleep(std::time::Duration::from_secs(20)).await;
-		restarts.record(RESTARTED.into());
-	});
 	let started = tokio::time::Instant::now();
-	let r = recover(&mut t, &mut io, &opts, 12_000).await.unwrap();
+	let r = recover(&mut t, &mut io, &opts, Some(12_000)).await.unwrap();
 	assert!(started.elapsed() < std::time::Duration::from_secs(21), "{:?}", started.elapsed());
 	assert!(!r.recovered, "{}", r.detail);
 }

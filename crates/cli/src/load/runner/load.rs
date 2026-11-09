@@ -5,10 +5,10 @@ use std::time::Duration;
 use polkameter_plugin_sdk::observers::summary::{Rule, Stop};
 use tokio::time::Instant;
 
-use super::{Io, Mode, PauseWatch, RunError, RunEvent, RunOptions, interval, next, node_down};
+use super::{Io, RunError, RunEvent, RunOptions, Ticks, live, node_down};
 use crate::load::{
 	now_ms,
-	rules::{LiveState, check_step, live_failure, measure_violation, secs},
+	rules::{check_step, live_failure, measure_violation, rate, secs},
 	steps::final_step,
 	submit::Submit,
 	tracker::Tracker,
@@ -48,6 +48,11 @@ pub async fn load<S: Submit>(
 		if let Some(stop) = ended {
 			return Ok(stop);
 		}
+		// The follower may have seen the node restart only as the step ended: that, not the
+		// step's low send rate, is why it sent too little.
+		if let Some(why) = node_down(t) {
+			return Ok(Stop::new(Rule::NodeDown, Some(k), why));
+		}
 		// After the last step an empty flood only means it was sized to the plan.
 		let last = k as usize + 1 == opts.plan.steps.len();
 		let unsent_kib = t.sender().queued_bytes() / 1024;
@@ -73,16 +78,17 @@ async fn send_step<S: Submit>(
 	// step early nor sends a burst.
 	let start = Instant::now();
 	let end = start + Duration::from_secs(u64::from(seconds));
-	let mut tick = interval(20);
+	let mut ticks = Ticks::new(io, 20);
 	let mut tokens = 0.0_f64;
-	let (mut last, mut watch) = (start, PauseWatch::new(io));
+	let mut last = start;
 	let step = t.steps.last().expect("started").step;
 	while Instant::now() < end {
-		if !next(t, io, &mut tick).await? {
-			continue;
-		}
-		if let Some(detail) = watch.tick(t, io, &opts.rules) {
+		let tick = ticks.next(t, io, &opts.rules).await?;
+		if let Some(detail) = ticks.long_pause() {
 			return Ok(Some(Stop::new(Rule::GeneratorLimit, Some(step), detail)));
+		}
+		if !tick {
+			continue;
 		}
 		let (at, now) = (Instant::now(), now_ms());
 		let elapsed = at.duration_since(last);
@@ -95,21 +101,7 @@ async fn send_step<S: Submit>(
 		}
 		last = at;
 		t.tick(now)?;
-		let live = LiveState {
-			step,
-			now,
-			closed_by_node: t.closed_by_node,
-			connections: opts.connections,
-			last_block_at: t.last_head.0,
-			last_finalized_at: t.last_finalized.0,
-			best: t.last_head.1,
-			finalized: t.last_finalized.1,
-			unobserved_since_block: t.unobserved_between(t.last_head.0, now),
-			unobserved_since_finalized: t.unobserved_between(t.last_finalized.0, now),
-			node_down: node_down(t, io),
-			smoke_problems: if opts.mode == Mode::Smoke { io.problems.all() } else { Vec::new() },
-		};
-		if let Some(stop) = live_failure(&live, &opts.rules) {
+		if let Some(stop) = live_failure(&live(t, io, opts, step), &opts.rules) {
 			return Ok(Some(stop));
 		}
 	}
@@ -119,13 +111,13 @@ async fn send_step<S: Submit>(
 fn log_step<S: Submit>(t: &Tracker<S>) {
 	let f = final_step(t.steps.last().expect("started"));
 	crate::redact::diag!(
-		"step {} prepared: target {} tx/s, sent {:.0} tx/s, {} blocks, {:.1} tx/s included, reply p95 {} s, {} replies pending, backlog {}",
+		"step {} prepared: target {} tx/s, sent {} tx/s, {} blocks, {:.1} tx/s included, reply p95 {}, {} replies pending, backlog {}",
 		f.step,
 		f.target_rate,
-		f.sent_per_s,
+		rate(f.sent_per_s),
 		f.blocks.blocks,
 		f.included_per_s,
-		secs(f.p95_reply_ms as f64),
+		f.p95_reply_ms.map_or("no time".into(), |ms| format!("{} s", secs(ms as f64))),
 		t.inflight(),
 		t.outstanding().len()
 	);

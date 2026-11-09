@@ -233,6 +233,35 @@ fn recovery_line(s: &Summary) -> String {
 	}
 }
 
+fn baseline_line(s: &Summary) -> String {
+	let b = &s.baseline;
+	match (b.p50_ms, b.max_ms) {
+		(Some(p50), Some(max)) => format!(
+			"{} probes before the load, p50 {} s, max {} s",
+			b.probes,
+			to_fixed(p50 as f64 / 1000.0, 1),
+			to_fixed(max as f64 / 1000.0, 1)
+		),
+		_ => format!(
+			"{} probes before the load, **no result**: {} timed none of them (it was paused, or reconnecting, while they landed)",
+			b.probes,
+			crate::PRODUCT_NAME
+		),
+	}
+}
+
+/// The walk of the finalized chain, or why it did not run. Blocks start at 1 at the least, so
+/// `(0, 0)` is a walk that never ran.
+pub fn on_chain_text(c: &polkameter_plugin_sdk::observers::summary::OnChain) -> String {
+	if c.blocks == (0, 0) {
+		return "the finalized chain was not walked, so nothing was counted on it".into();
+	}
+	format!(
+		"on the finalized chain (blocks {}-{}): {} included; {} the tracker missed (in a block that replaced one it read), {} only on a fork block, {} moved to another block",
+		c.blocks.0, c.blocks.1, c.included, c.missed, c.only_on_fork, c.moved
+	)
+}
+
 fn loss_line(s: &Summary) -> String {
 	let l = &s.loss;
 	let mut out = format!(
@@ -253,10 +282,8 @@ fn loss_line(s: &Summary) -> String {
 		out += &format!(" ({n})");
 	}
 	let c = &l.on_chain;
-	out += &format!(
-		". On the finalized chain (blocks {}-{}): {} included; {} the tracker missed (in a block that replaced one it read), {} only on a fork block, {} moved to another block",
-		c.blocks.0, c.blocks.1, c.included, c.missed, c.only_on_fork, c.moved
-	);
+	let walk = on_chain_text(c);
+	out += &format!(". {}{}", walk[..1].to_uppercase(), &walk[1..]);
 	if let Some(st) = &l.state {
 		out += &format!(
 			". State check: {} of {} {}",
@@ -286,9 +313,9 @@ fn step_row(f: &FinalStep) -> String {
 		to_fixed(f.sent_per_s, 0),
 		to_fixed(f.included_per_s, 0),
 		to_fixed(100.0 * f.included_ratio, 1),
-		to_fixed(f.p50_latency_ms as f64 / 1000.0, 1),
-		to_fixed(f.p95_latency_ms as f64 / 1000.0, 1),
-		to_fixed(f.p95_reply_ms as f64 / 1000.0, 2),
+		fmt(f.p50_latency_ms.map(|ms| ms as f64 / 1000.0), 1),
+		fmt(f.p95_latency_ms.map(|ms| ms as f64 / 1000.0), 1),
+		fmt(f.p95_reply_ms.map(|ms| ms as f64 / 1000.0), 2),
 		f.rejected.to_string(),
 		f.failed_in_block.to_string(),
 	];
@@ -355,7 +382,7 @@ fn render_summary(s: &Summary, steps: &[FinalStep], d: &RunData, checks: &[Check
         format!("- **Load stop:** {}: {}", s.stop.rule.name(), s.stop.detail),
         format!("- **Recovery:** {}", recovery_line(s)),
         format!("- **Loss check:** {}", loss_line(s)),
-        format!("- **Baseline:** {} probes before the load, p50 {} s, max {} s", s.baseline.probes, to_fixed(s.baseline.p50_ms as f64 / 1000.0, 1), to_fixed(s.baseline.max_ms as f64 / 1000.0, 1)),
+        format!("- **Baseline:** {}", baseline_line(s)),
         format!("- **Network:** spec {}, {} s blocks at start", s.network.spec_version, num(s.network.block_interval_s)),
         format!("- **Runner:** {} CPUs ({})", s.runner.cpus, s.runner.cpu_model.as_deref().unwrap_or("?")),
     ]);
@@ -497,6 +524,16 @@ mod tests {
 					.contains(&format!("- **Verdict:** {}", serde_name(want)))
 			);
 		}
+	}
+
+	/// A walk of the finalized chain that never ran says so, not "blocks 0-0".
+	#[test]
+	fn a_walk_that_did_not_run_has_no_blocks() {
+		let mut s = summary();
+		s.loss.on_chain = Default::default();
+		let line = loss_line(&s);
+		assert!(!line.contains("blocks 0-0"), "{line}");
+		assert!(line.contains("The finalized chain was not walked"), "{line}");
 	}
 
 	#[test]

@@ -45,8 +45,8 @@ pub struct Outcome {
 	/// `line L, column C: `.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub error_location: Option<crate::engine::plan::Location>,
-	/// Why a `completed_with_failures` run exits 1: smoke-mode problems, or the verdict and the
-	/// flag that failed it. Absent in every other state.
+	/// Why a `completed_with_failures` or `completed_inconclusive` run exits 1: smoke-mode
+	/// problems, or the verdict and the flag that failed it. Absent in every other state.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub exit_reason: Option<String>,
 }
@@ -60,6 +60,8 @@ pub const PREFLIGHT_EXIT_CODE: i32 = 3;
 pub enum RunState {
 	Completed,
 	CompletedWithFailures,
+	/// It exits 1 only because the load verdict is INCONCLUSIVE: nothing failed.
+	CompletedInconclusive,
 	Stopped,
 	Failed,
 	/// Provisional: a stop was requested and the run is still tearing down. The final outcome
@@ -82,6 +84,7 @@ impl std::fmt::Display for RunState {
 		f.write_str(match self {
 			Self::Completed => "completed",
 			Self::CompletedWithFailures => "completed_with_failures",
+			Self::CompletedInconclusive => "completed_inconclusive",
 			Self::Stopped => "stopped",
 			Self::Failed => "failed",
 			Self::Stopping => "stopping",
@@ -771,7 +774,7 @@ pub async fn run_stoppable(
 		teardown: Mutex::new(None),
 		phase: Mutex::new(PREFLIGHT.to_owned()),
 		failed_in: Mutex::new(None),
-		exit_reason: Mutex::new(None),
+		exit_reason: Mutex::new((None, false)),
 	};
 	let execute = Box::pin(run.execute(credentials));
 	let mut execute = std::pin::pin!(execute);
@@ -805,8 +808,9 @@ struct Run<'a> {
 	phase: Mutex<String>,
 	/// The phase the run's phases failed in, kept before teardown enters its own phase.
 	failed_in: Mutex<Option<String>>,
-	/// Why the report's exit code is 1, kept for the outcome.
-	exit_reason: Mutex<Option<String>>,
+	/// Why the report's exit code is 1, and whether only an INCONCLUSIVE verdict made it 1,
+	/// kept for the outcome.
+	exit_reason: Mutex<(Option<String>, bool)>,
 }
 
 impl Run<'_> {
@@ -961,7 +965,8 @@ impl Run<'_> {
 				});
 				let exit =
 					measurement::report(&dir, measured, &checks, self.fail_on, &self.log.redactor)?;
-				*self.exit_reason.lock().unwrap_or_else(|e| e.into_inner()) = exit.reason;
+				*self.exit_reason.lock().unwrap_or_else(|e| e.into_inner()) =
+					(exit.reason, exit.inconclusive);
 				exit.code
 			},
 			None => 0,
@@ -1102,6 +1107,9 @@ impl Run<'_> {
 				Some(anyhow::anyhow!("run stopped during teardown")),
 			),
 			Ok(0) => (0, RunState::Completed, None),
+			Ok(code) if self.exit_reason.lock().is_ok_and(|r| r.1) => {
+				(code, RunState::CompletedInconclusive, None)
+			},
 			Ok(code) => (code, RunState::CompletedWithFailures, None),
 			Err(error) if self.stop.cancel.is_cancelled() => {
 				(self.stop.exit_code(), RunState::Stopped, Some(error))
@@ -1135,10 +1143,13 @@ impl Run<'_> {
 			failed_phase,
 			error_location,
 			// Only a run the report failed has its reason: a later error or stop decides instead.
-			exit_reason: (state == RunState::CompletedWithFailures)
-				.then(|| self.exit_reason.lock().ok().and_then(|reason| reason.clone()))
-				.flatten()
-				.map(|reason| self.log.redactor.text(&reason)),
+			exit_reason: matches!(
+				state,
+				RunState::CompletedWithFailures | RunState::CompletedInconclusive
+			)
+			.then(|| self.exit_reason.lock().ok().and_then(|reason| reason.0.clone()))
+			.flatten()
+			.map(|reason| self.log.redactor.text(&reason)),
 		};
 		// Samples come from the raw files.
 		for error in [redacted, artifacts::write_samples(&self.directory)]

@@ -33,7 +33,7 @@ A load test ends with a [verdict](https://agustinustheodorus.com/polkameter/read
 ## Highlights
 
 - Every transaction the load sends gets one outcome: finalized, still in the ready pool, refused, lost, unverified or unknown. PolkaMeter checks this against the finalized chain, so a transaction counts as lost only when the evidence shows it.
-- PolkaMeter doesn't blame the chain for its own problems. A short RPC disconnect or a pause of the load machine never counts as a chain stall or as latency. [What PolkaMeter never blames on the chain](https://agustinustheodorus.com/polkameter/reading-results.html#what-polkameter-never-blames-on-the-chain) lists the rules.
+- PolkaMeter blames the chain only for the chain's faults. A short RPC disconnect or a pause of the load machine never counts as a stall or as latency, and a real stall still fails the run. [Whose fault is it](https://agustinustheodorus.com/polkameter/reading-results.html#whose-fault-is-it) lists the rules.
 - A GitHub Action runs a plan and fails the job on a `FAIL` or `INCONCLUSIVE` verdict.
 - The [substrate plugin](https://agustinustheodorus.com/polkameter/substrate-plugin.html#limits) funds accounts and sends remarks or transfers on standard runtimes, so you write no plugin code. For your own pallets, a plugin is any program that speaks JSON lines, in any language.
 - It raises the rate one rate step at a time. A rate step sends transactions at one rate for a set time. PolkaMeter records the first rate step that fails a limit, such as latency, and the load goes on. Then it checks how fast the chain recovers.

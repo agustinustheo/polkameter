@@ -71,15 +71,20 @@ scripts/dev-chain.sh stop
 
 ## Measurement integrity
 
-PolkaMeter's core claim is that it never blames the chain for a fault of its own, of the network or of the RPC connection. [What PolkaMeter never blames on the chain](docs/reading-results.md#what-polkameter-never-blames-on-the-chain) states the rules. These tests guard them. If a change makes one fail, fix the change, not the test.
+PolkaMeter's core claim is two-sided: it never blames the chain for a fault of its own, of the network or of the RPC connection, and it never excuses the chain for a fault in it. [Whose fault is it](docs/reading-results.md#whose-fault-is-it) states the rules. These tests guard them. If a change makes one fail, fix the change, not the test. Tests without a file are in `crates/cli/tests/attribution.rs`.
 
 | Rule | Test |
 | --- | --- |
-| 1. A disconnection shorter than 15 s is not node down | `i1_a_node_back_within_the_reconnect_budget_is_not_down` in `crates/cli/tests/attribution.rs` |
-| 2. The loss check is verified after a reconnect | `tests/rpc-outage.py`, in the CI dev-chain job: an 8 s outage through a TCP proxy |
-| 3. Time not observed never counts against the chain (baseline, load, recovery) | `i3_time_polkameter_did_not_observe_never_makes_a_latency_failure` and `i3_a_pause_in_the_baseline_or_recovery_is_not_the_chains` in `attribution.rs`; `a_pause_leaves_out_the_latency_timed_across_it_whichever_is_seen_first` in `crates/cli/tests/load_tracker.rs` |
-| 4. Reconnecting is not pool intake, and a resend has no latency | `i4_a_reconnecting_sender_is_never_pool_intake` and `i4_time_to_resend_after_a_reconnect_is_not_latency` in `attribution.rs` |
-| 5. Loss statuses partition what was sent | `statuses_partition_sent_in_every_scenario` in `crates/cli/src/load/loss.rs` |
+| A. A disconnection shorter than 15 s is not node down, in the load and the loss check | `i1_a_node_back_within_the_reconnect_budget_is_not_down`, `the_loss_check_reconnects_within_the_budget`; `tests/rpc-outage.py` in the CI dev-chain job (an 8 s outage through a TCP proxy) |
+| A. A connection that keeps dropping is unstable, not node down | `a_connection_that_keeps_dropping_is_unstable_not_node_down` |
+| A. A restarted proxy is not a restarted node | `a_restarted_proxy_is_not_a_restarted_node` |
+| A. A pause of PolkaMeter, of any length, is not latency, reply time or a block gap | `i3_time_polkameter_did_not_observe_never_makes_a_latency_failure`, `a_pause_of_any_length_never_makes_a_latency_failure`, `a_pause_is_never_the_nodes_reply_time`, `a_pause_never_counts_in_block_gaps`; `a_pause_leaves_out_every_time_measured_across_it` in `load_tracker.rs` |
+| A. Reconnecting is not pool intake, and a resend has no latency | `i4_a_reconnecting_sender_is_never_pool_intake`, `i4_time_to_resend_after_a_reconnect_is_not_latency` |
+| B. A node restart is node down in any phase | `a_restarted_node_is_node_down_in_any_phase`; `a_node_restart_is_node_down_in_load_and_recovery` in `load_runner.rs` |
+| B. A finality stall fails the run in recovery and in the loss check, also when PolkaMeter paused | `a_finality_stall_in_recovery_fails_even_when_polkameter_paused`, `a_finality_stall_while_the_loss_check_runs_fails_the_run` |
+| C. A baseline or recovery PolkaMeter didn't observe has no result | `i3_a_pause_in_the_baseline_or_recovery_is_not_the_chains`, `a_baseline_polkameter_did_not_observe_has_no_result`, `a_recovery_polkameter_did_not_observe_is_not_measured` |
+| C. An untimed transaction has no time in any export | `untimed_transactions_have_no_time_in_any_export` |
+| D. Loss statuses partition what was sent | `statuses_partition_sent_in_every_scenario` in `crates/cli/src/load/loss.rs` |
 
 ## Conventions
 

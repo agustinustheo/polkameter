@@ -232,9 +232,9 @@ pub struct Summary {
 	/// when empty.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub warnings: Vec<String>,
-	/// Time the block follower was disconnected (reconnecting), when no block could be seen.
-	/// Left out of the file when 0. More than the stall limit makes "monitors recorded
-	/// everything" a no result: a stall could hide in it.
+	/// Time the block follower was disconnected (reconnecting), or PolkaMeter itself paused,
+	/// when no block could be seen. Left out of the file when 0. More than the stall limit makes
+	/// "monitors recorded everything" a no result: a stall could hide in it.
 	#[serde(default, skip_serializing_if = "after::is_zero")]
 	pub unobserved_ms: u64,
 	/// The chain under load.

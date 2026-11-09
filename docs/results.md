@@ -62,10 +62,10 @@ PolkaMeter writes `execution.json` after teardown. When you stop a run, it write
 | `teardown` | `completed`, `failed` (every teardown step ran, at least one failed) or `interrupted` (a forced stop ended it). Absent if teardown did not run. |
 | `failed_phase` | Only when `state` is `failed`: the phase, such as `preflight`, `setup`, `measurement`, `teardown` or `report`. |
 | `error_location` | Only when `error` points into the plan: `{"line": …, "column": …}`. |
-| `exit_reason` | Only when `state` is `completed_with_failures`: why the run exits `1`, redacted. |
+| `exit_reason` | Only when `state` is `completed_with_failures` or `completed_inconclusive`: why the run exits `1`, redacted. |
 | `stop_requested_at` | Only in a provisional file: when the stop was requested, in milliseconds. |
 
-`state` is `completed`, `completed_with_failures`, `stopped`, `stopping` (provisional) or `failed`. [Exit codes](cli.md#exit-codes) gives each code.
+`state` is `completed`, `completed_with_failures`, `completed_inconclusive` (it exits `1` only because the verdict is INCONCLUSIVE), `stopped`, `stopping` (provisional) or `failed`. [Exit codes](cli.md#exit-codes) gives each code.
 
 
 ## junit.xml
@@ -125,8 +125,8 @@ Plugin checks come after the built-in ones and count toward the verdict the same
 | Column | Step rows | Transaction rows (load test) |
 | --- | --- | --- |
 | `timeStamp` | Start time, in milliseconds since the Unix epoch | Time of submission |
-| `elapsed` | Step duration, in milliseconds | Time from submission to inclusion, or to the reply without inclusion |
-| `label` | `step:<step id>` | `load:step:<step index>` |
+| `elapsed` | Step duration, in milliseconds | Time from submission to inclusion, or to the reply without inclusion. `0` for a transaction PolkaMeter couldn't time |
+| `label` | `step:<step id>` | `load:step:<step index>`, or `load:step:<step index>:untimed` for a transaction PolkaMeter couldn't time |
 | `responseCode` | `STEP_OK` or `STEP_FAILED` | Transaction status |
 | `responseMessage` | Step error, or empty | Transaction hash |
 | `threadName` | `steps` | `load` |

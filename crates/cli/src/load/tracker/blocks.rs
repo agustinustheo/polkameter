@@ -44,10 +44,6 @@ impl<S: Submit> Tracker<S> {
 			BlockEvent::Reconnected { at } => {
 				let Some(from) = self.unobserved_since() else { return Ok(()) };
 				self.catching_up = Some(from);
-				// A step that ended meanwhile counted its part when it ended.
-				for st in self.steps.iter_mut().filter(|st| !st.closed) {
-					st.unobserved_ms += at.saturating_sub(from.max(st.started_at));
-				}
 				if let Some(gap) = self
 					.observation_gaps
 					.iter_mut()
@@ -60,8 +56,11 @@ impl<S: Submit> Tracker<S> {
 				// observed (`unobserved_between`): a reconnect does not restart them.
 				self.prev_head_at = Some(at);
 			},
-			BlockEvent::Unreachable(why) => {
+			BlockEvent::Unreachable(why) | BlockEvent::Restarted(why) => {
 				self.node_down.get_or_insert(why);
+			},
+			BlockEvent::Unstable(why) => {
+				self.unstable.get_or_insert(why);
 			},
 			// Not node down: behind a load balancer the new node may be healthy. A chain that is
 			// really down still trips the stall and finality stall rules.
@@ -87,6 +86,12 @@ impl<S: Submit> Tracker<S> {
 		txs: &[(TxHash, bool)],
 	) -> Result<(), FileError> {
 		self.first_fetched.get_or_insert(record.number);
+		// A gap PolkaMeter was paused in is not known: the block may have come at any time.
+		if let Some(gap) = record.gap_ms
+			&& self.paused_across(record.seen_at.saturating_sub(gap), record.seen_at)
+		{
+			record.gap_ms = None;
+		}
 		for (tx, failed) in txs {
 			if self.on_tx(tx, record.number, record.seen_at, *failed) {
 				record.ours += 1;
@@ -124,13 +129,18 @@ impl<S: Submit> Tracker<S> {
 		}
 	}
 
-	/// No new best block from `from` to `to`: each step gets the part of it inside its time.
-	fn gap_until(&mut self, from: Millis, to: Millis) {
-		for st in self.steps.iter_mut().rev() {
+	/// No new best block from `from` to `to`: each step gets the part of it inside its time,
+	/// less the time PolkaMeter was paused.
+	pub(super) fn gap_until(&mut self, from: Millis, to: Millis) {
+		for i in (0..self.steps.len()).rev() {
+			let st = &self.steps[i];
 			if st.closed && st.ended_at <= from {
 				break;
 			}
-			st.gap_portion(from, to);
+			let (start, end) =
+				(from.max(st.started_at), if st.closed { to.min(st.ended_at) } else { to });
+			let paused = self.paused_within(start, end);
+			self.steps[i].gap_portion(from, to, paused);
 		}
 	}
 
@@ -139,7 +149,8 @@ impl<S: Submit> Tracker<S> {
 		let Some(tx) = self.sent.remove(hash) else { return false };
 		self.last_ours_block = self.last_ours_block.max(block);
 		let latency = seen_at.saturating_sub(tx.sent_at);
-		let late = self.read_late.iter().any(|(from, to)| *from < seen_at && seen_at <= *to);
+		let late = self.read_late.iter().any(|(from, to)| *from < seen_at && seen_at <= *to)
+			|| self.paused_across(tx.sent_at, seen_at);
 		let step = match tx.kind {
 			Kind::Probe { index } => {
 				self.probes[index].outcome =
@@ -153,20 +164,20 @@ impl<S: Submit> Tracker<S> {
 		self.included_in.insert(*hash, block);
 		let mut untimed = late;
 		if let Some(flood) = self.flood.get_mut(hash) {
-			flood.inclusion_ms = Some(latency);
 			flood.failed_in_block = failed;
 			flood.untimed |= late;
 			untimed = flood.untimed;
+			flood.inclusion_ms = (!untimed).then_some(latency);
 		}
 		let st = &mut self.steps[step];
 		st.included += 1;
+		self.load.inc(&TX_INCLUDED, [CALL], 1.0, seen_at);
 		if untimed {
 			st.untimed += 1;
 		} else {
 			st.latencies_ms.push(latency);
+			self.load.observe(&TX_INCLUSION, [CALL], latency as f64 / 1000.0, seen_at);
 		}
-		self.load.inc(&TX_INCLUDED, [CALL], 1.0, seen_at);
-		self.load.observe(&TX_INCLUSION, [CALL], latency as f64 / 1000.0, seen_at);
 		if failed {
 			st.failed_in_block += 1;
 			self.load.inc(&TX_FAILED, [CALL], 1.0, seen_at);

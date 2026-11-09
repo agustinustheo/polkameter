@@ -1,4 +1,5 @@
-//! Portable JMeter-compatible samples, written from a run's raw files.
+//! Portable JMeter-compatible samples, written from a run's raw files. A transaction PolkaMeter
+//! could not time is labelled `load:step:N:untimed`, with no time.
 use anyhow::Result;
 use serde::Serialize;
 use serde_json::Value;
@@ -85,10 +86,14 @@ pub fn write_samples(directory: &Path) -> Result<()> {
 		for tx in records(&ledger)? {
 			let tx = tx?;
 			let success = tx["status"] == "finalized" && tx["failedInFinalizedBlock"] == false;
+			// A tx PolkaMeter could not time has no time here either: JMeter needs a number,
+			// so it gets 0 under a label of its own, apart from the step's timed samples.
+			let untimed = tx["untimed"] == true;
+			let elapsed = tx["inclusionMs"].as_u64().or_else(|| tx["replyMs"].as_u64());
 			out.serialize(Sample {
 				time_stamp: tx["sentAt"].as_u64().unwrap_or(0),
-				elapsed: tx["inclusionMs"].as_u64().or_else(|| tx["replyMs"].as_u64()).unwrap_or(0),
-				label: format!("load:step:{}", tx["step"]),
+				elapsed: elapsed.filter(|_| !untimed).unwrap_or(0),
+				label: format!("load:step:{}{}", tx["step"], if untimed { ":untimed" } else { "" }),
 				response_code: tx["status"].as_str().unwrap_or("unknown").into(),
 				response_message: tx["hash"].as_str().unwrap_or("").into(),
 				thread_name: "load".into(),

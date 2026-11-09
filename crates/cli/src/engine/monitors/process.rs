@@ -8,9 +8,11 @@
 //! not the node, so it is not sampled. For a remote URL nothing is sampled. In both cases the run
 //! goes on without CPU or memory, with a warning.
 //!
-//! When the sampled process ends (the node restarted), the sampler looks for the new process on
-//! the same port, records the restart as a problem and samples the new one; the CPU of the first
-//! sample after a restart is not known.
+//! When the sampled process ends, the sampler looks for the process now on the same port,
+//! records the change as a problem and samples the new one; the CPU of its first sample is not
+//! known. A new process on the port is no evidence that the node restarted: it may be a proxy
+//! that restarted (Node.js, Python and Go proxies have no name to tell them by). The block
+//! follower tells a node restart from the node's own identity instead.
 
 use std::time::Duration;
 
@@ -172,7 +174,6 @@ pub struct NodeSampler {
 	processes: Ps,
 	out: JsonlWriter,
 	problems: Problems,
-	restarts: Problems,
 	/// The last sample: when, and the node's CPU seconds then.
 	last: Option<(Millis, f64)>,
 	/// The sampled process ended and no new one was found yet.
@@ -180,16 +181,10 @@ pub struct NodeSampler {
 }
 
 impl NodeSampler {
-	/// Samples process `pid` into `out` (`node.jsonl`); a restart goes to `problems`, and to
-	/// `restarts`, which the load reads as node down.
-	pub fn new(
-		pid: u32,
-		processes: Ps,
-		out: JsonlWriter,
-		problems: Problems,
-		restarts: Problems,
-	) -> Self {
-		Self { pid, processes, out, problems, restarts, last: None, lost: false }
+	/// Samples process `pid` into `out` (`node.jsonl`); a new process on the port goes to
+	/// `problems`.
+	pub fn new(pid: u32, processes: Ps, out: JsonlWriter, problems: Problems) -> Self {
+		Self { pid, processes, out, problems, last: None, lost: false }
 	}
 
 	/// Samples every 5 s until `stop`, then writes the file out.
@@ -212,12 +207,11 @@ impl NodeSampler {
 			None => match self.processes.listener().await {
 				Some(pid) if pid != self.pid => {
 					let what = format!(
-						"node: process {} ended; sampling the node process now on its port, {pid} (the node restarted)",
+						"node: process {} ended; sampling process {pid}, now on its port (the node, or a proxy in front of it, restarted)",
 						self.pid
 					);
 					crate::redact::diag!("{what}");
-					self.problems.record(what.clone());
-					self.restarts.record(what);
+					self.problems.record(what);
 					(self.pid, self.last, self.lost) = (pid, None, false);
 					let Some(usage) = self.processes.usage(pid).await else { return Ok(()) };
 					usage
