@@ -1,7 +1,8 @@
-//! What PolkaMeter never blames on the chain (docs/reading-results.md). Each test makes a fault
-//! that is not the chain's, as in the faults found on a dev chain behind a TCP proxy, and checks
-//! that the run does not end on a chain failure. A control case checks that a chain that really
-//! fails still does.
+//! Whose fault it is (docs/reading-results.md). A: each test makes a fault that is not the
+//! chain's, as in the faults found on a dev chain behind a TCP proxy, and checks that the run
+//! does not end on a chain failure, or show a number it has no evidence for. B: each test makes
+//! a fault that is the chain's, alongside one of PolkaMeter's own, and checks that the run still
+//! fails. Control cases check that a chain that really fails still does.
 
 use std::{
 	path::Path,
@@ -14,7 +15,7 @@ use polkameter::load::{
 	Plan, QueueSource, Tx, TxHash,
 	follower::BlockEvent,
 	reconnect::{Backoff, Reconnect, reconnect},
-	rules::{RULES, breaking_point},
+	rules::{RULES, breaking_point, check_step},
 	runner::{Io, Mode, RunOptions, baseline, load, recover},
 	sender::{Reply, Sender},
 	steps::final_step,
@@ -142,8 +143,8 @@ impl Submit for Node {
 /// What goes wrong in a [`chain_run`]. Seconds count from the start of the run.
 #[derive(Clone, Copy)]
 enum Fault {
-	/// PolkaMeter itself is paused for `.1` s at second `.0` (SIGSTOP, CPU starvation): every
-	/// block made meanwhile is seen only after it.
+	/// PolkaMeter itself is paused for `.1` ms at `.0` ms (SIGSTOP, CPU starvation): every block
+	/// made and every reply sent meanwhile is seen only after it.
 	Paused(u64, u64),
 	/// The block follower is disconnected from second `.0` to `.1` (an RPC outage, reconnected
 	/// within the budget): the blocks made meanwhile are read after the reconnect.
@@ -151,8 +152,11 @@ enum Fault {
 	/// The sender's connection drops at second `.0` and opens again at `.1`; what the node had
 	/// not read is sent again then, and only then reaches its pool.
 	SenderDown(u64, u64),
-	/// None: the chain includes each tx 11 s after it was sent, slower than the 10 s p95 limit.
-	SlowChain,
+	/// None: the chain includes each tx in the first block `.0` ms after it reached the pool;
+	/// 11 s is slower than the 10 s p95 limit.
+	Slow(u64),
+	/// The node reads each submit 2 s after it was sent, and answers then.
+	Linked,
 }
 
 /// A chain with a block every 6 s, including what reached `pool` `delay_ms` before, and the
@@ -163,19 +167,19 @@ fn chain(
 	faults: &[Fault],
 	blocks_tx: mpsc::UnboundedSender<BlockEvent>,
 ) {
-	let delay_ms = if faults.iter().any(|f| matches!(f, Fault::SlowChain)) { 11_000 } else { 0 };
-	let (mut down, mut sender_down) = (None, None);
+	let (mut delay_ms, mut down, mut sender_down) = (0, None, None);
 	for fault in faults {
 		match *fault {
-			Fault::Paused(at, seconds) => {
+			Fault::Paused(at, ms) => {
 				tokio::spawn(async move {
-					tokio::time::sleep(Duration::from_secs(at)).await;
-					tokio::time::advance(Duration::from_secs(seconds)).await;
+					tokio::time::sleep(Duration::from_millis(at)).await;
+					tokio::time::advance(Duration::from_millis(ms)).await;
 				});
 			},
 			Fault::FollowerDown(from, to) => down = Some((from, to)),
 			Fault::SenderDown(from, to) => sender_down = Some((from, to)),
-			Fault::SlowChain => {},
+			Fault::Slow(ms) => delay_ms = ms,
+			Fault::Linked => {},
 		}
 	}
 	tokio::spawn(async move {
@@ -219,7 +223,18 @@ fn chain(
 			}
 			if down.is_some_and(|(_, to)| to == second) {
 				events.push(BlockEvent::Reconnected { at: now });
-				events.extend(held.drain(..).flat_map(|(n, txs)| block(n, now, txs)));
+				// Read now, as the follower catches up.
+				events.extend(held.drain(..).flatten().map(|e| match e {
+					BlockEvent::Head { number, .. } => BlockEvent::Head { number, seen_at: now },
+					BlockEvent::Fetched { mut record, txs } => {
+						record.seen_at = now;
+						BlockEvent::Fetched { record, txs }
+					},
+					BlockEvent::Finalized { number, .. } => {
+						BlockEvent::Finalized { number, seen_at: now }
+					},
+					e => e,
+				}));
 			}
 			if second % 6 == 0 {
 				number += 1;
@@ -230,10 +245,11 @@ fn chain(
 					*pool = later;
 					ready.into_iter().map(|(hash, _)| (hash, false)).collect()
 				};
+				let b = Vec::from(block(number, now, txs));
 				if down.is_some_and(|(from, to)| (from..to).contains(&second)) {
-					held.push((number, txs));
+					held.push(b);
 				} else {
-					events.extend(block(number, now, txs));
+					events.extend(b);
 				}
 			}
 			for e in events {
@@ -257,7 +273,7 @@ fn on_chain(
 	let pool = Pool::default();
 	let link = faults
 		.iter()
-		.any(|f| matches!(f, Fault::SenderDown(..)))
+		.any(|f| matches!(f, Fault::SenderDown(..) | Fault::Linked))
 		.then(|| Arc::new(Mutex::new(Link::default())));
 	let node = Node { replies: replies_tx.clone(), pool: pool.clone(), link: link.clone() };
 	chain(pool, link.map(|l| (l, replies_tx)), faults, blocks_tx);
@@ -292,7 +308,7 @@ fn block(number: u32, seen_at: u64, txs: Vec<(TxHash, bool)>) -> [BlockEvent; 3]
 /// really is slow still breaks the latency measure.
 #[tokio::test(start_paused = true)]
 async fn i3_time_polkameter_did_not_observe_never_makes_a_latency_failure() {
-	let (stop, onset) = chain_run("attribution-paused", Fault::Paused(10, 8)).await;
+	let (stop, onset) = chain_run("attribution-paused", Fault::Paused(10_000, 8_000)).await;
 	assert_eq!((stop.rule, stop.class), (Rule::GeneratorLimit, None), "{}", stop.detail);
 	assert_eq!(onset, None, "a pause of PolkaMeter is not the chain's latency");
 
@@ -300,7 +316,7 @@ async fn i3_time_polkameter_did_not_observe_never_makes_a_latency_failure() {
 	assert_eq!(stop.rule, Rule::RateCap, "{}", stop.detail);
 	assert_eq!(onset, None, "blocks read after a reconnect are not the chain's latency");
 
-	let (stop, onset) = chain_run("attribution-slow-chain", Fault::SlowChain).await;
+	let (stop, onset) = chain_run("attribution-slow-chain", Fault::Slow(11_000)).await;
 	assert_eq!(stop.rule, Rule::RateCap, "{}", stop.detail);
 	assert_eq!(onset.map(|o| o.measure), Some("latency".into()), "a slow chain still fails");
 }
@@ -334,7 +350,7 @@ async fn i3_a_pause_in_the_baseline_or_recovery_is_not_the_chains() {
 	assert!(base.max_ms <= 6_000, "{base:?}");
 	assert!(r.measured && r.recovered && r.seconds <= Some(6), "{r:?}");
 
-	let pauses = [Fault::Paused(8, 8), Fault::Paused(33, 15)];
+	let pauses = [Fault::Paused(8_000, 8_000), Fault::Paused(33_000, 15_000)];
 	let (base, r) = phases_run("attribution-phases-paused", &pauses).await;
 	assert!(base.max_ms <= 6_000, "the baseline probe timed across the pause: {base:?}");
 	assert!(!r.measured, "a pause in recovery is not the chain's recovery time: {r:?}");
@@ -398,4 +414,67 @@ async fn i4_a_reconnecting_sender_is_never_pool_intake() {
 	assert!(gap.is_some_and(|g| g.to.is_some()), "the connection dropped and reconnected");
 	assert_ne!(stop.rule, Rule::PoolIntake, "{}", stop.detail);
 	assert_eq!((stop.rule, stop.class), (Rule::GeneratorLimit, None), "{}", stop.detail);
+}
+
+// A. Never blame the chain for a fault outside it.
+
+/// A1. PolkaMeter paused for 4.9 s, under the 5 s that stops the load at once, just before a
+/// block: the txs of that block are seen 4.9 s late. That is not the chain's latency, whatever
+/// the pause's length: no failure onset. The step sent too little, so the load ends on
+/// "generator limit". (A latency onset made it FAIL: p95 above 10 s on a chain at 3 to 9 s.)
+#[tokio::test(start_paused = true)]
+async fn a_pause_of_any_length_never_makes_a_latency_failure() {
+	let faults = [Fault::Slow(3_000), Fault::Paused(11_500, 4_900)];
+	let (mut t, mut io, opts) = on_chain("attribution-short-pause", &faults, (20.0, 30), 0);
+	let stop = load(&mut t, &mut io, &opts).await.unwrap();
+	recover(&mut t, &mut io, &opts, 12_000).await.unwrap();
+	let finals: Vec<_> = t.steps.iter().map(final_step).collect();
+	assert_eq!(stop.class, None, "{}: {}", stop.rule.name(), stop.detail);
+	assert_eq!(breaking_point(&finals, &RULES), None, "{:?}", finals[0].p95_latency_ms);
+	assert!(finals[0].untimed > 0, "the txs seen late are untimed");
+}
+
+/// A2. PolkaMeter paused for 4.9 s while the node answered submits 2 s after they were sent:
+/// the replies read after the pause hold it. That is not the node's reply time: no "pool
+/// intake". (It was: p95 submit reply above 5 s.)
+#[tokio::test(start_paused = true)]
+async fn a_pause_is_never_the_nodes_reply_time() {
+	let faults = [Fault::Linked, Fault::Paused(9_500, 4_900)];
+	let (mut t, mut io, opts) = on_chain("attribution-reply-pause", &faults, (20.0, 30), 0);
+	let stop = load(&mut t, &mut io, &opts).await.unwrap();
+	assert_eq!(stop.class, None, "{}: {}", stop.rule.name(), stop.detail);
+	let f = final_step(&t.steps[0]);
+	assert!(f.p95_reply_ms <= 3_000, "{}", f.p95_reply_ms);
+	assert!(f.max_oldest_pending_ms <= 3_000, "{}", f.max_oldest_pending_ms);
+}
+
+/// A3. PolkaMeter paused for 18 s in a step, and the node sent one new head for the blocks it
+/// made meanwhile. The pause is not a block gap: the step's blocks are not slow. (They were: a
+/// mean gap of 15 s against 6 s.)
+#[test]
+fn a_pause_never_counts_in_block_gaps() {
+	let (_replies_tx, replies) = mpsc::unbounded_channel();
+	let (_blocks_tx, blocks) = mpsc::unbounded_channel();
+	let node = Node { replies: mpsc::unbounded_channel().0, pool: Pool::default(), link: None };
+	let (mut t, ..) = runner("attribution-gap-pause", node, replies, blocks, (1.0, 30), 0);
+	let start = now_ms();
+	t.start_step(0, 1.0, start).unwrap();
+	let fetched = |number, seen_at, gap_ms| {
+		let record = BlockRecord { number, seen_at, gap_ms, ..Default::default() };
+		BlockEvent::Fetched { record, txs: vec![] }
+	};
+	t.on_block(BlockEvent::Head { number: 1, seen_at: start + 6_000 }, start + 6_000)
+		.unwrap();
+	t.on_block(fetched(1, start + 6_000, None), start + 6_000).unwrap();
+	t.paused(start + 7_000, start + 25_000);
+	t.on_block(BlockEvent::Head { number: 4, seen_at: start + 25_100 }, start + 25_100)
+		.unwrap();
+	t.on_block(fetched(4, start + 25_100, Some(19_100)), start + 25_100).unwrap();
+	t.end_step(start + 30_000);
+	let f = final_step(&t.steps[0]);
+	assert!(f.blocks.mean_block_gap_ms.is_some_and(|g| g <= 6_000.0), "{:?}", f.blocks);
+	assert!(f.blocks.max_block_gap_ms.is_some_and(|g| g <= 6_000), "{:?}", f.blocks);
+	assert_eq!(t.steps[0].blocks[1].gap_ms, None, "a gap with the pause in it is not known");
+	let stop = check_step(&t.steps, t.source(), 0, 6_000.0, &RULES, true).unwrap();
+	assert_ne!(stop.rule, Rule::SlowBlocks, "{}", stop.detail);
 }

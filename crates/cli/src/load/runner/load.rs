@@ -5,7 +5,7 @@ use std::time::Duration;
 use polkameter_plugin_sdk::observers::summary::{Rule, Stop};
 use tokio::time::Instant;
 
-use super::{Io, Mode, PauseWatch, RunError, RunEvent, RunOptions, interval, next, node_down};
+use super::{Io, Mode, RunError, RunEvent, RunOptions, Ticks, node_down};
 use crate::load::{
 	now_ms,
 	rules::{LiveState, check_step, live_failure, measure_violation, secs},
@@ -73,16 +73,17 @@ async fn send_step<S: Submit>(
 	// step early nor sends a burst.
 	let start = Instant::now();
 	let end = start + Duration::from_secs(u64::from(seconds));
-	let mut tick = interval(20);
+	let mut ticks = Ticks::new(io, 20);
 	let mut tokens = 0.0_f64;
-	let (mut last, mut watch) = (start, PauseWatch::new(io));
+	let mut last = start;
 	let step = t.steps.last().expect("started").step;
 	while Instant::now() < end {
-		if !next(t, io, &mut tick).await? {
-			continue;
-		}
-		if let Some(detail) = watch.tick(t, io, &opts.rules) {
+		let tick = ticks.next(t, io, &opts.rules).await?;
+		if let Some(detail) = ticks.long_pause() {
 			return Ok(Some(Stop::new(Rule::GeneratorLimit, Some(step), detail)));
+		}
+		if !tick {
+			continue;
 		}
 		let (at, now) = (Instant::now(), now_ms());
 		let elapsed = at.duration_since(last);

@@ -138,16 +138,15 @@ enum Event {
 	Block(BlockEvent),
 }
 
-pub(super) fn interval(ms: u64) -> tokio::time::Interval {
-	let mut i = tokio::time::interval(Duration::from_millis(ms));
-	i.set_missed_tick_behavior(MissedTickBehavior::Skip);
-	i
-}
+/// A stall of PolkaMeter's own loop longer than this, over the loop's tick period, is a pause of
+/// PolkaMeter itself: well above scheduling jitter, and far below any limit of the chain's.
+pub const STALL_MS: Millis = 1_000;
 
-/// Why the load tool itself was paused between two ticks, if it was: `elapsed` ms passed on
-/// the run's monotonic clock, and `boot` ms on a clock that also counts sleep (`None` without
-/// one). A long monotonic gap is CPU starvation; a boot clock far ahead of the monotonic one is a
-/// machine that was suspended. The wall clock plays no part: an NTP step either way is ignored.
+/// Why the load tool itself was paused longer than `max_gap` between two inputs, if it was:
+/// `elapsed` ms passed on the run's monotonic clock, and `boot` ms on a clock that also counts
+/// sleep (`None` without one). A long monotonic gap is CPU starvation; a boot clock far ahead of
+/// the monotonic one is a machine that was suspended. The wall clock plays no part: an NTP step
+/// either way is ignored.
 pub(super) fn paused(elapsed: Millis, boot: Option<Millis>, max_gap: Millis) -> Option<String> {
 	const NOT_THE_CHAIN: &str = "the numbers after this are not the chain's";
 	if elapsed > max_gap {
@@ -161,35 +160,67 @@ pub(super) fn paused(elapsed: Millis, boot: Option<Millis>, max_gap: Millis) -> 
 		.then(|| format!("the machine was suspended for {} s; {NOT_THE_CHAIN}", slept / 1000))
 }
 
-/// Watches the ticks of one loop for a pause of PolkaMeter itself ([`paused`]) and tells the
-/// tracker, which leaves out the time of what it saw late.
-pub(super) struct PauseWatch {
+/// One phase's loop: a tick every `period` ms, and the replies and block events between ticks.
+/// At every wakeup, before it hands an input to the tracker, it checks how long PolkaMeter went
+/// without one. A stall above the period plus [`STALL_MS`] is a pause of PolkaMeter itself (a
+/// stopped process, CPU starvation, a suspended machine): the tracker records it, so every time
+/// measured across it (latency, reply, block gap, stall clocks) leaves it out, whatever its
+/// length. A pause above `max_tick_gap_ms` is also returned by [`Ticks::long_pause`].
+pub(super) struct Ticks {
+	tick: tokio::time::Interval,
+	period: Millis,
 	last: Instant,
 	boot: Option<Millis>,
-	now: Millis,
+	at: Millis,
+	long: Option<String>,
 }
 
-impl PauseWatch {
-	pub(super) fn new(io: &Io) -> Self {
-		Self { last: Instant::now(), boot: (io.boot)(), now: now_ms() }
+impl Ticks {
+	pub(super) fn new(io: &Io, period: Millis) -> Self {
+		let mut tick = tokio::time::interval(Duration::from_millis(period));
+		tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+		Self { tick, period, last: Instant::now(), boot: (io.boot)(), at: now_ms(), long: None }
 	}
 
-	/// At a tick: why PolkaMeter was paused since the last one, if it was.
-	pub(super) fn tick<S: Submit>(
+	/// Waits for the next input; true for a tick. Replies and blocks go straight to the tracker.
+	pub(super) async fn next<S: Submit>(
 		&mut self,
 		t: &mut Tracker<S>,
-		io: &Io,
+		io: &mut Io,
 		rules: &Rules,
-	) -> Option<String> {
+	) -> Result<bool, RunError> {
+		let e = tokio::select! {
+			_ = self.tick.tick() => Event::Tick,
+			Some(r) = io.replies.recv() => Event::Reply(r),
+			Some(b) = io.blocks.recv() => Event::Block(b),
+		};
+		self.watch(t, io, rules);
+		match e {
+			Event::Tick if io.tool_failed.is_cancelled() => return Err(RunError::Monitor),
+			Event::Tick => return Ok(true),
+			Event::Reply(r) => t.on_reply(r),
+			Event::Block(BlockEvent::Tool(e)) => return Err(RunError::Tool(e)),
+			Event::Block(b) => t.on_block(b, now_ms())?,
+		}
+		Ok(false)
+	}
+
+	fn watch<S: Submit>(&mut self, t: &mut Tracker<S>, io: &Io, rules: &Rules) {
 		let (at, now, boot) = (Instant::now(), now_ms(), (io.boot)());
 		let elapsed = at.duration_since(self.last).as_millis() as Millis;
 		let slept = boot.zip(self.boot).map(|(b, l)| b.saturating_sub(l));
-		let why = paused(elapsed, slept, rules.max_tick_gap_ms);
-		if why.is_some() {
-			t.paused(self.now, now);
+		if elapsed.max(slept.unwrap_or(0)) > self.period + STALL_MS {
+			t.paused(self.at, now);
 		}
-		(self.last, self.boot, self.now) = (at, boot, now);
-		why
+		if let Some(why) = paused(elapsed, slept, rules.max_tick_gap_ms) {
+			self.long.get_or_insert(why);
+		}
+		(self.last, self.boot, self.at) = (at, boot, now);
+	}
+
+	/// Why PolkaMeter was paused longer than `max_tick_gap_ms` since this was last asked.
+	pub(super) fn long_pause(&mut self) -> Option<String> {
+		self.long.take()
 	}
 }
 
@@ -197,27 +228,6 @@ impl PauseWatch {
 /// change (a local node that restarted). Both the load and recovery end on it.
 pub(super) fn node_down<S: Submit>(t: &Tracker<S>, io: &Io) -> Option<String> {
 	t.node_down.clone().or_else(|| io.restarts.all().into_iter().next())
-}
-
-/// Waits for the next input; true for a tick. Replies and blocks go straight to the tracker.
-pub(super) async fn next<S: Submit>(
-	t: &mut Tracker<S>,
-	io: &mut Io,
-	tick: &mut tokio::time::Interval,
-) -> Result<bool, RunError> {
-	let e = tokio::select! {
-		_ = tick.tick() => Event::Tick,
-		Some(r) = io.replies.recv() => Event::Reply(r),
-		Some(b) = io.blocks.recv() => Event::Block(b),
-	};
-	match e {
-		Event::Tick if io.tool_failed.is_cancelled() => return Err(RunError::Monitor),
-		Event::Tick => return Ok(true),
-		Event::Reply(r) => t.on_reply(r),
-		Event::Block(BlockEvent::Tool(e)) => return Err(RunError::Tool(e)),
-		Event::Block(b) => t.on_block(b, now_ms())?,
-	}
-	Ok(false)
 }
 
 /// 1. Probes, one per block, must all land before any load; else the network is not healthy.
@@ -232,13 +242,13 @@ pub async fn baseline<S: Submit>(
 		+ Duration::from_millis(
 			(opts.baseline_probes as u64 + 10) * (opts.block_interval_s * 1000.0) as u64,
 		);
-	let mut tick = interval(200);
-	let mut watch = PauseWatch::new(io);
+	let mut ticks = Ticks::new(io, 200);
 	while Instant::now() < deadline {
-		if next(t, io, &mut tick).await? {
-			if let Some(why) = watch.tick(t, io, &opts.rules) {
-				crate::redact::diag!("baseline: {why}");
-			}
+		let tick = ticks.next(t, io, &opts.rules).await?;
+		if let Some(why) = ticks.long_pause() {
+			crate::redact::diag!("baseline: {why}");
+		}
+		if tick {
 			t.tick(now_ms())?;
 			if t.probes.len() >= opts.baseline_probes
 				&& t.probes.iter().all(|p| p.outcome != Outcome::Pending)
@@ -279,12 +289,10 @@ pub async fn drain<S: Submit>(
 	rules: &Rules,
 ) -> Result<bool, RunError> {
 	let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-	let mut tick = interval(100);
-	let mut watch = PauseWatch::new(io);
+	let mut ticks = Ticks::new(io, 100);
 	while t.last_fetched < t.last_head.1 && Instant::now() < deadline {
-		if next(t, io, &mut tick).await?
-			&& let Some(why) = watch.tick(t, io, rules)
-		{
+		ticks.next(t, io, rules).await?;
+		if let Some(why) = ticks.long_pause() {
 			crate::redact::diag!("drain: {why}");
 		}
 	}
@@ -309,16 +317,16 @@ pub async fn recover<S: Submit>(
 	let started = Instant::now();
 	let deadline = started + Duration::from_secs(u64::from(opts.recovery_s));
 	let (mut back_at, mut drained_at, mut last_log) = (None, None, started);
-	let mut tick = interval(500);
 	// Paused here, PolkaMeter would time its own pause as the chain's recovery and drain.
-	let (mut watch, mut paused_in) = (PauseWatch::new(io), None);
+	let (mut ticks, mut paused_in) = (Ticks::new(io, 500), None);
 	while Instant::now() < deadline && t.closed_by_node == 0 && node_down(t, io).is_none() {
-		if !next(t, io, &mut tick).await? {
-			continue;
-		}
-		if let Some(why) = watch.tick(t, io, &opts.rules) {
+		let tick = ticks.next(t, io, &opts.rules).await?;
+		if let Some(why) = ticks.long_pause() {
 			crate::redact::diag!("recovery: {why}");
 			paused_in.get_or_insert(why);
+		}
+		if !tick {
+			continue;
 		}
 		let now = now_ms();
 		t.tick(now)?;

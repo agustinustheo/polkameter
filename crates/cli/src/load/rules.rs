@@ -9,15 +9,15 @@
 //!   pool refuses    > 10% of a step's submits refused                         graceful
 //!   pool intake     p95 submit reply > 5 s, or the node stops reading submits graceful
 //!   slow blocks     blocks arrive 2x slower than at the start (wall clock)    hard
-//!   stall           no new best block for 30 s, while the follower is connected hard
+//!   stall           no new best block for 30 s of observed time               hard
 //!   finality stall  no new finalized block for 60 s, same                      hard
 //!   node down       the node stayed unreachable after every reconnect attempt  hard
 //!
 //! A dropped RPC connection that opens again is an observation gap (a problem), not a failure:
 //! the stall rules leave its time out, time with no connection open is not "pool intake", and
 //! txs seen late as the follower catches up or sent again after a sender reconnect are left out
-//! of the latency, as are txs timed across a pause of PolkaMeter itself. A pause in recovery
-//! leaves the recovery unmeasured.
+//! of the latency, as are txs timed across a pause of PolkaMeter itself, of any length. A pause
+//! in recovery leaves the recovery unmeasured.
 //!
 //! The ramp also ends without a failure on: rate cap, budget used up, generator limit, smoke error.
 
@@ -180,12 +180,16 @@ pub fn live_failure(s: &LiveState, rules: &Rules) -> Option<Stop> {
 		.then(|| Stop::new(Rule::SmokeError, step, s.smoke_problems.join("; ")))
 }
 
-/// ", N s of it while reconnecting" for a stall detail.
+/// ", N s of it not observed" for a stall detail.
 fn not_observed(ms: Millis) -> String {
 	if ms == 0 {
 		String::new()
 	} else {
-		format!(", {} s of it while reconnecting", secs(ms as f64))
+		format!(
+			", {} s of it not observed (reconnecting, or {} paused)",
+			secs(ms as f64),
+			crate::PRODUCT_NAME
+		)
 	}
 }
 

@@ -103,15 +103,16 @@ pub struct StepStats {
 	/// The longest time without a new best block inside the step's own time: a gap that spans
 	/// a step edge counts in each step for the part inside it.
 	pub max_gap_ms: Option<Millis>,
-	/// Time the block follower was disconnected while the step ran.
+	/// Time the block follower was disconnected, or PolkaMeter paused, while the step ran.
 	pub unobserved_ms: Millis,
 }
 
 impl StepStats {
-	/// No new best block from `from` to `to`: keeps the part inside the step's time.
-	pub fn gap_portion(&mut self, from: Millis, to: Millis) {
+	/// No new best block from `from` to `to`: keeps the part inside the step's time, less
+	/// `paused`, the part of it PolkaMeter was paused in.
+	pub fn gap_portion(&mut self, from: Millis, to: Millis, paused: Millis) {
 		let end = if self.closed { to.min(self.ended_at) } else { to };
-		let part = end.saturating_sub(from.max(self.started_at));
+		let part = end.saturating_sub(from.max(self.started_at)).saturating_sub(paused);
 		if end > self.started_at && part > 0 {
 			self.max_gap_ms = Some(self.max_gap_ms.map_or(part, |m| m.max(part)));
 		}

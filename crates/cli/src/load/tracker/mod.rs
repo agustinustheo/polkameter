@@ -51,7 +51,7 @@ pub struct FloodTx {
 	pub accepted: bool,
 	/// Explicit RPC refusal.
 	pub refused: bool,
-	/// Reply and observed inclusion latency.
+	/// Send to submit reply; `None` when not timed (the reply came across a pause of PolkaMeter).
 	pub reply_ms: Option<u64>,
 	/// Send to first observed inclusion.
 	pub inclusion_ms: Option<u64>,
@@ -131,13 +131,28 @@ pub struct Tracker<S> {
 	/// Blocks seen in these windows (from, to] were read late, as the follower caught up after
 	/// a reconnect: the time of their txs is not the chain's.
 	read_late: Vec<(Millis, Millis)>,
-	/// Probes still in flight when their time stopped being PolkaMeter's to know (a pause, a
-	/// dropped connection): when they land, they have no latency.
+	/// Probes in flight on a sender connection that dropped: when they land, they have no
+	/// latency.
 	untimed_probes: std::collections::HashSet<usize>,
+	/// When PolkaMeter itself was paused, (from, to): every time measured across one is not
+	/// known, and the stall clocks leave the time out.
+	pauses: Vec<(Millis, Millis)>,
 	phases: Vec<(Millis, Phase)>,
 	baseline_probes: usize,
 	/// Redacts RPC refusals before they are cut to their error key.
 	redactor: crate::redact::Redactor,
+}
+
+/// Whether pause `p` lies across a time measured from `from` to `to`: it started before `to` and
+/// ended after `from`. A suspend has no length on the run's clock, and is across a time that
+/// spans it.
+fn across(p: (Millis, Millis), from: Millis, to: Millis) -> bool {
+	p.0 < to && p.1.max(p.0 + 1) > from
+}
+
+/// How much of `b` lies inside `a`.
+fn overlap(a: (Millis, Millis), b: (Millis, Millis)) -> Millis {
+	a.1.min(b.1).saturating_sub(a.0.max(b.0))
 }
 
 /// A stretch of the run the block follower did not observe, or a sender connection that
@@ -209,6 +224,7 @@ impl<S: Submit> Tracker<S> {
 			catching_up: None,
 			read_late: Vec::new(),
 			untimed_probes: Default::default(),
+			pauses: Vec::new(),
 			phases: vec![(now, Phase::Baseline)],
 			baseline_probes,
 			redactor: crate::redact::Redactor::default(),
@@ -270,28 +286,48 @@ impl<S: Submit> Tracker<S> {
 	/// Ends the running step. The time since the last new best block counts as a block gap in
 	/// the step now, so a stall at its end is seen in its own numbers.
 	pub fn end_step(&mut self, now: Millis) {
-		let (prev, unobserved) = (self.prev_head_at, self.unobserved_since());
-		if let Some(st) = self.steps.last_mut() {
-			st.ended_at = now;
-			st.closed = true;
-			if let Some(prev) = prev {
-				st.gap_portion(prev, now);
-			}
-			if let Some(from) = unobserved {
-				st.unobserved_ms += now.saturating_sub(from.max(st.started_at));
-			}
+		let Some(started) = self.steps.last().map(|st| st.started_at) else { return };
+		let unobserved = self.unobserved_between(started, now);
+		let st = self.steps.last_mut().expect("a step");
+		st.ended_at = now;
+		st.closed = true;
+		st.unobserved_ms = unobserved;
+		if let Some(prev) = self.prev_head_at {
+			self.gap_until(prev, now);
 		}
 	}
 
-	/// The time from `from` to `to` that the block follower was disconnected. The stall rules
-	/// leave it out: no block could be seen then. Every other moment since the last new block
-	/// counts, also across reconnects.
+	/// The time from `from` to `to` that PolkaMeter did not observe the chain: the block
+	/// follower was disconnected, or PolkaMeter itself was paused. The stall rules and the
+	/// block gaps leave it out: no block could be seen then. Every other moment since the last
+	/// new block counts, also across reconnects.
 	pub fn unobserved_between(&self, from: Millis, to: Millis) -> Millis {
-		self.observation_gaps
+		let mut spans: Vec<(Millis, Millis)> = self
+			.observation_gaps
 			.iter()
 			.filter(|g| g.what == "blocks")
-			.map(|g| g.to.unwrap_or(to).min(to).saturating_sub(g.from.max(from)))
-			.sum()
+			.map(|g| (g.from, g.to.unwrap_or(to)))
+			.chain(self.pauses.iter().copied())
+			.map(|(a, b)| (a.max(from), b.min(to)))
+			.filter(|(a, b)| a < b)
+			.collect();
+		spans.sort_unstable();
+		let (mut total, mut covered) = (0, from);
+		for (a, b) in spans {
+			total += b.saturating_sub(a.max(covered));
+			covered = covered.max(b);
+		}
+		total
+	}
+
+	/// Whether PolkaMeter was paused across a time measured from `from` to `to`.
+	pub(super) fn paused_across(&self, from: Millis, to: Millis) -> bool {
+		self.pauses.iter().any(|p| across(*p, from, to))
+	}
+
+	/// How much of `from`..`to` PolkaMeter was paused.
+	pub(super) fn paused_within(&self, from: Millis, to: Millis) -> Millis {
+		self.pauses.iter().map(|p| overlap(*p, (from, to))).sum()
 	}
 
 	/// All the time the block follower was disconnected, up to `now`.
@@ -351,33 +387,16 @@ impl<S: Submit> Tracker<S> {
 	}
 
 	/// PolkaMeter itself was paused from `from` to `to` (SIGSTOP, CPU starvation, a suspend):
-	/// blocks that arrived meanwhile were read only after it. Every flood tx sent before `to` and
-	/// not seen included before `from` was timed across the pause; its latency is left out of
-	/// its step's, now or when it is seen. The same for probes: they get no latency.
+	/// blocks and replies that arrived meanwhile were read only after it. The runner records a
+	/// pause before it hands on anything it read after it, so every time measured across it
+	/// (latency, reply, block gap) is left out as it is read, and the stall clocks leave it out.
 	pub fn paused(&mut self, from: Millis, to: Millis) {
-		for (i, p) in self.probes.iter_mut().enumerate().filter(|(_, p)| p.sent_at < to) {
-			match p.latency_ms {
-				_ if p.outcome == Outcome::Pending => {
-					self.untimed_probes.insert(i);
-				},
-				Some(ms) if p.sent_at + ms > from => p.latency_ms = None,
-				_ => {},
-			}
-		}
-		for tx in self.flood.values_mut().filter(|tx| !tx.untimed && tx.sent_at < to) {
-			match tx.inclusion_ms {
-				None => tx.untimed = true,
-				Some(ms) if tx.sent_at + ms > from => {
-					tx.untimed = true;
-					let st = &mut self.steps[tx.step];
-					if let Some(i) = st.latencies_ms.iter().position(|l| *l == ms) {
-						st.latencies_ms.swap_remove(i);
-						st.untimed += 1;
-					}
-				},
-				Some(_) => {},
-			}
-		}
+		crate::redact::diag!(
+			"{} was paused for {} s; nothing it measured across that time is timed",
+			crate::PRODUCT_NAME,
+			crate::load::rules::secs(to.saturating_sub(from) as f64)
+		);
+		self.pauses.push((from, to));
 	}
 
 	/// Flood txs sent and not yet included or refused.
@@ -389,12 +408,12 @@ impl<S: Submit> Tracker<S> {
 			.collect()
 	}
 
-	/// How long the oldest unanswered submit has waited.
+	/// How long the oldest unanswered submit has waited, less the time PolkaMeter was paused.
 	pub fn oldest_pending_ms(&self, now: Millis) -> Millis {
 		self.requests
 			.values()
 			.filter_map(|r| r.waiting_since)
-			.map(|since| now.saturating_sub(since))
+			.map(|since| now.saturating_sub(since).saturating_sub(self.paused_within(since, now)))
 			.max()
 			.unwrap_or(0)
 	}
@@ -428,12 +447,14 @@ impl<S: Submit> Tracker<S> {
 			},
 		};
 		let Some(req) = self.requests.remove(&id) else { return };
-		let reply_ms = at.saturating_sub(req.waiting_since.unwrap_or(at));
-		if let Kind::Flood { step } = req.kind {
-			self.steps[step].reply_ms.push(reply_ms);
+		let since = req.waiting_since.unwrap_or(at);
+		// A reply read after a pause of PolkaMeter has no time: the pause is in it.
+		let reply_ms = (!self.paused_across(since, at)).then(|| at.saturating_sub(since));
+		if let (Kind::Flood { step }, Some(ms)) = (req.kind, reply_ms) {
+			self.steps[step].reply_ms.push(ms);
 		}
 		if let Some(tx) = self.flood.get_mut(&req.hash) {
-			tx.reply_ms = Some(reply_ms);
+			tx.reply_ms = reply_ms;
 		}
 		// A request sent again that the node already has: the first one got through.
 		let refusal = refusal.filter(|(code, _)| !(req.resent && ALREADY_HAVE.contains(code)));
