@@ -85,14 +85,14 @@ pub async fn run(
 	let block_interval_s = load.block_interval_seconds;
 	let flood = transactions(&resolve(values, &load.source)?, &context.artifact_dir)?;
 	let probes = transactions(&resolve(values, &load.probes_ref)?, &context.artifact_dir)?;
+	let needed =
+		crate::load::probe_count(load.baseline_probes, load.recovery_seconds, block_interval_s);
 	anyhow::ensure!(
+		probes.len() >= needed,
+		"insufficient probe reserve: `probes-ref` {} holds {} transactions and the load needs {needed}; \
+		 pass `run.probeBudget` as the probe count of the step that prepares them",
+		load.probes_ref,
 		probes.len()
-			>= crate::load::probe_count(
-				load.baseline_probes,
-				load.recovery_seconds,
-				block_interval_s
-			),
-		"insufficient probe reserve"
 	);
 	let lane = Lane { call: "prepared", source: prepared_source(&flood, &probes)? };
 	let state_check = load

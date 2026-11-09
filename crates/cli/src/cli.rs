@@ -662,19 +662,23 @@ async fn plugin_command(command: PluginCommand) -> Result<i32, CliError> {
 			return Ok(0);
 		},
 		PluginCommand::Credential { profile, env } => {
+			let message = format!("Credential profile {profile} reads {env}.");
 			update_registry(&path, |registry| {
 				registry.credentials.insert(profile, env);
 			})?;
-			json!({"configured":true})
+			write_stdout(&message);
+			return Ok(0);
 		},
 		PluginCommand::Topology { name, path: topology } => {
 			let topology = topology.canonicalize().map_err(|e| {
 				CliError::invalid(format!("cannot read topology {}: {e}", topology.display()))
 			})?;
+			let message = format!("Topology {name} is {}.", topology.display());
 			update_registry(&path, |registry| {
 				registry.topologies.insert(name, topology);
 			})?;
-			json!({"configured":true})
+			write_stdout(&message);
+			return Ok(0);
 		},
 	};
 	let pretty =
