@@ -202,13 +202,9 @@ impl CliError {
 	/// An error about plan file `path`. The message starts with the file and, when the error has
 	/// one, the line and column: `plan.xml: line 3, column 5: …`.
 	fn in_plan(kind: ErrorKind, path: &Path, error: &anyhow::Error) -> Self {
-		let (location, detail) = match error.downcast_ref::<PlanError>() {
-			Some(located) => (located.location, located.message.clone()),
-			None => (None, format!("{error:#}")),
-		};
-		let message = match location {
-			Some(location) => format!("{}: {location}: {detail}", path.display()),
-			None => format!("{}: {detail}", path.display()),
+		let message = match error.downcast_ref::<PlanError>() {
+			Some(located) => format!("{}: {located}", path.display()),
+			None => format!("{}: {error:#}", path.display()),
 		};
 		Self { kind, message }
 	}
@@ -268,7 +264,7 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 			let registry = registry(&plan, credential_env)?;
 			crate::engine::execute::preflight(&plan, &registry).await.map_err(|e| {
 				// Errors about one step or element name the plan file and position.
-				if e.downcast_ref::<PlanError>().is_some_and(|e| e.location.is_some()) {
+				if e.is::<PlanError>() {
 					CliError::in_plan(ErrorKind::Preflight, &path, &e)
 				} else {
 					CliError::preflight(format!("{e:#}"))
@@ -628,7 +624,7 @@ async fn plugin_command(command: PluginCommand) -> Result<i32, CliError> {
 			let plan = load(&scenario)?;
 			let registry = Registry::read(&path).map_err(invalid)?;
 			crate::engine::execute::inspect(&plan, &registry).await.map_err(|e| {
-				if e.downcast_ref::<PlanError>().is_some_and(|e| e.location.is_some()) {
+				if e.is::<PlanError>() {
 					CliError::in_plan(ErrorKind::Invalid, &scenario, &e)
 				} else {
 					invalid(e)

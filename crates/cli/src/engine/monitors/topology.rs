@@ -76,11 +76,10 @@ struct Relay {
 	nodes: Vec<Node>,
 }
 
-/// A parachain's entry in zombie.json: one para, or a list of them.
-
 #[derive(Deserialize)]
 struct Zombie {
 	relay: Relay,
+	/// A parachain's entry in zombie.json: one para, or a list of them.
 	parachains: std::collections::HashMap<String, serde_json::Value>,
 }
 

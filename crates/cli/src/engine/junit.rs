@@ -51,7 +51,6 @@ struct Case {
 	message: String,
 }
 
-#[derive(Default)]
 struct Suite {
 	name: String,
 	cases: Vec<Case>,
@@ -206,13 +205,12 @@ fn suites(
 		};
 		suites[index].cases.push(case);
 	}
-	let mut execution = mapped_case(
+	// Step timings and load measurement timings are counted in their own suites: no time here.
+	let execution = mapped_case(
 		"execution".into(),
 		text(outcome, "state"),
 		&execution_detail(summary, outcome),
 	);
-	// Step timings and load measurement timings are counted in their own suites.
-	execution.ms = 0;
 	suites[0].cases.push(execution);
 	if !summary.is_null() || !plan["load"].is_null() {
 		suites.push(load_suite(&timing, summary));
@@ -363,6 +361,7 @@ fn render_case(case: &Case, suite_name: &str, name: &str) -> String {
 }
 
 fn render(suites: &[Suite], directory: &Path) -> String {
+	let directory = escape(&directory.display().to_string());
 	let mut xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<testsuites>\n");
 	let mut omitted = [0u64; 3];
 	let mut suite_names = BTreeMap::new();
@@ -395,17 +394,11 @@ fn render(suites: &[Suite], directory: &Path) -> String {
 		writeln!(xml, "  <testsuite name=\"{name}\" tests=\"{}\" failures=\"{}\" errors=\"0\" skipped=\"{}\" time=\"{:.3}\">", counts.iter().sum::<u64>(), counts[1], counts[2], ms as f64 / 1000.0).unwrap();
 		writeln!(
 			xml,
-			"    <properties><property name=\"run-directory\" value=\"{}\"/></properties>",
-			escape(&directory.display().to_string())
+			"    <properties><property name=\"run-directory\" value=\"{directory}\"/></properties>"
 		)
 		.unwrap();
 		xml.push_str(&body);
-		writeln!(
-			xml,
-			"    <system-out>Run directory: {}</system-out>",
-			escape(&directory.display().to_string())
-		)
-		.unwrap();
+		writeln!(xml, "    <system-out>Run directory: {directory}</system-out>").unwrap();
 		xml.push_str("  </testsuite>\n");
 	}
 	if omitted.iter().sum::<u64>() > 0 {

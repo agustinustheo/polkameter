@@ -1136,7 +1136,7 @@ impl Run<'_> {
 		let error_location = error
 			.as_ref()
 			.and_then(|error| error.downcast_ref::<crate::engine::plan::PlanError>())
-			.and_then(|error| error.location);
+			.map(|error| error.location);
 		let mut outcome = Outcome {
 			artifact_dir: self.context.artifact_dir.clone(),
 			exit_code,

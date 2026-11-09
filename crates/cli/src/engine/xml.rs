@@ -89,28 +89,25 @@ impl Display for Location {
 	}
 }
 
-/// An error in a plan, with the position it applies to when there is one. It displays as
-/// `line L, column C: message`, or as the message alone. A caller that knows the plan's file
-/// can downcast an [`anyhow::Error`] to this type to report the file, line and column.
+/// An error in a plan, with the position it applies to. It displays as
+/// `line L, column C: message`. A caller that knows the plan's file can downcast an
+/// [`anyhow::Error`] to this type to report the file, line and column.
 #[derive(Debug)]
 pub struct PlanError {
-	pub location: Option<Location>,
+	pub location: Location,
 	pub message: String,
 }
 
 impl PlanError {
 	/// An error at `location`.
 	pub fn at(location: Location, message: impl Display) -> anyhow::Error {
-		anyhow::Error::new(Self { location: Some(location), message: message.to_string() })
+		anyhow::Error::new(Self { location, message: message.to_string() })
 	}
 }
 
 impl Display for PlanError {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		match self.location {
-			Some(location) => write!(f, "{location}: {}", self.message),
-			None => f.write_str(&self.message),
-		}
+		write!(f, "{}: {}", self.location, self.message)
 	}
 }
 
@@ -528,8 +525,7 @@ mod tests {
 			"<a/>\u{0}",
 		] {
 			let error = parse(xml).unwrap_err();
-			let error = error.downcast_ref::<PlanError>().unwrap();
-			assert!(error.location.is_some(), "{xml:?}: {error}");
+			assert!(error.is::<PlanError>(), "{xml:?}: {error}");
 		}
 		parse("<a x=\"\t\u{7F}\u{85}\u{E000}\u{10FFFF}\"/>").unwrap();
 	}
