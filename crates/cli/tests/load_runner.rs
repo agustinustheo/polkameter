@@ -4,15 +4,15 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use polkameter::load::{
-	Lane, Plan, QueueSource, Tx,
+	Plan, QueueSource, Tx,
 	rules::RULES,
 	runner::{Io, Mode, RunOptions, load, recover},
 	sender::Reply,
 	steps::final_step,
 	submit::Submit,
-	tracker::{Phase, Tracker},
+	tracker::Tracker,
 };
-use polkameter_plugin_sdk::observers::{Problems, RunDir, now_ms, summary::Rule};
+use polkameter_plugin_sdk::observers::{Phase, Problems, RunDir, now_ms, summary::Rule};
 
 /// A node that accepts every tx at once.
 struct FakeSender(tokio::sync::mpsc::UnboundedSender<Reply>);
@@ -63,10 +63,9 @@ fn setup_with(
 ) -> (Tracker<FakeSender>, Io, RunOptions) {
 	let dir = RunDir::create(std::path::Path::new(env!("CARGO_TARGET_TMPDIR")), name).unwrap();
 	let txs: Vec<Tx> = (0..flood).map(|n| Tx::new(n.to_le_bytes().to_vec())).collect();
-	let lane = Lane { call: "Test.call", source: QueueSource::new(txs, vec![], "txs") };
 	let (replies_tx, replies) = tokio::sync::mpsc::unbounded_channel();
 	let mut t = Tracker::new(
-		lane,
+		QueueSource::new(txs, vec![]),
 		FakeSender(replies_tx),
 		dir.jsonl("load.jsonl").unwrap(),
 		dir.jsonl("blocks.jsonl").unwrap(),
@@ -151,7 +150,7 @@ async fn a_flood_sized_to_the_plan_reaches_the_rate_cap() {
 	let (mut t, mut io, opts) =
 		setup_with("sized", boot_awake, Problems::default(), u32::try_from(sent).unwrap());
 	let stop = load(&mut t, &mut io, &opts).await.unwrap();
-	assert!(t.lane().source.exhausted(), "the flood was sized to the plan");
+	assert!(t.source().exhausted(), "the flood was sized to the plan");
 	assert_eq!((stop.rule, stop.step), (Rule::RateCap, Some(1)), "{}", stop.detail);
 
 	let (mut t, mut io, opts) = setup_with("short", boot_awake, Problems::default(), 50);

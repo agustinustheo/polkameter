@@ -1,20 +1,15 @@
 //! The tracker as a state machine: a fake sender, hand-made replies and block events, no network.
 
 use polkameter::load::{
-	Lane, QueueSource, Tx,
-	follower::BlockEvent,
-	sender::Reply,
-	submit::Submit,
-	tracker::{Phase, Tracker},
+	QueueSource, Tx, follower::BlockEvent, sender::Reply, submit::Submit, tracker::Tracker,
 };
 use polkameter_plugin_sdk::observers::{
-	BlockRecord, RunDir,
+	BlockRecord, Phase, RunDir,
 	summary::{Outcome, Rule},
 };
 
 #[derive(Default)]
 struct FakeSender {
-	sent: Vec<u64>,
 	/// The bytes queued, in order.
 	bytes: Vec<Vec<u8>>,
 	/// Submits still to refuse as backed up.
@@ -22,12 +17,11 @@ struct FakeSender {
 }
 
 impl Submit for FakeSender {
-	fn submit(&mut self, id: u64, bytes: &[u8]) -> Option<usize> {
+	fn submit(&mut self, _id: u64, bytes: &[u8]) -> Option<usize> {
 		if self.full > 0 {
 			self.full -= 1;
 			return None;
 		}
-		self.sent.push(id);
 		self.bytes.push(bytes.to_vec());
 		Some(0)
 	}
@@ -40,12 +34,12 @@ fn tx(n: u8) -> Tx {
 	Tx::new(vec![n; 8])
 }
 
-fn tracker(name: &str, flood: Vec<Tx>, probes: Vec<Tx>) -> Tracker<FakeSender> {
+/// A tracker whose sender refuses its first `full` submits as backed up.
+fn tracker(name: &str, flood: Vec<Tx>, probes: Vec<Tx>, full: usize) -> Tracker<FakeSender> {
 	let dir = RunDir::create(std::path::Path::new(env!("CARGO_TARGET_TMPDIR")), name).unwrap();
-	let lane = Lane { call: "Test.call", source: QueueSource::new(flood, probes, "txs") };
 	Tracker::new(
-		lane,
-		FakeSender::default(),
+		QueueSource::new(flood, probes),
+		FakeSender { full, ..FakeSender::default() },
 		dir.jsonl("load.jsonl").unwrap(),
 		dir.jsonl("blocks.jsonl").unwrap(),
 		1,
@@ -61,7 +55,7 @@ fn fetched(number: u32, seen_at: u64, txs: &[&Tx]) -> BlockEvent {
 #[test]
 fn a_reply_after_inclusion_still_counts_and_a_late_refusal_is_ignored() {
 	let (a, b) = (tx(1), tx(2));
-	let mut t = tracker("late-reply", vec![a.clone(), b.clone()], vec![]);
+	let mut t = tracker("late-reply", vec![a.clone(), b.clone()], vec![], 0);
 	t.set_phase(Phase::Ramp, 1_000).unwrap();
 	t.start_step(0, 10.0, 1_000).unwrap();
 	assert!(t.send_next(1_000) && t.send_next(1_000));
@@ -85,12 +79,11 @@ fn a_reply_after_inclusion_still_counts_and_a_late_refusal_is_ignored() {
 #[test]
 fn backpressure_keeps_the_tx_and_sends_it_next() {
 	let (a, b) = (tx(1), tx(2));
-	let mut t = tracker("backpressure", vec![a.clone(), b.clone()], vec![]);
+	let mut t = tracker("backpressure", vec![a.clone(), b.clone()], vec![], 1);
 	t.set_phase(Phase::Ramp, 0).unwrap();
 	t.start_step(0, 10.0, 0).unwrap();
 	// One transiently full queue: the first tx must not be lost (a nonce gap would strand every
 	// later tx and blame the chain).
-	t.sender_mut().full = 1;
 	assert!(!t.send_next(0), "backed up");
 	assert!(t.send_next(20) && t.send_next(40));
 	assert!(!t.send_next(60), "both sent, nothing left");
@@ -103,8 +96,7 @@ fn backpressure_keeps_the_tx_and_sends_it_next() {
 
 #[test]
 fn a_backed_up_probe_is_not_a_refusal_and_is_sent_on_the_next_block() {
-	let mut t = tracker("probe-backpressure", vec![], vec![tx(9), tx(10)]);
-	t.sender_mut().full = 1;
+	let mut t = tracker("probe-backpressure", vec![], vec![tx(9), tx(10)], 1);
 	t.on_block(BlockEvent::Head { number: 2, seen_at: 200 }, 200).unwrap();
 	assert!(t.probes.is_empty(), "not sent, so not a probe");
 	t.on_block(BlockEvent::Head { number: 3, seen_at: 300 }, 300).unwrap();
@@ -128,7 +120,7 @@ fn block(t: &mut Tracker<FakeSender>, number: u32, seen_at: u64, gap: Option<u64
 
 #[test]
 fn a_dropped_sender_connection_resends_and_is_not_node_down() {
-	let mut t = tracker("interrupted", vec![tx(1), tx(2), tx(3)], vec![]);
+	let mut t = tracker("interrupted", vec![tx(1), tx(2), tx(3)], vec![], 0);
 	t.set_phase(Phase::Ramp, 0).unwrap();
 	t.start_step(0, 1.0, 0).unwrap();
 	assert!(t.send_next(0) && t.send_next(0) && t.send_next(0));
@@ -163,7 +155,7 @@ fn a_dropped_sender_connection_resends_and_is_not_node_down() {
 
 #[test]
 fn a_refusal_is_redacted_whole_before_it_is_cut_to_its_error_key() {
-	let mut t = tracker("redacted-refusal", vec![tx(1)], vec![]);
+	let mut t = tracker("redacted-refusal", vec![tx(1)], vec![], 0);
 	t.redact_with(polkameter::redact::Redactor::new(["SeedPhraseSensitive"], None::<&str>));
 	t.set_phase(Phase::Ramp, 0).unwrap();
 	t.start_step(0, 1.0, 0).unwrap();
@@ -202,7 +194,7 @@ fn drop_and_reconnect(t: &mut Tracker<FakeSender>, at: u64, down: u64) {
 
 /// A tracker in its first ramp step that saw block 1 finalized at time 0.
 fn observing(name: &str) -> Tracker<FakeSender> {
-	let mut t = tracker(name, vec![tx(1)], vec![]);
+	let mut t = tracker(name, vec![tx(1)], vec![], 0);
 	t.set_phase(Phase::Ramp, 0).unwrap();
 	t.start_step(0, 1.0, 0).unwrap();
 	t.on_block(BlockEvent::Finalized { number: 1, seen_at: 0 }, 0).unwrap();

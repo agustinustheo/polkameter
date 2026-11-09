@@ -1,16 +1,6 @@
 //! How fast to send, step by step. Each step is one window for the stop rules
 //! and the checks; the first failure ends the load.
 
-use crate::load::source::QueueSource;
-
-/// The txs of a run's load. The `call` names them in the load series.
-pub struct Lane {
-	/// `call` label, e.g. `Resources.set_statement_store_account`.
-	pub call: &'static str,
-	/// Its txs.
-	pub source: QueueSource,
-}
-
 /// One step: how long, and the target rate.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StepPlan {

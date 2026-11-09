@@ -13,8 +13,8 @@ use crate::load::runner::{Io, Mode, RunOptions, baseline, drain, load as apply_l
 use crate::load::sender::Sender;
 use crate::load::steps::FinalStep;
 use crate::load::steps::final_step;
-use crate::load::tracker::{Phase, Tracker};
-use crate::load::{Lane, QueueSource, Tx, TxHash, follower, now_ms, rules};
+use crate::load::tracker::Tracker;
+use crate::load::{QueueSource, Tx, TxHash, follower, now_ms, rules};
 use crate::redact::{Redactor, diag, records};
 use anyhow::{Context as _, Result, bail};
 use polkameter_plugin_sdk::chain::{ChainError, Client};
@@ -22,7 +22,7 @@ use polkameter_plugin_sdk::observers::summary::{
 	Artifact, Loss, LostTx, MaxSustained, Network, NodePool, OverallStatus, Rule, SCHEMA_VERSION,
 	Summary,
 };
-use polkameter_plugin_sdk::observers::{CheckResult, Status};
+use polkameter_plugin_sdk::observers::{CheckResult, Phase, Status};
 use polkameter_plugin_sdk::observers::{NodeMax, NodeSample, RunDir};
 use polkameter_plugin_sdk::{Context, StateCheckInput};
 use std::fmt::Write as _;
@@ -94,7 +94,7 @@ pub async fn run(
 		load.probes_ref,
 		probes.len()
 	);
-	let lane = Lane { call: "prepared", source: prepared_source(&flood, &probes)? };
+	let source = prepared_source(&flood, &probes)?;
 	let state_check = load
 		.state
 		.as_ref()
@@ -129,7 +129,7 @@ pub async fn run(
 	let mut monitors = Monitors::start(dir, targets, &events, chains, redactor).await?;
 	let (replies_tx, replies) = tokio::sync::mpsc::unbounded_channel();
 	let (blocks_tx, blocks) = tokio::sync::mpsc::unbounded_channel();
-	let sender = Sender::open(&url, load.connections, replies_tx).await?;
+	let sender = Sender::open(&url, load.connections, replies_tx, &Default::default()).await?;
 	let follow = CancellationToken::new();
 	let _follow_guard = follow.clone().drop_guard();
 	follower::start(
@@ -140,7 +140,7 @@ pub async fn run(
 		follow.clone(),
 	);
 	let mut tracker = Tracker::new(
-		lane,
+		source,
 		sender,
 		jsonl("load.jsonl")?,
 		jsonl("blocks.jsonl")?,
@@ -292,7 +292,7 @@ pub async fn run(
 	Ok(Measured { summary, finals, mode })
 }
 
-/// The lane's source from the prepared flood and probe transactions. Each is decoded, and two
+/// The load's source from the prepared flood and probe transactions. Each is decoded, and two
 /// with the same bytes are refused wherever they are (flood or probes), whatever the spelling
 /// of their hash (`0x` prefix or not, letter case): the tracker keys every tx by its 32-byte hash.
 fn prepared_source(
@@ -316,7 +316,7 @@ fn prepared_source(
 	};
 	let flood = decode(flood, "flood transaction")?;
 	let probes = decode(probes, "probe transaction")?;
-	Ok(QueueSource::new(flood, probes, "prepared transactions"))
+	Ok(QueueSource::new(flood, probes))
 }
 
 /// Writes the checks (the plugins' after the built-in ones), summary.json and summary.md,

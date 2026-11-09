@@ -22,8 +22,8 @@
 
 use std::{collections::HashSet, future::Future, time::Duration};
 
-use subxt::{PolkadotConfig, client::Blocks};
 use subxt::rpcs::rpc_params;
+use subxt::{PolkadotConfig, client::Blocks};
 
 use polkameter_plugin_sdk::chain::{
 	ChainError, Client, DecodeAsType, Fault, decode_err, events, failed_extrinsics, fetch, hex0x,

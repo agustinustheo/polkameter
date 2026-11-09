@@ -3,8 +3,8 @@
 //! subxt. The sender holds no tx state: the tracker picks request ids and gets every reply back
 //! on one channel.
 //!
-//! A connection counts as backed up with 4 MiB queued and not yet written (as TS
-//! `bufferedAmount`), so "pool intake" fires at the same point whatever the tx size.
+//! A connection counts as backed up with 4 MiB queued and not yet written, so "pool intake"
+//! fires at the same point whatever the tx size.
 //!
 //! A connection the node or the network closes is opened again, with backoff (see
 //! [`crate::load::reconnect`]). The requests it had written and not seen answered are reported
@@ -115,18 +115,10 @@ async fn connect(url: &str, limit: Duration) -> Result<Socket, String> {
 }
 
 impl Sender {
-	/// Opens `connections` WebSockets to `url`; replies go to `replies`. A connection that
-	/// cannot be opened, from a wrong URL or a node that is down before the run, is the error.
+	/// Opens `connections` WebSockets to `url`, reconnecting with `backoff`; replies go to
+	/// `replies`. A connection that cannot be opened, from a wrong URL or a node that is down
+	/// before the run, is the error.
 	pub async fn open(
-		url: &str,
-		connections: usize,
-		replies: mpsc::UnboundedSender<Reply>,
-	) -> anyhow::Result<Self> {
-		Self::open_with(url, connections, replies, &Backoff::default()).await
-	}
-
-	/// [`Sender::open`], with the backoff of reconnects.
-	pub async fn open_with(
 		url: &str,
 		connections: usize,
 		replies: mpsc::UnboundedSender<Reply>,
@@ -414,7 +406,7 @@ mod tests {
 			answer_all(tokio_tungstenite::accept_async(tcp).await.unwrap(), seen_tx).await;
 		});
 		let (tx, mut rx) = mpsc::unbounded_channel();
-		let mut sender = Sender::open_with(&url, 1, tx, &backoff()).await.unwrap();
+		let mut sender = Sender::open(&url, 1, tx, &backoff()).await.unwrap();
 		assert_eq!(sender.submit(1, &[1]), Some(0));
 		let Reply::Interrupted { connection: 0, ids, .. } = reply(&mut rx).await else {
 			panic!("interrupted")

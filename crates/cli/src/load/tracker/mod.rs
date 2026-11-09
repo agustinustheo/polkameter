@@ -8,36 +8,20 @@ mod blocks;
 use std::collections::HashMap;
 
 use polkameter_plugin_sdk::observers::{
-	BlockRecord, FileError, JsonlWriter, Millis, SeriesWriter,
+	BlockRecord, FileError, JsonlWriter, Millis, Phase, SeriesWriter,
 	registry::{PHASE, STEP, TX_REJECTED, TX_SENT},
 	summary::{Outcome, Probe},
 };
 
-use crate::load::{plan::Lane, sender::Reply, source::TxHash, steps::StepStats, submit::Submit};
+use crate::load::{
+	sender::Reply,
+	source::{QueueSource, TxHash},
+	steps::StepStats,
+	submit::Submit,
+};
 
-/// The phases of a run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(missing_docs)]
-pub enum Phase {
-	Baseline,
-	Ramp,
-	Recovery,
-	Done,
-}
-
-impl Phase {
-	const ALL: [Phase; 4] = [Phase::Baseline, Phase::Ramp, Phase::Recovery, Phase::Done];
-
-	/// The `phase` label.
-	pub fn label(self) -> &'static str {
-		match self {
-			Phase::Baseline => "baseline",
-			Phase::Ramp => "ramp",
-			Phase::Recovery => "recovery",
-			Phase::Done => "done",
-		}
-	}
-}
+/// The `call` label of the load series: every tx is a prepared one.
+const CALL: &str = "prepared";
 
 /// What a tx was sent as.
 #[derive(Debug, Clone, Copy)]
@@ -93,7 +77,7 @@ const ALREADY_HAVE: [i64; 2] = [1012, 1013]; // temporarily banned, already impo
 
 /// The tracker.
 pub struct Tracker<S> {
-	lane: Lane,
+	source: QueueSource,
 	sender: S,
 	load: SeriesWriter,
 	blocks_out: JsonlWriter,
@@ -175,9 +159,9 @@ impl std::fmt::Display for ObservationGap {
 }
 
 impl<S: Submit> Tracker<S> {
-	/// A tracker sending `lane` through `sender`, starting at `now`.
+	/// A tracker sending the txs of `source` through `sender`, starting at `now`.
 	pub fn new(
-		lane: Lane,
+		source: QueueSource,
 		sender: S,
 		load: JsonlWriter,
 		blocks_out: JsonlWriter,
@@ -185,7 +169,7 @@ impl<S: Submit> Tracker<S> {
 		now: Millis,
 	) -> Self {
 		Self {
-			lane,
+			source,
 			sender,
 			load: SeriesWriter::new(load),
 			blocks_out,
@@ -221,19 +205,14 @@ impl<S: Submit> Tracker<S> {
 		self.redactor = redactor;
 	}
 
-	/// The txs and their `call` label.
-	pub fn lane(&self) -> &Lane {
-		&self.lane
+	/// The txs.
+	pub fn source(&self) -> &QueueSource {
+		&self.source
 	}
 
 	/// The sender.
 	pub fn sender(&self) -> &S {
 		&self.sender
-	}
-
-	/// The sender, to change it (tests).
-	pub fn sender_mut(&mut self) -> &mut S {
-		&mut self.sender
 	}
 
 	pub(super) fn phase(&self) -> Phase {
@@ -254,8 +233,8 @@ impl<S: Submit> Tracker<S> {
 		if phase != Phase::Ramp {
 			self.load.gauge(&STEP, [], -1.0, now)?;
 		}
-		for p in Phase::ALL {
-			self.load.gauge(&PHASE, [p.label()], if p == phase { 1.0 } else { 0.0 }, now)?;
+		for p in [Phase::Baseline, Phase::Ramp, Phase::Recovery, Phase::Done] {
+			self.load.gauge(&PHASE, [p.name()], if p == phase { 1.0 } else { 0.0 }, now)?;
 		}
 		Ok(())
 	}
@@ -316,18 +295,18 @@ impl<S: Submit> Tracker<S> {
 	/// Sends one flood tx; false when it has none ready or every connection is backed up.
 	/// A tx that could not be queued goes back to the source and is the next one sent.
 	pub fn send_next(&mut self, now: Millis) -> bool {
-		let Some(tx) = self.lane.source.next_tx() else {
+		let Some(tx) = self.source.next_tx() else {
 			self.current().starved_ticks += 1;
 			return false;
 		};
 		let step = self.steps.len() - 1;
 		if !self.submit(tx.hash, &tx.bytes, Kind::Flood { step }, now) {
-			self.lane.source.put_back(tx);
+			self.source.put_back(tx);
 			self.current().backpressure_ticks += 1;
 			return false;
 		}
 		self.current().sent += 1;
-		self.load.inc(&TX_SENT, [self.lane.call], 1.0, now);
+		self.load.inc(&TX_SENT, [CALL], 1.0, now);
 		true
 	}
 
@@ -428,7 +407,7 @@ impl<S: Submit> Tracker<S> {
 				let error = self.redactor.text(format!("{code} {error}").trim());
 				let key = crate::redact::truncate(&error, 160).trim_end().to_owned();
 				*st.errors.entry(key).or_default() += 1;
-				self.load.inc(&TX_REJECTED, [self.lane.call, &code.to_string()], 1.0, at);
+				self.load.inc(&TX_REJECTED, [CALL, &code.to_string()], 1.0, at);
 			},
 		}
 	}

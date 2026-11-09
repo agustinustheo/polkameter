@@ -21,6 +21,6 @@ pub mod steps;
 pub mod submit;
 pub mod tracker;
 
-pub use plan::{Lane, Plan, StepPlan};
-pub use polkameter_plugin_sdk::observers::{Millis, now_ms};
+pub use plan::Plan;
+pub use polkameter_plugin_sdk::observers::now_ms;
 pub use source::{QueueSource, Tx, TxHash, probe_count};

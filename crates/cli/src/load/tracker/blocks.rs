@@ -4,12 +4,12 @@
 //! counts once more on the finalized chain.
 
 use polkameter_plugin_sdk::observers::{
-	BlockRecord, FileError, Millis,
+	BlockRecord, FileError, Millis, Phase,
 	registry::{TX_FAILED, TX_INCLUDED, TX_INCLUSION},
 	summary::{Outcome, Probe, ProbePhase},
 };
 
-use super::{Kind, ObservationGap, Phase, Tracker};
+use super::{CALL, Kind, ObservationGap, Tracker};
 use crate::load::{follower::BlockEvent, source::TxHash, submit::Submit};
 
 impl<S: Submit> Tracker<S> {
@@ -143,7 +143,6 @@ impl<S: Submit> Tracker<S> {
 			},
 			Kind::Flood { step } => step,
 		};
-		let call = self.lane.call;
 		self.included_in.insert(*hash, block);
 		if let Some(flood) = self.flood.get_mut(hash) {
 			flood.inclusion_ms = Some(latency);
@@ -152,11 +151,11 @@ impl<S: Submit> Tracker<S> {
 		let st = &mut self.steps[step];
 		st.included += 1;
 		st.latencies_ms.push(latency);
-		self.load.inc(&TX_INCLUDED, [call], 1.0, seen_at);
-		self.load.observe(&TX_INCLUSION, [call], latency as f64 / 1000.0, seen_at);
+		self.load.inc(&TX_INCLUDED, [CALL], 1.0, seen_at);
+		self.load.observe(&TX_INCLUSION, [CALL], latency as f64 / 1000.0, seen_at);
 		if failed {
 			st.failed_in_block += 1;
-			self.load.inc(&TX_FAILED, [call], 1.0, seen_at);
+			self.load.inc(&TX_FAILED, [CALL], 1.0, seen_at);
 		}
 		if self.phase() == Phase::Recovery {
 			self.drained += 1;
@@ -170,7 +169,7 @@ impl<S: Submit> Tracker<S> {
 			Phase::Recovery => ProbePhase::Recovery,
 			_ => return,
 		};
-		let Some(tx) = self.lane.source.probe() else { return };
+		let Some(tx) = self.source.probe() else { return };
 		let from = self.phases.last().expect("phase").0;
 		self.probes.push(Probe {
 			phase,
@@ -184,7 +183,7 @@ impl<S: Submit> Tracker<S> {
 			// Every connection is backed up: our side, not the node's answer. The probe was not
 			// sent; its tx is kept for the next block.
 			self.probes.pop();
-			self.lane.source.put_back_probe(tx);
+			self.source.put_back_probe(tx);
 		}
 	}
 }

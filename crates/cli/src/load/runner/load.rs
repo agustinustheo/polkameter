@@ -14,8 +14,9 @@ use crate::load::{
 	rules::{LiveState, check_step, live_failure, measure_violation, secs},
 	steps::final_step,
 	submit::Submit,
-	tracker::{Phase, Tracker},
+	tracker::Tracker,
 };
+use polkameter_plugin_sdk::observers::Phase;
 
 /// 2. The plan's steps, until the first failure or the last step. Returns why the load ended.
 pub async fn load<S: Submit>(
@@ -53,8 +54,9 @@ pub async fn load<S: Submit>(
 		// After the last step an empty flood only means it was sized to the plan.
 		let last = k as usize + 1 == opts.plan.steps.len();
 		let unsent_kib = t.sender().queued_bytes() / 1024;
-		let source = &t.lane().source;
-		if let Some(stop) = check_step(&t.steps, source, unsent_kib, block_ms, &opts.rules, last) {
+		if let Some(stop) =
+			check_step(&t.steps, t.source(), unsent_kib, block_ms, &opts.rules, last)
+		{
 			return Ok(stop);
 		}
 	}
@@ -142,9 +144,8 @@ fn paused(elapsed: Millis, boot: Option<Millis>, max_gap: Millis) -> Option<Stri
 fn log_step<S: Submit>(t: &Tracker<S>) {
 	let f = final_step(t.steps.last().expect("started"));
 	crate::redact::diag!(
-		"step {} {}: target {} tx/s, sent {:.0} tx/s, {} blocks, {:.1} tx/s included, reply p95 {} s, {} replies pending, backlog {}",
+		"step {} prepared: target {} tx/s, sent {:.0} tx/s, {} blocks, {:.1} tx/s included, reply p95 {} s, {} replies pending, backlog {}",
 		f.step,
-		t.lane().call,
 		f.target_rate,
 		f.sent_per_s,
 		f.blocks.blocks,
