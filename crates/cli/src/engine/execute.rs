@@ -497,17 +497,14 @@ async fn with_scratch_plugins<T>(
 	result
 }
 pub async fn inspect(plan: &Plan, registry: &Registry) -> Result<Value> {
-	let mut inspected = inspect_plugins(plan, registry).await?;
-	// The targets' endpoints may hold API keys.
-	redactor(plan, registry, &[]).value(&mut inspected["targets"]);
-	Ok(inspected)
-}
-async fn inspect_plugins(plan: &Plan, registry: &Registry) -> Result<Value> {
-	with_scratch_plugins(plan, registry, "inspect", async |plugins, _, _| {
+	let mut inspected = with_scratch_plugins(plan, registry, "inspect", async |plugins, _, _| {
 		validate_contracts(plan, plugins)?;
 		Ok(json!({"valid": true, "plugins": plugins.manifests, "targets": plan.targets}))
 	})
-	.await
+	.await?;
+	// The targets' endpoints may hold API keys.
+	redactor(plan, registry, &[]).value(&mut inspected["targets"]);
+	Ok(inspected)
 }
 /// Checks the plan against its plugins, credentials and chain, and runs its `<preflight>` steps
 /// and the calibration. Never arms setup or load and writes only to its scratch directory.

@@ -242,7 +242,8 @@ pub fn main() -> i32 {
 			error.exit_code()
 		},
 	};
-	exit_code_after_output(code, STDOUT_FAILED.load(Ordering::Relaxed))
+	// A command that succeeded but could not write its output exits 1.
+	if code == 0 && STDOUT_FAILED.load(Ordering::Relaxed) { 1 } else { code }
 }
 
 async fn execute(cli: Cli) -> Result<i32, CliError> {
@@ -275,7 +276,8 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 		},
 		Command::Run { plan: path, output, credential_env, fail_on, shutdown_grace } => {
 			// Before any work, so that no signal can end the process without cleanup.
-			let mut signals = install_signals()?;
+			let mut signals = Signals::install()
+				.map_err(|e| CliError::runtime(format!("cannot install signal handlers: {e}")))?;
 			let grace = Duration::from_secs(shutdown_grace);
 			let plan = load(&path)?;
 			let options = RunOptions { fail_on };
@@ -287,16 +289,10 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 				)));
 			}
 			let registry = registry(&plan, credential_env)?;
-			let local = LocalRun { plan, registry, output, options, grace, path };
-			run_local(local, &mut signals).await
+			run(&path, plan, registry, &output, options, grace, &mut signals).await
 		},
 		Command::Report { artifact_directory } => report(artifact_directory),
 	}
-}
-
-fn install_signals() -> Result<Signals, CliError> {
-	Signals::install()
-		.map_err(|e| CliError::runtime(format!("cannot install signal handlers: {e}")))
 }
 
 /// `polkameter init`: inspects the chain, renders the plan, checks that it parses and writes it.
@@ -394,19 +390,16 @@ fn registry(plan: &Plan, credential_env: Option<String>) -> Result<Registry, Cli
 	Ok(registry)
 }
 
-/// A local run and where its results go.
-struct LocalRun {
-	/// The plan file, for messages that point into it.
-	path: PathBuf,
+/// Runs `plan` (read from `path`, for messages that point into it) into `output`.
+async fn run(
+	path: &Path,
 	plan: Plan,
 	registry: Registry,
-	output: PathBuf,
+	output: &Path,
 	options: RunOptions,
 	grace: Duration,
-}
-
-async fn run_local(run: LocalRun, signals: &mut Signals) -> Result<i32, CliError> {
-	let LocalRun { path, plan, registry, output, options, grace } = run;
+	signals: &mut Signals,
+) -> Result<i32, CliError> {
 	let stop = Stop::default();
 	let sink = Arc::new(move |event: Value| {
 		if event["event"] == "phase" {
@@ -414,7 +407,7 @@ async fn run_local(run: LocalRun, signals: &mut Signals) -> Result<i32, CliError
 		}
 	});
 	let work =
-		crate::engine::execute::run_stoppable(plan, registry, &output, stop.clone(), sink, options);
+		crate::engine::execute::run_stoppable(plan, registry, output, stop.clone(), sink, options);
 	let supervised = shutdown::supervise(
 		work,
 		signals,
@@ -442,7 +435,7 @@ async fn run_local(run: LocalRun, signals: &mut Signals) -> Result<i32, CliError
 		return Ok(signal.exit_code());
 	};
 	let outcome = result.map_err(|e| CliError::runtime(e.to_string()))?;
-	write_artifact_written(&path, &outcome);
+	write_artifact_written(path, &outcome);
 	Ok(outcome.exit_code)
 }
 
@@ -557,52 +550,29 @@ static STDOUT_FAILED: AtomicBool = AtomicBool::new(false);
 /// Writes `text` and a newline to standard output. When the reader has closed the pipe, output
 /// stops silently and the command carries on: a run still finishes, writes its results and
 /// exits with its own code. Any other failure, such as a full disk, is reported once on standard
-/// error; output stops, the command carries on, and it exits 1 instead of 0 (see
-/// [`exit_code_after_output`]).
+/// error; output stops, the command carries on, and it exits 1 instead of 0 (see [`main`]).
 fn write_stdout(text: &str) {
 	if STDOUT_CLOSED.load(Ordering::Relaxed) || STDOUT_FAILED.load(Ordering::Relaxed) {
 		return;
 	}
 	let mut stdout = std::io::stdout().lock();
-	let written = write_line(&mut stdout, text);
-	match written.map_err(|error| classify_stdout_error(&error)) {
+	let written = (|| {
+		stdout.write_all(text.as_bytes())?;
+		stdout.write_all(b"\n")?;
+		stdout.flush()
+	})();
+	match written {
 		Ok(()) => {},
-		Err(StdoutError::Closed) => STDOUT_CLOSED.store(true, Ordering::Relaxed),
-		Err(StdoutError::Failed(error)) => {
+		// The reader went away (`| head -1`): not an error.
+		Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {
+			STDOUT_CLOSED.store(true, Ordering::Relaxed);
+		},
+		Err(error) => {
 			if !STDOUT_FAILED.swap(true, Ordering::Relaxed) {
 				eprintln!("{PRODUCT_NAME}: cannot write to standard output: {error}");
 			}
 		},
 	}
-}
-
-fn write_line(out: &mut impl Write, text: &str) -> std::io::Result<()> {
-	out.write_all(text.as_bytes())?;
-	out.write_all(b"\n")?;
-	out.flush()
-}
-
-/// Why a write to standard output failed.
-#[derive(Debug, Eq, PartialEq)]
-enum StdoutError {
-	/// The reader went away (`| head -1`): not an error.
-	Closed,
-	/// Anything else, such as a full disk or a file over its size limit.
-	Failed(String),
-}
-
-fn classify_stdout_error(error: &std::io::Error) -> StdoutError {
-	if error.kind() == std::io::ErrorKind::BrokenPipe {
-		StdoutError::Closed
-	} else {
-		StdoutError::Failed(error.to_string())
-	}
-}
-
-/// The process's exit code: the command's, or 1 when it succeeded but its output could not be
-/// written.
-fn exit_code_after_output(code: i32, output_failed: bool) -> i32 {
-	if output_failed && code == 0 { 1 } else { code }
 }
 
 async fn plugin_command(command: PluginCommand) -> Result<i32, CliError> {
