@@ -25,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/insta
 
 ## Use cargo
 
-[cargo-binstall](https://github.com/cargo-bins/cargo-binstall) downloads the prebuilt CLI. `cargo install` builds it, with Rust 1.93 or newer, in 10 minutes or more. The substrate plugin isn't on crates.io, so cargo builds it from the release tag. Both go to `~/.cargo/bin`:
+[cargo-binstall](https://github.com/cargo-bins/cargo-binstall) downloads the prebuilt CLI. `cargo install` builds it from source with Rust 1.93 or newer, which takes 10 minutes or more. The substrate plugin isn't on crates.io, so cargo builds it from the release tag. Both go to `~/.cargo/bin`:
 
 ```sh
 cargo binstall polkameter --version 0.4.0    # or: cargo install --locked polkameter --version 0.4.0
@@ -57,4 +57,4 @@ polkameter plugin install "$(command -v polkameter-substrate-plugin)"
 
 ## Versions
 
-Use one release everywhere. The plan's `<plugin id="substrate" version="…">` must equal the installed plugin's version, which is the CLI's version, `polkameter --version`. Fetch `dev-chain.sh` and the example plans from that release's tag, such as `v0.4.0`. In CI, set the action's `version` input to it too.
+Use one release everywhere. The plan's `<plugin id="substrate" version="…">` must equal the installed plugin's version. That's also the CLI's version, which `polkameter --version` prints. Fetch `dev-chain.sh` and the example plans from that release's tag, such as `v0.4.0`. In CI, set the action's `version` input to it too.

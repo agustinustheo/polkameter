@@ -1,10 +1,10 @@
 # Use PolkaMeter with an AI assistant
 
-A skill is a set of instructions an AI assistant loads for a task. Install the PolkaMeter skill, then ask your assistant to create a load test for your chain. It installs PolkaMeter and picks the substrate plugin or starts your own plugin. Then it writes a plan, runs it on a [dev chain](getting-started.md#2-start-a-dev-chain) and adds a CI job.
+A skill is a set of instructions an AI assistant loads for a task. Install the PolkaMeter skill, then ask your assistant to create a load test for your chain. It installs PolkaMeter, then picks the substrate plugin or starts a plugin of your own. Then it writes a plan, runs it on a [dev chain](getting-started.md#2-start-a-dev-chain) and adds a CI job.
 
 ## Install the skill in Claude Code
 
-The PolkaMeter repository is also a Claude Code plugin marketplace, a source of plugins. In a Claude Code session, add it and install the plugin that holds the skill:
+The PolkaMeter repository is also a Claude Code plugin marketplace. A Claude Code plugin isn't a PolkaMeter plugin. In a Claude Code session, add it and install the plugin that holds the skill:
 
 ```text
 /plugin marketplace add agustinustheo/polkameter
@@ -15,7 +15,7 @@ Claude Code lists the skill as `polkameter:polkameter`. To get updates, run `/pl
 
 ## Copy the skill
 
-The skill is the [`skills/polkameter`](https://github.com/agustinustheo/polkameter/tree/main/skills/polkameter) directory. To use it without the marketplace, copy it into your project's `.claude/skills/`, from your project's root:
+The skill is the [`skills/polkameter`](https://github.com/agustinustheo/polkameter/tree/main/skills/polkameter) directory. To use it without the marketplace, run this from your project's root. It copies the skill into `.claude/skills/`:
 
 ```sh
 git clone --depth 1 https://github.com/agustinustheo/polkameter /tmp/polkameter

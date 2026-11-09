@@ -4,7 +4,7 @@
 
 ## Tutorials
 
-- [Getting started](https://agustinustheodorus.com/polkameter/getting-started.html): install, start a dev chain, load it until a limit fails, and generate a plan for your chain
+- [Getting started](https://agustinustheodorus.com/polkameter/getting-started.html): install, start a dev chain, load it past a limit, and generate a plan for your chain
 - [Writing a plugin](https://agustinustheodorus.com/polkameter/writing-a-plugin.html): build, install and run a plugin with one operation
 
 ## How-to guides

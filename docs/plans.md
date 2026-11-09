@@ -1,6 +1,6 @@
 # Plan reference
 
-A plan is an XML file that lists the test's steps and settings. It never holds a secret or a file path. Those live on the run host, set with [`polkameter plugin`](cli.md#plugin).
+A plan is an XML file that lists the test's steps and settings. It never holds a secret or a file path. Those stay on the machine that runs the plan. You set them with [`polkameter plugin`](cli.md#plugin).
 
 ## Example
 
@@ -54,7 +54,7 @@ Children, in any order: `plugins`, `targets`, `credentials`, `preflight`, `setup
 
 1. `preflight`: checks the installed plugins against the plan and runs the preflight steps. For a load test, it also compares the block interval with the chain's.
 2. `setup`: setup steps run once, usually to prepare the load's transactions.
-3. In a load test, `measurement`, then `baseline` (probes before the flood), `load` (the rate steps), `recovery`, and `reconciliation` (the wait for finality and the loss check).
+3. `measurement`, in a load test. It holds four phases: `baseline` (probes before the flood), `load` (the rate steps), `recovery`, and `reconciliation` (the wait for finality and the loss check).
 4. Evaluate steps run, with no phase line of their own.
 5. `checks`, in a load test: the outcome checks and the verdict.
 6. `teardown`: teardown steps run even after a failure in setup or later. A run that fails in preflight sent nothing, so it skips teardown.
@@ -69,7 +69,7 @@ Steps in a phase run in their written order. Last, the run writes its reports.
 | `mode` | string | `stress` | `stress` or `smoke` | See below |
 | `timeout-ms` | integer | `3600000` | above 0 | The run deadline. See below |
 
-Stress mode records monitor problems, such as a node that stops answering, and goes on unless a [stop rule](reading-results.md#stop-rules) ends the load. Smoke mode stops the load at the first monitor problem and has [stricter exit rules](cli.md#run), for a quick check that must catch any problem.
+Stress mode records monitor problems, such as a node that stops answering, and goes on. Only a [stop rule](reading-results.md#stop-rules) ends the load early. Smoke mode is for a quick check that must catch any problem. It stops the load at the first monitor problem and has [stricter exit rules](cli.md#run).
 
 `timeout-ms` limits everything before teardown. A run that reaches it fails and exits `1`, or `3` in preflight.
 
@@ -114,7 +114,7 @@ Each holds zero or more `step` elements.
 
 Makes the plan a load test against one target. A load test sends transactions at chosen rates and measures how the chain responds.
 
-It sends two lists of prepared transactions, which must not share a transaction. Flood transactions are the main load, sent at the target rate. Probe transactions time submission to inclusion, one per block: the baseline probes before the flood, and the recovery probes after it.
+It sends two lists of prepared transactions, which must not share a transaction. Flood transactions are the main load, sent at the target rate. A probe transaction measures the time from submission to inclusion. PolkaMeter sends one probe per block: baseline probes before the flood, and recovery probes after it.
 
 Children: `rate` (one or more) or one `ramp`. Give one or the other.
 
@@ -145,7 +145,7 @@ A rate step sends flood transactions at one target rate for a set time. A plan h
 
 ### ramp
 
-A ramp sets the target rate of each rate step. The first uses `start`. Each later one adds the `step` attribute or multiplies by `growth`.
+A ramp makes a list of rate steps. The first rate step uses `start`. Each later rate step adds `step` to the rate before it, or multiplies it by `growth`.
 
 | Attribute | Type | Default | Limits | Meaning |
 | --- | --- | --- | --- | --- |
@@ -157,7 +157,7 @@ A ramp sets the target rate of each rate step. The first uses `start`. Each late
 
 ### monitors
 
-Watches a Zombienet test network during the load. It records the relay chain's view of the parachain, reads the listed metrics from each node and records [node CPU and memory](troubleshooting.md#node--no-cpu-or-memory-recorded). It needs a `<load>`.
+Watches a Zombienet test network during the load. It records what the relay chain reports about the parachain, reads the listed metrics from each node and records [node CPU and memory](troubleshooting.md#node--no-cpu-or-memory-recorded). It needs a `<load>`.
 
 Children: `metric`, zero or more.
 

@@ -11,7 +11,7 @@ Each run writes a new directory in `--output`, named `run-<milliseconds>-<pid>-<
 | `summary.md` | No load test: plan name, state, and the error or `All configured steps completed.` Load test: the full report. |
 | `events.jsonl` | Every event, one JSON object per line. |
 | `plan.json` | The plan as parsed. |
-| `resolved-plan.json` | Plugin manifests and registry records, `<monitors>` settings, CLI version and BLAKE2 hash. |
+| `resolved-plan.json` | Plugin manifests and registry records, `<monitors>` settings, and the CLI's version and BLAKE2 hash. |
 | `samples.jtl` | [One CSV row per plan step](#samplesjtl), and per transaction in a load test. |
 | `plugins/<id>/stderr.log` | Standard error of each plugin that started. |
 
@@ -20,7 +20,7 @@ Each run writes a new directory in `--output`, named `run-<milliseconds>-<pid>-<
 Redaction replaces known credential values and endpoint secrets with `[redacted]`. PolkaMeter redacts:
 
 - the value of each credential the plan declares, read from the environment variable that [`polkameter plugin credential`](cli.md#plugin) maps it to;
-- the user information, query values, path parameter values (`;name=value`) and fragment of each target endpoint and monitor URL.
+- in each target endpoint and monitor URL: the user information (`user:pass@`), the query values, the path parameter values (`;name=value`) and the fragment (`#…`).
 
 An endpoint keeps its scheme, host, port, path and parameter names. For example, `wss://user:pass@rpc.example/ws?apikey=KEY` is written as `wss://[redacted]@rpc.example/ws?apikey=[redacted]`.
 
@@ -51,7 +51,7 @@ PolkaMeter doesn't redact:
 
 ## execution.json
 
-PolkaMeter writes `execution.json` after teardown. When you stop a run, it writes a provisional file with the state `stopping` at once. It replaces that file when the run ends.
+PolkaMeter writes `execution.json` after teardown. When you stop a run, it writes a temporary one with the state `stopping` at once. It replaces that file when the run ends.
 
 | Field | Meaning |
 | --- | --- |
@@ -114,7 +114,7 @@ Checks run on the recorded data, in this order. The `block production`, `pvf` an
 | pool: pool work leaves time for blocks | Pool maintenance p95, and validation backlog. | `fail`: p95 over half the block interval. `warn`: over 1000 waiting for validation. |
 | run: monitors recorded everything | Monitor problems, and time when blocks were not observed. | `warn` if any problem. `no result` if blocks went unobserved for longer than `stall-ms` in total. |
 
-A check measures each window: a rate step, or recovery. A failure or warning in any window decides the status. Otherwise a window without data, such as one in which a node restarted, makes the check `no result`. The detail names the window and the cause.
+A check measures each window. A window is one rate step, or the recovery. A failure or warning in any window sets the status. Otherwise, a window without data makes the check `no result`. A node restart can leave a window without data. The detail names the window and the cause.
 
 Plugin checks come after the built-in ones and count toward the verdict the same way.
 
@@ -156,4 +156,4 @@ Each event has a `timestamp` in milliseconds and `version` `2`. PolkaMeter redac
 
 It rewrites `junit.xml` and `samples.jtl`, and in a load test also the checks, `summary.json` and `summary.md`.
 
-The result comes only from the files. So you can copy a run directory to another machine and report it there.
+`report` reads only the run directory, so you can copy it to another machine and run `report` there.
