@@ -15,8 +15,9 @@
 //!
 //! A dropped RPC connection that opens again is an observation gap (a problem), not a failure:
 //! the stall rules leave its time out, time with no connection open is not "pool intake", and
-//! txs seen late as the follower catches up are left out of the latency, as are txs timed across
-//! a pause of PolkaMeter itself.
+//! txs seen late as the follower catches up or sent again after a sender reconnect are left out
+//! of the latency, as are txs timed across a pause of PolkaMeter itself. A pause in recovery
+//! leaves the recovery unmeasured.
 //!
 //! The ramp also ends without a failure on: rate cap, budget used up, generator limit, smoke error.
 
@@ -302,7 +303,7 @@ pub fn untimed_warning(finals: &[FinalStep]) -> Option<String> {
 		.collect();
 	(!steps.is_empty()).then(|| {
 		format!(
-			"latency leaves out included txs seen late, after {} was paused or while it reconnected to the node ({}): their time is not the chain's",
+			"latency leaves out included txs {} could not time, because it was paused or reconnecting to the node ({}): their time is not the chain's",
 			crate::PRODUCT_NAME,
 			steps.join(", ")
 		)

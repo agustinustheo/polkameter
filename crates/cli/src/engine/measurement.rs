@@ -171,7 +171,7 @@ pub async fn run(
 		let recovery = recover(&mut tracker, &mut io, &run_opts, threshold_ms).await?;
 		let recovery_to = now_ms();
 		// Every block the follower still has queued, so no inclusion is missed by the loss check.
-		if !drain(&mut tracker, &mut io, 30_000).await? {
+		if !drain(&mut tracker, &mut io, 30_000, &run_opts.rules).await? {
 			diag!(
 				"drain: block {} not read after 30 s (last read {})",
 				tracker.last_head.1,

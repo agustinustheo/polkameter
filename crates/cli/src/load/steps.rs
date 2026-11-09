@@ -34,8 +34,8 @@ pub struct FinalStep {
 	pub rejected: u64,
 	/// Refused against sent.
 	pub rejected_ratio: f64,
-	/// Included txs whose latency is left out: seen late, after PolkaMeter was paused or while
-	/// its block follower caught up after a reconnect.
+	/// Included txs whose latency is left out: timed across a pause of PolkaMeter, sent again
+	/// after a sender reconnect, or read as the block follower caught up after a reconnect.
 	#[serde(default)]
 	pub untimed: u64,
 	/// p50 send to best block.
@@ -80,8 +80,7 @@ pub struct StepStats {
 	pub rejected: u64,
 	/// Send to best block, per included tx timed while PolkaMeter observed.
 	pub latencies_ms: Vec<Millis>,
-	/// Included txs left out of `latencies_ms`: seen late, after PolkaMeter was paused or while
-	/// its block follower caught up after a reconnect.
+	/// Included txs left out of `latencies_ms`: see [`FinalStep::untimed`].
 	pub untimed: u64,
 	/// Send to submit reply.
 	pub reply_ms: Vec<Millis>,

@@ -139,17 +139,18 @@ impl<S: Submit> Tracker<S> {
 		let Some(tx) = self.sent.remove(hash) else { return false };
 		self.last_ours_block = self.last_ours_block.max(block);
 		let latency = seen_at.saturating_sub(tx.sent_at);
+		let late = self.read_late.iter().any(|(from, to)| *from < seen_at && seen_at <= *to);
 		let step = match tx.kind {
 			Kind::Probe { index } => {
 				self.probes[index].outcome =
 					if failed { Outcome::Failed } else { Outcome::Included };
-				self.probes[index].latency_ms = Some(latency);
+				let untimed = late || self.untimed_probes.contains(&index);
+				self.probes[index].latency_ms = (!untimed).then_some(latency);
 				return true;
 			},
 			Kind::Flood { step } => step,
 		};
 		self.included_in.insert(*hash, block);
-		let late = self.read_late.iter().any(|(from, to)| *from < seen_at && seen_at <= *to);
 		let mut untimed = late;
 		if let Some(flood) = self.flood.get_mut(hash) {
 			flood.inclusion_ms = Some(latency);

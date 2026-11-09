@@ -7,7 +7,8 @@ User-visible changes in each release. The GitHub release notes list every merged
 ### Fixed
 
 - A dropped RPC connection gets the full 15 s to reconnect before the node counts as down. It gave up after 7.75 s, so an 8 s outage stopped the load on "node down". The loss check reconnects with the same budget, so it still verifies the loss after an outage.
-- A pause of PolkaMeter itself, or blocks read late after a reconnect, no longer make a latency failure onset. Their transactions are left out of p50 and p95, and a warning gives the count. `steps.jsonl` counts them per rate step in `untimed`.
+- A pause of PolkaMeter itself, blocks read late after a reconnect, or a transaction sent again after its connection dropped no longer make a latency failure onset. Their transactions are left out of p50 and p95, and a warning gives the count. `steps.jsonl` counts them per rate step in `untimed`.
+- A pause of PolkaMeter in the baseline no longer counts in the baseline probe times. A pause in recovery makes the recovery `not measured`, instead of a slow recovery.
 - Time when every RPC connection is down no longer stops the load on "pool intake". That rule now needs bytes unsent on an open connection. A rate step that sent too little while reconnecting ends on "generator limit".
 
 ## 0.4.0 (2026-11-09)

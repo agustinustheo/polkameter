@@ -125,12 +125,12 @@ A dropped connection that reconnects is not a stop. See [blocks: RPC connection 
 
 ## What PolkaMeter never blames on the chain
 
-PolkaMeter sees the chain through its own connections and clock. When one of those fails, PolkaMeter doesn't report it as a chain failure. These rules always hold:
+PolkaMeter sees the chain through its own connections and clock. When one of those fails, it doesn't report a chain failure:
 
 1. A disconnection shorter than 15 s is never "node down". PolkaMeter uses the full 15 s to reconnect, and makes its last attempt at 15 s.
-2. After a reconnect, the loss check still reads the finalized chain. If the first connection dropped, PolkaMeter opens a new one, with the same 15 s budget.
-3. Time that PolkaMeter didn't observe never makes a latency failure onset. That time is a pause of PolkaMeter itself (a stopped process, CPU starvation or a suspended machine), or blocks it read late after a reconnect. Transactions it saw late still count as included, but p50 and p95 leave them out. The `Warnings:` line gives the count per rate step. A pause during the load ends it on `generator limit`. The verdict is then INCONCLUSIVE, unless other evidence fails the run, such as lost or refused transactions.
-4. Time with no connection open never counts as the node not reading submissions. Pool intake needs bytes that wait unsent on an open connection. If a rate step sent too little because PolkaMeter was reconnecting, the load ends on `generator limit`, and its detail says so.
+2. After a reconnect, the loss check still reads the finalized chain. If its connection dropped, PolkaMeter opens a new one, with the same budget.
+3. Time that PolkaMeter didn't observe never counts against the chain, in the baseline, the load or recovery. That time is a pause of PolkaMeter itself (a stopped process, CPU starvation or a suspended machine), or blocks it read late after a reconnect. A transaction or probe that it saw late still counts as included, but has no latency. p50, p95 and the baseline leave it out, and the `Warnings:` line counts the transactions. A pause during the load ends the load on `generator limit`. A pause during recovery makes the recovery `not measured`. So the verdict is at most INCONCLUSIVE, unless other evidence fails the run, such as lost or refused transactions.
+4. Time with no connection open never counts as the node not reading submissions, or as latency. Pool intake needs bytes unsent on an open connection. If reconnecting made a rate step send too little, the load ends on `generator limit`, and its detail says so. A transaction sent again after its connection dropped has no latency, because PolkaMeter can't tell when the node first got it.
 5. Each sent flood transaction gets exactly one loss status, so sent = finalized + in pool + refused + lost + unverified + unknown.
 
 Tests guard each rule. `AGENTS.md` in the repository names them.

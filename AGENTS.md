@@ -77,8 +77,8 @@ PolkaMeter's core claim is that it never blames the chain for a fault of its own
 | --- | --- |
 | 1. A disconnection shorter than 15 s is not node down | `i1_a_node_back_within_the_reconnect_budget_is_not_down` in `crates/cli/tests/attribution.rs` |
 | 2. The loss check is verified after a reconnect | `tests/rpc-outage.py`, in the CI dev-chain job: an 8 s outage through a TCP proxy |
-| 3. Time not observed makes no latency failure | `i3_time_polkameter_did_not_observe_never_makes_a_latency_failure` in `attribution.rs`; `a_pause_leaves_out_the_latency_timed_across_it_whichever_is_seen_first` in `crates/cli/tests/load_tracker.rs` |
-| 4. Reconnecting is not pool intake | `i4_a_reconnecting_sender_is_never_pool_intake` in `attribution.rs` |
+| 3. Time not observed never counts against the chain (baseline, load, recovery) | `i3_time_polkameter_did_not_observe_never_makes_a_latency_failure` and `i3_a_pause_in_the_baseline_or_recovery_is_not_the_chains` in `attribution.rs`; `a_pause_leaves_out_the_latency_timed_across_it_whichever_is_seen_first` in `crates/cli/tests/load_tracker.rs` |
+| 4. Reconnecting is not pool intake, and a resend has no latency | `i4_a_reconnecting_sender_is_never_pool_intake` and `i4_time_to_resend_after_a_reconnect_is_not_latency` in `attribution.rs` |
 | 5. Loss statuses partition what was sent | `statuses_partition_sent_in_every_scenario` in `crates/cli/src/load/loss.rs` |
 
 ## Conventions
