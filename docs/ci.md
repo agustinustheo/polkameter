@@ -172,7 +172,7 @@ load-test:
       files: [dev-chain.sh]
     paths: [.polkameter/dev-chain/bin]
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends ca-certificates curl
+    - apt-get update && apt-get install -y --no-install-recommends ca-certificates curl procps
     - curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh | sh -s -- "$POLKAMETER_VERSION"
     - export PATH="$HOME/.local/bin:$PATH"
   script:
@@ -180,7 +180,7 @@ load-test:
     - polkameter plugin install "$HOME/.local/bin/polkameter-substrate-plugin"
     - polkameter plugin credential substrate-dev POLKAMETER_SUBSTRATE_SEED
     - polkameter validate plans/substrate-remarks-ci.polkameter.xml
-    - polkameter run plans/substrate-remarks-ci.polkameter.xml --output polkameter-runs --fail-on-verdict
+    - polkameter run plans/substrate-remarks-ci.polkameter.xml --output polkameter-runs --fail-on verdict
   after_script:
     - bash dev-chain.sh stop
   artifacts:

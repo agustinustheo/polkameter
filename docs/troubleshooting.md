@@ -143,7 +143,7 @@ While the block follower is away, PolkaMeter can't see blocks. That time is left
 
 After a sending connection drops, PolkaMeter can resend a transaction whose reply is missing. The node may never have read it. Loss accounting still counts it once.
 
-The node counts as down in three cases. It stays unreachable for 15 s. A connection drops more than 5 times in 60 s. Or a local node's process restarts, which drops the pool, so it counts even when it's quick.
+[Stop rules](reading-results.md#stop-rules) says when the node counts as down.
 
 ### generator limit: the machine was suspended for \<seconds> s; the numbers after this are not the chain's
 

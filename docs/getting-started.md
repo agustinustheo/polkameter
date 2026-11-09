@@ -32,7 +32,7 @@ dev-chain: started pid 38403, log .polkameter/dev-chain/node.log
 dev-chain: ready at ws://127.0.0.1:9944, block 21, 6000 ms blocks
 ```
 
-The first start downloads about 155 MB into `.polkameter/dev-chain/bin`. Add `.polkameter/` to your `.gitignore`. Later starts reuse the files. If port 9944 is taken, set `POLKAMETER_DEV_CHAIN_PORT` to another port.
+The first start downloads about 155 MB into `.polkameter/dev-chain/bin`. Add `.polkameter/` to your `.gitignore`. Later starts reuse the files. If you set `POLKAMETER_DEV_CHAIN_PORT`, change the plan's endpoint and later `--rpc` too.
 
 `start` waits for 21 blocks, about two minutes. Preflight needs 20 blocks to measure the block time.
 
@@ -55,7 +55,7 @@ The second command maps the credential profile `substrate-dev` to the variable `
 
 ## 4. Run a stress plan
 
-[`examples/substrate-remarks.polkameter.xml`](https://github.com/agustinustheo/polkameter/blob/v0.3.0/examples/substrate-remarks.polkameter.xml) funds 16 flood signers and one signer per probe. It signs 65,000 remarks. Then it ramps from 100 to 600 transactions per second (tx/s), 30 seconds per step:
+[`examples/substrate-remarks.polkameter.xml`](https://github.com/agustinustheo/polkameter/blob/v0.3.0/examples/substrate-remarks.polkameter.xml) funds 16 [flood](plans.md#load) signers and one signer per [probe](plans.md#load). It signs 65,000 remarks. Then it ramps from 100 to 600 transactions per second (tx/s), 30 seconds per step:
 
 ```sh
 mkdir -p plans
@@ -117,7 +117,7 @@ The plan ramps from 10 to 50 tx/s, so a dev chain passes it. Raise the ramp's ra
 
 ## 6. Load your own runtime
 
-Set `POLKAMETER_DEV_RUNTIME` to your runtime's compressed Wasm to run it instead of the template:
+Stop the dev chain, then set `POLKAMETER_DEV_RUNTIME` to your runtime's compressed Wasm:
 
 ```sh
 POLKAMETER_DEV_RUNTIME=<path-to-your-runtime>.compact.compressed.wasm bash dev-chain.sh start

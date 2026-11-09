@@ -58,7 +58,7 @@ PolkaMeter starts one process per plugin per run and keeps it until the run ends
 - Keep each message within 8 MiB. Return an artifact reference for larger data.
 - An `Artifact` holds a version, a file path in the run directory and a BLAKE2 hash. The host checks the hash and reads at most 256 MiB. Give artifacts unique names when an operation runs more than once.
 - Standard output carries replies only. Standard error goes to `plugins/<id>/stderr.log`. The host [redacts](results.md#redaction) credentials from it as it is written. Never write credentials to it anyway.
-- The host clears the environment. It passes only `PATH`, `TMPDIR`, `TEMP`, `SYSTEMROOT`, `SSL_CERT_FILE` and `SSL_CERT_DIR`.
+- The host clears the environment. See [Environment variables](cli.md#environment-variables).
 
 The host never retries an operation. An `error` reply fails the step, but the plugin keeps running. A crash, a malformed reply, a cancellation or a timeout ends the plugin process. Later steps of that phase then fail. Before each teardown step, the host starts an ended plugin again and logs a `plugin-restarted` event.
 
@@ -68,7 +68,7 @@ When the host kills a plugin, it also kills every process the plugin started.
 
 ## Registry
 
-The registry is a JSON file, `~/.config/polkameter/plugins.json` by default. Set `POLKAMETER_PLUGIN_REGISTRY` to use another path. It stores plugins, credential profiles and topology aliases. For a credential profile it stores only the variable name. [`polkameter plugin`](cli.md#plugin) manages it.
+[`polkameter plugin`](cli.md#plugin) manages the registry.
 
 A plugin gets a credential's value only as the input `credentials.ID`, and only in steps that reference it.
 

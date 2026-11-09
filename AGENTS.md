@@ -75,7 +75,7 @@ scripts/dev-chain.sh stop
 - Plugins never log secrets. Errors about a secret URI name the input, never its value.
 - Plans never hold secrets. They name credential profiles.
 - New example plans go in `examples/` and must pass `polkameter validate` and the XSD.
-- Keep plan templates identical to their example files. Keep CI templates identical to the jobs in `docs/dev-chain.md`. `tests/validate-plans.py` checks both.
+- Keep plan templates identical to their example files. Keep CI templates identical to the jobs in `docs/ci.md`. `tests/validate-plans.py` checks both.
 - Docs follow `docs/STYLE.md`. Add new pages to `docs/SUMMARY.md` and `docs/llms.txt`.
 - Pin GitHub Actions in new workflow steps to a full commit SHA, with the version in a comment.
 - Commit messages are plain and describe the change. Don't add AI attribution: no `Co-Authored-By` lines for assistants and no "Generated with" footers, in commits or pull requests.
