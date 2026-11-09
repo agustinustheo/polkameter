@@ -287,7 +287,7 @@ fn on_chain(
 async fn chain_run(name: &str, fault: Fault) -> (Stop, Option<BreakingPoint>) {
 	let (mut t, mut io, opts) = on_chain(name, &[fault], (20.0, 30), 0);
 	let stop = load(&mut t, &mut io, &opts).await.unwrap();
-	recover(&mut t, &mut io, &opts, 12_000).await.unwrap();
+	recover(&mut t, &mut io, &opts, Some(12_000)).await.unwrap();
 	let finals: Vec<_> = t.steps.iter().map(final_step).collect();
 	(stop, breaking_point(&finals, &RULES))
 }
@@ -337,7 +337,7 @@ async fn phases_run(name: &str, pauses: &[Fault]) -> (Baseline, Recovery) {
 	let (mut t, mut io, opts) = on_chain(name, pauses, (2.0, 6), 3);
 	let base = baseline(&mut t, &mut io, &opts).await.unwrap();
 	load(&mut t, &mut io, &opts).await.unwrap();
-	(base, recover(&mut t, &mut io, &opts, 12_000).await.unwrap())
+	(base, recover(&mut t, &mut io, &opts, Some(12_000)).await.unwrap())
 }
 
 /// I3 in the baseline and in recovery. Paused in the baseline, PolkaMeter does not take the
@@ -347,12 +347,12 @@ async fn phases_run(name: &str, pauses: &[Fault]) -> (Baseline, Recovery) {
 #[tokio::test(start_paused = true)]
 async fn i3_a_pause_in_the_baseline_or_recovery_is_not_the_chains() {
 	let (base, r) = phases_run("attribution-phases", &[]).await;
-	assert!(base.max_ms <= 6_000, "{base:?}");
+	assert!(base.max_ms.is_some_and(|ms| ms <= 6_000), "{base:?}");
 	assert!(r.measured && r.recovered && r.seconds <= Some(6), "{r:?}");
 
 	let pauses = [Fault::Paused(8_000, 8_000), Fault::Paused(33_000, 15_000)];
 	let (base, r) = phases_run("attribution-phases-paused", &pauses).await;
-	assert!(base.max_ms <= 6_000, "the baseline probe timed across the pause: {base:?}");
+	assert!(base.max_ms.is_none_or(|ms| ms <= 6_000), "the probe timed across the pause: {base:?}");
 	assert!(!r.measured, "a pause in recovery is not the chain's recovery time: {r:?}");
 }
 
@@ -427,7 +427,7 @@ async fn a_pause_of_any_length_never_makes_a_latency_failure() {
 	let faults = [Fault::Slow(3_000), Fault::Paused(11_500, 4_900)];
 	let (mut t, mut io, opts) = on_chain("attribution-short-pause", &faults, (20.0, 30), 0);
 	let stop = load(&mut t, &mut io, &opts).await.unwrap();
-	recover(&mut t, &mut io, &opts, 12_000).await.unwrap();
+	recover(&mut t, &mut io, &opts, Some(12_000)).await.unwrap();
 	let finals: Vec<_> = t.steps.iter().map(final_step).collect();
 	assert_eq!(stop.class, None, "{}: {}", stop.rule.name(), stop.detail);
 	assert_eq!(breaking_point(&finals, &RULES), None, "{:?}", finals[0].p95_latency_ms);
@@ -444,7 +444,7 @@ async fn a_pause_is_never_the_nodes_reply_time() {
 	let stop = load(&mut t, &mut io, &opts).await.unwrap();
 	assert_eq!(stop.class, None, "{}: {}", stop.rule.name(), stop.detail);
 	let f = final_step(&t.steps[0]);
-	assert!(f.p95_reply_ms <= 3_000, "{}", f.p95_reply_ms);
+	assert!(f.p95_reply_ms.is_some_and(|ms| ms <= 3_000), "{:?}", f.p95_reply_ms);
 	assert!(f.max_oldest_pending_ms <= 3_000, "{}", f.max_oldest_pending_ms);
 }
 
@@ -477,4 +477,49 @@ fn a_pause_never_counts_in_block_gaps() {
 	assert_eq!(t.steps[0].blocks[1].gap_ms, None, "a gap with the pause in it is not known");
 	let stop = check_step(&t.steps, t.source(), 0, 6_000.0, &RULES, true).unwrap();
 	assert_ne!(stop.rule, Rule::SlowBlocks, "{}", stop.detail);
+}
+
+/// A4. A tx PolkaMeter could not time (here: read as the follower caught up after a reconnect)
+/// has no time in any export: no inclusion time in the ledger, no sample in the inclusion
+/// histogram, and a samples.jtl row apart from the step's timed ones. (They kept the time.)
+#[tokio::test(start_paused = true)]
+async fn untimed_transactions_have_no_time_in_any_export() {
+	let (mut t, mut io, opts) =
+		on_chain("attribution-exports", &[Fault::FollowerDown(9, 24)], (20.0, 30), 0);
+	load(&mut t, &mut io, &opts).await.unwrap();
+	recover(&mut t, &mut io, &opts, Some(12_000)).await.unwrap();
+	let untimed: Vec<_> = t.flood.values().filter(|tx| tx.untimed).collect();
+	assert!(!untimed.is_empty());
+	for tx in untimed {
+		assert_eq!(tx.inclusion_ms, None, "an untimed tx keeps no inclusion time");
+	}
+	let st = &t.steps[0];
+	assert_eq!(st.latencies_ms.len() as u64, st.included - st.untimed);
+
+	let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("attribution-jtl");
+	std::fs::create_dir_all(&dir).unwrap();
+	std::fs::write(dir.join("events.jsonl"), "").unwrap();
+	let rows = [
+		r#"{"hash":"aa","step":0,"sentAt":1,"replyMs":5,"inclusionMs":900,"untimed":false,"status":"finalized","failedInFinalizedBlock":false}"#,
+		r#"{"hash":"bb","step":0,"sentAt":2,"replyMs":5,"inclusionMs":null,"untimed":true,"status":"finalized","failedInFinalizedBlock":false}"#,
+	];
+	std::fs::write(dir.join("transactions.jsonl"), rows.join("\n") + "\n").unwrap();
+	polkameter::engine::artifacts::write_samples(&dir).unwrap();
+	let jtl = std::fs::read_to_string(dir.join("samples.jtl")).unwrap();
+	let cells: Vec<Vec<&str>> = jtl.lines().skip(1).map(|l| l.split(',').collect()).collect();
+	assert_eq!((cells[0][1], cells[0][2]), ("900", "load:step:0"), "{jtl}");
+	assert_eq!((cells[1][1], cells[1][2]), ("0", "load:step:0:untimed"), "{jtl}");
+}
+
+/// A5. Baseline probes all landed while PolkaMeter was paused: the baseline has no time, never
+/// 0 ms. (It was 0 ms, and passed.)
+#[tokio::test(start_paused = true)]
+async fn a_baseline_polkameter_did_not_observe_has_no_result() {
+	// Each probe is sent on a new block, and PolkaMeter pauses before the next one lands it.
+	let pauses =
+		[Fault::Paused(6_500, 6_000), Fault::Paused(13_000, 6_000), Fault::Paused(20_000, 6_000)];
+	let (base, _) = phases_run("attribution-baseline-paused", &pauses).await;
+	let json = serde_json::to_value(&base).unwrap();
+	assert_eq!(base.probes, 3);
+	assert!(json["p50Ms"].is_null() && json["maxMs"].is_null(), "{json}");
 }

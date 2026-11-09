@@ -88,11 +88,8 @@ pub fn measure_violation(f: &FinalStep, rules: &Rules) -> Option<(&'static str, 
 	if f.included_ratio < rules.min_included_ratio {
 		return Some(("included", format!("{} of the step's txs included", pct(f.included_ratio))));
 	}
-	if f.p95_latency_ms > rules.max_p95_latency_ms {
-		return Some((
-			"latency",
-			format!("p95 send -> best block {} s", secs(f.p95_latency_ms as f64)),
-		));
+	if let Some(p95) = f.p95_latency_ms.filter(|p95| *p95 > rules.max_p95_latency_ms) {
+		return Some(("latency", format!("p95 send -> best block {} s", secs(p95 as f64))));
 	}
 	if f.rejected_ratio > rules.max_refused_ratio {
 		return Some(("refused", format!("{} of submits refused", pct(f.rejected_ratio))));
@@ -223,13 +220,13 @@ pub fn check_step(
 		}
 	}
 	let step = Some(cur.step);
-	if cur.p95_reply_ms > rules.max_submit_reply_ms {
+	if let Some(p95) = cur.p95_reply_ms.filter(|p95| *p95 > rules.max_submit_reply_ms) {
 		return Some(Stop::new(
 			Rule::PoolIntake,
 			step,
 			format!(
 				"p95 submit reply {} s: the node takes that long to check and accept a tx",
-				secs(cur.p95_reply_ms as f64)
+				secs(p95 as f64)
 			),
 		));
 	}

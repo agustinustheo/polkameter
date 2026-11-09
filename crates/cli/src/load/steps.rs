@@ -38,12 +38,12 @@ pub struct FinalStep {
 	/// after a sender reconnect, or read as the block follower caught up after a reconnect.
 	#[serde(default)]
 	pub untimed: u64,
-	/// p50 send to best block.
-	pub p50_latency_ms: Millis,
-	/// p95 send to best block.
-	pub p95_latency_ms: Millis,
-	/// p95 submit reply.
-	pub p95_reply_ms: Millis,
+	/// p50 send to best block; `None` when no included tx was timed.
+	pub p50_latency_ms: Option<Millis>,
+	/// p95 send to best block; `None` when no included tx was timed.
+	pub p95_latency_ms: Option<Millis>,
+	/// p95 submit reply; `None` when no reply was timed.
+	pub p95_reply_ms: Option<Millis>,
 	/// Longest wait for a reply.
 	pub max_oldest_pending_ms: Millis,
 	/// Refusals by "code message".
@@ -119,15 +119,15 @@ impl StepStats {
 	}
 }
 
-/// The p-th percentile (nearest rank); 0 for no values.
-pub fn percentile(values: &[Millis], p: f64) -> Millis {
+/// The p-th percentile (nearest rank); `None` for no values: no evidence is no number.
+pub fn percentile(values: &[Millis], p: f64) -> Option<Millis> {
 	if values.is_empty() {
-		return 0;
+		return None;
 	}
 	let mut sorted = values.to_vec();
 	sorted.sort_unstable();
 	let i = ((p / 100.0) * sorted.len() as f64).floor() as usize;
-	sorted[i.min(sorted.len() - 1)]
+	Some(sorted[i.min(sorted.len() - 1)])
 }
 
 /// What a run of best blocks held.
@@ -197,9 +197,9 @@ mod tests {
 
 	#[test]
 	fn percentile_is_nearest_rank() {
-		assert_eq!(percentile(&[1, 5, 9, 100], 95.0), 100);
-		assert_eq!(percentile(&[1, 5, 9, 100], 50.0), 9);
-		assert_eq!(percentile(&[9, 1, 100, 5], 0.0), 1);
-		assert_eq!(percentile(&[], 95.0), 0);
+		assert_eq!(percentile(&[1, 5, 9, 100], 95.0), Some(100));
+		assert_eq!(percentile(&[1, 5, 9, 100], 50.0), Some(9));
+		assert_eq!(percentile(&[9, 1, 100, 5], 0.0), Some(1));
+		assert_eq!(percentile(&[], 95.0), None);
 	}
 }

@@ -306,9 +306,10 @@ fn ledger<'a>(
 			let failed_finalized = finalized.map(|_| evidence.finalized_failed.contains(hash));
 			let (failed, failed_on_fork) =
 				dispatch(tx.failed_in_block, failed_finalized, evidence.settled);
+			// An untimed tx has no inclusion time here either (`inclusionMs` is null).
 			let json = serde_json::json!({"version":1,"hash":hex::encode(hash),"step":tx.step,
 				"sentAt":tx.sent_at,"poolSnapshotBlock":cutoff,"accepted":tx.accepted,
-				"replyMs":tx.reply_ms,"inclusionMs":tx.inclusion_ms,"bestBlock":best,
+				"replyMs":tx.reply_ms,"inclusionMs":tx.inclusion_ms,"untimed":tx.untimed,"bestBlock":best,
 				"failedInBestBlock":tx.failed_in_block,"finalizedBlock":finalized,
 				"failedInFinalizedBlock":failed_finalized,"failedOnlyOnFork":failed_on_fork,
 				"inReadyPool":ready,"status":status});

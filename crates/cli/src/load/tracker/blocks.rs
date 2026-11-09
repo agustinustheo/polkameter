@@ -161,20 +161,20 @@ impl<S: Submit> Tracker<S> {
 		self.included_in.insert(*hash, block);
 		let mut untimed = late;
 		if let Some(flood) = self.flood.get_mut(hash) {
-			flood.inclusion_ms = Some(latency);
 			flood.failed_in_block = failed;
 			flood.untimed |= late;
 			untimed = flood.untimed;
+			flood.inclusion_ms = (!untimed).then_some(latency);
 		}
 		let st = &mut self.steps[step];
 		st.included += 1;
+		self.load.inc(&TX_INCLUDED, [CALL], 1.0, seen_at);
 		if untimed {
 			st.untimed += 1;
 		} else {
 			st.latencies_ms.push(latency);
+			self.load.observe(&TX_INCLUSION, [CALL], latency as f64 / 1000.0, seen_at);
 		}
-		self.load.inc(&TX_INCLUDED, [CALL], 1.0, seen_at);
-		self.load.observe(&TX_INCLUSION, [CALL], latency as f64 / 1000.0, seen_at);
 		if failed {
 			st.failed_in_block += 1;
 			self.load.inc(&TX_FAILED, [CALL], 1.0, seen_at);

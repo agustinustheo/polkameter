@@ -231,6 +231,9 @@ pub(super) fn node_down<S: Submit>(t: &Tracker<S>, io: &Io) -> Option<String> {
 }
 
 /// 1. Probes, one per block, must all land before any load; else the network is not healthy.
+///
+/// Probes PolkaMeter could not time (it was paused, or reconnecting) give the baseline no time:
+/// `p50_ms` and `max_ms` are then `None`, never 0.
 pub async fn baseline<S: Submit>(
 	t: &mut Tracker<S>,
 	io: &mut Io,
@@ -269,13 +272,15 @@ pub async fn baseline<S: Submit>(
 	let b = Baseline {
 		probes: t.probes.len(),
 		p50_ms: percentile(&ms, 50.0),
-		max_ms: ms.iter().copied().max().unwrap_or(0),
+		max_ms: ms.iter().copied().max(),
 	};
+	let time =
+		|ms: Option<Millis>| ms.map_or("no time".into(), |ms| format!("{} s", secs(ms as f64)));
 	crate::redact::diag!(
-		"baseline: {} probes landed, p50 {} s, max {} s",
+		"baseline: {} probes landed, p50 {}, max {}",
 		b.probes,
-		secs(b.p50_ms as f64),
-		secs(b.max_ms as f64)
+		time(b.p50_ms),
+		time(b.max_ms)
 	);
 	Ok(b)
 }
@@ -300,12 +305,19 @@ pub async fn drain<S: Submit>(
 }
 
 /// 3. No load, one probe per block, until probes land in time again and our backlog drained.
+///
+/// A chain not back with no `threshold_ms` (the baseline has no time) is not measured: twice the
+/// block interval is the threshold then, which may be too strict to hold against the chain.
 pub async fn recover<S: Submit>(
 	t: &mut Tracker<S>,
 	io: &mut Io,
 	opts: &RunOptions,
-	threshold_ms: Millis,
+	threshold_ms: Option<Millis>,
 ) -> Result<Recovery, RunError> {
+	let (threshold_ms, guessed) = match threshold_ms {
+		Some(ms) => (ms, false),
+		None => ((opts.block_interval_s * 2000.0) as Millis, true),
+	};
 	t.set_phase(Phase::Recovery, now_ms())?;
 	let _ = io.events.send(RunEvent::PhaseEdge);
 	let stopped_at = now_ms();
@@ -360,11 +372,16 @@ pub async fn recover<S: Submit>(
 		opts.rules.probes_in_a_row,
 		secs(threshold_ms as f64)
 	);
-	let measured = paused_in.is_none();
+	let not_back = guessed && back_at.is_none() && node_down(t, io).is_none();
+	let measured = paused_in.is_none() && !not_back;
 	let detail = match (paused_in, back_at, node_down(t, io)) {
 		(Some(paused), ..) => paused,
 		(None, Some(_), _) => landed,
 		(None, None, Some(why)) => format!("node down: {why}"),
+		(None, None, None) if not_back => format!(
+			"not back within {} s, but the baseline has no time, so that threshold is only twice the block interval",
+			secs(threshold_ms as f64)
+		),
 		(None, None, None) if t.recovery_blocks.is_empty() => {
 			format!("no new block in {} s", opts.recovery_s)
 		},

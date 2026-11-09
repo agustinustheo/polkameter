@@ -162,7 +162,8 @@ pub async fn run(
 	let phases = async {
 		progress("baseline")?;
 		let base = baseline(&mut tracker, &mut io, &run_opts).await?;
-		let threshold_ms = (2 * base.max_ms).max((2000.0 * block_interval_s) as u64);
+		// Without a baseline time there is no threshold the chain can be held to.
+		let threshold_ms = base.max_ms.map(|max| (2 * max).max((2000.0 * block_interval_s) as u64));
 		progress("load")?;
 		let stop = apply_load(&mut tracker, &mut io, &run_opts).await?;
 		diag!("stop: {}: {}", stop.rule.name(), stop.detail);
@@ -238,6 +239,13 @@ pub async fn run(
 	let node_down = tracker.node_down.clone().map(|why| format!("node down: {why}"));
 	let mut warnings = tracker.warnings.clone();
 	warnings.extend(rules::untimed_warning(&finals));
+	if base.max_ms.is_none() {
+		warnings.push(format!(
+			"the baseline has no result: {} timed none of its {} probes (it was paused, or reconnecting, while they landed)",
+			crate::PRODUCT_NAME,
+			base.probes
+		));
+	}
 	tracker.finish()?.close();
 	monitors.stop_chain().await?;
 	let mut problems = monitors.problems.all();

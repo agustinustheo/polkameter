@@ -120,13 +120,13 @@ async fn send_step<S: Submit>(
 fn log_step<S: Submit>(t: &Tracker<S>) {
 	let f = final_step(t.steps.last().expect("started"));
 	crate::redact::diag!(
-		"step {} prepared: target {} tx/s, sent {:.0} tx/s, {} blocks, {:.1} tx/s included, reply p95 {} s, {} replies pending, backlog {}",
+		"step {} prepared: target {} tx/s, sent {:.0} tx/s, {} blocks, {:.1} tx/s included, reply p95 {}, {} replies pending, backlog {}",
 		f.step,
 		f.target_rate,
 		f.sent_per_s,
 		f.blocks.blocks,
 		f.included_per_s,
-		secs(f.p95_reply_ms as f64),
+		f.p95_reply_ms.map_or("no time".into(), |ms| format!("{} s", secs(ms as f64))),
 		t.inflight(),
 		t.outstanding().len()
 	);

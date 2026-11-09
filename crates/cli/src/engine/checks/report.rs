@@ -233,6 +233,23 @@ fn recovery_line(s: &Summary) -> String {
 	}
 }
 
+fn baseline_line(s: &Summary) -> String {
+	let b = &s.baseline;
+	match (b.p50_ms, b.max_ms) {
+		(Some(p50), Some(max)) => format!(
+			"{} probes before the load, p50 {} s, max {} s",
+			b.probes,
+			to_fixed(p50 as f64 / 1000.0, 1),
+			to_fixed(max as f64 / 1000.0, 1)
+		),
+		_ => format!(
+			"{} probes before the load, **no result**: {} timed none of them (it was paused, or reconnecting, while they landed)",
+			b.probes,
+			crate::PRODUCT_NAME
+		),
+	}
+}
+
 fn loss_line(s: &Summary) -> String {
 	let l = &s.loss;
 	let mut out = format!(
@@ -286,9 +303,9 @@ fn step_row(f: &FinalStep) -> String {
 		to_fixed(f.sent_per_s, 0),
 		to_fixed(f.included_per_s, 0),
 		to_fixed(100.0 * f.included_ratio, 1),
-		to_fixed(f.p50_latency_ms as f64 / 1000.0, 1),
-		to_fixed(f.p95_latency_ms as f64 / 1000.0, 1),
-		to_fixed(f.p95_reply_ms as f64 / 1000.0, 2),
+		fmt(f.p50_latency_ms.map(|ms| ms as f64 / 1000.0), 1),
+		fmt(f.p95_latency_ms.map(|ms| ms as f64 / 1000.0), 1),
+		fmt(f.p95_reply_ms.map(|ms| ms as f64 / 1000.0), 2),
 		f.rejected.to_string(),
 		f.failed_in_block.to_string(),
 	];
@@ -355,7 +372,7 @@ fn render_summary(s: &Summary, steps: &[FinalStep], d: &RunData, checks: &[Check
         format!("- **Load stop:** {}: {}", s.stop.rule.name(), s.stop.detail),
         format!("- **Recovery:** {}", recovery_line(s)),
         format!("- **Loss check:** {}", loss_line(s)),
-        format!("- **Baseline:** {} probes before the load, p50 {} s, max {} s", s.baseline.probes, to_fixed(s.baseline.p50_ms as f64 / 1000.0, 1), to_fixed(s.baseline.max_ms as f64 / 1000.0, 1)),
+        format!("- **Baseline:** {}", baseline_line(s)),
         format!("- **Network:** spec {}, {} s blocks at start", s.network.spec_version, num(s.network.block_interval_s)),
         format!("- **Runner:** {} CPUs ({})", s.runner.cpus, s.runner.cpu_model.as_deref().unwrap_or("?")),
     ]);

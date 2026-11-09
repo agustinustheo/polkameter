@@ -53,13 +53,13 @@ pub struct FloodTx {
 	pub refused: bool,
 	/// Send to submit reply; `None` when not timed (the reply came across a pause of PolkaMeter).
 	pub reply_ms: Option<u64>,
-	/// Send to first observed inclusion.
+	/// Send to first observed inclusion; `None` when not included yet, or [`FloodTx::untimed`].
 	pub inclusion_ms: Option<u64>,
 	/// Dispatch failure in the best block observation.
 	pub failed_in_block: bool,
 	/// Its time to inclusion is not known: timed across a pause of PolkaMeter, in flight on a
 	/// sender connection that dropped, or read as the block follower caught up after a
-	/// reconnect. It is left out of its step's latency.
+	/// reconnect. It is left out of its step's latency, and of every export.
 	pub untimed: bool,
 }
 
@@ -495,13 +495,12 @@ impl<S: Submit> Tracker<S> {
 				r.waiting_since = None;
 				r.resent |= ids.contains(id);
 				match r.kind {
-					Kind::Flood { .. } => {
-						if let Some(tx) =
-							self.flood.get_mut(&r.hash).filter(|tx| tx.inclusion_ms.is_none())
-						{
+					Kind::Flood { .. } if !self.included_in.contains_key(&r.hash) => {
+						if let Some(tx) = self.flood.get_mut(&r.hash) {
 							tx.untimed = true;
 						}
 					},
+					Kind::Flood { .. } => {},
 					Kind::Probe { index } if self.probes[index].outcome == Outcome::Pending => {
 						self.untimed_probes.insert(index);
 					},

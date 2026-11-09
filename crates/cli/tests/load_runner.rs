@@ -183,7 +183,7 @@ async fn a_node_restart_the_sampler_saw_is_node_down_in_load_and_recovery() {
 		restarts.record(RESTARTED.into());
 	});
 	let started = tokio::time::Instant::now();
-	let r = recover(&mut t, &mut io, &opts, 12_000).await.unwrap();
+	let r = recover(&mut t, &mut io, &opts, Some(12_000)).await.unwrap();
 	assert!(started.elapsed() < std::time::Duration::from_secs(21), "{:?}", started.elapsed());
 	assert!(!r.recovered, "{}", r.detail);
 }

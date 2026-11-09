@@ -48,10 +48,11 @@ pub struct Probe {
 pub struct Baseline {
 	/// Probes.
 	pub probes: usize,
-	/// p50 latency.
-	pub p50_ms: Millis,
-	/// Max latency.
-	pub max_ms: Millis,
+	/// p50 latency of the probes PolkaMeter timed; `None` (`null`) when it timed none: it was
+	/// paused, or reconnecting, while they landed.
+	pub p50_ms: Option<Millis>,
+	/// Max latency, the same way.
+	pub max_ms: Option<Millis>,
 }
 
 /// After the load stopped: back in time, and the backlog drained.
@@ -59,7 +60,8 @@ pub struct Baseline {
 #[serde(rename_all = "camelCase")]
 pub struct Recovery {
 	/// False when the node closed the RPC connection, or PolkaMeter itself was paused while it
-	/// measured (its pause is not the chain's recovery time).
+	/// measured (its pause is not the chain's recovery time), or the chain was not back by a
+	/// threshold the baseline could not set.
 	pub measured: bool,
 	/// Probes landed in time again.
 	pub recovered: bool,
