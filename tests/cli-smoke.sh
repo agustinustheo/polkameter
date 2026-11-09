@@ -16,7 +16,7 @@ trap 'rm -rf "$work"' EXIT
 "$cli" validate "$plan" | grep -q 'structurally valid'
 "$cli" preflight "$plan" > /dev/null
 
-# Both verdict policies on a plan without a load test: there is no verdict to fail on.
+# A plan without a load test has no verdict to fail on.
 "$cli" run "$plan" --output "$work/local" --fail-on verdict-or-inconclusive > /dev/null
 run=$(ls -d "$work"/local/run-*)
 [ ! -e "$run/summary.json" ]

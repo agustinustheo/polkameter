@@ -39,7 +39,7 @@ PolkaMeter doesn't redact:
 | --- | --- | --- |
 | `calibration.json` | Configured and measured block interval. | |
 | `summary.json` | The summary as data. | |
-| `steps.jsonl` | Per rate step and lane: target rate, sent, included, refused, p50 and p95 latency, block gaps, node CPU and memory. See [Which step does a number belong to?](reading-results.md#which-step-does-a-number-belong-to) | |
+| `steps.jsonl` | Per rate step: target rate, sent, included, refused, p50 and p95 latency, block gaps, node CPU and memory. See [Which step does a number belong to?](reading-results.md#which-step-does-a-number-belong-to) | |
 | `load.jsonl` | The load tool's `polkameter_*` metrics. | |
 | `blocks.jsonl` | Each best block, and the gap since the previous one. The gap is `null` for the first block after a reconnect. | |
 | `transactions.jsonl` | Each sent flood transaction and its [status](reading-results.md#did-transactions-get-lost). | |
