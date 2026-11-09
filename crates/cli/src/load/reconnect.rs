@@ -4,15 +4,16 @@
 //! run's cancellation: a node that accepts TCP and never finishes the WebSocket handshake cannot
 //! hold the run. The budget is used in full: a wait that would pass the deadline is cut short,
 //! and the last attempt is made at the deadline (with its own attempt time), so a node back
-//! within 15 s is never down. A connection that keeps dropping is bounded as well: more than
-//! [`MAX_DROPS`] drops within [`DROP_WINDOW`] count as a node that is down.
+//! within 15 s is never down. A connection that keeps dropping is reported too: more than
+//! [`MAX_DROPS`] drops within [`DROP_WINDOW`] make it unstable, which ends the load without
+//! blaming the chain. Only the node's own identity tells that it restarted.
 
 use std::{collections::VecDeque, fmt::Display, future::Future, time::Duration};
 
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-/// Drops of one connection within [`DROP_WINDOW`] that are still reconnected.
+/// Drops of one connection within [`DROP_WINDOW`] before it counts as unstable.
 pub const MAX_DROPS: usize = 5;
 /// The window [`MAX_DROPS`] counts in.
 pub const DROP_WINDOW: Duration = Duration::from_secs(60);
@@ -87,7 +88,7 @@ where
 	Reconnect::GaveUp(format!("not reachable for {} s: {last}", backoff.total.as_secs()))
 }
 
-/// The drops of one connection, to bound a connection that keeps dropping.
+/// The drops of one connection, to see a connection that keeps dropping.
 #[derive(Debug, Default)]
 pub struct Drops(VecDeque<Instant>);
 
@@ -102,7 +103,7 @@ impl Drops {
 		self.0.len() <= MAX_DROPS
 	}
 
-	/// Why the connection counts as down, for the stop detail.
+	/// Why the connection counts as unstable, for the stop detail.
 	pub fn reason() -> String {
 		format!(
 			"the RPC connection dropped more than {MAX_DROPS} times in {} s",

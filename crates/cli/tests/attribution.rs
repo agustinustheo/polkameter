@@ -60,7 +60,6 @@ fn runner<S: Submit>(
 		problems: Problems::default(),
 		tool_failed: CancellationToken::new(),
 		boot: || Some(now_ms()),
-		restarts: Problems::default(),
 	};
 	let opts = RunOptions {
 		rules: RULES,
@@ -161,6 +160,18 @@ enum Fault {
 	FinalityFrozen(u64),
 	/// The chain makes no block from second `.0` on: a production stall.
 	Halted(u64),
+	/// The follower loses the node at second `.0` and is back 2 s later, with `.1` about who
+	/// answers: the same node restarted, or another one.
+	Reconnect(u64, Answer),
+}
+
+/// Who answers the follower after a [`Fault::Reconnect`].
+#[derive(Clone, Copy)]
+enum Answer {
+	/// The node, restarted: same peer ID, new start block.
+	Restarted,
+	/// Another node behind a load balancer: a new peer ID.
+	OtherNode,
 }
 
 /// A chain with a block every 6 s, including what reached `pool` `delay_ms` before, and the
@@ -172,7 +183,7 @@ fn chain(
 	blocks_tx: mpsc::UnboundedSender<BlockEvent>,
 ) {
 	let (mut delay_ms, mut down, mut sender_down) = (0, None, None);
-	let (mut frozen, mut halted) = (u64::MAX, u64::MAX);
+	let (mut frozen, mut halted, mut reconnect) = (u64::MAX, u64::MAX, None);
 	for fault in faults {
 		match *fault {
 			Fault::Paused(at, ms) => {
@@ -187,6 +198,7 @@ fn chain(
 			Fault::Linked => {},
 			Fault::FinalityFrozen(from) => frozen = from,
 			Fault::Halted(from) => halted = from,
+			Fault::Reconnect(at, answer) => reconnect = Some((at, answer)),
 		}
 	}
 	tokio::spawn(async move {
@@ -225,6 +237,18 @@ fn chain(
 				}
 			}
 			let mut events = Vec::new();
+			if let Some((at, answer)) = reconnect {
+				if second == at {
+					events.push(BlockEvent::Disconnected { at: now, reason: "reset".into() });
+				}
+				if second == at + 2 {
+					events.push(BlockEvent::Reconnected { at: now });
+					events.push(match answer {
+						Answer::Restarted => BlockEvent::Restarted("the node restarted".into()),
+						Answer::OtherNode => BlockEvent::OtherNode("its peer ID changed".into()),
+					});
+				}
+			}
 			if down.is_some_and(|(from, _)| from == second) {
 				events.push(BlockEvent::Disconnected { at: now, reason: "stream ended".into() });
 			}
@@ -552,6 +576,43 @@ async fn a_recovery_polkameter_did_not_observe_is_not_measured() {
 	}
 }
 
+/// A7. The RPC connection dropped again and again, each time back at once, and the node did not
+/// restart: the connection is unstable. The load ends without a chain failure, on "generator
+/// limit". (It was "node down": more than 5 drops in 60 s.)
+#[tokio::test]
+async fn a_connection_that_keeps_dropping_is_unstable_not_node_down() {
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let url = format!("ws://{}", listener.local_addr().unwrap());
+	tokio::spawn(async move {
+		loop {
+			let (tcp, _) = listener.accept().await.unwrap();
+			// Each connection answers submits for 100 ms, then drops.
+			tokio::spawn(async move {
+				let _ = tokio::time::timeout(
+					Duration::from_millis(100),
+					serve(tcp, Instant::now() + Duration::from_secs(60)),
+				)
+				.await;
+			});
+		}
+	});
+	let (replies_tx, replies) = mpsc::unbounded_channel();
+	let backoff = Backoff {
+		waits: vec![Duration::from_millis(20)],
+		attempt: Duration::from_secs(1),
+		total: Duration::from_secs(15),
+	};
+	let sender = Sender::open(&url, 1, replies_tx, &backoff).await.unwrap();
+	let (_blocks_tx, blocks) = mpsc::unbounded_channel();
+	let (mut t, mut io, opts) =
+		runner("attribution-unstable", sender, replies, blocks, (50.0, 5), 0);
+	t.last_head.0 = now_ms() + 60_000;
+	t.last_finalized.0 = now_ms() + 60_000;
+	let stop = load(&mut t, &mut io, &opts).await.unwrap();
+	assert_eq!((stop.rule, stop.class), (Rule::GeneratorLimit, None), "{}", stop.detail);
+	assert!(stop.detail.contains("connection unstable"), "{}", stop.detail);
+}
+
 /// A8. The loss check's connection dropped and the node was back 8 s later, within the budget:
 /// the read is made again on a new connection, and gets its answer. (It was not: 48 txs were
 /// left unverified.)
@@ -579,7 +640,74 @@ async fn the_loss_check_reconnects_within_the_budget() {
 	assert!(*live.conn(), "reads go on on the new connection");
 }
 
+/// A10. The sender's connection dropped with a tx unanswered; the node had it, put it in a block,
+/// and refused the copy sent after the reconnect as "outdated". That refusal is no evidence
+/// against the chain: the tx counts as included when its block is read. (It was refused, and
+/// never included: a failure onset on a chain that included every tx.)
+#[test]
+fn a_refused_resend_is_not_a_refusal() {
+	let (_replies_tx, replies) = mpsc::unbounded_channel();
+	let (_blocks_tx, blocks) = mpsc::unbounded_channel();
+	let link = Some(Arc::new(Mutex::new(Link::default())));
+	let node = Node { replies: mpsc::unbounded_channel().0, pool: Pool::default(), link };
+	let (mut t, ..) = runner("attribution-resend-refused", node, replies, blocks, (1.0, 30), 0);
+	let start = now_ms();
+	t.start_step(0, 1.0, start).unwrap();
+	assert!(t.send_next(start));
+	t.on_reply(Reply::Interrupted { connection: 0, ids: vec![1], reason: "reset".into() });
+	t.on_reply(Reply::Reconnected { connection: 0, down_ms: 1_000 });
+	let error = "Invalid Transaction: Transaction is outdated".to_owned();
+	t.on_reply(Reply::Refused { id: 1, at: start + 1_001, code: 1010, error });
+	let hash = Tx::new(0u32.to_le_bytes().to_vec()).hash;
+	let record = BlockRecord { number: 1, seen_at: start + 6_000, ..Default::default() };
+	t.on_block(BlockEvent::Fetched { record, txs: vec![(hash, false)] }, start + 6_000)
+		.unwrap();
+	let st = &t.steps[0];
+	assert_eq!((st.included, st.rejected), (1, 0));
+	assert!(!t.flood[&hash].refused);
+}
+
+/// A9. The follower reconnects with the node unchanged (a proxy or the network dropped), or to
+/// another node behind a load balancer: neither is node down. PolkaMeter tells them from the
+/// node's own identity, never from the process on the endpoint's port, which may be the proxy.
+/// (A restarted proxy was "node down: the node restarted".)
+#[tokio::test(start_paused = true)]
+async fn a_restarted_proxy_is_not_a_restarted_node() {
+	use polkameter::load::follower::Identity;
+	let node = Identity { peer_id: Some("12D3KooWNode".into()), starting_block: Some(10) };
+	let other = Identity { peer_id: Some("12D3KooWOther".into()), starting_block: Some(50) };
+	assert_eq!(node.restarted(&node.clone()), None, "a proxy restart changes nothing");
+	assert_eq!(node.other_node(&node.clone()), None);
+	assert_eq!(node.restarted(&other), None, "another node did not restart");
+	assert!(node.other_node(&other).is_some());
+
+	let (stop, _) =
+		chain_run("attribution-other-node", Fault::Reconnect(10, Answer::OtherNode)).await;
+	assert_eq!(stop.rule, Rule::RateCap, "{}", stop.detail);
+}
+
 // B. Never excuse the chain for a fault in it.
+
+/// B1. The node restarted (the same peer ID, a new sync starting block) while every
+/// connection reconnected within the budget: that is node down, in the load and in recovery.
+/// (It was a warning, and the load ended on "generator limit".)
+#[tokio::test(start_paused = true)]
+async fn a_restarted_node_is_node_down_in_any_phase() {
+	use polkameter::load::follower::Identity;
+	let node = Identity { peer_id: Some("12D3KooWNode".into()), starting_block: Some(10) };
+	let restarted = Identity { starting_block: Some(60), ..node.clone() };
+	assert!(node.restarted(&restarted).is_some_and(|why| why.contains("restarted")));
+
+	let (stop, _) =
+		chain_run("attribution-restarted", Fault::Reconnect(10, Answer::Restarted)).await;
+	assert_eq!((stop.rule, stop.class), (Rule::NodeDown, Some(Class::Hard)), "{}", stop.detail);
+
+	let faults = [Fault::Reconnect(10, Answer::Restarted)];
+	let (mut t, mut io, opts) = on_chain("attribution-restarted-recovery", &faults, (2.0, 6), 0);
+	load(&mut t, &mut io, &opts).await.unwrap();
+	let r = recover(&mut t, &mut io, &opts, Some(12_000)).await.unwrap();
+	assert!(r.measured && !r.recovered && r.detail.starts_with("node down"), "{r:?}");
+}
 
 /// B2. Finality stopped in recovery, longer than the 60 s limit, while PolkaMeter was also
 /// paused for 7 s: the chain failed, and a pause of PolkaMeter does not excuse it. (The

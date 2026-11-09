@@ -12,8 +12,9 @@
 //! may never have read them, and a later nonce would wait behind a missing one. A node that had
 //! read one answers "already imported" or "temporarily banned", which the tracker takes as
 //! accepted. Requests still queued are written after them. While a connection is down, submits
-//! go to the others. When the node stays unreachable for the backoff, or the connection keeps
-//! dropping, it ends with [`Reply::Closed`], which the "node down" rule reads.
+//! go to the others. When the node stays unreachable for the backoff, it ends with
+//! [`Reply::Closed`], which the "node down" rule reads. A connection that keeps dropping is
+//! [`Reply::Unstable`] once, and goes on reconnecting.
 
 use std::{
 	collections::BTreeMap,
@@ -72,6 +73,14 @@ pub enum Reply {
 		/// Why it dropped.
 		reason: String,
 	},
+	/// A connection dropped more than [`crate::load::reconnect::MAX_DROPS`] times in
+	/// [`crate::load::reconnect::DROP_WINDOW`]: it is unstable. Sent once; it goes on.
+	Unstable {
+		/// Connection index.
+		connection: usize,
+		/// Why.
+		reason: String,
+	},
 	/// A dropped connection is open again.
 	Reconnected {
 		/// Connection index.
@@ -83,8 +92,7 @@ pub enum Reply {
 	Closed {
 		/// Connection index.
 		connection: usize,
-		/// True when it could not be opened again, or kept dropping: the node is down. False
-		/// when we closed it.
+		/// True when it could not be opened again: the node is down. False when we closed it.
 		by_node: bool,
 	},
 }
@@ -181,7 +189,7 @@ type Unanswered = Arc<Mutex<BTreeMap<u64, String>>>;
 impl Link {
 	async fn run(self, mut ws: Socket, mut rx: mpsc::UnboundedReceiver<(u64, String)>) {
 		let unanswered = Unanswered::default();
-		let mut drops = Drops::default();
+		let (mut drops, mut unstable) = (Drops::default(), false);
 		loop {
 			let reason = match self.session(ws, &mut rx, &unanswered).await {
 				End::Done => return self.closed(false),
@@ -197,9 +205,10 @@ impl Link {
 				ids,
 				reason: reason.clone(),
 			});
-			if !drops.record() {
+			if !drops.record() && !std::mem::replace(&mut unstable, true) {
 				crate::redact::diag!("sender: connection {}: {}", self.connection, Drops::reason());
-				return self.closed(true);
+				let reason = Drops::reason();
+				let _ = self.replies.send(Reply::Unstable { connection: self.connection, reason });
 			}
 			let down_at = now_ms();
 			let attempt = self.backoff.attempt;

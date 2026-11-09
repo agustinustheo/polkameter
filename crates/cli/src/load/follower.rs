@@ -11,11 +11,16 @@
 //! with backoff, subscribes, and only then sends [`BlockEvent::Reconnected`]: the time between is
 //! an observation gap, not a chain stall, and the first block after it has no gap to the block
 //! before. The blocks missed meanwhile are filled in below the next best block. A node that stays
-//! unreachable for the backoff (about 15 s), or that drops the connection again and again, is
-//! [`BlockEvent::Unreachable`]: node down. A reconnect that lands on another node, or on the same
-//! node restarted, is [`BlockEvent::OtherNode`]: a warning only. Behind a load balancer a
-//! reconnect can reach another healthy node; a chain that is really down still trips the stall
-//! and finality stall rules.
+//! unreachable for the backoff (about 15 s) is [`BlockEvent::Unreachable`]: node down. A
+//! connection that drops again and again is [`BlockEvent::Unstable`]: the follower goes on, and
+//! the load ends without blaming the chain.
+//!
+//! After a reconnect the node's own identity tells what changed ([`Identity`]): the same peer ID
+//! with a new sync starting block is the same node restarted, [`BlockEvent::Restarted`]: node
+//! down. A new peer ID is another node (a load balancer), [`BlockEvent::OtherNode`]: a warning
+//! only; a chain that is really down still trips the stall and finality stall rules. Neither
+//! changed is the connection only (a proxy restarted, the network dropped): nothing to report.
+//! The process behind the endpoint's port is no evidence, because it may be a proxy.
 //!
 //! Every read the heads task makes has [`REQUEST`] to answer and gives way to `stop`, so a node
 //! that never answers cannot hold the task past the end of the run.
@@ -78,13 +83,18 @@ pub enum BlockEvent {
 		/// When.
 		at: Millis,
 	},
-	/// The node stayed unreachable for the whole reconnect backoff, or kept dropping the
-	/// connection: the node is down.
+	/// The node stayed unreachable for the whole reconnect backoff: the node is down.
 	Unreachable(String),
-	/// After a reconnect the node is another process (a new peer ID or starting block): a load
-	/// balancer sent the connection to another node, or the node restarted. A warning, not node
-	/// down: the stall rules judge whether the chain still produces blocks.
+	/// After a reconnect the node is the same node, restarted: node down.
+	Restarted(String),
+	/// After a reconnect the node is another node (a new peer ID), or what changed is not known:
+	/// a load balancer sent the connection to another node. A warning, not node down: the stall
+	/// rules judge whether the chain still produces blocks.
 	OtherNode(String),
+	/// The connection dropped more than [`crate::load::reconnect::MAX_DROPS`] times in
+	/// [`crate::load::reconnect::DROP_WINDOW`], and the node did not restart: the connection is
+	/// unstable. Sent once; the follower goes on.
+	Unstable(String),
 	/// An answer did not decode as our types: an error of our tools, the run stops.
 	Tool(String),
 }
@@ -216,15 +226,28 @@ impl Identity {
 		}
 	}
 
-	/// Why `now` is another process than `self`, if it is: a load balancer sent the
-	/// connection to another node, or the node restarted. A value either side could not read
-	/// tells nothing.
+	/// Why `now` is the node of `self` restarted, if it is: the same peer ID, and a new sync
+	/// starting block (the best block when the process started). A proxy or a network between
+	/// changes neither, and another node has another peer ID.
+	pub fn restarted(&self, now: &Identity) -> Option<String> {
+		let (Some(a), Some(b)) = (&self.peer_id, &now.peer_id) else { return None };
+		let (Some(from), Some(to)) = (self.starting_block, now.starting_block) else { return None };
+		(a == b && from != to).then(|| {
+			format!(
+				"the node restarted: after a reconnect it has the same peer ID, {b}, and its sync starting block changed from {from} to {to}"
+			)
+		})
+	}
+
+	/// Why `now` is another node than `self`, if it is: its peer ID changed (a load balancer
+	/// sent the connection to another node, or a node restarted with a new key), or, with a
+	/// peer ID either side could not read, its sync starting block changed. A value either side
+	/// could not read tells nothing.
 	pub fn other_node(&self, now: &Identity) -> Option<String> {
-		const WHY: &str = "reconnected to a different node (load balancer, or the node restarted)";
-		if let (Some(a), Some(b)) = (&self.peer_id, &now.peer_id)
-			&& a != b
-		{
-			return Some(format!("{WHY}: its peer ID changed from {a} to {b}"));
+		const WHY: &str =
+			"reconnected to a different node (load balancer, or a node restarted with a new key)";
+		if let (Some(a), Some(b)) = (&self.peer_id, &now.peer_id) {
+			return (a != b).then(|| format!("{WHY}: its peer ID changed from {a} to {b}"));
 		}
 		if let (Some(a), Some(b)) = (self.starting_block, now.starting_block)
 			&& a != b
@@ -284,7 +307,7 @@ async fn heads(
 ) {
 	let backoff = Backoff::default();
 	let mut followed = Followed::default();
-	let mut drops = Drops::default();
+	let (mut drops, mut unstable) = (Drops::default(), false);
 	let first = tokio::time::timeout(backoff.attempt, Session::subscribe(client));
 	let mut session = match until_stopped(&stop, first).await {
 		None => return,
@@ -306,9 +329,8 @@ async fn heads(
 		let lost_at = now_ms();
 		crate::redact::diag!("blocks: lost the node ({reason}); reconnecting");
 		let _ = out.send(BlockEvent::Disconnected { at: lost_at, reason: reason.clone() });
-		if !drops.record() {
-			let _ = out.send(BlockEvent::Unreachable(format!("blocks: {}", Drops::reason())));
-			return;
+		if !drops.record() && !std::mem::replace(&mut unstable, true) {
+			let _ = out.send(BlockEvent::Unstable(format!("blocks: {}", Drops::reason())));
 		}
 		let s = match reconnect(|| Session::open(&url), &backoff, &stop).await {
 			Reconnect::Connected(s) => s,
@@ -321,7 +343,10 @@ async fn heads(
 			},
 		};
 		if let Some(id) = followed.identity.as_mut() {
-			if let Some(why) = id.other_node(&s.identity) {
+			if let Some(why) = id.restarted(&s.identity) {
+				crate::redact::diag!("blocks: {why}");
+				let _ = out.send(BlockEvent::Restarted(why));
+			} else if let Some(why) = id.other_node(&s.identity) {
 				crate::redact::diag!("blocks: {why}");
 				let _ = out.send(BlockEvent::OtherNode(why));
 			}

@@ -56,8 +56,11 @@ impl<S: Submit> Tracker<S> {
 				// observed (`unobserved_between`): a reconnect does not restart them.
 				self.prev_head_at = Some(at);
 			},
-			BlockEvent::Unreachable(why) => {
+			BlockEvent::Unreachable(why) | BlockEvent::Restarted(why) => {
 				self.node_down.get_or_insert(why);
+			},
+			BlockEvent::Unstable(why) => {
+				self.unstable.get_or_insert(why);
 			},
 			// Not node down: behind a load balancer the new node may be healthy. A chain that is
 			// really down still trips the stall and finality stall rules.

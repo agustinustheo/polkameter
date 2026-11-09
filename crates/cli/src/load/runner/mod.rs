@@ -111,9 +111,6 @@ pub struct Io {
 	/// A clock that counts sleep ([`crate::load::clock::boot_ms`]), only to see that the
 	/// machine was suspended; a test changes it.
 	pub boot: fn() -> Option<Millis>,
-	/// Node restarts the process sampler saw (the node's PID changed): node down, in the load and
-	/// in recovery.
-	pub restarts: Problems,
 }
 
 /// No result: the network was not healthy before the load, or a raw file could not be written.
@@ -225,10 +222,10 @@ impl Ticks {
 	}
 }
 
-/// Why the node is down, if it is: the block follower lost it, or the process sampler saw its PID
-/// change (a local node that restarted). Both the load and recovery end on it.
-pub(super) fn node_down<S: Submit>(t: &Tracker<S>, io: &Io) -> Option<String> {
-	t.node_down.clone().or_else(|| io.restarts.all().into_iter().next())
+/// Why the node is down, if it is: the block follower lost it for the reconnect budget, or saw
+/// it restart. Both the load and recovery end on it.
+pub(super) fn node_down<S: Submit>(t: &Tracker<S>) -> Option<String> {
+	t.node_down.clone()
 }
 
 /// What the live rules read, now.
@@ -245,7 +242,8 @@ pub(super) fn live<S: Submit>(t: &Tracker<S>, io: &Io, opts: &RunOptions, step: 
 		finalized: t.last_finalized.1,
 		unobserved_since_block: t.unobserved_between(t.last_head.0, now),
 		unobserved_since_finalized: t.unobserved_between(t.last_finalized.0, now),
-		node_down: node_down(t, io),
+		node_down: node_down(t),
+		unstable: t.unstable.clone(),
 		smoke_problems: if opts.mode == Mode::Smoke { io.problems.all() } else { Vec::new() },
 	}
 }

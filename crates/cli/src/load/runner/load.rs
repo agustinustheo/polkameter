@@ -5,7 +5,7 @@ use std::time::Duration;
 use polkameter_plugin_sdk::observers::summary::{Rule, Stop};
 use tokio::time::Instant;
 
-use super::{Io, RunError, RunEvent, RunOptions, Ticks, live};
+use super::{Io, RunError, RunEvent, RunOptions, Ticks, live, node_down};
 use crate::load::{
 	now_ms,
 	rules::{check_step, live_failure, measure_violation, secs},
@@ -47,6 +47,11 @@ pub async fn load<S: Submit>(
 		}
 		if let Some(stop) = ended {
 			return Ok(stop);
+		}
+		// The follower may have seen the node restart only as the step ended: that, not the
+		// step's low send rate, is why it sent too little.
+		if let Some(why) = node_down(t) {
+			return Ok(Stop::new(Rule::NodeDown, Some(k), why));
 		}
 		// After the last step an empty flood only means it was sized to the plan.
 		let last = k as usize + 1 == opts.plan.steps.len();

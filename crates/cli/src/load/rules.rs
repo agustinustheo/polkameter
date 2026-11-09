@@ -11,14 +11,15 @@
 //!   slow blocks     blocks arrive 2x slower than at the start (wall clock)    hard
 //!   stall           no new best block for 30 s of observed time               hard
 //!   finality stall  no new finalized block for 60 s, same                      hard
-//!   node down       the node stayed unreachable after every reconnect attempt  hard
+//!   node down       unreachable for the reconnect budget, or restarted        hard
 //!
 //! A dropped RPC connection that opens again is an observation gap (a problem), not a failure:
 //! the stall rules leave its time out, time with no connection open is not "pool intake", and
 //! txs seen late as the follower catches up or sent again after a sender reconnect are left out
-//! of the latency, as are txs timed across a pause of PolkaMeter itself, of any length. The
-//! stall, finality stall and node down rules also hold in recovery and while the loss check
-//! runs.
+//! of the latency, as are txs timed across a pause of PolkaMeter itself, of any length. A
+//! connection that keeps dropping, with the node not restarted, ends the load on "generator
+//! limit". The stall, finality stall and node down rules also hold in recovery and while the
+//! loss check runs.
 //!
 //! The ramp also ends without a failure on: rate cap, budget used up, generator limit, smoke error.
 
@@ -124,9 +125,10 @@ pub struct LiveState {
 	pub unobserved_since_block: Millis,
 	/// The same, since the last new finalized block.
 	pub unobserved_since_finalized: Millis,
-	/// The node is down: unreachable for the reconnect backoff, dropping the connection again
-	/// and again, or restarted.
+	/// The node is down: unreachable for the reconnect backoff, or restarted.
 	pub node_down: Option<String>,
+	/// A connection to the node kept dropping, while the node did not restart.
+	pub unstable: Option<String>,
 }
 
 /// A failure that shows during a step.
@@ -173,6 +175,12 @@ pub fn live_failure(s: &LiveState, rules: &Rules) -> Option<Stop> {
 			s.finalized
 		);
 		return Some(Stop::new(Rule::FinalityStall, step, detail));
+	}
+	if let Some(why) = &s.unstable {
+		let detail = format!(
+			"connection unstable: {why}; the node did not restart, so this is the connection to it, not the chain"
+		);
+		return Some(Stop::new(Rule::GeneratorLimit, step, detail));
 	}
 	(!s.smoke_problems.is_empty())
 		.then(|| Stop::new(Rule::SmokeError, step, s.smoke_problems.join("; ")))

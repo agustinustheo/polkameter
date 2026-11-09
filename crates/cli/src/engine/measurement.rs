@@ -158,7 +158,6 @@ pub async fn run(
 		problems: monitors.problems.clone(),
 		tool_failed: monitors.tool_failed.clone(),
 		boot: crate::load::clock::boot_ms,
-		restarts: monitors.node_restarts.clone(),
 	};
 
 	let phases = async {

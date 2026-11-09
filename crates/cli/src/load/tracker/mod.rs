@@ -117,9 +117,12 @@ pub struct Tracker<S> {
 	/// Times the block follower lost the node and followed it again: not observed, so not a
 	/// chain stall. Also sender connections that dropped and were opened again.
 	pub observation_gaps: Vec<ObservationGap>,
-	/// The node is down: the follower could not reach it within the reconnect backoff, or the
-	/// connection kept dropping.
+	/// The node is down: the follower could not reach it within the reconnect backoff, or saw it
+	/// restart.
 	pub node_down: Option<String>,
+	/// A connection to the node kept dropping, while the node did not restart: not the chain's
+	/// failure, but no measure can be trusted, so the load ends on "generator limit".
+	pub unstable: Option<String>,
 	/// What the run should show but is not a problem: a reconnect that reached another node
 	/// (a load balancer, or the node restarted).
 	pub warnings: Vec<String>,
@@ -219,6 +222,7 @@ impl<S: Submit> Tracker<S> {
 			unreadable: Vec::new(),
 			observation_gaps: Vec::new(),
 			node_down: None,
+			unstable: None,
 			warnings: Vec::new(),
 			prev_head_at: None,
 			catching_up: None,
@@ -473,6 +477,10 @@ impl<S: Submit> Tracker<S> {
 			Reply::Reconnected { connection, down_ms } => {
 				return self.on_reconnected(connection, down_ms);
 			},
+			Reply::Unstable { connection, reason } => {
+				self.unstable.get_or_insert(format!("sender connection {connection}: {reason}"));
+				return;
+			},
 		};
 		let Some(req) = self.requests.remove(&id) else { return };
 		let since = req.waiting_since.unwrap_or(at);
@@ -484,8 +492,19 @@ impl<S: Submit> Tracker<S> {
 		if let Some(tx) = self.flood.get_mut(&req.hash) {
 			tx.reply_ms = reply_ms;
 		}
-		// A request sent again that the node already has: the first one got through.
-		let refusal = refusal.filter(|(code, _)| !(req.resent && ALREADY_HAVE.contains(code)));
+		// A refusal of a request sent again is no evidence: the node may have read the first
+		// copy, and refuses this one for it (already imported, banned, or outdated once the
+		// first is in a block). "Already have it" says the first one got through; anything else
+		// leaves the tx to the blocks and the loss check.
+		if req.resent
+			&& let Some((code, _)) = &refusal
+		{
+			if let Some(tx) = self.flood.get_mut(&req.hash).filter(|_| ALREADY_HAVE.contains(code))
+			{
+				tx.accepted = true;
+			}
+			return;
+		}
 		let Some((code, error)) = refusal else {
 			if let Some(tx) = self.flood.get_mut(&req.hash) {
 				tx.accepted = true;
