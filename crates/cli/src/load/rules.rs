@@ -16,8 +16,9 @@
 //! A dropped RPC connection that opens again is an observation gap (a problem), not a failure:
 //! the stall rules leave its time out, time with no connection open is not "pool intake", and
 //! txs seen late as the follower catches up or sent again after a sender reconnect are left out
-//! of the latency, as are txs timed across a pause of PolkaMeter itself, of any length. A pause
-//! in recovery leaves the recovery unmeasured.
+//! of the latency, as are txs timed across a pause of PolkaMeter itself, of any length. The
+//! stall, finality stall and node down rules also hold in recovery and while the loss check
+//! runs.
 //!
 //! The ramp also ends without a failure on: rate cap, budget used up, generator limit, smoke error.
 

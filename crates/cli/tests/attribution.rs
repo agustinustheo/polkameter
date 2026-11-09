@@ -16,7 +16,7 @@ use polkameter::load::{
 	follower::BlockEvent,
 	reconnect::{Backoff, Reconnect, reconnect},
 	rules::{RULES, breaking_point, check_step},
-	runner::{Io, Mode, RunOptions, baseline, load, recover},
+	runner::{Io, Mode, RunOptions, baseline, load, recover, watch},
 	sender::{Reply, Sender},
 	steps::final_step,
 	submit::Submit,
@@ -24,7 +24,7 @@ use polkameter::load::{
 };
 use polkameter_plugin_sdk::observers::{
 	BlockRecord, Phase, Problems, RunDir, now_ms,
-	summary::{Baseline, BreakingPoint, Recovery, Rule, Stop},
+	summary::{Baseline, BreakingPoint, Class, Recovery, Rule, Stop},
 };
 use tokio::{sync::mpsc, time::Instant};
 use tokio_tungstenite::tungstenite::Message;
@@ -157,6 +157,10 @@ enum Fault {
 	Slow(u64),
 	/// The node reads each submit 2 s after it was sent, and answers then.
 	Linked,
+	/// The chain finalizes no block from second `.0` on: a finality stall.
+	FinalityFrozen(u64),
+	/// The chain makes no block from second `.0` on: a production stall.
+	Halted(u64),
 }
 
 /// A chain with a block every 6 s, including what reached `pool` `delay_ms` before, and the
@@ -168,6 +172,7 @@ fn chain(
 	blocks_tx: mpsc::UnboundedSender<BlockEvent>,
 ) {
 	let (mut delay_ms, mut down, mut sender_down) = (0, None, None);
+	let (mut frozen, mut halted) = (u64::MAX, u64::MAX);
 	for fault in faults {
 		match *fault {
 			Fault::Paused(at, ms) => {
@@ -180,6 +185,8 @@ fn chain(
 			Fault::SenderDown(from, to) => sender_down = Some((from, to)),
 			Fault::Slow(ms) => delay_ms = ms,
 			Fault::Linked => {},
+			Fault::FinalityFrozen(from) => frozen = from,
+			Fault::Halted(from) => halted = from,
 		}
 	}
 	tokio::spawn(async move {
@@ -236,7 +243,7 @@ fn chain(
 					e => e,
 				}));
 			}
-			if second % 6 == 0 {
+			if second % 6 == 0 && second < halted {
 				number += 1;
 				let txs: Vec<(TxHash, bool)> = {
 					let mut pool = pool.lock().unwrap();
@@ -245,7 +252,10 @@ fn chain(
 					*pool = later;
 					ready.into_iter().map(|(hash, _)| (hash, false)).collect()
 				};
-				let b = Vec::from(block(number, now, txs));
+				let mut b = Vec::from(block(number, now, txs));
+				if second >= frozen {
+					b.retain(|e| !matches!(e, BlockEvent::Finalized { .. }));
+				}
 				if down.is_some_and(|(from, to)| (from..to).contains(&second)) {
 					held.push(b);
 				} else {
@@ -522,4 +532,84 @@ async fn a_baseline_polkameter_did_not_observe_has_no_result() {
 	let json = serde_json::to_value(&base).unwrap();
 	assert_eq!(base.probes, 3);
 	assert!(json["p50Ms"].is_null() && json["maxMs"].is_null(), "{json}");
+}
+
+/// A6. The block follower lost the node for the whole recovery and was back within the budget:
+/// PolkaMeter saw no block, so the recovery is not measured, never a recovery that failed. A
+/// chain that makes no block while PolkaMeter watches still fails it (control). (It failed:
+/// "no new block in 20 s".)
+#[tokio::test(start_paused = true)]
+async fn a_recovery_polkameter_did_not_observe_is_not_measured() {
+	for (name, fault, measured) in [
+		("attribution-recovery-unobserved", Fault::FollowerDown(7, 30), false),
+		("attribution-recovery-halted", Fault::Halted(7), true),
+	] {
+		let (mut t, mut io, mut opts) = on_chain(name, &[fault], (2.0, 6), 0);
+		opts.recovery_s = 20;
+		load(&mut t, &mut io, &opts).await.unwrap();
+		let r = recover(&mut t, &mut io, &opts, Some(12_000)).await.unwrap();
+		assert_eq!((r.measured, r.recovered), (measured, false), "{name}: {r:?}");
+	}
+}
+
+/// A8. The loss check's connection dropped and the node was back 8 s later, within the budget:
+/// the read is made again on a new connection, and gets its answer. (It was not: 48 txs were
+/// left unverified.)
+#[tokio::test(start_paused = true)]
+async fn the_loss_check_reconnects_within_the_budget() {
+	use polkameter::load::loss::Live;
+	use polkameter_plugin_sdk::chain::ChainError;
+	let start = Instant::now();
+	let back = start + Duration::from_secs(8);
+	// A connection opened before the outage fails every read; the node answers on one opened
+	// after it is back.
+	let connect = || async move {
+		if Instant::now() < back {
+			Err(ChainError::Timeout("connection refused".into()))
+		} else {
+			Ok(true)
+		}
+	};
+	let mut live = Live::new(false, connect, Backoff::default());
+	let read = |up: bool| async move {
+		if up { Ok(42) } else { Err(ChainError::Timeout("the connection closed".into())) }
+	};
+	assert_eq!(live.read(read).await.unwrap(), 42);
+	assert!(start.elapsed() <= Duration::from_secs(15), "{:?}", start.elapsed());
+	assert!(*live.conn(), "reads go on on the new connection");
+}
+
+// B. Never excuse the chain for a fault in it.
+
+/// B2. Finality stopped in recovery, longer than the 60 s limit, while PolkaMeter was also
+/// paused for 7 s: the chain failed, and a pause of PolkaMeter does not excuse it. (The
+/// recovery was "not measured", and the run INCONCLUSIVE.)
+#[tokio::test(start_paused = true)]
+async fn a_finality_stall_in_recovery_fails_even_when_polkameter_paused() {
+	let faults = [Fault::Slow(13_000), Fault::FinalityFrozen(7), Fault::Paused(30_000, 7_000)];
+	let (mut t, mut io, mut opts) = on_chain("attribution-recovery-finality", &faults, (2.0, 6), 0);
+	opts.recovery_s = 120;
+	load(&mut t, &mut io, &opts).await.unwrap();
+	let r = recover(&mut t, &mut io, &opts, Some(12_000)).await.unwrap();
+	assert!(r.measured && !r.recovered, "{r:?}");
+	assert!(r.detail.starts_with("finality stall"), "{}", r.detail);
+}
+
+/// B3. Finality stopped for 90 s while the loss check waited for it, and then went on, so every
+/// tx was verified: that is still a finality stall, as in the load. (The run passed.)
+#[tokio::test(start_paused = true)]
+async fn a_finality_stall_while_the_loss_check_runs_fails_the_run() {
+	let faults = [Fault::FinalityFrozen(12)];
+	let (mut t, mut io, opts) = on_chain("attribution-reconcile-finality", &faults, (2.0, 6), 0);
+	load(&mut t, &mut io, &opts).await.unwrap();
+	recover(&mut t, &mut io, &opts, Some(12_000)).await.unwrap();
+	let wait = tokio::time::sleep(Duration::from_secs(90));
+	let ((), failed) = watch(&mut t, &mut io, &opts, wait).await.unwrap();
+	let failed = failed.expect("a finality stall");
+	assert_eq!(
+		(failed.rule, failed.class),
+		(Rule::FinalityStall, Some(Class::Hard)),
+		"{}",
+		failed.detail
+	);
 }

@@ -9,8 +9,10 @@ use crate::engine::{
 	plugins::{Plugins, Registry},
 	wiring::{Chains, Monitors, monitor_targets},
 };
-use crate::load::reconnect::{Backoff, Reconnect, reconnect};
-use crate::load::runner::{Io, Mode, RunOptions, baseline, drain, load as apply_load, recover};
+use crate::load::reconnect::Backoff;
+use crate::load::runner::{
+	Io, Mode, RunOptions, baseline, drain, load as apply_load, recover, watch,
+};
 use crate::load::sender::Sender;
 use crate::load::steps::FinalStep;
 use crate::load::steps::final_step;
@@ -20,8 +22,8 @@ use crate::redact::{Redactor, diag, records};
 use anyhow::{Context as _, Result, bail};
 use polkameter_plugin_sdk::chain::{ChainError, Client};
 use polkameter_plugin_sdk::observers::summary::{
-	Artifact, Loss, LostTx, MaxSustained, Network, NodePool, OverallStatus, Rule, SCHEMA_VERSION,
-	Summary,
+	Artifact, Class, FailureMode, Loss, LostTx, MaxSustained, Network, NodePool, OverallStatus,
+	Rule, SCHEMA_VERSION, Summary,
 };
 use polkameter_plugin_sdk::observers::{CheckResult, Phase, Status};
 use polkameter_plugin_sdk::observers::{NodeMax, NodeSample, RunDir};
@@ -192,7 +194,6 @@ pub async fn run(
 			bail!(e);
 		},
 	};
-	follow.cancel();
 	tracker.set_phase(Phase::Done, now_ms())?;
 	// The run window ends here: scrape now, so it ends on fresh samples.
 	monitors.scraper.scrape_now().await;
@@ -203,29 +204,33 @@ pub async fn run(
 	let finals = write_steps(dir, &tracker, &samples, redactor)?;
 	progress("reconciliation")?;
 	// The connection of the start may have dropped during the run (the follower and the sender
-	// reconnect on their own): the loss check reads on a live one, opened again with the same
-	// backoff, so a node back within the budget still has its loss verified.
-	let client = match client.best_number().await {
-		Ok(_) => client,
-		Err(e) => {
-			diag!("loss check: the RPC connection dropped ({e}); reconnecting");
-			let connect = || Client::connect(&url);
-			match reconnect(connect, &Backoff::default(), &CancellationToken::new()).await {
-				Reconnect::Connected(live) => live,
-				Reconnect::Stopped | Reconnect::GaveUp(_) => client,
-			}
-		},
+	// reconnect on their own): every read of the loss check that fails is made again on a
+	// connection opened again with the same budget, so a node back within it still has its loss
+	// verified.
+	let mut live =
+		crate::load::loss::Live::new(client, || Client::connect(&url), Backoff::default());
+	// The follower goes on meanwhile: a stall, a finality stall or node down while the loss
+	// check waits for finality is the chain's failure, as in the load.
+	let (sent, included_in) =
+		(std::mem::take(&mut tracker.flood), std::mem::take(&mut tracker.included_in));
+	let settled = crate::load::loss::Settled {
+		last_ours_block: tracker.last_ours_block.max(tracker.last_fetched),
+		flood: &sent,
+		included_in: &included_in,
+		first_fetched: tracker.first_fetched,
 	};
-	let (loss, lost) = loss_check(
-		&client,
+	let check = loss_check(
+		&mut live,
 		&monitors,
-		&mut tracker,
+		settled,
 		dir,
 		configured_rules.finality_wait_ms,
 		state_check.as_ref(),
 		redactor,
-	)
-	.await;
+	);
+	let ((loss, lost), reconciling) = watch(&mut tracker, &mut io, &run_opts, check).await?;
+	follow.cancel();
+	(tracker.flood, tracker.included_in) = (sent, included_in);
 	let mut lost_out = jsonl("lost.jsonl")?;
 	for l in &lost {
 		lost_out.write(l)?;
@@ -246,6 +251,12 @@ pub async fn run(
 			base.probes
 		));
 	}
+	// A chain failure while the loss check ran fails the run like one in the load.
+	let mut failure_modes = rules::failure_modes(&stop, &loss, &finals);
+	failure_modes.extend(reconciling.map(|f| FailureMode {
+		class: f.class.unwrap_or(Class::Hard),
+		what: format!("{} during the loss check: {}", f.rule.name(), f.detail),
+	}));
 	tracker.finish()?.close();
 	monitors.stop_chain().await?;
 	let mut problems = monitors.problems.all();
@@ -276,9 +287,9 @@ pub async fn run(
 		params: serde_json::json!({ "plan": plan, "connections": load.connections }),
 		budget: format!("{} flood transactions and {} reserved probes", flood.len(), probes.len()),
 		setup_seconds,
-		extra: serde_json::json!({"genesis":hex::encode(chain.genesis),"transactionVersion":chain.tx_version,"nodeVersion":client.request::<String>("system_version",subxt::rpcs::rpc_params![]).await.ok()}),
+		extra: serde_json::json!({"genesis":hex::encode(chain.genesis),"transactionVersion":chain.tx_version,"nodeVersion":live.conn().request::<String>("system_version",subxt::rpcs::rpc_params![]).await.ok()}),
 		rules: serde_json::to_value(configured_rules)?,
-		failure_modes: rules::failure_modes(&stop, &loss, &finals),
+		failure_modes,
 		stop,
 		breaking_point: bp,
 		max_sustained: sustained.map(|f| MaxSustained {
@@ -360,15 +371,19 @@ pub fn report(
 
 /// The loss check, with the node's pool counts read from the collator we submit to after the
 /// finality wait (the loss check awaits the read then).
-async fn loss_check<S: crate::load::submit::Submit>(
-	client: &Client,
+async fn loss_check<F, Fut>(
+	live: &mut crate::load::loss::Live<Client, F>,
 	monitors: &Monitors,
-	tracker: &mut Tracker<S>,
+	settled: crate::load::loss::Settled<'_>,
 	dir: &RunDir,
 	finality_wait_ms: u64,
 	state: Option<&PluginState>,
 	redactor: &Redactor,
-) -> (Loss, Vec<LostTx>) {
+) -> (Loss, Vec<LostTx>)
+where
+	F: FnMut() -> Fut,
+	Fut: std::future::Future<Output = Result<Client, ChainError>>,
+{
 	let scraper = monitors.scraper.clone();
 	let node_pool = async move {
 		scraper.scrape_now().await;
@@ -378,14 +393,8 @@ async fn loss_check<S: crate::load::submit::Submit>(
 			ready: s.sum("substrate_ready_transactions_number")? as u64,
 		})
 	};
-	let settled = crate::load::loss::Settled {
-		last_ours_block: tracker.last_ours_block.max(tracker.last_fetched),
-		flood: &tracker.flood,
-		included_in: &tracker.included_in,
-		first_fetched: tracker.first_fetched,
-	};
 	let (mut loss, lost, records) =
-		crate::load::loss::loss_check(client, settled, node_pool, state, finality_wait_ms).await;
+		crate::load::loss::loss_check(live, settled, node_pool, state, finality_wait_ms).await;
 	if let Err(error) = (|| -> Result<()> {
 		let mut out = crate::redact::records(dir.jsonl("transactions.jsonl")?, redactor);
 		for record in &records {

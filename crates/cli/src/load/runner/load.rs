@@ -5,10 +5,10 @@ use std::time::Duration;
 use polkameter_plugin_sdk::observers::summary::{Rule, Stop};
 use tokio::time::Instant;
 
-use super::{Io, Mode, RunError, RunEvent, RunOptions, Ticks, node_down};
+use super::{Io, RunError, RunEvent, RunOptions, Ticks, live};
 use crate::load::{
 	now_ms,
-	rules::{LiveState, check_step, live_failure, measure_violation, secs},
+	rules::{check_step, live_failure, measure_violation, secs},
 	steps::final_step,
 	submit::Submit,
 	tracker::Tracker,
@@ -96,21 +96,7 @@ async fn send_step<S: Submit>(
 		}
 		last = at;
 		t.tick(now)?;
-		let live = LiveState {
-			step,
-			now,
-			closed_by_node: t.closed_by_node,
-			connections: opts.connections,
-			last_block_at: t.last_head.0,
-			last_finalized_at: t.last_finalized.0,
-			best: t.last_head.1,
-			finalized: t.last_finalized.1,
-			unobserved_since_block: t.unobserved_between(t.last_head.0, now),
-			unobserved_since_finalized: t.unobserved_between(t.last_finalized.0, now),
-			node_down: node_down(t, io),
-			smoke_problems: if opts.mode == Mode::Smoke { io.problems.all() } else { Vec::new() },
-		};
-		if let Some(stop) = live_failure(&live, &opts.rules) {
+		if let Some(stop) = live_failure(&live(t, io, opts, step), &opts.rules) {
 			return Ok(Some(stop));
 		}
 	}

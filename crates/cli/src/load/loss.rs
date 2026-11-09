@@ -1,7 +1,8 @@
 //! The loss check, after recovery. Every flood tx we sent gets one [`Status`] from its own
 //! evidence, and every printed count is tallied from those statuses, so they partition `sent`.
 //! It waits until the last block with our txs is finalized, walks the finalized chain for them,
-//! and lets the scenario check chain state for a sample.
+//! and lets the scenario check chain state for a sample. Its reads go through [`Live`], which
+//! opens the connection again when it drops, with the same budget as the load's.
 
 use std::{
 	collections::{HashMap, HashSet},
@@ -11,9 +12,64 @@ use std::{
 use polkameter_plugin_sdk::chain::{ChainError, Client, tx_hash};
 use polkameter_plugin_sdk::observers::summary::{Finality, Loss, LostTx, NodePool, StateSample};
 use serde::Serialize;
+use tokio_util::sync::CancellationToken;
 
 use crate::engine::measurement::PluginState;
-use crate::load::{source::TxHash, tracker::FloodTx};
+use crate::load::{
+	reconnect::{Backoff, Reconnect, reconnect},
+	source::TxHash,
+	tracker::FloodTx,
+};
+
+/// The loss check's connection. A read that fails opens the connection again, with the
+/// reconnect budget (15 s), and is made once more on the new one: a dropped connection is not
+/// the chain's, and a node back within the budget still has its loss verified. Once the budget
+/// ran out, reads are not tried again.
+pub struct Live<C, F> {
+	conn: C,
+	connect: F,
+	backoff: Backoff,
+	gave_up: bool,
+}
+
+impl<C: Clone, F, Fut> Live<C, F>
+where
+	F: FnMut() -> Fut,
+	Fut: std::future::Future<Output = Result<C, ChainError>>,
+{
+	/// Reads on `conn`, and opens a new one with `connect` when a read fails.
+	pub fn new(conn: C, connect: F, backoff: Backoff) -> Self {
+		Self { conn, connect, backoff, gave_up: false }
+	}
+
+	/// The connection now.
+	pub fn conn(&self) -> &C {
+		&self.conn
+	}
+
+	/// `read` on the connection; when it fails, on a new connection.
+	pub async fn read<T, R>(&mut self, read: impl Fn(C) -> R) -> Result<T, ChainError>
+	where
+		R: std::future::Future<Output = Result<T, ChainError>>,
+	{
+		let error = match read(self.conn.clone()).await {
+			Ok(value) => return Ok(value),
+			Err(e) if self.gave_up => return Err(e),
+			Err(e) => e,
+		};
+		crate::redact::diag!("loss check: {error}; opening the connection again");
+		match reconnect(&mut self.connect, &self.backoff, &CancellationToken::new()).await {
+			Reconnect::Connected(conn) => {
+				self.conn = conn;
+				read(self.conn.clone()).await
+			},
+			Reconnect::Stopped | Reconnect::GaveUp(_) => {
+				self.gave_up = true;
+				Err(error)
+			},
+		}
+	}
+}
 
 const STATE_SAMPLE: usize = 100;
 /// Lost txs checked one by one for lost.jsonl; the rest are only counted.
@@ -36,13 +92,17 @@ pub struct Settled<'a> {
 /// reads the node's own mempool and ready counts from `/metrics`; it runs after the finality
 /// wait, once our included txs are pruned. Chain errors become notes, never a stop.
 #[allow(clippy::too_many_lines)]
-pub async fn loss_check(
-	client: &Client,
+pub async fn loss_check<F, Fut>(
+	live: &mut Live<Client, F>,
 	run: Settled<'_>,
 	node_pool: impl std::future::Future<Output = Option<NodePool>>,
 	state: Option<&PluginState>,
 	finality_wait_ms: u64,
-) -> (Loss, Vec<LostTx>, Vec<serde_json::Value>) {
+) -> (Loss, Vec<LostTx>, Vec<serde_json::Value>)
+where
+	F: FnMut() -> Fut,
+	Fut: std::future::Future<Output = Result<Client, ChainError>>,
+{
 	let mut notes = Vec::new();
 	let mut loss = Loss::default();
 	loss.sent = run.flood.len() as u64;
@@ -50,14 +110,16 @@ pub async fn loss_check(
 	// after listing it. A tx can leave the pool while we walk, but cannot disappear
 	// between a late pool snapshot and an earlier chain cutoff. The reads are awaited in
 	// this order, never joined concurrently.
-	let ready = pending(client).await.map(|hashes| hashes.into_iter().collect::<HashSet<_>>());
+	let ready = live.read(|c: Client| async move { pending(&c).await }).await;
+	let ready = ready.map(|hashes| hashes.into_iter().collect::<HashSet<_>>());
 	let ready = ready.map_err(|e| notes.push(format!("the pool could not be listed: {e}"))).ok();
-	let cutoff = client.best_number().await.map(|number| number.max(run.last_ours_block));
+	let cutoff = live.read(|c: Client| async move { c.best_number().await }).await;
+	let cutoff = cutoff.map(|number| number.max(run.last_ours_block));
 	let cutoff = cutoff
 		.map_err(|e| notes.push(format!("pool snapshot head unavailable: {e}")))
 		.ok();
 	let required_block = cutoff.unwrap_or(run.last_ours_block);
-	let finalized = wait_finalized(client, required_block, finality_wait_ms).await;
+	let finalized = wait_finalized(live, required_block, finality_wait_ms).await;
 	let mut on_chain = None;
 	let mut finalized_failed = HashSet::new();
 	match &finalized {
@@ -76,7 +138,7 @@ pub async fn loss_check(
 				waited_for_it,
 			});
 			if let Some(first) = run.first_fetched {
-				match finalized_txs(client, run.flood, first, *number).await {
+				match finalized_txs(live, run.flood, first, *number).await {
 					Ok((found, failed)) => {
 						on_chain = Some((first, *number, found));
 						finalized_failed = failed;
@@ -151,7 +213,8 @@ pub async fn loss_check(
 			},
 			_ => None,
 		};
-		let validate = match client.validate(&row.tx.bytes, "lost tx").await {
+		// Not tried again: an invalid tx is an answer, not a dropped connection.
+		let validate = match live.conn().validate(&row.tx.bytes, "lost tx").await {
 			Ok(()) => "valid".to_owned(),
 			Err(e) => e.to_string(),
 		};
@@ -319,17 +382,25 @@ fn ledger<'a>(
 }
 
 /// Our flood txs in the finalized blocks `first..=last`, with the block each is in.
-async fn finalized_txs(
-	client: &Client,
+async fn finalized_txs<F, Fut>(
+	live: &mut Live<Client, F>,
 	flood: &HashMap<TxHash, FloodTx>,
 	first: u32,
 	last: u32,
-) -> Result<(HashMap<TxHash, u32>, HashSet<TxHash>), polkameter_plugin_sdk::chain::ChainError> {
+) -> Result<(HashMap<TxHash, u32>, HashSet<TxHash>), ChainError>
+where
+	F: FnMut() -> Fut,
+	Fut: std::future::Future<Output = Result<Client, ChainError>>,
+{
 	let mut found = HashMap::new();
 	let mut failed = HashSet::new();
 	for n in first..=last {
-		let hash = client.block_hash(n).await?;
-		let body = client.body(hash).await?;
+		let (hash, body) = live
+			.read(|c: Client| async move {
+				let hash = c.block_hash(n).await?;
+				Ok((hash, c.body(hash).await?))
+			})
+			.await?;
 		let ours: Vec<_> = body
 			.iter()
 			.enumerate()
@@ -341,7 +412,11 @@ async fn finalized_txs(
 		if ours.is_empty() {
 			continue;
 		}
-		let events = polkameter_plugin_sdk::chain::events(&client.at(hash).await?).await?;
+		let events = live
+			.read(|c: Client| async move {
+				polkameter_plugin_sdk::chain::events(&c.at(hash).await?).await
+			})
+			.await?;
 		let failed_in_block = polkameter_plugin_sdk::chain::failed_extrinsics(&events);
 		for (index, h) in ours {
 			found.insert(h, n);
@@ -353,17 +428,24 @@ async fn finalized_txs(
 	Ok((found, failed))
 }
 
-async fn wait_finalized(
-	client: &Client,
+async fn wait_finalized<F, Fut>(
+	live: &mut Live<Client, F>,
 	block: u32,
 	finality_wait_ms: u64,
-) -> Result<(u32, [u8; 32]), polkameter_plugin_sdk::chain::ChainError> {
+) -> Result<(u32, [u8; 32]), ChainError>
+where
+	F: FnMut() -> Fut,
+	Fut: std::future::Future<Output = Result<Client, ChainError>>,
+{
 	let deadline = tokio::time::Instant::now() + Duration::from_millis(finality_wait_ms);
 	loop {
-		let at = client.finalized().await?;
-		let number = at.block_number() as u32;
+		let (number, hash) = live
+			.read(|c: Client| async move {
+				c.finalized().await.map(|at| (at.block_number() as u32, at.block_hash().0))
+			})
+			.await?;
 		if number >= block || tokio::time::Instant::now() > deadline {
-			return Ok((number, at.block_hash().0));
+			return Ok((number, hash));
 		}
 		tokio::time::sleep(Duration::from_secs(2)).await;
 	}

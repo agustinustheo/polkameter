@@ -320,6 +320,34 @@ impl<S: Submit> Tracker<S> {
 		total
 	}
 
+	/// Why PolkaMeter did not observe all of `from`..`to`, if it did not: it was paused, a
+	/// connection to the node was down, or a probe sent then landed without a time.
+	pub fn unobserved_why(&self, from: Millis, to: Millis) -> Option<String> {
+		if self.paused_across(from, to) {
+			return Some(format!(
+				"{} was paused for {} s of it (CPU starvation or a suspended machine)",
+				crate::PRODUCT_NAME,
+				crate::load::rules::secs(self.paused_within(from, to) as f64)
+			));
+		}
+		if let Some(gap) = self
+			.observation_gaps
+			.iter()
+			.find(|g| g.from < to && g.to.is_none_or(|back| back > from))
+		{
+			return Some(format!("{} lost the node for part of it: {gap}", crate::PRODUCT_NAME));
+		}
+		let untimed = |p: &&Probe| {
+			(from..=to).contains(&p.sent_at)
+				&& !matches!(p.outcome, Outcome::Pending | Outcome::Refused)
+				&& p.latency_ms.is_none()
+		};
+		self.probes
+			.iter()
+			.find(untimed)
+			.map(|_| format!("a probe landed that {} could not time", crate::PRODUCT_NAME))
+	}
+
 	/// Whether PolkaMeter was paused across a time measured from `from` to `to`.
 	pub(super) fn paused_across(&self, from: Millis, to: Millis) -> bool {
 		self.pauses.iter().any(|p| across(*p, from, to))
