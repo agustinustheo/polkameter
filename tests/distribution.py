@@ -14,7 +14,6 @@ import tarfile
 import tempfile
 import threading
 import unittest
-import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -29,7 +28,7 @@ def load(name, filename):
 packager = load("packager", "package-cli.py")
 TARGETS = (
     "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu",
-    "x86_64-apple-darwin", "aarch64-apple-darwin", "x86_64-pc-windows-msvc",
+    "x86_64-apple-darwin", "aarch64-apple-darwin",
 )
 
 
@@ -298,37 +297,24 @@ class InstallerTests(unittest.TestCase):
 
     def test_archive_contract(self):
         for target in TARGETS:
-            windows = "windows" in target
-            name = f"polkameter-0.2.0-{target}.{'zip' if windows else 'tar.gz'}"
+            name = f"polkameter-0.2.0-{target}.tar.gz"
             archive = self.assets / name
-            if windows:
-                with zipfile.ZipFile(archive) as bundle:
-                    members = bundle.namelist()
-            else:
-                with tarfile.open(archive) as bundle:
-                    members = bundle.getnames()
-                    self.assertEqual(bundle.getmember("polkameter").mode & 0o777, 0o755)
-            self.assertEqual(sorted(members), ["LICENSE", "README.md", "polkameter.exe" if windows else "polkameter"])
+            with tarfile.open(archive) as bundle:
+                members = bundle.getnames()
+                self.assertEqual(bundle.getmember("polkameter").mode & 0o777, 0o755)
+            self.assertEqual(sorted(members), ["LICENSE", "README.md", "polkameter"])
             self.assertEqual(archive.with_name(name + ".sha256").read_text(), f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {name}\n")
-
 
     def test_archive_contract_with_plugin(self):
         plugin = self.root / "polkameter-substrate-plugin"
         plugin.write_text("plugin")
         for target in TARGETS:
-            windows = "windows" in target
             output = self.root / "with-plugin" / target
             archive = packager.package("0.3.0", target, self.root / "binary", output, [plugin])
-            if windows:
-                with zipfile.ZipFile(archive) as bundle:
-                    members = bundle.namelist()
-            else:
-                with tarfile.open(archive) as bundle:
-                    members = bundle.getnames()
-                    self.assertEqual(bundle.getmember("polkameter-substrate-plugin").mode & 0o777, 0o755)
-            suffix = ".exe" if windows else ""
-            self.assertEqual(sorted(members), sorted(["LICENSE", "README.md", f"polkameter{suffix}",
-                                                      f"polkameter-substrate-plugin{suffix}"]))
+            with tarfile.open(archive) as bundle:
+                members = bundle.getnames()
+                self.assertEqual(bundle.getmember("polkameter-substrate-plugin").mode & 0o777, 0o755)
+            self.assertEqual(sorted(members), ["LICENSE", "README.md", "polkameter", "polkameter-substrate-plugin"])
         with self.assertRaises(ValueError):
             packager.package("0.3.0", TARGETS[0], self.root / "binary", self.root / "clash", [self.root / "LICENSE"])
 
@@ -352,17 +338,15 @@ class MetadataTests(unittest.TestCase):
         package = next(p for p in metadata["packages"] if p["name"] == "polkameter")
         metadata = package["metadata"]["binstall"]
         for target in TARGETS:
-            config = {**metadata, **metadata.get("overrides", {}).get(target, {})}
-            values = {"repo": package["repository"], "version": package["version"], "target": target, "bin": "polkameter", "binary-ext": ".exe" if "windows" in target else ""}
-            url = config["pkg-url"]
-            binary = config["bin-dir"]
+            values = {"repo": package["repository"], "version": package["version"], "target": target, "bin": "polkameter", "binary-ext": ""}
+            url = metadata["pkg-url"]
+            binary = metadata["bin-dir"]
             for key, value in values.items():
                 url = url.replace("{ " + key + " }", value)
                 binary = binary.replace("{ " + key + " }", value)
-            extension = "zip" if "windows" in target else "tar.gz"
-            self.assertEqual(url, f"https://github.com/agustinustheo/polkameter/releases/download/v{package['version']}/polkameter-{package['version']}-{target}.{extension}")
-            self.assertEqual(binary, "polkameter.exe" if "windows" in target else "polkameter")
-            self.assertEqual(config["pkg-fmt"], "zip" if "windows" in target else "tgz")
+            self.assertEqual(url, f"https://github.com/agustinustheo/polkameter/releases/download/v{package['version']}/polkameter-{package['version']}-{target}.tar.gz")
+            self.assertEqual(binary, "polkameter")
+            self.assertEqual(metadata["pkg-fmt"], "tgz")
 
 
 if __name__ == "__main__":

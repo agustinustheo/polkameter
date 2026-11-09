@@ -49,7 +49,3 @@ tokio = { workspace = true, features = ["test-util"] }
 pkg-url = "{ repo }/releases/download/v{ version }/polkameter-{ version }-{ target }.tar.gz"
 bin-dir = "{ bin }{ binary-ext }"
 pkg-fmt = "tgz"
-
-[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
-pkg-url = "{ repo }/releases/download/v{ version }/polkameter-{ version }-{ target }.zip"
-pkg-fmt = "zip"

@@ -9,7 +9,7 @@ Every crate shares `[workspace.package].version` in the root `Cargo.toml`. Inter
 3. Commit, merge to `main`, then tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`.
 4. After the release is published, clean up the docs in one pull request. Remove each `vX.Y.Z: remove after release` marker with the text it marks (`grep -rn 'vX.Y.Z: remove after release' .`). Where a marker says so, replace `main` with the release tag. Then check `grep -rnE 'from v0\.3\.0|v0\.2\.0' docs skills README.md` for version notes the markers missed.
 
-The release workflow checks that the tag matches the workspace version before it publishes anything. It builds five CLI targets and uploads the archives, checksums and build attestations. crates.io and the moving `v<major>` tag publish only after every build succeeds. The job graph is in `.github/workflows/release.yml`.
+The release workflow checks that the tag matches the workspace version before it publishes anything. It builds four CLI targets and uploads the archives, checksums and build attestations. crates.io and the moving `v<major>` tag publish only after every build succeeds. The job graph is in `.github/workflows/release.yml`.
 
 After a stable release, the workflow moves `v<major>` to the release commit, so `uses: agustinustheo/polkameter@v0` works. Tag protection must allow the workflow to update that tag.
 
@@ -18,10 +18,9 @@ After a stable release, the workflow moves `v<major>` to the release commit, so 
 Binstall, the installer and the GitHub Action download assets by name. Keep these names when you change packaging:
 
 - Release tag: `v<version>`, where `<version>` has no leading `v`.
-- Unix archive: `polkameter-<version>-<target>.tar.gz`.
-- Windows archive: `polkameter-<version>-x86_64-pc-windows-msvc.zip`.
+- Archive: `polkameter-<version>-<target>.tar.gz`.
 - Checksum: the complete archive filename followed by `.sha256`, containing `<sha256>  <archive-filename>` and a newline.
-- Archive root: only `polkameter` (`polkameter.exe` on Windows), `polkameter-substrate-plugin` (`polkameter-substrate-plugin.exe`), `LICENSE` and `README.md`.
+- Archive root: only `polkameter`, `polkameter-substrate-plugin`, `LICENSE` and `README.md`.
 - Download URL: `https://github.com/agustinustheo/polkameter/releases/download/v<version>/<archive-filename>`.
 
 ## Rehearse with a release candidate
@@ -49,4 +48,4 @@ gh workflow run release.yml --ref v0.3.0 -f tag=v0.3.0
 3. The workflow publishes only with Trusted Publishing. Publish a new crate's first version by hand, then configure Trusted Publishing for it.
 4. Allow GitHub Actions to write repository contents.
 
-After a real release, check the downloads on all five platforms, `cargo binstall polkameter`, `gh attestation verify` on one archive, and the moving major tag.
+After a real release, check the downloads on all four platforms, `cargo binstall polkameter`, `gh attestation verify` on one archive, and the moving major tag.
