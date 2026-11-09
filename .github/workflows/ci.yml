@@ -116,7 +116,7 @@ jobs:
           target/debug/polkameter init --rpc ws://127.0.0.1:9944 --profile substrate-dev --output target/init.polkameter.xml
           target/debug/polkameter validate target/init.polkameter.xml
           for plan in substrate-remarks-ci substrate-transfers-ci; do
-            target/debug/polkameter run "examples/$plan.polkameter.xml" --output target/dev-chain-runs --fail-on-verdict
+            target/debug/polkameter run "examples/$plan.polkameter.xml" --output target/dev-chain-runs --fail-on verdict
           done
           cat target/dev-chain-runs/run-*/summary.md >> "$GITHUB_STEP_SUMMARY"
       - name: Stop the dev chain
@@ -155,12 +155,25 @@ jobs:
         run: |
           python3 tests/distribution.py
           python3 tests/action-smoke.py
-      - run: cargo +${{ env.RUST_VERSION }} build --locked --release -p polkameter-example-plugin
-      # A local action has no release tag, so it installs the latest release with install.sh.
+      # A local action has no release tag. Serve this commit's CLI as a release, so that the
+      # action's install.sh installs it and the action runs against the CLI it ships with.
+      - name: Build this commit's CLI and serve it as a release
+        id: cli
+        run: |
+          cargo +${{ env.RUST_VERSION }} build --locked --release -p polkameter -p polkameter-example-plugin
+          version=$(target/release/polkameter --version | cut -d ' ' -f 2)
+          target=$(rustc +${{ env.RUST_VERSION }} -vV | sed -n 's/^host: //p')
+          python3 scripts/package-cli.py "$version" "$target" target/release/polkameter \
+            --output "$RUNNER_TEMP/releases/download/v$version"
+          nohup python3 -m http.server 8765 --bind 127.0.0.1 --directory "$RUNNER_TEMP/releases" > /dev/null 2>&1 &
+          for _ in $(seq 20); do curl -fsI http://127.0.0.1:8765/ > /dev/null && break; sleep 0.5; done
+          # The local archive has no build attestation.
+          printf '%s\n' POLKAMETER_RELEASE_BASE_URL=http://127.0.0.1:8765 POLKAMETER_VERIFY_ATTESTATION=0 >> "$GITHUB_ENV"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: ./
         id: plan
         with:
-          version: latest
+          version: ${{ steps.cli.outputs.version }}
           plan: examples/plugin-data-flow.polkameter.xml
           plugins: target/release/polkameter-example-plugin
           fail-on: verdict
@@ -168,7 +181,7 @@ jobs:
       - uses: ./
         id: again
         with:
-          version: latest
+          version: ${{ steps.cli.outputs.version }}
           plan: examples/plugin-data-flow.polkameter.xml
           plugins: target/release/polkameter-example-plugin
           artifact-retention-days: "1"

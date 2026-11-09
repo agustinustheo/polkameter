@@ -232,7 +232,7 @@ load-test:
     - polkameter plugin install "$HOME/.local/bin/polkameter-substrate-plugin"
     - polkameter plugin credential substrate-dev POLKAMETER_SUBSTRATE_SEED
     - polkameter validate plans/substrate-remarks-ci.polkameter.xml
-    - polkameter run plans/substrate-remarks-ci.polkameter.xml --output polkameter-runs --fail-on-verdict
+    - polkameter run plans/substrate-remarks-ci.polkameter.xml --output polkameter-runs --fail-on verdict
   after_script:
     - bash dev-chain.sh stop
   artifacts:

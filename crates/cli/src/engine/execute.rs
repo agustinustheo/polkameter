@@ -659,16 +659,33 @@ fn interval_s(stamps: &[u64]) -> Option<f64> {
 	(intervals >= MIN_INTERVALS && span > 0).then(|| span as f64 / intervals as f64 / 1000.0)
 }
 
-/// Opt-in run exit policies. Defaults preserve the original run behavior.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+/// How a run exits.
+#[derive(Clone, Copy, Debug, Default)]
 pub struct RunOptions {
-	/// Return exit code 1 when the load report's overall verdict is FAIL.
-	#[serde(default)]
-	pub fail_on_verdict: bool,
-	/// Return exit code 1 when the load report's overall verdict is INCONCLUSIVE.
-	#[serde(default)]
-	pub fail_on_inconclusive: bool,
+	pub fail_on: FailOn,
+}
+
+/// Which load-test verdicts make a run exit 1, besides runtime and smoke-mode failures.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum FailOn {
+	/// Only a failed run.
+	Error,
+	/// Also a FAIL verdict.
+	Verdict,
+	/// Also a FAIL or INCONCLUSIVE verdict.
+	#[default]
+	VerdictOrInconclusive,
+}
+
+impl FailOn {
+	/// The `--fail-on` value.
+	pub fn name(self) -> &'static str {
+		match self {
+			FailOn::Error => "error",
+			FailOn::Verdict => "verdict",
+			FailOn::VerdictOrInconclusive => "verdict-or-inconclusive",
+		}
+	}
 }
 
 /// Exit code of a run stopped by `Stop::request` without an explicit code (SIGINT, `/stop`).

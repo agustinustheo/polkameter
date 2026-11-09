@@ -12,15 +12,14 @@ STUB_CLI = r"""#!/usr/bin/env bash
 set -eu
 if [ "$1" != run ]; then exit 0; fi
 shift
-flags=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --output) output=$2; shift ;;
-    --fail-on-*) flags="$flags $1" ;;
+    --fail-on) policy=$2; shift ;;
   esac
   shift
 done
-test "$flags" = "$EXPECT_FLAGS"
+test "$policy" = "$FAIL_ON"
 run="$output/run-1-2-3"
 mkdir -p "$run/plugins/p"
 echo 'test summary' > "$run/summary.md"
@@ -39,10 +38,10 @@ if [ "$TEST_KILLED" = true ]; then
 fi
 code=$TEST_CODE
 reason=""
-if [ "$code" = 0 ] && { [[ "$flags" = *verdict* && "$TEST_VERDICT" = FAIL ]] \
-    || [[ "$flags" = *inconclusive* && "$TEST_VERDICT" = INCONCLUSIVE ]]; }; then
+if [ "$code" = 0 ] && { [[ "$policy" != error && "$TEST_VERDICT" = FAIL ]] \
+    || [[ "$policy" = verdict-or-inconclusive && "$TEST_VERDICT" = INCONCLUSIVE ]]; }; then
   code=1
-  reason="verdict $TEST_VERDICT: 50% lost; exit 1 because of a flag"
+  reason="verdict $TEST_VERDICT: 50% lost; exit 1 because of --fail-on $policy"
 fi
 jq -n --arg reason "$reason" '{exit_reason: ($reason | select(. != ""))}' > "$run/execution.json"
 echo '<testsuites/>' > "$run/junit.xml"
@@ -85,18 +84,14 @@ class RunTest(unittest.TestCase):
         cli = work / "polkameter"
         cli.write_text(STUB_CLI)
         cli.chmod(0o755)
-        flags = {"verdict": " --fail-on-verdict",
-                 "verdict-or-inconclusive": " --fail-on-verdict --fail-on-inconclusive"}.get(policy, "")
         env = dict(os.environ, PATH=f"{work}:{os.environ['PATH']}", RUNNER_TEMP=str(work),
                    GITHUB_ENV=str(work / "env"), GITHUB_OUTPUT=str(work / "outputs"),
                    GITHUB_STEP_SUMMARY=str(work / "summary"), GITHUB_JOB="load", GITHUB_RUN_ATTEMPT="2",
                    PLAN="test.xml", PLUGINS="", CREDENTIALS="", OUTPUT=str(work / "runs"),
-                   FAIL_ON=policy, ARTIFACT_NAME=artifact_name, EXPECT_FLAGS=flags,
+                   FAIL_ON=policy, ARTIFACT_NAME=artifact_name,
                    TEST_VERDICT=verdict, TEST_CODE=str(code), TEST_KILLED=str(killed).lower(), TEST_LINK=link)
         result = subprocess.run(["bash", "-euo", "pipefail", "-c", shell_block("Run the plan")],
                                 env=env, capture_output=True, text=True)
-        if policy == "invalid":
-            return result, None, None
         self.assertEqual(result.returncode, 0, result.stderr)
         values = outputs(work / "outputs")
         job = subprocess.run(["bash", "-c", shell_block("Fail the job if the plan failed")],
@@ -121,11 +116,6 @@ class RunTest(unittest.TestCase):
             for code in (2, 130):
                 with self.subTest(policy=policy, code=code):
                     self.assertEqual(self.run_plan(policy, "FAIL", code)[2], code)
-
-    def test_invalid_policy_fails_before_the_run(self):
-        result, _, _ = self.run_plan("invalid")
-        self.assertEqual(result.returncode, 2)
-        self.assertFalse((self.work / "runs").exists())
 
     def test_malformed_summary_warns(self):
         result, values, _ = self.run_plan("verdict", "MALFORMED")
