@@ -1043,3 +1043,21 @@ async fn a_resumed_node_does_not_erase_its_stopped_evidence() {
 	assert_eq!((stop.rule, stop.class), (Rule::NodeDown, Some(Class::Hard)), "{}", stop.detail);
 	assert!(stop.detail.contains("process 42 was stopped"), "{}", stop.detail);
 }
+
+/// An endpoint back at 8 s still needs time to complete its handshake. Waiting until the
+/// deadline to start it cannot recover within a hard budget.
+#[tokio::test(start_paused = true)]
+async fn a_reconnect_reserves_time_for_the_last_handshake() {
+	let start = Instant::now();
+	let back = start + Duration::from_secs(8);
+	let attempt = || async {
+		if Instant::now() < back {
+			return Err("connection refused");
+		}
+		tokio::time::sleep(Duration::from_millis(50)).await;
+		Ok(())
+	};
+	let r = reconnect(attempt, &Backoff::default(), &CancellationToken::new()).await;
+	assert_eq!(r, Reconnect::Connected(()));
+	assert!(start.elapsed() <= Duration::from_secs(15), "{:?}", start.elapsed());
+}

@@ -2,9 +2,9 @@
 //!
 //! Each attempt has its own deadline, the whole recovery has one too (15 s), and both race the
 //! run's cancellation: a node that accepts TCP and never finishes the WebSocket handshake cannot
-//! hold the run. The budget is used in full: a wait that would pass the deadline is cut short,
-//! and no attempt may finish beyond it. A connection ready at the deadline still counts. A
-//! connection that keeps dropping is reported too: more than
+//! hold the run. Waits use at most half the remaining budget, leaving time for a final
+//! handshake, and no attempt may finish beyond the deadline. A connection ready at the deadline
+//! still counts. A connection that keeps dropping is reported too: more than
 //! [`MAX_DROPS`] drops within [`DROP_WINDOW`] make it unstable, which ends the load without
 //! blaming the chain. Only the node's own identity tells that it restarted.
 
@@ -67,7 +67,10 @@ where
 	let mut last = String::from("no attempt was made");
 	for attempt in 0.. {
 		let wait = backoff.waits.get(attempt).or(backoff.waits.last()).copied().unwrap_or_default();
-		let at = (Instant::now() + wait).min(deadline);
+		let now = Instant::now();
+		let left = deadline.saturating_duration_since(now);
+		let wait = wait.min((left / 2).max(Duration::from_millis(1)));
+		let at = (now + wait).min(deadline);
 		tokio::select! {
 			() = stop.cancelled() => return Reconnect::Stopped,
 			() = tokio::time::sleep_until(at) => {},
@@ -77,7 +80,7 @@ where
 			() = stop.cancelled() => return Reconnect::Stopped,
 			result = tokio::time::timeout_at(ends, connect()) => match result {
 				Ok(Ok(t)) if Instant::now() <= deadline => return Reconnect::Connected(t),
-				Ok(Ok(_)) => break,
+				Ok(Ok(_)) => last = "the attempt completed after the reconnect budget".into(),
 				Ok(Err(e)) => last = e.to_string(),
 				Err(_) => last = "the attempt got no answer in time".into(),
 			},
