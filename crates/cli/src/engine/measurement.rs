@@ -151,6 +151,12 @@ pub async fn run(
 		now_ms(),
 	);
 	tracker.redact_with(redactor.clone());
+	// The block finalized now, before any flood tx: the loss check walks from the one above it.
+	let finalized = client.finalized().await?.block_number() as u32;
+	tracker.on_block(
+		follower::BlockEvent::Finalized { number: finalized, seen_at: now_ms() },
+		now_ms(),
+	)?;
 	let mut io = Io {
 		replies,
 		blocks,
@@ -216,7 +222,7 @@ pub async fn run(
 		last_ours_block: tracker.last_ours_block.max(tracker.last_fetched),
 		flood: &sent,
 		included_in: &included_in,
-		first_fetched: tracker.first_fetched,
+		walk_from: tracker.walk_from,
 	};
 	let check = loss_check(
 		&mut live,

@@ -741,3 +741,27 @@ async fn a_finality_stall_while_the_loss_check_runs_fails_the_run() {
 		failed.detail
 	);
 }
+
+// D. Each sent flood transaction gets one loss status, from its own evidence.
+
+/// D1. The run starts with block 2322 finalized and 2324 the best; the first block read is 2324.
+/// A fork from 2322 wins, and its block 2323, made after a flood tx was sent, has the tx and is
+/// finalized. The loss check walks the finalized chain from the block above the one finalized
+/// before the first flood tx, so it finds the tx. (It walked from the first block read, 2324, and
+/// called six finalized txs lost.)
+#[test]
+fn the_loss_check_walks_from_below_every_flood_transaction() {
+	let (_replies_tx, replies) = mpsc::unbounded_channel();
+	let (_blocks_tx, blocks) = mpsc::unbounded_channel();
+	let link = Some(Arc::new(Mutex::new(Link::default())));
+	let node = Node { replies: mpsc::unbounded_channel().0, pool: Pool::default(), link };
+	let (mut t, ..) = runner("attribution-walk-from", node, replies, blocks, (1.0, 30), 0);
+	let start = now_ms();
+	t.on_block(BlockEvent::Finalized { number: 2322, seen_at: start }, start)
+		.unwrap();
+	let record = BlockRecord { number: 2324, seen_at: start, ..Default::default() };
+	t.on_block(BlockEvent::Fetched { record, txs: vec![] }, start).unwrap();
+	t.start_step(0, 1.0, start).unwrap();
+	assert!(t.send_next(start + 1));
+	assert!(t.walk_from.is_some_and(|from| from <= 2323), "walks from {:?}", t.walk_from);
+}

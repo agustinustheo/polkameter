@@ -96,8 +96,11 @@ pub struct Tracker<S> {
 	pub flood: HashMap<TxHash, FloodTx>,
 	/// The block each included flood tx was seen in.
 	pub included_in: HashMap<TxHash, u32>,
-	/// The first block read.
-	pub first_fetched: Option<u32>,
+	/// The lowest block a flood tx can be in, where the loss check walks the finalized chain
+	/// from: the one above the highest block finalized when the first flood tx was sent. Blocks
+	/// up to that one were final before any flood tx existed. A block below the first one read
+	/// can still have one: a fork built below it can win. `None` until a flood tx is sent.
+	pub walk_from: Option<u32>,
 	/// Blocks seen while recovering.
 	pub recovery_blocks: Vec<BlockRecord>,
 	/// Flood txs included while recovering.
@@ -211,7 +214,7 @@ impl<S: Submit> Tracker<S> {
 			probes: Vec::new(),
 			flood: HashMap::new(),
 			included_in: HashMap::new(),
-			first_fetched: None,
+			walk_from: None,
 			recovery_blocks: Vec::new(),
 			drained: 0,
 			last_ours_block: 0,
@@ -411,6 +414,7 @@ impl<S: Submit> Tracker<S> {
 		self.requests
 			.insert(id, Request { hash, kind, connection, waiting_since, resent: false });
 		if let Kind::Flood { step } = kind {
+			self.walk_from.get_or_insert(self.last_finalized.1 + 1);
 			let flood = FloodTx { step, sent_at: now, bytes: bytes.to_vec(), ..Default::default() };
 			self.flood.insert(hash, flood);
 		}

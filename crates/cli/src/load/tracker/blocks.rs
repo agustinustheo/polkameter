@@ -85,7 +85,6 @@ impl<S: Submit> Tracker<S> {
 		mut record: BlockRecord,
 		txs: &[(TxHash, bool)],
 	) -> Result<(), FileError> {
-		self.first_fetched.get_or_insert(record.number);
 		// A gap PolkaMeter was paused in is not known: the block may have come at any time.
 		if let Some(gap) = record.gap_ms
 			&& self.paused_across(record.seen_at.saturating_sub(gap), record.seen_at)
