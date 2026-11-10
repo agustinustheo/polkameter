@@ -913,6 +913,35 @@ async fn delayed_drain(delay: u64, offsets: [Option<i64>; 4]) -> Recovery {
 	recover(&mut t, &mut io, &opts, Some(12_000)).await.unwrap()
 }
 
+/// C. The same txs land in competing blocks at the same height on either side of stop.
+/// Finality decides the drain; latency still ends at the first best-block inclusion.
+#[test]
+fn recovery_drain_uses_finalized_inclusions_across_load_stop() {
+	let (replies_tx, replies) = mpsc::unbounded_channel();
+	let (_blocks_tx, blocks) = mpsc::unbounded_channel();
+	let node = Node { replies: replies_tx, pool: Pool::default(), link: None };
+	let (mut t, _io, _) = runner("attribution-fork-drain", node, replies, blocks, (3.0, 10), 0);
+	let start = now_ms();
+	let stop = start + 10_000;
+	t.start_step(0, 3.0, start).unwrap();
+	for _ in 0..18 {
+		assert!(t.send_next(start));
+	}
+	let txs: Vec<_> = t.flood.keys().map(|hash| (*hash, false)).collect();
+	for (number, timestamp, txs) in [
+		(1, stop - 6_080, vec![]),
+		(2, stop - 80, txs.clone()),
+		(2, stop + 5_920, txs),
+	] {
+		let record = BlockRecord { number, timestamp, seen_at: timestamp, ..Default::default() };
+		t.on_block(BlockEvent::Fetched { record, txs }, timestamp).unwrap();
+	}
+	t.on_block(BlockEvent::Finalized { number: 2, seen_at: stop + 6_000 }, stop + 6_000)
+		.unwrap();
+	assert!(t.flood.values().all(|tx| tx.inclusion_ms == Some(9_920)));
+	assert_eq!(t.recovery_drain(stop), Some((18, Some(5_920))));
+}
+
 /// C. Blocks produced before or at load stop can arrive in recovery without a reconnect.
 /// Only the two included after stop form the backlog; their last block, not its delivery or
 /// the end of the probe wait, determines the four-second drain.
