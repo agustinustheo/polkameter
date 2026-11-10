@@ -9,17 +9,17 @@ You need `bash` and `curl`. The dev chain script pins node builds for Linux x86-
 ## 1. Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh | sh -s -- 0.4.4
+curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh | sh -s -- 0.4.5
 export PATH="$HOME/.local/bin:$PATH"
 polkameter --version
 ```
 
-Every command on this page uses release 0.4.4, as [Versions](install.md#versions) asks. [Install](install.md) has other methods.
+Every command on this page uses release 0.4.5, as [Versions](install.md#versions) asks. [Install](install.md) has other methods.
 
 ## 2. Start a dev chain
 
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/agustinustheo/polkameter/v0.4.4/scripts/dev-chain.sh
+curl -fsSLO https://raw.githubusercontent.com/agustinustheo/polkameter/v0.4.5/scripts/dev-chain.sh
 bash dev-chain.sh start
 ```
 
@@ -43,7 +43,7 @@ export POLKAMETER_SUBSTRATE_SEED='//Alice'
 ```
 
 ```text
-Installed plugin substrate 0.4.4 (5 operations) from ~/.local/bin/polkameter-substrate-plugin
+Installed plugin substrate 0.4.5 (5 operations) from ~/.local/bin/polkameter-substrate-plugin
 Credential profile substrate-dev reads POLKAMETER_SUBSTRATE_SEED.
 ```
 
@@ -53,11 +53,11 @@ A plan never holds a secret. It names a [credential profile](cli.md#plugin), her
 
 A load test sends two kinds of [transactions](plans.md#load). The flood is the main load. PolkaMeter sends it at the target rate. A probe is a single transaction that measures how long it takes to get into a block. Probes go before and after the flood.
 
-[`examples/substrate-remarks.polkameter.xml`](https://github.com/agustinustheo/polkameter/blob/v0.4.4/examples/substrate-remarks.polkameter.xml) funds 16 flood accounts and one account per probe. It signs 65,000 `System.remark` transactions. Then it sends about 63,000 of them in six [rate steps](plans.md#rate) of 30 seconds, from 100 to 600 transactions per second (tx/s). The rest are spare:
+[`examples/substrate-remarks.polkameter.xml`](https://github.com/agustinustheo/polkameter/blob/v0.4.5/examples/substrate-remarks.polkameter.xml) funds 16 flood accounts and one account per probe. It signs 65,000 `System.remark` transactions. Then it sends about 63,000 of them in six [rate steps](plans.md#rate) of 30 seconds, from 100 to 600 transactions per second (tx/s). The rest are spare:
 
 ```sh
 mkdir -p plans
-curl -fsSL -o plans/substrate-remarks.polkameter.xml https://raw.githubusercontent.com/agustinustheo/polkameter/v0.4.4/examples/substrate-remarks.polkameter.xml
+curl -fsSL -o plans/substrate-remarks.polkameter.xml https://raw.githubusercontent.com/agustinustheo/polkameter/v0.4.5/examples/substrate-remarks.polkameter.xml
 polkameter run plans/substrate-remarks.polkameter.xml --output runs
 echo $?
 ```

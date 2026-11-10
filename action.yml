@@ -9,7 +9,7 @@ inputs:
     required: false
     default: ""
   version:
-    description: CLI release to install, such as 0.4.4, or latest. Empty uses the action's release tag.
+    description: CLI release to install, such as 0.4.5, or latest. Empty uses the action's release tag.
     required: false
     default: ""
   credentials:
