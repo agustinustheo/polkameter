@@ -583,6 +583,9 @@ pub fn verdict_reason(summary: &Summary, checks: &[CheckResult]) -> String {
 				stop.detail
 			));
 		}
+		if summary.baseline.max_ms.is_none() {
+			reasons.push("the baseline has no result".into());
+		}
 		reasons.extend(names("required checks with no result", &|c| {
 			c.verdict.status == Status::NoResult && !c.optional
 		}));

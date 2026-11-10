@@ -148,8 +148,8 @@ impl<S: Submit> Tracker<S> {
 		let Some(tx) = self.sent.remove(hash) else { return false };
 		self.last_ours_block = self.last_ours_block.max(block);
 		let latency = seen_at.saturating_sub(tx.sent_at);
-		let late = self.read_late.iter().any(|(from, to)| *from < seen_at && seen_at <= *to)
-			|| self.paused_across(tx.sent_at, seen_at);
+		let read_late = self.read_late.iter().any(|(from, to)| *from < seen_at && seen_at <= *to);
+		let late = read_late || self.paused_across(tx.sent_at, seen_at);
 		let step = match tx.kind {
 			Kind::Probe { index } => {
 				self.probes[index].outcome =
@@ -181,7 +181,9 @@ impl<S: Submit> Tracker<S> {
 			st.failed_in_block += 1;
 			self.load.inc(&TX_FAILED, [CALL], 1.0, seen_at);
 		}
-		if self.phase() == Phase::Recovery {
+		// The recovery drains what blocks announced after the load stopped include: not a block
+		// announced in the load and read later, nor one read as the follower caught up.
+		if !read_late && self.phase_at(seen_at) == Phase::Recovery {
 			self.drained += 1;
 		}
 		true

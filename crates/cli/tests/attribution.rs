@@ -515,7 +515,10 @@ fn a_pause_never_counts_in_block_gaps() {
 
 /// A4. A tx PolkaMeter could not time (here: read as the follower caught up after a reconnect)
 /// has no time in any export: no inclusion time in the ledger, no sample in the inclusion
-/// histogram, and a samples.jtl row apart from the step's timed ones. (They kept the time.)
+/// histogram, and no samples.jtl row. Nor has a tx whose inclusion PolkaMeter never saw, or one
+/// with no reply time: samples.jtl gives no stand-in for a time it did not measure. A refusal
+/// is a sample: the time to the node's refusal. (Untimed txs were 0 ms samples, and txs found
+/// only on the finalized chain took their 1 to 2 ms reply time as their elapsed time.)
 #[tokio::test(start_paused = true)]
 async fn untimed_transactions_have_no_time_in_any_export() {
 	let (mut t, mut io, opts) =
@@ -533,16 +536,33 @@ async fn untimed_transactions_have_no_time_in_any_export() {
 	let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("attribution-jtl");
 	std::fs::create_dir_all(&dir).unwrap();
 	std::fs::write(dir.join("events.jsonl"), "").unwrap();
+	let row = |hash: &str, reply: &str, inclusion: &str, untimed: bool, status: &str| {
+		format!(
+			r#"{{"hash":"{hash}","step":0,"sentAt":1,"replyMs":{reply},"inclusionMs":{inclusion},"untimed":{untimed},"status":"{status}","failedInFinalizedBlock":false}}"#
+		)
+	};
 	let rows = [
-		r#"{"hash":"aa","step":0,"sentAt":1,"replyMs":5,"inclusionMs":900,"untimed":false,"status":"finalized","failedInFinalizedBlock":false}"#,
-		r#"{"hash":"bb","step":0,"sentAt":2,"replyMs":5,"inclusionMs":null,"untimed":true,"status":"finalized","failedInFinalizedBlock":false}"#,
+		row("timed", "5", "900", false, "finalized"),
+		row("untimed", "5", "null", true, "finalized"),
+		row("only-on-the-finalized-chain", "2", "null", false, "finalized"),
+		row("no-reply-time", "null", "800", false, "finalized"),
+		row("lost", "1", "null", false, "lost"),
+		row("refused", "7", "null", false, "refused"),
 	];
 	std::fs::write(dir.join("transactions.jsonl"), rows.join("\n") + "\n").unwrap();
 	polkameter::engine::artifacts::write_samples(&dir).unwrap();
 	let jtl = std::fs::read_to_string(dir.join("samples.jtl")).unwrap();
 	let cells: Vec<Vec<&str>> = jtl.lines().skip(1).map(|l| l.split(',').collect()).collect();
-	assert_eq!((cells[0][1], cells[0][2]), ("900", "load:step:0"), "{jtl}");
-	assert_eq!((cells[1][1], cells[1][2]), ("0", "load:step:0:untimed"), "{jtl}");
+	// timeStamp, elapsed, label, responseCode, responseMessage, ..., success, ..., Latency
+	let samples: Vec<_> = cells.iter().map(|c| (c[4], c[1], c[2], c[6], c[9])).collect();
+	assert_eq!(
+		samples,
+		[
+			("timed", "900", "load:step:0", "true", "5"),
+			("refused", "7", "load:step:0", "false", "7")
+		],
+		"{jtl}"
+	);
 }
 
 /// A5. Baseline probes all landed while PolkaMeter was paused: the baseline has no time, never
@@ -559,9 +579,9 @@ async fn a_baseline_polkameter_did_not_observe_has_no_result() {
 }
 
 /// A6. The block follower lost the node for the whole recovery and was back within the budget:
-/// PolkaMeter saw no block, so the recovery is not measured, never a recovery that failed. A
-/// chain that makes no block while PolkaMeter watches still fails it (control). (It failed:
-/// "no new block in 20 s".)
+/// PolkaMeter saw no block, so the recovery is not measured, never a recovery that failed, and
+/// it has no drain rate. A chain that makes no block while PolkaMeter watches still fails it
+/// (control). (It failed: "no new block in 20 s". Then, not measured, it kept a drain rate.)
 #[tokio::test(start_paused = true)]
 async fn a_recovery_polkameter_did_not_observe_is_not_measured() {
 	for (name, fault, measured) in [
@@ -573,6 +593,9 @@ async fn a_recovery_polkameter_did_not_observe_is_not_measured() {
 		load(&mut t, &mut io, &opts).await.unwrap();
 		let r = recover(&mut t, &mut io, &opts, Some(12_000)).await.unwrap();
 		assert_eq!((r.measured, r.recovered), (measured, false), "{name}: {r:?}");
+		// No evidence, no number: an unmeasured recovery has no drain rate, not 0 tx/s.
+		let drain = &serde_json::to_value(&r).unwrap()["drainPerS"];
+		assert_eq!(drain.is_null(), !measured, "{name}: {drain}");
 	}
 }
 
@@ -740,6 +763,48 @@ async fn a_finality_stall_while_the_loss_check_runs_fails_the_run() {
 		"{}",
 		failed.detail
 	);
+}
+
+/// C1. Recovery drains what blocks announced after the load stopped include. A block announced
+/// in the load and read in recovery is not its drain, nor are the blocks read as the follower
+/// caught up after a reconnect: they may have been made before the load stopped. (They were: a
+/// drain of 0.38 tx/s from txs all included before recovery.)
+#[test]
+fn inclusions_seen_before_recovery_are_not_its_drain() {
+	let (_replies_tx, replies) = mpsc::unbounded_channel();
+	let (_blocks_tx, blocks) = mpsc::unbounded_channel();
+	let link = Some(Arc::new(Mutex::new(Link::default())));
+	let node = Node { replies: mpsc::unbounded_channel().0, pool: Pool::default(), link };
+	let (mut t, ..) = runner("attribution-catch-up-drain", node, replies, blocks, (1.0, 30), 0);
+	let start = now_ms();
+	t.start_step(0, 1.0, start).unwrap();
+	for n in 0..4 {
+		assert!(t.send_next(start + n));
+	}
+	let fetched = |number, seen_at, n: u32| {
+		let record = BlockRecord { number, seen_at, ..Default::default() };
+		BlockEvent::Fetched { record, txs: vec![(Tx::new(n.to_le_bytes().to_vec()).hash, false)] }
+	};
+	let at = |ms| start + ms;
+	t.on_block(BlockEvent::Head { number: 1, seen_at: at(3_000) }, at(3_000))
+		.unwrap();
+	t.on_block(BlockEvent::Disconnected { at: at(4_000), reason: "reset".into() }, at(4_000))
+		.unwrap();
+	t.on_block(BlockEvent::Reconnected { at: at(9_000) }, at(9_000)).unwrap();
+	t.end_step(at(10_000));
+	t.set_phase(Phase::Recovery, at(10_000)).unwrap();
+	// Block 1, announced in the load, is read now.
+	t.on_block(fetched(1, at(3_000), 0), at(10_500)).unwrap();
+	// The first new block after the reconnect, and the one below it, filled in.
+	t.on_block(BlockEvent::Head { number: 3, seen_at: at(11_000) }, at(11_000))
+		.unwrap();
+	t.on_block(fetched(2, at(11_000), 1), at(11_000)).unwrap();
+	t.on_block(fetched(3, at(11_000), 2), at(11_000)).unwrap();
+	assert_eq!(t.drained, 0, "nothing shows these were included after the load stopped");
+	t.on_block(BlockEvent::Head { number: 4, seen_at: at(17_000) }, at(17_000))
+		.unwrap();
+	t.on_block(fetched(4, at(17_000), 3), at(17_000)).unwrap();
+	assert_eq!(t.drained, 1, "a block announced in recovery drains");
 }
 
 // D. Each sent flood transaction gets one loss status, from its own evidence.

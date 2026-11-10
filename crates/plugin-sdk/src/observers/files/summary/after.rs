@@ -78,8 +78,9 @@ pub struct Recovery {
 	pub backlog_at_end: u64,
 	/// Seconds until none was left.
 	pub drained_seconds: Option<u64>,
-	/// Flood txs included per second while recovering.
-	pub drain_per_s: f64,
+	/// Flood txs included per second while recovering; `None` (`null`) when the recovery is not
+	/// measured.
+	pub drain_per_s: Option<f64>,
 	/// The recovery probes.
 	pub probes: Vec<Probe>,
 	/// The blocks while recovering.

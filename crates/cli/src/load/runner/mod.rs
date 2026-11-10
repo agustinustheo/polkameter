@@ -450,8 +450,9 @@ pub async fn recover<S: Submit>(
 		backlog_at_stop,
 		backlog_at_end: t.outstanding().len() as u64,
 		drained_seconds: seconds(drained_at.filter(|_| measured)),
-		drain_per_s: t.drained as f64
-			/ (now_ms().saturating_sub(stopped_at) as f64 / 1000.0).max(0.001),
+		drain_per_s: measured.then(|| {
+			t.drained as f64 / (ended_at.saturating_sub(stopped_at) as f64 / 1000.0).max(0.001)
+		}),
 		probes: t.probes.iter().filter(|p| p.phase == ProbePhase::Recovery).cloned().collect(),
 		blocks: block_stats(&t.recovery_blocks),
 		node: NodeMax::default(),
