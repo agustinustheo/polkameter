@@ -422,17 +422,17 @@ pub async fn recover<S: Submit>(
 		Some(ms) => (ms, false),
 		None => ((opts.block_interval_s * 2000.0) as Millis, true),
 	};
-	t.set_phase(Phase::Recovery, now_ms())?;
+	let stopped_at = t.steps.last().map_or_else(now_ms, |step| step.ended_at);
+	t.set_phase(Phase::Recovery, stopped_at)?;
 	let _ = io.events.send(RunEvent::PhaseEdge);
-	let stopped_at = now_ms();
-	let backlog_at_stop = t.outstanding().len() as u64;
 	crate::redact::diag!(
-		"recovery: load stopped with {backlog_at_stop} txs outstanding; one probe per block for up to {} s",
+		"recovery: load stopped with {} txs not yet observed included; one probe per block for up to {} s",
+		t.outstanding().len(),
 		opts.recovery_s
 	);
 	let started = Instant::now();
 	let deadline = started + Duration::from_secs(u64::from(opts.recovery_s));
-	let (mut back_at, mut drained_at, mut last_log) = (None, None, started);
+	let (mut back_at, mut last_log) = (None, started);
 	let mut ticks = Ticks::new(io, 500);
 	let known = known_stall(t, io, opts);
 	let mut failed = None;
@@ -458,10 +458,7 @@ pub async fn recover<S: Submit>(
 				&opts.rules,
 			)
 		});
-		if t.outstanding().is_empty() {
-			drained_at = drained_at.or(Some(now));
-		}
-		if back_at.is_some() && drained_at.is_some() {
+		if back_at.is_some() && t.recovery_drain(stopped_at).is_some_and(|(_, ms)| ms.is_some()) {
 			break;
 		}
 		if last_log.elapsed() > Duration::from_secs(30) {
@@ -508,17 +505,19 @@ pub async fn recover<S: Submit>(
 		(None, None, None) => format!("after {} s no {landed}", opts.recovery_s),
 	};
 	let back_at = back_at.filter(|_| failed.is_none());
+	let drain = measured.then(|| t.recovery_drain(stopped_at)).flatten();
+	let drained_ms = drain.and_then(|(_, ms)| ms);
 	let r = Recovery {
 		measured,
 		recovered: measured && back_at.is_some(),
 		seconds: seconds(back_at.filter(|_| measured)),
 		detail,
 		threshold_ms,
-		backlog_at_stop,
+		backlog_at_stop: drain.map(|(backlog, _)| backlog),
 		backlog_at_end: t.outstanding().len() as u64,
-		drained_seconds: seconds(drained_at.filter(|_| measured)),
-		drain_per_s: measured.then(|| {
-			t.drained as f64 / (ended_at.saturating_sub(stopped_at) as f64 / 1000.0).max(0.001)
+		drained_seconds: drained_ms.map(|ms| ms.div_ceil(1000)),
+		drain_per_s: drain.and_then(|(backlog, ms)| {
+			ms.filter(|&ms| ms > 0).map(|ms| backlog as f64 / (ms as f64 / 1000.0))
 		}),
 		probes: t.probes.iter().filter(|p| p.phase == ProbePhase::Recovery).cloned().collect(),
 		blocks: block_stats(&t.recovery_blocks),

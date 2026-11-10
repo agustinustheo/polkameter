@@ -81,6 +81,7 @@ impl<S: Submit> Tracker<S> {
 		mut record: BlockRecord,
 		txs: &[(TxHash, bool)],
 	) -> Result<(), FileError> {
+		self.block_times.insert(record.number, record.timestamp);
 		for (tx, failed) in txs {
 			if self.on_tx(tx, record.number, record.seen_at, *failed) {
 				record.ours += 1;
@@ -143,12 +144,42 @@ impl<S: Submit> Tracker<S> {
 			st.failed_in_block += 1;
 			self.load.inc(&TX_FAILED, [CALL], 1.0, seen_at);
 		}
-		// The recovery drains what blocks announced after the load stopped include: not a block
-		// announced in the load and read later, nor one read as the follower caught up.
-		if !read_late && self.phase_at(seen_at) == Phase::Recovery {
-			self.drained += 1;
-		}
+
 		true
+	}
+
+	/// Backlog at load stop, and its time to inclusion on the chain. Consecutive timestamped
+	/// blocks must bracket stop; arrival times cannot locate that boundary. Missing reads or
+	/// a missing drain timestamp leave no measure. A known backlog still waiting has no duration.
+	pub fn recovery_drain(&self, stopped_at: Millis) -> Option<(u64, Option<Millis>)> {
+		if !self.unreadable.is_empty() {
+			return None;
+		}
+		let boundary = self.block_times.iter().zip(self.block_times.iter().skip(1)).find_map(
+			|((&n, &at), (&next, &after))| {
+				(n.checked_add(1) == Some(next) && at > 0 && at <= stopped_at && after > stopped_at)
+					.then_some(n)
+			},
+		)?;
+		let (mut backlog, mut last, mut pending) = (0, stopped_at, false);
+		for (hash, tx) in &self.flood {
+			if tx.sent_at > stopped_at {
+				continue;
+			}
+			match self.included_in.get(hash) {
+				Some(&n) if n <= boundary => {},
+				Some(n) => {
+					let at = *self.block_times.get(n).filter(|&&at| at > stopped_at)?;
+					backlog += 1;
+					last = last.max(at);
+				},
+				None => {
+					backlog += 1;
+					pending = true;
+				},
+			}
+		}
+		Some((backlog, (!pending).then_some(last - stopped_at)))
 	}
 
 	fn send_probe(&mut self, now: Millis) {

@@ -94,12 +94,12 @@ The plan's state check reads a sample of finalized transactions and checks that 
 ## Did the chain recover?
 
 ```markdown
-- **Recovery:** back 1 s after the load stopped (3 probes in a row landed within 12.0 s). Backlog at stop 5712 txs, drained after 8 s, at 317.3 tx/s.
+- **Recovery:** back 1 s after the load stopped (3 probes in a row landed within 12.0 s). Backlog at stop 5712 txs, drained after 8 s, at 714.0 tx/s.
 ```
 
 After the flood stops, the run sends one probe per block. A probe is in time when a block includes it within a time limit. The limit is twice the slowest baseline probe's time, or twice the block interval if that's longer. The chain has recovered when `probes-in-a-row` probes in a row are in time and blocks come at their normal pace again. [`<thresholds>`](plans.md#thresholds) and [`<load>`](plans.md#load) set these limits.
 
-`Backlog at stop` counts transactions still waiting when the load stopped. `drained after` is how long the pool took to empty.
+`Backlog at stop` counts flood transactions not included by load stop. Block timestamps determine `drained after`, regardless of delivery time. The rate divides backlog by that duration. Missing chain evidence leaves drain measures `null` (`not measured`).
 
 ## Stop rules
 

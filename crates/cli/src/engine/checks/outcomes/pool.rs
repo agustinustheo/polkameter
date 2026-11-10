@@ -79,6 +79,12 @@ fn burst_drains(d: &RunData) -> Result<Verdict, CounterReset> {
 	let Some(rec) = d.phase(Phase::Recovery).filter(|_| r.measured) else {
 		return Ok(Verdict::new(Status::NoResult, r.detail.clone()));
 	};
+	let Some(backlog) = r.backlog_at_stop else {
+		return Ok(Verdict::new(
+			if r.recovered { Status::NoResult } else { Status::Fail },
+			format!("{}; drain not measured: missing chain evidence at load stop", r.detail),
+		));
+	};
 	let empty = empty_while_waiting(d, &rec, LIMITS.pool_stuck_min_txs);
 	let back = match r.seconds {
 		Some(s) if r.recovered => format!("probes back in time {s} s after the load stopped"),
@@ -111,10 +117,8 @@ fn burst_drains(d: &RunData) -> Result<Verdict, CounterReset> {
 	} else {
 		String::new()
 	};
-	let detail = format!(
-		"{back}; backlog {} at the stop, {drained}{stuck}{failed_scrapes}",
-		r.backlog_at_stop
-	);
+	let detail =
+		format!("{back}; backlog {} at the stop, {drained}{stuck}{failed_scrapes}", backlog);
 	Ok(Verdict::new(if ok { Status::Pass } else { Status::Fail }, detail)
 		.with(serde_json::json!({ "drainedSeconds": r.drained_seconds })))
 }

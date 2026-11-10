@@ -72,14 +72,14 @@ pub struct Recovery {
 	pub detail: String,
 	/// Landing within this counts as back.
 	pub threshold_ms: Millis,
-	/// Our flood txs outstanding at the stop.
-	pub backlog_at_stop: u64,
+	/// Flood txs not included by load stop on the chain; `None` without a known boundary.
+	pub backlog_at_stop: Option<u64>,
 	/// ... and at the end.
 	pub backlog_at_end: u64,
-	/// Seconds until none was left.
+	/// Seconds from load stop to the last backlog inclusion, by the block's timestamp.
 	pub drained_seconds: Option<u64>,
-	/// Flood txs included per second while recovering; `None` (`null`) when the recovery is not
-	/// measured.
+	/// Backlog divided by its drain duration; `None` (`null`) without a measured drain,
+	/// or with no backlog (there is no duration to divide by).
 	pub drain_per_s: Option<f64>,
 	/// The recovery probes.
 	pub probes: Vec<Probe>,

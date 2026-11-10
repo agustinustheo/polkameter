@@ -67,6 +67,25 @@ substrate_proposer_end_proposal_reason{instance="a",job="collator",reason="hit_b
 	);
 }
 
+/// Missing drain evidence makes the drain inconclusive, while a measured probe failure stands.
+#[test]
+fn an_unmeasured_drain_does_not_hide_a_recovery_failure() {
+	let samples = "polkameter_phase{phase=\"recovery\"} 1 100.000\n\
+		polkameter_phase{phase=\"recovery\"} 0 120.000\n";
+	for (recovered, status) in [(true, Status::NoResult), (false, Status::Fail)] {
+		let mut s = summary();
+		s.recovery.measured = true;
+		s.recovery.recovered = recovered;
+		s.recovery.backlog_at_stop = None;
+		s.recovery.drained_seconds = None;
+		s.recovery.drain_per_s = None;
+		let results = run(&all(), &RunData::new(parse_samples(samples), s));
+		let drain = results.iter().find(|r| r.check == "the burst drains").unwrap();
+		assert_eq!(drain.verdict.status, status, "{}", drain.verdict.detail);
+		assert!(drain.verdict.detail.contains("drain not measured"));
+	}
+}
+
 #[test]
 fn a_state_check_without_a_result_makes_the_verdict_inconclusive() {
 	use polkameter_plugin_sdk::observers::summary::{OverallStatus, Rule, Stop};

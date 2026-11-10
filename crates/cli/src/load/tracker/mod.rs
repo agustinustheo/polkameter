@@ -5,7 +5,7 @@
 
 mod blocks;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use polkameter_plugin_sdk::observers::{
 	BlockRecord, FileError, JsonlWriter, Millis, Phase, SeriesWriter,
@@ -103,8 +103,8 @@ pub struct Tracker<S> {
 	pub walk_from: Option<u32>,
 	/// Blocks seen while recovering.
 	pub recovery_blocks: Vec<BlockRecord>,
-	/// Flood txs included while recovering.
-	pub drained: u64,
+	/// Block timestamps, to locate load stop on the chain even when blocks arrive late.
+	block_times: BTreeMap<u32, Millis>,
 	/// The highest block with one of our txs.
 	pub last_ours_block: u32,
 	/// Last new best head: when, and the highest number.
@@ -215,7 +215,7 @@ impl<S: Submit> Tracker<S> {
 			included_in: HashMap::new(),
 			walk_from: None,
 			recovery_blocks: Vec::new(),
-			drained: 0,
+			block_times: BTreeMap::new(),
 			last_ours_block: 0,
 			last_head: (now, 0),
 			last_fetched: 0,
