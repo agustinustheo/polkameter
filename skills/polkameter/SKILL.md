@@ -34,7 +34,7 @@ Docs: https://agustinustheodorus.com/polkameter/ (LLM index: https://agustinusth
 2. Get a chain. Use the user's node if one is running (`ws://127.0.0.1:9944` is typical). Otherwise, download the dev chain script into the repository root. Use the tag that matches `polkameter --version`:
 
    ```sh
-   curl -fsSLO https://raw.githubusercontent.com/agustinustheo/polkameter/v0.4.5/scripts/dev-chain.sh
+   curl -fsSLO https://raw.githubusercontent.com/agustinustheo/polkameter/v0.4.6/scripts/dev-chain.sh
    bash dev-chain.sh start      # waits about 2 minutes for 21 blocks
    ```
 
