@@ -20,7 +20,7 @@ To install a given release, pass its version. Set `POLKAMETER_INSTALL_DIR` to ch
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh |
-  POLKAMETER_INSTALL_DIR="$HOME/bin" sh -s -- 0.4.6
+  POLKAMETER_INSTALL_DIR="$HOME/bin" sh -s -- 0.4.7
 ```
 
 ## Use cargo
@@ -28,7 +28,7 @@ curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/insta
 [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) downloads the prebuilt CLI. `cargo install` builds it from source with Rust 1.93 or newer, which takes 10 minutes or more. The substrate plugin isn't on crates.io, so cargo builds it from the release tag. Both go to `~/.cargo/bin`:
 
 ```sh
-cargo binstall polkameter --version 0.4.6    # or: cargo install --locked polkameter --version 0.4.6
+cargo binstall polkameter --version 0.4.7    # or: cargo install --locked polkameter --version 0.4.7
 cargo install --locked --git https://github.com/agustinustheo/polkameter --tag v0.4.6 polkameter-substrate-plugin
 ```
 
@@ -39,9 +39,9 @@ Download `polkameter-<version>-<target>.tar.gz` and its `.sha256` file from [Git
 Check the archive, then extract both executables:
 
 ```sh
-sha256sum -c polkameter-0.4.6-<target>.tar.gz.sha256    # on macOS: shasum -a 256 -c
+sha256sum -c polkameter-0.4.7-<target>.tar.gz.sha256    # on macOS: shasum -a 256 -c
 mkdir -p ~/.local/bin
-tar -xzf polkameter-0.4.6-<target>.tar.gz -C ~/.local/bin polkameter polkameter-substrate-plugin
+tar -xzf polkameter-0.4.7-<target>.tar.gz -C ~/.local/bin polkameter polkameter-substrate-plugin
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
