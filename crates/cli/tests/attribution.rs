@@ -15,6 +15,7 @@ use polkameter::load::{
 	Plan, QueueSource, Tx, TxHash,
 	follower::BlockEvent,
 	reconnect::{Backoff, Reconnect, reconnect},
+	recovery::Canonical,
 	rules::{RULES, breaking_point, check_step, untimed_warning},
 	runner::{Io, Mode, RunOptions, baseline, load, recover, watch},
 	sender::{Reply, Sender},
@@ -910,36 +911,115 @@ async fn delayed_drain(delay: u64, offsets: [Option<i64>; 4]) -> Recovery {
 		// Keep the input open until recovery ends.
 		tokio::time::sleep(Duration::from_secs(30)).await;
 	});
-	recover(&mut t, &mut io, &opts, Some(12_000)).await.unwrap()
+	let mut r = recover(&mut t, &mut io, &opts, Some(12_000)).await.unwrap();
+	// The finalized walk reads the same blocks, independently of their delivery time.
+	let mut canonical = Canonical::default();
+	for (n, offset) in offsets.into_iter().enumerate() {
+		let hash = Tx::new((n as u32).to_le_bytes().to_vec()).hash;
+		canonical.record_block(
+			n as u32 + 1,
+			offset.map_or(0, |ms| stop.saturating_add_signed(ms)),
+			[hash],
+		);
+	}
+	canonical.record_block(5, stop + 6_000, []);
+	canonical.apply_drain(&mut r, &t.flood, stop);
+	r
 }
 
 /// C. The same txs land in competing blocks at the same height on either side of stop.
 /// Finality decides the drain; latency still ends at the first best-block inclusion.
 #[test]
 fn recovery_drain_uses_finalized_inclusions_across_load_stop() {
+	for (first_offset, final_offset, backlog, ms) in [(-80, 5_920, 18, 5_920), (5_920, -80, 0, 0)] {
+		let (replies_tx, replies) = mpsc::unbounded_channel();
+		let (_blocks_tx, blocks) = mpsc::unbounded_channel();
+		let node = Node { replies: replies_tx, pool: Pool::default(), link: None };
+		let (mut t, _io, _) = runner("attribution-fork-drain", node, replies, blocks, (3.0, 10), 0);
+		let start = now_ms();
+		let stop = start + 10_000;
+		t.start_step(0, 3.0, start).unwrap();
+		for _ in 0..18 {
+			assert!(t.send_next(start));
+		}
+		let txs: Vec<_> = t.flood.keys().map(|hash| (*hash, false)).collect();
+		for (index, (timestamp, hash)) in [
+			(stop.saturating_add_signed(first_offset), "fork"),
+			(stop.saturating_add_signed(final_offset), "canonical"),
+		]
+		.into_iter()
+		.enumerate()
+		{
+			let seen_at = stop + 6_000 + index as u64 * 6_000;
+			let record = BlockRecord {
+				number: 2,
+				hash: hash.into(),
+				timestamp,
+				seen_at,
+				..Default::default()
+			};
+			t.on_block(BlockEvent::Fetched { record, txs: txs.clone() }, seen_at).unwrap();
+		}
+		// These are the finalized walk's blocks, not a choice among best-block timestamps.
+		let mut canonical = Canonical::default();
+		canonical.record_block(1, stop - 6_080, []);
+		canonical.record_block(
+			2,
+			stop.saturating_add_signed(final_offset),
+			txs.iter().map(|(h, _)| *h),
+		);
+		canonical.record_block(3, stop + 11_920, []);
+		let latency = 16_000;
+		assert!(t.flood.values().all(|tx| tx.inclusion_ms == Some(latency)));
+		assert_eq!(t.steps[0].latencies_ms, vec![latency; 18]);
+		assert_eq!(canonical.drain(&t.flood, stop), Ok((backlog, ms)));
+		let mut r = Recovery { measured: true, ..Default::default() };
+		canonical.apply_drain(&mut r, &t.flood, stop);
+		assert_eq!(r.backlog_at_stop, Some(backlog));
+		assert_eq!(r.drained_seconds, Some(ms.div_ceil(1000)));
+		assert_eq!(r.drain_per_s, (ms > 0).then(|| 18.0 / 5.92));
+	}
+}
+
+/// C. A first best-block inclusion, an acceptance reply, or no reply cannot stand in for
+/// a missing finalized inclusion. Even one missing transaction leaves the drain unmeasured.
+#[test]
+fn drain_without_finalized_inclusions_has_a_reason_and_no_numbers() {
 	let (replies_tx, replies) = mpsc::unbounded_channel();
 	let (_blocks_tx, blocks) = mpsc::unbounded_channel();
 	let node = Node { replies: replies_tx, pool: Pool::default(), link: None };
-	let (mut t, _io, _) = runner("attribution-fork-drain", node, replies, blocks, (3.0, 10), 0);
+	let (mut t, _io, _) = runner("attribution-unknown-drain", node, replies, blocks, (1.0, 10), 0);
 	let start = now_ms();
 	let stop = start + 10_000;
-	t.start_step(0, 3.0, start).unwrap();
-	for _ in 0..18 {
+	t.start_step(0, 1.0, start).unwrap();
+	for _ in 0..3 {
 		assert!(t.send_next(start));
 	}
-	let txs: Vec<_> = t.flood.keys().map(|hash| (*hash, false)).collect();
-	for (number, timestamp, txs) in [
-		(1, stop - 6_080, vec![]),
-		(2, stop - 80, txs.clone()),
-		(2, stop + 5_920, txs),
-	] {
-		let record = BlockRecord { number, timestamp, seen_at: timestamp, ..Default::default() };
-		t.on_block(BlockEvent::Fetched { record, txs }, timestamp).unwrap();
-	}
-	t.on_block(BlockEvent::Finalized { number: 2, seen_at: stop + 6_000 }, stop + 6_000)
+	let hash = Tx::new(0u32.to_le_bytes().to_vec()).hash;
+	let record =
+		BlockRecord { number: 2, timestamp: stop - 80, seen_at: stop - 80, ..Default::default() };
+	t.on_block(BlockEvent::Fetched { record, txs: vec![(hash, false)] }, stop - 80)
 		.unwrap();
-	assert!(t.flood.values().all(|tx| tx.inclusion_ms == Some(9_920)));
-	assert_eq!(t.recovery_drain(stop), Some((18, Some(5_920))));
+	t.flood.get_mut(&Tx::new(1u32.to_le_bytes().to_vec()).hash).unwrap().accepted = true;
+	for missing in 0..3u32 {
+		let mut canonical = Canonical::default();
+		canonical.record_block(1, stop - 6_080, []);
+		canonical.record_block(
+			2,
+			stop + 5_920,
+			(0..3u32)
+				.filter(|n| *n != missing)
+				.map(|n| Tx::new(n.to_le_bytes().to_vec()).hash),
+		);
+		let mut r = Recovery { measured: true, recovered: true, ..Default::default() };
+		canonical.apply_drain(&mut r, &t.flood, stop);
+		assert!(r.measured && r.recovered, "drain evidence does not change recovery");
+		assert!(r.detail.contains("finalized inclusion is unknown"), "{r:?}");
+		let json = serde_json::to_value(&r).unwrap();
+		for field in ["backlogAtStop", "drainedSeconds", "drainPerS"] {
+			assert!(json[field].is_null(), "{field}: {r:?}");
+		}
+	}
 }
 
 /// C. Blocks produced before or at load stop can arrive in recovery without a reconnect.
@@ -967,6 +1047,7 @@ async fn drain_without_chain_evidence_has_no_numbers() {
 	] {
 		let r = delayed_drain(3_000, offsets).await;
 		let json = serde_json::to_value(&r).unwrap();
+		assert!(r.detail.contains("drain not measured"), "{r:?}");
 		for field in ["backlogAtStop", "drainedSeconds", "drainPerS"] {
 			assert!(json[field].is_null(), "{offsets:?}: {field}: {r:?}");
 		}
@@ -1002,6 +1083,14 @@ fn inclusions_seen_before_recovery_are_not_its_drain() {
 		let record = BlockRecord { number, seen_at, timestamp, ..Default::default() };
 		BlockEvent::Fetched { record, txs: vec![(Tx::new(n.to_le_bytes().to_vec()).hash, false)] }
 	};
+	let mut canonical = Canonical::default();
+	for n in 0..3u32 {
+		canonical.record_block(
+			n + 1,
+			start + [3_000, 7_000, 9_000][n as usize],
+			[Tx::new(n.to_le_bytes().to_vec()).hash],
+		);
+	}
 	let at = |ms| start + ms;
 	t.on_block(BlockEvent::Head { number: 1, seen_at: at(3_000) }, at(3_000))
 		.unwrap();
@@ -1017,16 +1106,18 @@ fn inclusions_seen_before_recovery_are_not_its_drain() {
 		.unwrap();
 	t.on_block(fetched(2, at(11_000), 1), at(11_000)).unwrap();
 	t.on_block(fetched(3, at(11_000), 2), at(11_000)).unwrap();
-	assert_eq!(t.recovery_drain(at(10_000)), None, "no block yet brackets load stop");
+	assert!(canonical.drain(&t.flood, at(10_000)).is_err(), "no block yet brackets load stop");
 	t.on_block(BlockEvent::Head { number: 4, seen_at: at(17_000) }, at(17_000))
 		.unwrap();
 	t.on_block(fetched(4, at(17_000), 3), at(17_000)).unwrap();
-	assert_eq!(t.recovery_drain(at(10_000)), Some((1, Some(7_000))), "only block 4 drains");
-	// A later fork reuses block 4's number, but not the first inclusion's timestamp.
+	canonical.record_block(4, at(17_000), [Tx::new(3u32.to_le_bytes().to_vec()).hash]);
+	assert_eq!(canonical.drain(&t.flood, at(10_000)), Ok((1, 7_000)), "only block 4 drains");
+	// A later best fork reuses the height; it cannot change the finalized drain or latency.
 	let record =
 		BlockRecord { number: 4, timestamp: at(25_000), seen_at: at(25_000), ..Default::default() };
 	t.on_block(BlockEvent::Fetched { record, txs: vec![] }, at(25_000)).unwrap();
-	assert_eq!(t.recovery_drain(at(10_000)), Some((1, Some(7_000))), "first inclusion stays timed");
+	assert_eq!(canonical.drain(&t.flood, at(10_000)), Ok((1, 7_000)));
+	assert_eq!(t.flood[&Tx::new(3u32.to_le_bytes().to_vec()).hash].inclusion_ms, Some(16_997));
 }
 
 // D. Each sent flood transaction gets one loss status, from its own evidence.

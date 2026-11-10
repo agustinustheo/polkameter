@@ -458,7 +458,7 @@ pub async fn recover<S: Submit>(
 				&opts.rules,
 			)
 		});
-		if back_at.is_some() && t.recovery_drain(stopped_at).is_some_and(|(_, ms)| ms.is_some()) {
+		if back_at.is_some() && t.outstanding().is_empty() {
 			break;
 		}
 		if last_log.elapsed() > Duration::from_secs(30) {
@@ -505,20 +505,17 @@ pub async fn recover<S: Submit>(
 		(None, None, None) => format!("after {} s no {landed}", opts.recovery_s),
 	};
 	let back_at = back_at.filter(|_| failed.is_none());
-	let drain = measured.then(|| t.recovery_drain(stopped_at)).flatten();
-	let drained_ms = drain.and_then(|(_, ms)| ms);
 	let r = Recovery {
 		measured,
 		recovered: measured && back_at.is_some(),
 		seconds: seconds(back_at.filter(|_| measured)),
 		detail,
 		threshold_ms,
-		backlog_at_stop: drain.map(|(backlog, _)| backlog),
+		// Finalized inclusions from reconciliation fill the drain measures later.
+		backlog_at_stop: None,
 		backlog_at_end: t.outstanding().len() as u64,
-		drained_seconds: drained_ms.map(|ms| ms.div_ceil(1000)),
-		drain_per_s: drain.and_then(|(backlog, ms)| {
-			ms.filter(|&ms| ms > 0).map(|ms| backlog as f64 / (ms as f64 / 1000.0))
-		}),
+		drained_seconds: None,
+		drain_per_s: None,
 		probes: t.probes.iter().filter(|p| p.phase == ProbePhase::Recovery).cloned().collect(),
 		blocks: block_stats(&t.recovery_blocks),
 		node: NodeMax::default(),

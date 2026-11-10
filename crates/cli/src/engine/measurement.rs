@@ -240,8 +240,11 @@ pub async fn run(
 		state_check.as_ref(),
 		redactor,
 	);
-	let ((loss, lost), reconciling) = watch(&mut tracker, &mut io, &run_opts, check).await?;
+	let ((loss, lost, canonical), reconciling) =
+		watch(&mut tracker, &mut io, &run_opts, check).await?;
 	follow.cancel();
+	let stopped_at = tracker.steps.last().expect("load step").ended_at;
+	canonical.apply_drain(&mut recovery, &sent, stopped_at);
 	(tracker.flood, tracker.included_in) = (sent, included_in);
 	let mut lost_out = jsonl("lost.jsonl")?;
 	for l in &lost {
@@ -406,7 +409,7 @@ async fn loss_check<F, Fut>(
 	finality_wait_ms: u64,
 	state: Option<&PluginState>,
 	redactor: &Redactor,
-) -> (Loss, Vec<LostTx>)
+) -> (Loss, Vec<LostTx>, crate::load::recovery::Canonical)
 where
 	F: FnMut() -> Fut,
 	Fut: std::future::Future<Output = Result<Client, ChainError>>,
@@ -420,7 +423,7 @@ where
 			ready: s.sum("substrate_ready_transactions_number")? as u64,
 		})
 	};
-	let (mut loss, lost, records) =
+	let (mut loss, lost, records, canonical) =
 		crate::load::loss::loss_check(live, settled, node_pool, state, finality_wait_ms).await;
 	if let Err(error) = (|| -> Result<()> {
 		let mut out = crate::redact::records(dir.jsonl("transactions.jsonl")?, redactor);
@@ -437,7 +440,7 @@ where
 	}
 	diag!("{}", loss_line(&loss));
 	diag!("loss check {}", crate::engine::checks::report::on_chain_text(&loss.on_chain));
-	(loss, lost)
+	(loss, lost, canonical)
 }
 
 /// The loss check's line on standard error. A count that was not counted (`None`) reads

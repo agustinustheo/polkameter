@@ -2,6 +2,12 @@
 
 User-visible changes in each release. The GitHub release notes list every merged pull request.
 
+## Unreleased
+
+### Fixed
+
+- Recovery backlog and drain now use finalized inclusion blocks. When a fork replaces a block across load stop, its first observed inclusion no longer decides the drain. Missing finalized inclusions or timestamps leave the drain unmeasured with a reason. Latency still measures submission to the first observed inclusion.
+
 ## 0.4.6 (2026-11-10)
 
 ### Fixed

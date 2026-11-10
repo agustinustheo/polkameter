@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 use crate::engine::measurement::PluginState;
 use crate::load::{
 	reconnect::{Backoff, Reconnect, reconnect},
+	recovery::Canonical,
 	source::TxHash,
 	tracker::FloodTx,
 };
@@ -98,7 +99,7 @@ pub async fn loss_check<F, Fut>(
 	node_pool: impl std::future::Future<Output = Option<NodePool>>,
 	state: Option<&PluginState>,
 	finality_wait_ms: u64,
-) -> (Loss, Vec<LostTx>, Vec<serde_json::Value>)
+) -> (Loss, Vec<LostTx>, Vec<serde_json::Value>, Canonical)
 where
 	F: FnMut() -> Fut,
 	Fut: std::future::Future<Output = Result<Client, ChainError>>,
@@ -121,6 +122,7 @@ where
 	let required_block = cutoff.unwrap_or(run.last_ours_block);
 	let finalized = wait_finalized(live, required_block, finality_wait_ms).await;
 	let mut on_chain = None;
+	let mut canonical = Canonical::default();
 	let mut finalized_failed = HashSet::new();
 	match &finalized {
 		Ok((number, _)) => {
@@ -139,8 +141,9 @@ where
 			});
 			if let Some(first) = run.walk_from {
 				match finalized_txs(live, run.flood, first, *number).await {
-					Ok((found, failed)) => {
-						on_chain = Some((first, *number, found));
+					Ok((walk, failed)) => {
+						canonical = walk;
+						on_chain = Some((first, *number));
 						finalized_failed = failed;
 					},
 					Err(e) => notes.push(format!("the finalized chain could not be walked: {e}")),
@@ -152,7 +155,7 @@ where
 	if run.walk_from.is_none() {
 		notes.push("no flood transaction was sent, so the finalized chain was not walked".into());
 	}
-	let found = on_chain.as_ref().map(|(_, _, found)| found);
+	let found = on_chain.as_ref().map(|_| &canonical.inclusions);
 	// Absence is useful only after the walk reached the required finalized head. READY
 	// says nothing about FUTURE transactions: loss also needs a consumed finalized nonce.
 	let settled = on_chain.is_some() && loss.finalized.as_ref().is_some_and(|f| f.waited_for_it);
@@ -200,7 +203,7 @@ where
 	loss.in_pool = ready.is_some().then(|| count(Status::InPool));
 	loss.lost = settled.then(|| count(Status::Lost));
 	loss.failed_in_block = rows.iter().filter(|r| r.failed).count() as u64;
-	if let Some((first, last, _)) = &on_chain {
+	if let Some((first, last)) = &on_chain {
 		let c = &mut loss.on_chain;
 		c.blocks = (*first, *last);
 		c.included = loss.included;
@@ -261,7 +264,7 @@ where
 	loss.note = (!notes.is_empty()).then(|| notes.join("; "));
 	let mut records: Vec<serde_json::Value> = rows.into_iter().map(|r| r.json).collect();
 	records.sort_by_key(|record| record["sentAt"].as_u64());
-	(loss, lost, records)
+	(loss, lost, records, canonical)
 }
 
 /// The txs the state check samples: every flood tx in a finalized block whose dispatch did not
@@ -482,13 +485,19 @@ async fn finalized_txs<F, Fut>(
 	flood: &HashMap<TxHash, FloodTx>,
 	first: u32,
 	last: u32,
-) -> Result<(HashMap<TxHash, u32>, HashSet<TxHash>), ChainError>
+) -> Result<(Canonical, HashSet<TxHash>), ChainError>
 where
 	F: FnMut() -> Fut,
 	Fut: std::future::Future<Output = Result<Client, ChainError>>,
 {
-	let mut found = HashMap::new();
+	let mut canonical = Canonical::default();
 	let mut failed = HashSet::new();
+	// The predecessor can bracket stop when the first flood block is already after it.
+	let before = first.saturating_sub(1);
+	if let Ok(hash) = live.read(|c: Client| async move { c.block_hash(before).await }).await {
+		let timestamp = finalized_timestamp(live, hash).await;
+		canonical.record_block(before, timestamp, []);
+	}
 	for n in first..=last {
 		let (hash, body) = live
 			.read(|c: Client| async move {
@@ -504,6 +513,8 @@ where
 				flood.contains_key(&h).then_some((index, h))
 			})
 			.collect();
+		let timestamp = finalized_timestamp(live, hash).await;
+		canonical.record_block(n, timestamp, ours.iter().map(|(_, h)| *h));
 		if ours.is_empty() {
 			continue;
 		}
@@ -514,13 +525,28 @@ where
 			.await?;
 		let failed_in_block = polkameter_plugin_sdk::chain::failed_extrinsics(&events);
 		for (index, h) in ours {
-			found.insert(h, n);
 			if failed_in_block.contains(&(index as u32)) {
 				failed.insert(h);
 			}
 		}
 	}
-	Ok((found, failed))
+	Ok((canonical, failed))
+}
+
+// A missing timestamp makes drain unmeasured, without discarding proven loss/inclusion.
+async fn finalized_timestamp<F, Fut>(live: &mut Live<Client, F>, hash: [u8; 32]) -> u64
+where
+	F: FnMut() -> Fut,
+	Fut: std::future::Future<Output = Result<Client, ChainError>>,
+{
+	live.read(|c: Client| async move {
+		polkameter_plugin_sdk::chain::fetch::<(), u64>(&c.at(hash).await?, "Timestamp", "Now", ())
+			.await
+	})
+	.await
+	.ok()
+	.flatten()
+	.unwrap_or(0)
 }
 
 async fn wait_finalized<F, Fut>(
