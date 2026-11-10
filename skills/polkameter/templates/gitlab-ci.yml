@@ -7,7 +7,7 @@
 load-test:
   image: debian:bookworm-slim
   variables:
-    POLKAMETER_VERSION: "0.4.7"
+    POLKAMETER_VERSION: "0.4.8"
     POLKAMETER_PLUGIN_REGISTRY: /tmp/polkameter-plugins.json
     # //Alice is funded on the dev chain. On a shared network, use a masked CI/CD variable.
     POLKAMETER_SUBSTRATE_SEED: //Alice

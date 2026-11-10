@@ -46,7 +46,7 @@ jobs:
         # @v0 is the action; version pins the CLI and the substrate plugin it installs.
         uses: agustinustheo/polkameter@v0
         with:
-          version: 0.4.7
+          version: 0.4.8
           plan: plans/substrate-remarks-ci.polkameter.xml
           plugins: polkameter-substrate-plugin
           credentials: substrate-dev=POLKAMETER_SUBSTRATE_SEED
@@ -79,7 +79,7 @@ jobs:
       - id: load
         uses: agustinustheo/polkameter@v0
         with:
-          version: 0.4.7
+          version: 0.4.8
           plan: <plan>
           plugins: target/release/<plugin-binary>
           credentials: <profile>=POLKAMETER_SETUP_SURI
@@ -162,7 +162,7 @@ Use a Linux x86-64 runner, which the dev chain script needs. Add this job to `.g
 load-test:
   image: debian:bookworm-slim
   variables:
-    POLKAMETER_VERSION: "0.4.7"
+    POLKAMETER_VERSION: "0.4.8"
     POLKAMETER_PLUGIN_REGISTRY: /tmp/polkameter-plugins.json
     # //Alice is funded on the dev chain. On a shared network, use a masked CI/CD variable.
     POLKAMETER_SUBSTRATE_SEED: //Alice
@@ -195,7 +195,7 @@ load-test:
 Without the action, install the CLI and the substrate plugin with the install script, then run from the repository root. For your own plugin, build it first and install `target/release/<plugin-binary>` instead. Replace `<profile>`, `<ENV_VAR>` and `<plan>`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh | sh -s -- 0.4.7
+curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh | sh -s -- 0.4.8
 export PATH="$HOME/.local/bin:$PATH"
 polkameter plugin install "$HOME/.local/bin/polkameter-substrate-plugin"
 polkameter plugin credential <profile> <ENV_VAR>
