@@ -183,12 +183,11 @@ pub struct Loss {
 	/// Successful RPC replies (not a dispatch-success count).
 	#[serde(default)]
 	pub accepted: u64,
-	/// No evidence either way: no acceptance reply and no inclusion seen, or the chain or pool was
-	/// not read.
+	/// Not enough evidence to establish finalization, pool presence, refusal or loss.
+	/// Accepted transactions whose nonce is not yet consumed may still finalize.
 	#[serde(default)]
 	pub unknown: u64,
-	/// Seen in a best block, but finality was not verified (the wait timed out or the chain was not
-	/// walked).
+	/// Seen in a best block, but neither finalization nor loss is proven.
 	#[serde(default)]
 	pub unverified: u64,
 	/// Sent.
@@ -202,8 +201,9 @@ pub struct Loss {
 	pub refused: u64,
 	/// Still ready in the node's pool; `None` when it could not be listed.
 	pub in_pool: Option<u64>,
-	/// Accepted or seen in a best block, in no finalized block, not ready in the pool; `None` when
-	/// the pool could not be listed or the finalized chain not walked, or finality was not verified.
+	/// Proven unable to finalize: absent from the finalized walk, with a finalized signer nonce
+	/// past its own. `None` when the walk or finality wait was incomplete. Unknown and unverified
+	/// counts must also be zero to establish no loss.
 	pub lost: Option<u64>,
 	/// The count on the finalized chain; zeros when it could not be walked (see `note`).
 	pub on_chain: OnChain,

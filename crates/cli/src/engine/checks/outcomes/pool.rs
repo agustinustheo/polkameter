@@ -44,15 +44,26 @@ fn no_silent_loss(d: &RunData) -> Result<Verdict, CounterReset> {
 	let Some(lost) = l.lost else {
 		return Ok(Verdict::new(
 			Status::NoResult,
-			l.note.clone().unwrap_or_else(|| "the pool could not be listed".into()),
+			l.note
+				.clone()
+				.unwrap_or_else(|| "the finalized chain could not be verified".into()),
 		));
 	};
 	let pool = l.node_pool.as_ref().map_or(String::new(), |p| {
 		format!("; the node's mempool holds {} txs, {} ready", p.mempool, p.ready)
 	});
 	let mut status = if lost > 0 { Status::Fail } else { Status::Pass };
-	let mut detail =
-		format!("{lost} of {} txs accepted, in no block, and without any error{pool}", l.sent);
+	let mut detail = format!(
+		"{lost} of {} txs proven unable to finalize and absent from the finalized chain{pool}",
+		l.sent
+	);
+	let unresolved = l.unknown + l.unverified;
+	if unresolved > 0 {
+		detail += &format!("; {unresolved} unknown or unverified txs may still finalize");
+		if status == Status::Pass {
+			status = Status::NoResult;
+		}
+	}
 	// The plan asked to check chain state: without that result, "no loss" is not proven.
 	if let Some(e) = &l.state_error {
 		detail += &format!("; the state check gave no result: {e}");

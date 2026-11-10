@@ -77,13 +77,13 @@ After the load, PolkaMeter gives each sent flood transaction the first status in
 | Status | Meaning |
 | --- | --- |
 | `finalized` | In a finalized block. Its call can still have failed. |
-| `in_pool` | In the node's ready pool: the transactions that wait for a block. |
+| `in_pool` | Reported by the node's ready-pool RPC. FUTURE transactions behind nonce gaps may be absent. |
 | `refused` | The node rejected the submission. |
-| `lost` | The node accepted it, or a best block had it. It's in no finalized block and not in the ready pool. PolkaMeter read both the finalized chain and the pool. |
-| `unverified` | In a best block, but PolkaMeter could not verify finality. |
+| `lost` | Accepted or seen in a best block, absent from the finalized chain, and its signer's finalized account nonce has passed its nonce. |
+| `unverified` | Seen in a best block, but neither finalization nor loss is proven. |
 | `unknown` | Not enough evidence for another status. |
 
-A finalized block is permanent. A best block isn't. In a reorg, the node switches to another fork, a competing branch of recent blocks, and its best blocks change. So when PolkaMeter can't check a transaction, its status is `unknown` or `unverified`, never `lost`. Check those two counts too before you call a run loss-free. A lost transaction, or one that failed after inclusion, makes the verdict FAIL.
+A reorg can drop a best block; a finalized block is permanent. Without evidence of loss, a transaction stays `unknown` or `unverified`. An accepted transaction whose nonce is not yet used may still finalize, even when absent from READY. The summary counts these transactions. Unknown or unverified transactions make the no-loss check INCONCLUSIVE. A lost transaction, or one that failed after inclusion, makes the verdict FAIL.
 
 `lost.jsonl` lists the first 1000 lost transactions. An empty file means no confirmed loss, not proof that nothing was lost.
 

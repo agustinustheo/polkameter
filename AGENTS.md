@@ -89,6 +89,7 @@ PolkaMeter asserts only what its evidence shows, from the one place it watches t
 | C. A baseline with no time makes the verdict at most INCONCLUSIVE | `a_baseline_with_no_time_is_at_most_inconclusive` in `engine/checks/tests.rs` |
 | C. Inclusions seen before recovery are not its drain | `inclusions_seen_before_recovery_are_not_its_drain` |
 | C. A transaction without a measured time has no time in any export | `untimed_transactions_have_no_time_in_any_export` |
+| C/D. Absence from READY is not loss; a finalized nonce past an absent transaction proves loss | `an_accepted_transaction_absent_from_ready_may_still_finalize`, `loss_requires_a_consumed_finalized_nonce` in `crates/cli/src/load/loss.rs`; `unresolved_transactions_are_inconclusive_but_proven_loss_fails` in `engine/checks/tests.rs` |
 | D. Loss statuses partition what was sent | `statuses_partition_sent_in_every_scenario` in `crates/cli/src/load/loss.rs` |
 | D. The loss check walks from below every flood transaction | `the_loss_check_walks_from_below_every_flood_transaction` |
 | Diagnostics name what PolkaMeter saw | `a_node_down_in_the_baseline_is_named`, `a_pause_is_not_called_a_reconnect`, `heads_without_a_block_read_are_not_no_new_block`; `blocks_unobserved_for_longer_than_a_stall_are_no_result` in `engine/checks/tests.rs` |

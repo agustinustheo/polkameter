@@ -2,6 +2,12 @@
 
 User-visible changes in each release. The GitHub release notes list every merged pull request.
 
+## Unreleased
+
+### Fixed
+
+- A transaction absent from the ready pool is no longer called lost without evidence it cannot finalize. Loss now requires its signer’s finalized account nonce to have passed its nonce, with its hash absent from the finalized chain. Accepted transactions that may still finalize remain `unknown` or `unverified`, with a reason and count; missing evidence makes the no-loss check INCONCLUSIVE, not FAIL.
+
 ## 0.4.3 (2026-11-10)
 
 ### Fixed
