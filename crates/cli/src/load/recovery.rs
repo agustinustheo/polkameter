@@ -1,5 +1,9 @@
 //! After the load: when do new txs land in time again.
 
+mod drain;
+
+pub use drain::Canonical;
+
 use polkameter_plugin_sdk::observers::{
 	BlockRecord, Millis,
 	summary::{Outcome, Probe, ProbePhase},

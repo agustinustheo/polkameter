@@ -81,7 +81,6 @@ impl<S: Submit> Tracker<S> {
 		mut record: BlockRecord,
 		txs: &[(TxHash, bool)],
 	) -> Result<(), FileError> {
-		self.block_times.insert(record.number, record.timestamp);
 		for (tx, failed) in txs {
 			if self.on_tx(tx, &record, *failed) {
 				record.ours += 1;
@@ -127,7 +126,6 @@ impl<S: Submit> Tracker<S> {
 		self.included_in.insert(*hash, block);
 		let mut untimed = late;
 		if let Some(flood) = self.flood.get_mut(hash) {
-			flood.included_at = (record.timestamp > 0).then_some(record.timestamp);
 			flood.failed_in_block = failed;
 			flood.untimed |= late;
 			untimed = flood.untimed;
@@ -148,42 +146,6 @@ impl<S: Submit> Tracker<S> {
 		}
 
 		true
-	}
-
-	/// Backlog at load stop, and its time to inclusion on the chain. Consecutive timestamped
-	/// blocks must bracket stop; arrival times cannot locate that boundary. Missing reads or
-	/// a missing drain timestamp leave no measure. A known backlog still waiting has no duration.
-	pub fn recovery_drain(&self, stopped_at: Millis) -> Option<(u64, Option<Millis>)> {
-		if !self.unreadable.is_empty() {
-			return None;
-		}
-		let boundary_known = self.block_times.iter().zip(self.block_times.iter().skip(1)).any(
-			|((&n, &at), (&next, &after))| {
-				n.checked_add(1) == Some(next) && at > 0 && at <= stopped_at && after > stopped_at
-			},
-		);
-		if !boundary_known {
-			return None;
-		}
-		let (mut backlog, mut last, mut pending) = (0, stopped_at, false);
-		for (hash, tx) in &self.flood {
-			if tx.sent_at > stopped_at {
-				continue;
-			}
-			match tx.included_at {
-				Some(at) if at <= stopped_at => {},
-				Some(at) => {
-					backlog += 1;
-					last = last.max(at);
-				},
-				None if self.included_in.contains_key(hash) => return None,
-				None => {
-					backlog += 1;
-					pending = true;
-				},
-			}
-		}
-		Some((backlog, (!pending).then_some(last - stopped_at)))
 	}
 
 	fn send_probe(&mut self, now: Millis) {
