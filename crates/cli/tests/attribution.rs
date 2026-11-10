@@ -482,9 +482,10 @@ async fn a_pause_is_never_the_nodes_reply_time() {
 	assert!(f.max_oldest_pending_ms <= 3_000, "{}", f.max_oldest_pending_ms);
 }
 
-/// A3. PolkaMeter paused for 18 s in a step, and the node sent one new head for the blocks it
-/// made meanwhile. The pause is not a block gap: the step's blocks are not slow. (They were: a
-/// mean gap of 15 s against 6 s.)
+/// A3. PolkaMeter paused for 18 s in a step; the chain made a block every 6 s meanwhile, and the
+/// node sent one new head for them. A block's gap is the chain's own time per block, from its
+/// timestamps: the pause is not in it, so the step's blocks are not slow. (They were: a mean gap
+/// of 15 s against 6 s.)
 #[test]
 fn a_pause_never_counts_in_block_gaps() {
 	let (_replies_tx, replies) = mpsc::unbounded_channel();
@@ -493,24 +494,51 @@ fn a_pause_never_counts_in_block_gaps() {
 	let (mut t, ..) = runner("attribution-gap-pause", node, replies, blocks, (1.0, 30), 0);
 	let start = now_ms();
 	t.start_step(0, 1.0, start).unwrap();
-	let fetched = |number, seen_at, gap_ms| {
-		let record = BlockRecord { number, seen_at, gap_ms, ..Default::default() };
-		BlockEvent::Fetched { record, txs: vec![] }
-	};
 	t.on_block(BlockEvent::Head { number: 1, seen_at: start + 6_000 }, start + 6_000)
 		.unwrap();
-	t.on_block(fetched(1, start + 6_000, None), start + 6_000).unwrap();
+	t.on_block(chain_block(1, start + 6_000), start + 6_000).unwrap();
 	t.paused(start + 7_000, start + 25_000);
 	t.on_block(BlockEvent::Head { number: 4, seen_at: start + 25_100 }, start + 25_100)
 		.unwrap();
-	t.on_block(fetched(4, start + 25_100, Some(19_100)), start + 25_100).unwrap();
+	for number in 2..=4 {
+		t.on_block(chain_block(number, start + 25_100), start + 25_100).unwrap();
+	}
 	t.end_step(start + 30_000);
 	let f = final_step(&t.steps[0]);
 	assert!(f.blocks.mean_block_gap_ms.is_some_and(|g| g <= 6_000.0), "{:?}", f.blocks);
 	assert!(f.blocks.max_block_gap_ms.is_some_and(|g| g <= 6_000), "{:?}", f.blocks);
-	assert_eq!(t.steps[0].blocks[1].gap_ms, None, "a gap with the pause in it is not known");
 	let stop = check_step(&t.steps, t.source(), 0, 6_000.0, &RULES, true).unwrap();
 	assert_ne!(stop.rule, Rule::SlowBlocks, "{}", stop.detail);
+}
+
+/// Block `number` of a chain that makes one every 6 s, as the follower reads it at `seen_at`:
+/// its gap is the chain's own, 6 s.
+fn chain_block(number: u32, seen_at: u64) -> BlockEvent {
+	let record = BlockRecord { number, seen_at, gap_ms: Some(6_000), ..Default::default() };
+	BlockEvent::Fetched { record, txs: vec![] }
+}
+
+/// A11. A proxy holds everything from the node for 2 s, and the reads queue behind it: in a 13 s
+/// rate step only one new block reaches PolkaMeter, and it is read after the step ends. The
+/// chain made a block every 6 s by its own timestamps, so its blocks are not slow. (They were
+/// "slow blocks": one new block in 13 s, against 6 s.)
+#[test]
+fn a_delay_on_the_way_never_makes_slow_blocks() {
+	let (_replies_tx, replies) = mpsc::unbounded_channel();
+	let (_blocks_tx, blocks) = mpsc::unbounded_channel();
+	let node = Node { replies: mpsc::unbounded_channel().0, pool: Pool::default(), link: None };
+	let (mut t, ..) = runner("attribution-delayed-blocks", node, replies, blocks, (1.0, 13), 0);
+	let start = now_ms();
+	t.start_step(0, 1.0, start).unwrap();
+	t.on_block(BlockEvent::Head { number: 7, seen_at: start + 11_000 }, start + 11_000)
+		.unwrap();
+	t.end_step(start + 13_000);
+	for judged_at in ["the step's end", "after its block was read"] {
+		let stop = check_step(&t.steps, t.source(), 0, 6_000.0, &RULES, true);
+		let rule = stop.map(|stop| stop.rule);
+		assert_ne!(rule, Some(Rule::SlowBlocks), "judged at {judged_at}");
+		t.on_block(chain_block(7, start + 11_000), start + 14_000).unwrap();
+	}
 }
 
 /// A4. A tx PolkaMeter could not time (here: read as the follower caught up after a reconnect)

@@ -23,17 +23,11 @@ impl<S: Submit> Tracker<S> {
 					self.read_late.push((lost, seen_at));
 				}
 				self.last_head = (seen_at, number.max(self.last_head.1));
-				self.on_head(seen_at);
 				if matches!(self.phase(), Phase::Baseline | Phase::Recovery) {
 					self.send_probe(now);
 				}
 			},
 			BlockEvent::Disconnected { at, reason } => {
-				// What passed since the last block, while connected, was a gap; after it, nothing
-				// was observed.
-				if let Some(prev) = self.prev_head_at.take() {
-					self.gap_until(prev, at);
-				}
 				self.observation_gaps.push(ObservationGap {
 					what: "blocks".into(),
 					from: at,
@@ -52,9 +46,6 @@ impl<S: Submit> Tracker<S> {
 				{
 					gap.to = Some(at);
 				}
-				// The stall rules keep the time since the last new block, less the time not
-				// observed (`unobserved_between`): a reconnect does not restart them.
-				self.prev_head_at = Some(at);
 			},
 			BlockEvent::Unreachable(why) | BlockEvent::Restarted(why) => {
 				self.node_down.get_or_insert(why);
@@ -80,17 +71,13 @@ impl<S: Submit> Tracker<S> {
 		Ok(())
 	}
 
+	/// A block read. Its gap is the chain's own time (see [`crate::load::follower`]), so neither
+	/// a pause of PolkaMeter nor a delay on the way changes it.
 	fn on_fetched(
 		&mut self,
 		mut record: BlockRecord,
 		txs: &[(TxHash, bool)],
 	) -> Result<(), FileError> {
-		// A gap PolkaMeter was paused in is not known: the block may have come at any time.
-		if let Some(gap) = record.gap_ms
-			&& self.paused_across(record.seen_at.saturating_sub(gap), record.seen_at)
-		{
-			record.gap_ms = None;
-		}
 		for (tx, failed) in txs {
 			if self.on_tx(tx, record.number, record.seen_at, *failed) {
 				record.ours += 1;
@@ -112,35 +99,6 @@ impl<S: Submit> Tracker<S> {
 			_ => {},
 		}
 		Ok(())
-	}
-
-	/// A new best block at `at`: the gap since the one before goes to the steps it spans, each
-	/// the part inside its own time, and the block counts in the step it arrived in.
-	fn on_head(&mut self, at: Millis) {
-		if let Some(prev) = self.prev_head_at {
-			self.gap_until(prev, at);
-		}
-		self.prev_head_at = Some(at);
-		if let Some(st) = self.steps.iter_mut().rev().find(|s| s.started_at <= at)
-			&& (!st.closed || at < st.ended_at)
-		{
-			st.heads += 1;
-		}
-	}
-
-	/// No new best block from `from` to `to`: each step gets the part of it inside its time,
-	/// less the time PolkaMeter was paused.
-	pub(super) fn gap_until(&mut self, from: Millis, to: Millis) {
-		for i in (0..self.steps.len()).rev() {
-			let st = &self.steps[i];
-			if st.closed && st.ended_at <= from {
-				break;
-			}
-			let (start, end) =
-				(from.max(st.started_at), if st.closed { to.min(st.ended_at) } else { to });
-			let paused = self.paused_within(start, end);
-			self.steps[i].gap_portion(from, to, paused);
-		}
 	}
 
 	/// Whether `hash` is one of ours.

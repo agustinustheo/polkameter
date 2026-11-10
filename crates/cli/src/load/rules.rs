@@ -8,7 +8,7 @@
 //! Failures. The first one ends the ramp:
 //!   pool refuses    > 10% of a step's submits refused                         graceful
 //!   pool intake     p95 submit reply > 5 s, or submits stop going out          graceful
-//!   slow blocks     blocks arrive 2x slower than at the start (wall clock)    hard
+//!   slow blocks     blocks 2x slower than at the start, by the chain's clock  hard
 //!   stall           no new best block for 30 s of observed time               hard
 //!   finality stall  no new finalized block for 60 s, same                      hard
 //!   node down       unreachable for the reconnect budget, or restarted        hard
@@ -443,34 +443,27 @@ mod tests {
 	}
 
 	#[test]
-	fn slow_blocks_and_stalls_count_only_observed_time() {
-		// 10 s with one new best block against 4 s at the start; 20 s with none against 6 s.
-		for (slow, start_gap_ms) in [
-			(
-				step(0, |s| {
-					s.heads = 1;
-					s.closed = true;
-				}),
-				4_000.0,
-			),
-			(
-				step(0, |s| {
-					s.ended_at = 20_000;
-					s.closed = true;
-				}),
-				6_000.0,
-			),
-		] {
-			let stop = check_step(&[slow], &source(), 0, start_gap_ms, &RULES, false).unwrap();
-			assert_eq!((stop.rule, stop.class), (Rule::SlowBlocks, Some(Class::Hard)));
-		}
-		// A step not observed at all has nothing to judge.
-		let unobserved = step(0, |s| {
-			s.ended_at = 20_000;
-			s.closed = true;
-			s.unobserved_ms = 20_000;
-		});
-		assert_eq!(final_step(&unobserved).blocks.mean_block_gap_ms, None);
+	fn slow_blocks_are_the_chains_own_gaps_and_stalls_count_only_observed_time() {
+		use polkameter_plugin_sdk::observers::BlockRecord;
+		let gaps = |gaps: &[u64]| {
+			step(0, |s| {
+				s.blocks = gaps
+					.iter()
+					.map(|g| BlockRecord { gap_ms: Some(*g), ..Default::default() })
+					.collect();
+			})
+		};
+		let judge = |st, start_gap_ms| {
+			check_step(&[st], &source(), 0, start_gap_ms, &RULES, false).map(|s| (s.rule, s.class))
+		};
+		// The chain made a block every 10 s, against 4 s at the start.
+		assert_eq!(
+			judge(gaps(&[10_000, 10_000]), 4_000.0),
+			Some((Rule::SlowBlocks, Some(Class::Hard)))
+		);
+		assert_eq!(judge(gaps(&[6_000]), 6_000.0), None);
+		// A step without a block read has no pace to judge.
+		assert_eq!(final_step(&gaps(&[])).blocks.mean_block_gap_ms, None);
 		// 40 s since the last block; time spent reconnecting does not count.
 		let down = Some("blocks: the node did not answer for 15 s".to_owned());
 		for (state, expected) in [
@@ -496,7 +489,6 @@ mod tests {
 			let st = step(0, |s| {
 				(s.target_rate, s.ended_at, s.sent, s.included) =
 					(target_rate, seconds * 1000, sent, sent);
-				s.heads = seconds / 6;
 			});
 			check_step(&[st], &source(), 0, 6_000.0, &RULES, false).unwrap().detail
 		};

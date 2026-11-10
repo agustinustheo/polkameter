@@ -270,7 +270,7 @@ fn reconnects_never_hide_a_stall() {
 	assert_eq!(rule(&t, 70_000), Some(Rule::Stall), "32 s observed, across the reconnect");
 	block(&mut t, 9, 41_000, None, &[]);
 	t.end_step(60_000);
-	assert_eq!((t.steps[0].unobserved_ms, t.steps[0].max_gap_ms), (38_000, Some(19_000)));
+	assert_eq!(t.unobserved_between(0, 60_000), 38_000, "the outage is not observed");
 	t.on_block(BlockEvent::Unreachable("not reachable for 15 s".into()), 61_000)
 		.unwrap();
 	assert_eq!(rule(&t, 61_000), Some(Rule::NodeDown));

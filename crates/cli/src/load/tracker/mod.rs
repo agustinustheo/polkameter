@@ -129,8 +129,6 @@ pub struct Tracker<S> {
 	/// What the run should show but is not a problem: a reconnect that reached another node
 	/// (a load balancer, or the node restarted).
 	pub warnings: Vec<String>,
-	/// When the last new best block arrived while the follower was connected, for block gaps.
-	prev_head_at: Option<Millis>,
 	/// The follower reconnected after losing the node at this time; the next new best block
 	/// ends the catch-up.
 	catching_up: Option<Millis>,
@@ -227,7 +225,6 @@ impl<S: Submit> Tracker<S> {
 			node_down: None,
 			unstable: None,
 			warnings: Vec::new(),
-			prev_head_at: None,
 			catching_up: None,
 			read_late: Vec::new(),
 			untimed_probes: Default::default(),
@@ -290,24 +287,17 @@ impl<S: Submit> Tracker<S> {
 		self.load.gauge(&STEP, [], f64::from(k), now)
 	}
 
-	/// Ends the running step. The time since the last new best block counts as a block gap in
-	/// the step now, so a stall at its end is seen in its own numbers.
+	/// Ends the running step.
 	pub fn end_step(&mut self, now: Millis) {
-		let Some(started) = self.steps.last().map(|st| st.started_at) else { return };
-		let unobserved = self.unobserved_between(started, now);
-		let st = self.steps.last_mut().expect("a step");
-		st.ended_at = now;
-		st.closed = true;
-		st.unobserved_ms = unobserved;
-		if let Some(prev) = self.prev_head_at {
-			self.gap_until(prev, now);
+		if let Some(st) = self.steps.last_mut() {
+			st.ended_at = now;
 		}
 	}
 
 	/// The time from `from` to `to` that PolkaMeter did not observe the chain: the block
-	/// follower was disconnected, or PolkaMeter itself was paused. The stall rules and the
-	/// block gaps leave it out: no block could be seen then. Every other moment since the last
-	/// new block counts, also across reconnects.
+	/// follower was disconnected, or PolkaMeter itself was paused. The stall rules leave it out:
+	/// no block could be seen then. Every other moment since the last new block counts, also
+	/// across reconnects.
 	pub fn unobserved_between(&self, from: Millis, to: Millis) -> Millis {
 		let mut spans: Vec<(Millis, Millis)> = self
 			.observation_gaps

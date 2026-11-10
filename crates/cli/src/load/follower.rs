@@ -5,12 +5,14 @@
 //!   filled in;
 //! - fetcher: reads each queued block (body, weight, timestamp, events) strictly in arrival
 //!   order and sends [`BlockEvent::Fetched`]. In order, so a source never sees a later block
-//!   before the inclusions of an earlier one.
+//!   before the inclusions of an earlier one. A block's gap is the chain's own time per block,
+//!   from its `Timestamp.Now`, since the highest block read before it: when PolkaMeter received
+//!   either, and whatever delayed that, plays no part.
 //!
 //! When the connection drops, the heads task sends [`BlockEvent::Disconnected`], opens it again
 //! with backoff, subscribes, and only then sends [`BlockEvent::Reconnected`]: the time between is
-//! an observation gap, not a chain stall, and the first block after it has no gap to the block
-//! before. The blocks missed meanwhile are filled in below the next best block. A node that stays
+//! an observation gap, not a chain stall. The blocks missed meanwhile are filled in below the
+//! next best block. A node that stays
 //! unreachable for the backoff (about 15 s) is [`BlockEvent::Unreachable`]: node down. A
 //! connection that drops again and again is [`BlockEvent::Unstable`]: the follower goes on, and
 //! the load ends without blaming the chain.
@@ -115,9 +117,8 @@ struct PerClass {
 /// The running runtime's normal class limit (ref time, proof size), from `System.BlockWeights`.
 pub type Limit = (u64, u64);
 
-/// A block for the fetcher: hash, number, when it arrived, filled in, and the first after the
-/// follower reconnected (its gap to the block before is not known).
-type Queued = ([u8; 32], u32, Millis, bool, bool);
+/// A block for the fetcher: hash, number, when it arrived, and whether it is filled in.
+type Queued = ([u8; 32], u32, Millis, bool);
 
 /// Blocks filled in below one best block at most; a longer walk is an unreadable stretch.
 const MAX_FILL: usize = 64;
@@ -358,7 +359,6 @@ async fn heads(
 			at.saturating_sub(lost_at) as f64 / 1000.0
 		);
 		let _ = out.send(BlockEvent::Reconnected { at });
-		followed.after_gap = true;
 		session = Ok(s);
 	}
 }
@@ -370,8 +370,6 @@ struct Followed {
 	seen: HashSet<[u8; 32]>,
 	/// The first best block followed.
 	first: Option<u32>,
-	/// The next block queued is the first after a reconnect.
-	after_gap: bool,
 	/// Who the node was on the last connection.
 	identity: Option<Identity>,
 }
@@ -417,17 +415,16 @@ async fn follow(
 					if b.number() as u32 >= first && !f.seen.contains(&b.hash().0) {
 						let (number, hash, seen_at) = (b.number() as u32, b.hash().0, now_ms());
 						let _ = out.send(BlockEvent::Head { number, seen_at });
-						let after_gap = std::mem::take(&mut f.after_gap);
 						let walk = fill_in(b.header().parent_hash.0, number, first, &f.seen, |h| bounded("parent header", parent(&client, h)));
 						match until_stopped(stop, walk).await? {
 							Ok(missing) => for (h, n) in missing {
 								f.seen.insert(h);
-								let _ = queue.send((h, n, seen_at, true, false));
+								let _ = queue.send((h, n, seen_at, true));
 							},
 							Err(e) => { let _ = out.send(BlockEvent::Unreadable(format!("blocks below {number}: {e}"))); }
 						}
 						f.seen.insert(hash);
-						let _ = queue.send((hash, number, seen_at, false, after_gap));
+						let _ = queue.send((hash, number, seen_at, false));
 					}
 				},
 			},
@@ -484,7 +481,7 @@ async fn fetcher(
 	use futures_util::StreamExt;
 	let blocks = futures_util::stream::poll_fn(move |cx| queue.poll_recv(cx));
 	let mut reads = blocks
-		.map(|(hash, number, seen_at, filled_in, after_gap)| {
+		.map(|(hash, number, seen_at, filled_in)| {
 			let clients = clients.clone();
 			async move {
 				let mut attempt = 1;
@@ -498,26 +495,24 @@ async fn fetcher(
 						result => break result,
 					}
 				};
-				(number, seen_at, filled_in, after_gap, result)
+				(number, seen_at, filled_in, result)
 			}
 		})
 		.buffered(FETCH_AHEAD);
-	let mut last: Option<Millis> = None; // when the last best block arrived
+	// The highest block read, and its `Timestamp.Now`.
+	let mut last: Option<(u32, Millis)> = None;
 	loop {
-		let (number, seen_at, filled_in, after_gap, result) = tokio::select! {
+		let (number, seen_at, filled_in, result) = tokio::select! {
 			() = stop.cancelled() => return,
 			Some(r) = reads.next() => r,
 		};
-		if after_gap {
-			last = None; // the follower was disconnected: the gap is not known
-		}
 		match result {
 			Ok((mut record, txs)) => {
 				record.fetch_lag_ms = Some(now_ms().saturating_sub(seen_at));
 				record.filled_in = filled_in;
-				if !filled_in {
-					record.gap_ms = last.map(|s| seen_at.saturating_sub(s));
-					last = Some(seen_at);
+				record.gap_ms = chain_gap(last, record.number, record.timestamp);
+				if record.timestamp > 0 && last.is_none_or(|(n, _)| record.number > n) {
+					last = Some((record.number, record.timestamp));
 				}
 				let _ = out.send(BlockEvent::Fetched { record, txs });
 			},
@@ -529,6 +524,14 @@ async fn fetcher(
 			},
 		}
 	}
+}
+
+/// The chain's own time per block from `last`, the highest block read before (its number and
+/// `Timestamp.Now`), to block `number` with `timestamp`. `None` for a block at or below it (a
+/// fork), or without a timestamp.
+pub fn chain_gap(last: Option<(u32, Millis)>, number: u32, timestamp: Millis) -> Option<Millis> {
+	let (n, at) = last?;
+	(number > n && timestamp > 0).then(|| timestamp.saturating_sub(at) / u64::from(number - n))
 }
 
 async fn read(
@@ -596,6 +599,16 @@ mod tests {
 		}))
 		.expect("ready")
 		.expect("walks")
+	}
+
+	/// A block's gap is the chain's time per block since the highest block read before it.
+	#[test]
+	fn a_block_gap_is_the_chains_own_time() {
+		assert_eq!(chain_gap(None, 10, 60_000), None, "the first block read");
+		assert_eq!(chain_gap(Some((10, 60_000)), 11, 66_000), Some(6_000));
+		assert_eq!(chain_gap(Some((10, 60_000)), 13, 78_000), Some(6_000), "two filled in");
+		assert_eq!(chain_gap(Some((12, 72_000)), 12, 73_000), None, "a fork block");
+		assert_eq!(chain_gap(Some((10, 60_000)), 11, 0), None, "no timestamp");
 	}
 
 	#[test]

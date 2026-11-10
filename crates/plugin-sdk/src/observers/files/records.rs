@@ -71,7 +71,8 @@ pub struct BlockRecord {
 	/// Never a best block itself: read because a later best block builds on it (after a reorg,
 	/// the node announces only the new tip). No gap or interval.
 	pub filled_in: bool,
-	/// Wall-clock gap to the best block recorded before it.
+	/// The chain's own time per block since the highest block recorded before it, from their
+	/// `Timestamp.Now`; `None` for the first block, a fork block or a chain without timestamps.
 	pub gap_ms: Option<u64>,
 	/// `Timestamp.Now` of the block.
 	pub timestamp: Millis,
