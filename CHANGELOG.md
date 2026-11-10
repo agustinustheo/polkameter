@@ -2,6 +2,16 @@
 
 User-visible changes in each release. The GitHub release notes list every merged pull request.
 
+## Unreleased
+
+### Fixed
+
+- Recovery backlog and drain use the chain's block timestamps. Blocks delivered late by a proxy or after a pause no longer count transactions included before load stop. The drain rate is the backlog divided by the time to its last inclusion, not the recovery wait. Missing boundary or inclusion timestamps leave the drain measures unmeasured.
+
+### Changed
+
+- Plugin SDK: `Recovery::backlog_at_stop` is `Option<u64>` (`null` without chain evidence). Earlier summaries still read.
+
 ## 0.4.5 (2026-11-10)
 
 ### Fixed

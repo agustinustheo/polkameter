@@ -211,6 +211,13 @@ fn recovery_line(s: &Summary) -> String {
 	if !r.measured {
 		return format!("not measured: {}", r.detail);
 	}
+	let Some(backlog) = r.backlog_at_stop else {
+		return format!(
+			"{} ({}). Drain not measured: missing chain evidence at load stop.",
+			if r.recovered { "back" } else { "not back within the budget" },
+			r.detail
+		);
+	};
 	if r.recovered {
 		let left = match r.drained_seconds {
 			None => format!("{} left", r.backlog_at_end),
@@ -220,14 +227,14 @@ fn recovery_line(s: &Summary) -> String {
 			"back {} s after the load stopped ({}). Backlog at stop {} txs, {left}, at {} tx/s.",
 			fmt(r.seconds.map(|x| x as f64), 0),
 			r.detail,
-			r.backlog_at_stop,
+			backlog,
 			fmt(r.drain_per_s, 1)
 		)
 	} else {
 		format!(
 			"not back within the budget: {}. Backlog at stop {} txs, {} left, drained at {} tx/s.",
 			r.detail,
-			r.backlog_at_stop,
+			backlog,
 			r.backlog_at_end,
 			fmt(r.drain_per_s, 1)
 		)

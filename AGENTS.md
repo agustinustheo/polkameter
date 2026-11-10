@@ -89,7 +89,7 @@ PolkaMeter asserts only what its evidence shows, from the one place it watches t
 | B. A finality stall fails the run in recovery and in the loss check, also when PolkaMeter paused | `a_finality_stall_in_recovery_fails_even_when_polkameter_paused`, `a_finality_stall_while_the_loss_check_runs_fails_the_run` |
 | C. A baseline or recovery PolkaMeter didn't observe has no result, and no drain rate | `i3_a_pause_in_the_baseline_or_recovery_is_not_the_chains`, `a_baseline_polkameter_did_not_observe_has_no_result`, `a_recovery_polkameter_did_not_observe_is_not_measured` |
 | C. A baseline with no time makes the verdict at most INCONCLUSIVE | `a_baseline_with_no_time_is_at_most_inconclusive` in `engine/checks/tests.rs` |
-| C. Inclusions seen before recovery are not its drain | `inclusions_seen_before_recovery_are_not_its_drain` |
+| C. Drain uses the chain’s timestamps, with no number without evidence | `inclusions_seen_before_recovery_are_not_its_drain`, `delayed_pre_stop_blocks_are_not_recovery_drain`, `drain_without_chain_evidence_has_no_numbers`, `an_empty_backlog_has_no_drain_rate`; `an_unmeasured_drain_does_not_hide_a_recovery_failure` in `engine/checks/tests.rs` |
 | C. A transaction without a measured time has no time in any export | `untimed_transactions_have_no_time_in_any_export` |
 | C/D. Absence from READY is not loss; a finalized nonce past an absent transaction proves loss | `an_accepted_transaction_absent_from_ready_may_still_finalize`, `loss_requires_a_consumed_finalized_nonce` in `crates/cli/src/load/loss.rs`; `unresolved_transactions_are_inconclusive_but_proven_loss_fails` in `engine/checks/tests.rs` |
 | D. Every unknown transaction has a reason | `every_unknown_transaction_has_a_reason` in `crates/cli/src/load/loss.rs` |

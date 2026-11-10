@@ -348,7 +348,13 @@ async fn chain_run(name: &str, fault: Fault) -> (Stop, Option<BreakingPoint>) {
 
 /// Block `number` as the follower reads it at `seen_at`: new best, read, finalized at once.
 fn block(number: u32, seen_at: u64, txs: Vec<(TxHash, bool)>) -> [BlockEvent; 3] {
-	let record = BlockRecord { number, seen_at, gap_ms: Some(6_000), ..Default::default() };
+	let record = BlockRecord {
+		number,
+		seen_at,
+		timestamp: seen_at,
+		gap_ms: Some(6_000),
+		..Default::default()
+	};
 	[
 		BlockEvent::Head { number, seen_at },
 		BlockEvent::Fetched { record, txs },
@@ -534,7 +540,13 @@ fn a_pause_never_counts_in_block_gaps() {
 /// Block `number` of a chain that makes one every 6 s, as the follower reads it at `seen_at`:
 /// its gap is the chain's own, 6 s.
 fn chain_block(number: u32, seen_at: u64) -> BlockEvent {
-	let record = BlockRecord { number, seen_at, gap_ms: Some(6_000), ..Default::default() };
+	let record = BlockRecord {
+		number,
+		seen_at,
+		timestamp: seen_at,
+		gap_ms: Some(6_000),
+		..Default::default()
+	};
 	BlockEvent::Fetched { record, txs: vec![] }
 }
 
@@ -641,9 +653,9 @@ async fn a_recovery_polkameter_did_not_observe_is_not_measured() {
 		load(&mut t, &mut io, &opts).await.unwrap();
 		let r = recover(&mut t, &mut io, &opts, Some(12_000)).await.unwrap();
 		assert_eq!((r.measured, r.recovered), (measured, false), "{name}: {r:?}");
-		// No evidence, no number: an unmeasured recovery has no drain rate, not 0 tx/s.
+		// No boundary block in either case: even a measured stall cannot supply a drain rate.
 		let drain = &serde_json::to_value(&r).unwrap()["drainPerS"];
-		assert_eq!(drain.is_null(), !measured, "{name}: {drain}");
+		assert!(drain.is_null(), "{name}: {drain}");
 	}
 }
 
@@ -849,10 +861,101 @@ async fn a_finality_stall_while_the_loss_check_runs_fails_the_run() {
 	);
 }
 
-/// C1. Recovery drains what blocks announced after the load stopped include. A block announced
-/// in the load and read in recovery is not its drain, nor are the blocks read as the follower
-/// caught up after a reconnect: they may have been made before the load stopped. (They were: a
-/// drain of 0.38 tx/s from txs all included before recovery.)
+/// Four flood transactions, included at the given offsets from stop, delivered late without
+/// any reconnect. `None` is a block without Timestamp.Now. Probes keep waiting for the budget.
+async fn delayed_drain(delay: u64, offsets: [Option<i64>; 4]) -> Recovery {
+	let (replies_tx, replies) = mpsc::unbounded_channel();
+	let (blocks_tx, blocks) = mpsc::unbounded_channel();
+	let node = Node { replies: replies_tx, pool: Pool::default(), link: None };
+	let (mut t, mut io, opts) =
+		runner("attribution-delayed-drain", node, replies, blocks, (1.0, 10), 0);
+	let start = now_ms();
+	t.start_step(0, 1.0, start).unwrap();
+	for _ in 0..4 {
+		assert!(t.send_next(start));
+	}
+	tokio::time::advance(Duration::from_secs(10)).await;
+	let stop = now_ms();
+	t.end_step(stop);
+	tokio::spawn(async move {
+		let began = Instant::now();
+		for (n, offset) in offsets.into_iter().enumerate() {
+			let after = delay + [0, 1, 2_000, 4_000][n];
+			tokio::time::sleep_until(began + Duration::from_millis(after)).await;
+			let n = n as u32;
+			let hash = Tx::new(n.to_le_bytes().to_vec()).hash;
+			for e in block(n + 1, now_ms(), vec![(hash, false)]) {
+				let e = match e {
+					BlockEvent::Fetched { mut record, txs } => {
+						record.timestamp = offset.map_or(0, |ms| stop.saturating_add_signed(ms));
+						BlockEvent::Fetched { record, txs }
+					},
+					e => e,
+				};
+				blocks_tx.send(e).unwrap();
+			}
+		}
+		// An empty block beyond stop also locates the boundary when the backlog was empty.
+		tokio::time::sleep_until(began + Duration::from_millis(delay + 6_000)).await;
+		for e in block(5, now_ms(), vec![]) {
+			let e = match e {
+				BlockEvent::Fetched { mut record, txs } => {
+					record.timestamp = stop + 6_000;
+					BlockEvent::Fetched { record, txs }
+				},
+				e => e,
+			};
+			blocks_tx.send(e).unwrap();
+		}
+		// Keep the input open until recovery ends.
+		tokio::time::sleep(Duration::from_secs(30)).await;
+	});
+	recover(&mut t, &mut io, &opts, Some(12_000)).await.unwrap()
+}
+
+/// C. Blocks produced before or at load stop can arrive in recovery without a reconnect.
+/// Only the two included after stop form the backlog; their last block, not its delivery or
+/// the end of the probe wait, determines the four-second drain.
+#[tokio::test(start_paused = true)]
+async fn delayed_pre_stop_blocks_are_not_recovery_drain() {
+	for delay in [200, 1_000, 3_000] {
+		let r = delayed_drain(delay, [Some(-4_000), Some(0), Some(2_000), Some(4_000)]).await;
+		let json = serde_json::to_value(&r).unwrap();
+		assert_eq!(json["backlogAtStop"], 2, "delay {delay}: {r:?}");
+		assert_eq!(r.drained_seconds, Some(4), "delay {delay}: {r:?}");
+		assert_eq!(r.drain_per_s, Some(0.5), "delay {delay}: {r:?}");
+	}
+}
+
+/// C. Neither a missing boundary nor a missing last inclusion timestamp has a numeric drain.
+#[tokio::test(start_paused = true)]
+async fn drain_without_chain_evidence_has_no_numbers() {
+	for offsets in [
+		[None; 4],
+		[Some(-4_000), None, Some(2_000), Some(4_000)],
+		[Some(-4_000), Some(0), Some(2_000), None],
+		[Some(1), Some(2), Some(2_000), Some(4_000)],
+	] {
+		let r = delayed_drain(3_000, offsets).await;
+		let json = serde_json::to_value(&r).unwrap();
+		for field in ["backlogAtStop", "drainedSeconds", "drainPerS"] {
+			assert!(json[field].is_null(), "{offsets:?}: {field}: {r:?}");
+		}
+	}
+}
+
+/// C. Nothing remained on the chain at stop: later delivery cannot invent a positive drain.
+#[tokio::test(start_paused = true)]
+async fn an_empty_backlog_has_no_drain_rate() {
+	let r = delayed_drain(3_000, [Some(-6_000), Some(-4_000), Some(-2_000), Some(0)]).await;
+	assert_eq!(r.backlog_at_stop, Some(0), "{r:?}");
+	assert_eq!(r.drained_seconds, Some(0), "{r:?}");
+	assert_eq!(r.drain_per_s, None, "no duration to divide by: {r:?}");
+}
+
+/// C1. Blocks read late after a reconnect can have included our txs before stop. The chain's
+/// timestamps, including blocks bracketing stop, must establish the drain. (A receive-time
+/// count reported 0.38 tx/s from txs all included before recovery.)
 #[test]
 fn inclusions_seen_before_recovery_are_not_its_drain() {
 	let (_replies_tx, replies) = mpsc::unbounded_channel();
@@ -866,7 +969,8 @@ fn inclusions_seen_before_recovery_are_not_its_drain() {
 		assert!(t.send_next(start + n));
 	}
 	let fetched = |number, seen_at, n: u32| {
-		let record = BlockRecord { number, seen_at, ..Default::default() };
+		let timestamp = start + [3_000, 7_000, 9_000, 17_000][number as usize - 1];
+		let record = BlockRecord { number, seen_at, timestamp, ..Default::default() };
 		BlockEvent::Fetched { record, txs: vec![(Tx::new(n.to_le_bytes().to_vec()).hash, false)] }
 	};
 	let at = |ms| start + ms;
@@ -884,11 +988,16 @@ fn inclusions_seen_before_recovery_are_not_its_drain() {
 		.unwrap();
 	t.on_block(fetched(2, at(11_000), 1), at(11_000)).unwrap();
 	t.on_block(fetched(3, at(11_000), 2), at(11_000)).unwrap();
-	assert_eq!(t.drained, 0, "nothing shows these were included after the load stopped");
+	assert_eq!(t.recovery_drain(at(10_000)), None, "no block yet brackets load stop");
 	t.on_block(BlockEvent::Head { number: 4, seen_at: at(17_000) }, at(17_000))
 		.unwrap();
 	t.on_block(fetched(4, at(17_000), 3), at(17_000)).unwrap();
-	assert_eq!(t.drained, 1, "a block announced in recovery drains");
+	assert_eq!(t.recovery_drain(at(10_000)), Some((1, Some(7_000))), "only block 4 drains");
+	// A later fork reuses block 4's number, but not the first inclusion's timestamp.
+	let record =
+		BlockRecord { number: 4, timestamp: at(25_000), seen_at: at(25_000), ..Default::default() };
+	t.on_block(BlockEvent::Fetched { record, txs: vec![] }, at(25_000)).unwrap();
+	assert_eq!(t.recovery_drain(at(10_000)), Some((1, Some(7_000))), "first inclusion stays timed");
 }
 
 // D. Each sent flood transaction gets one loss status, from its own evidence.
