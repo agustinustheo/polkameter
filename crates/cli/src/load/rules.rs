@@ -94,8 +94,11 @@ pub fn measure_violation(f: &FinalStep, rules: &Rules) -> Option<(&'static str, 
 	if f.sent == 0 {
 		return None;
 	}
-	if f.included_ratio < rules.min_included_ratio {
-		return Some(("included", format!("{} of the step's txs included", pct(f.included_ratio))));
+	if let Some(ratio) = f.included_ratio.filter(|ratio| *ratio < rules.min_included_ratio) {
+		return Some((
+			"included",
+			format!("{} of the step's observed submissions included", pct(ratio)),
+		));
 	}
 	if let Some(p95) = f.p95_latency_ms.filter(|p95| *p95 > rules.max_p95_latency_ms) {
 		return Some(("latency", format!("p95 send -> best block {} s", secs(p95 as f64))));
@@ -320,6 +323,19 @@ pub fn breaking_point(finals: &[FinalStep], rules: &Rules) -> Option<BreakingPoi
 			detail,
 		})
 	})
+}
+
+/// What the inclusion ratio leaves out, per step: no evidence that the node got the submission.
+pub fn inclusion_warning(finals: &[FinalStep]) -> Option<String> {
+	let steps: Vec<String> = finals
+		.iter()
+		.filter(|f| f.unknown_submissions > 0)
+		.map(|f| format!("{} in step {}", f.unknown_submissions, f.step))
+		.collect();
+	(!steps.is_empty()).then(|| format!(
+		"inclusion ratios leave out submissions whose outcome was not observed ({}); a step with no observed submissions has no inclusion result",
+		steps.join(", ")
+	))
 }
 
 /// What the steps' latency leaves out, for the run's warnings: txs seen late, after PolkaMeter

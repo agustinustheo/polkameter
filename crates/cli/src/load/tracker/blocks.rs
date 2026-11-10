@@ -121,6 +121,7 @@ impl<S: Submit> Tracker<S> {
 			},
 			Kind::Flood { step } => step,
 		};
+		self.observe_submission(hash);
 		self.included_in.insert(*hash, block);
 		let mut untimed = late;
 		if let Some(flood) = self.flood.get_mut(hash) {

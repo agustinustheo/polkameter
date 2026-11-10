@@ -399,6 +399,7 @@ impl<S: Submit> Tracker<S> {
 			return false;
 		}
 		self.current().sent += 1;
+		self.current().unknown_submissions += 1;
 		self.load.inc(&TX_SENT, [CALL], 1.0, now);
 		true
 	}
@@ -421,6 +422,17 @@ impl<S: Submit> Tracker<S> {
 		}
 		self.sent.insert(hash, Sent { kind, sent_at: now });
 		true
+	}
+
+	/// A reply or inclusion resolves a submission once, even if the other arrives later.
+	fn observe_submission(&mut self, hash: &TxHash) {
+		if let Some(tx) = self.flood.get(hash)
+			&& !tx.accepted
+			&& !tx.refused
+			&& !self.included_in.contains_key(hash)
+		{
+			self.steps[tx.step].unknown_submissions -= 1;
+		}
 	}
 
 	/// PolkaMeter itself was paused from `from` to `to` (SIGSTOP, CPU starvation, a suspend):
@@ -504,12 +516,15 @@ impl<S: Submit> Tracker<S> {
 		if req.resent
 			&& let Some((code, _)) = &refusal
 		{
-			if let Some(tx) = self.flood.get_mut(&req.hash).filter(|_| ALREADY_HAVE.contains(code))
-			{
-				tx.accepted = true;
+			if ALREADY_HAVE.contains(code) {
+				self.observe_submission(&req.hash);
+				if let Some(tx) = self.flood.get_mut(&req.hash) {
+					tx.accepted = true;
+				}
 			}
 			return;
 		}
+		self.observe_submission(&req.hash);
 		let Some((code, error)) = refusal else {
 			if let Some(tx) = self.flood.get_mut(&req.hash) {
 				tx.accepted = true;

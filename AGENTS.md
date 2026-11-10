@@ -75,6 +75,7 @@ PolkaMeter asserts only what its evidence shows, from the one place it watches t
 
 | Rule | Test |
 | --- | --- |
+| A. An unknown submission is not failed inclusion; later replies or blocks resolve it | `unknown_submissions_are_not_failed_inclusions` |
 | A. A disconnection shorter than 15 s is not node down, in the load and the loss check | `i1_a_node_back_within_the_reconnect_budget_is_not_down`, `the_loss_check_reconnects_within_the_budget`; `tests/rpc-outage.py` in the CI dev-chain job (an 8 s outage through a TCP proxy) |
 | A. A connection that keeps dropping is unstable, not node down | `a_connection_that_keeps_dropping_is_unstable_not_node_down` |
 | A. A restarted proxy is not a restarted node | `a_restarted_proxy_is_not_a_restarted_node` |
@@ -83,6 +84,7 @@ PolkaMeter asserts only what its evidence shows, from the one place it watches t
 | A. A node or network that answers nothing for 15 s is not node down without evidence; a proxy is not the node's process | `a_node_or_network_unreachable_is_not_node_down`; `a_silent_connection_is_lost_from_the_last_answer` in `follower.rs`; `a_proxy_on_the_rpc_port_is_not_the_node` in `monitors/process.rs` |
 | A. Reconnecting is not pool intake, and a resend has no latency | `i4_a_reconnecting_sender_is_never_pool_intake`, `i4_time_to_resend_after_a_reconnect_is_not_latency` |
 | B. A node restart is node down in any phase | `a_restarted_node_is_node_down_in_any_phase`; `a_node_restart_is_node_down_in_load_and_recovery` in `load_runner.rs` |
+| B. The reconnect budget is a hard limit; resuming a node keeps its stopped evidence | `a_reconnect_reserves_time_for_the_last_handshake`, `a_reconnect_that_finishes_after_the_budget_is_too_late`, `a_resumed_node_does_not_erase_its_stopped_evidence` |
 | B. An unreachable node whose process here ended, stopped or serves the RPC port is node down | `an_unreachable_node_whose_process_failed_is_node_down` |
 | B. A finality stall fails the run in recovery and in the loss check, also when PolkaMeter paused | `a_finality_stall_in_recovery_fails_even_when_polkameter_paused`, `a_finality_stall_while_the_loss_check_runs_fails_the_run` |
 | C. A baseline or recovery PolkaMeter didn't observe has no result, and no drain rate | `i3_a_pause_in_the_baseline_or_recovery_is_not_the_chains`, `a_baseline_polkameter_did_not_observe_has_no_result`, `a_recovery_polkameter_did_not_observe_is_not_measured` |
@@ -90,6 +92,7 @@ PolkaMeter asserts only what its evidence shows, from the one place it watches t
 | C. Inclusions seen before recovery are not its drain | `inclusions_seen_before_recovery_are_not_its_drain` |
 | C. A transaction without a measured time has no time in any export | `untimed_transactions_have_no_time_in_any_export` |
 | C/D. Absence from READY is not loss; a finalized nonce past an absent transaction proves loss | `an_accepted_transaction_absent_from_ready_may_still_finalize`, `loss_requires_a_consumed_finalized_nonce` in `crates/cli/src/load/loss.rs`; `unresolved_transactions_are_inconclusive_but_proven_loss_fails` in `engine/checks/tests.rs` |
+| D. Every unknown transaction has a reason | `every_unknown_transaction_has_a_reason` in `crates/cli/src/load/loss.rs` |
 | D. Loss statuses partition what was sent | `statuses_partition_sent_in_every_scenario` in `crates/cli/src/load/loss.rs` |
 | D. The loss check walks from below every flood transaction | `the_loss_check_walks_from_below_every_flood_transaction` |
 | Diagnostics name what PolkaMeter saw | `a_node_down_in_the_baseline_is_named`, `a_pause_is_not_called_a_reconnect`, `heads_without_a_block_read_are_not_no_new_block`; `blocks_unobserved_for_longer_than_a_stall_are_no_result` in `engine/checks/tests.rs` |

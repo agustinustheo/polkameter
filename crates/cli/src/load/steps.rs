@@ -24,8 +24,11 @@ pub struct FinalStep {
 	pub send_ratio: f64,
 	/// Included.
 	pub included: u64,
-	/// Included against sent (1 with nothing sent).
-	pub included_ratio: f64,
+	/// Sent without an observed acceptance, refusal or inclusion.
+	#[serde(default)]
+	pub unknown_submissions: u64,
+	/// Included against submissions with an observed outcome; `None` with no observations.
+	pub included_ratio: Option<f64>,
 	/// Our txs in blocks seen during the step, per second: what the chain took.
 	pub included_per_s: f64,
 	/// Failed after inclusion.
@@ -72,6 +75,8 @@ pub struct StepStats {
 	pub ended_at: Millis,
 	/// Sent.
 	pub sent: u64,
+	/// Sent without an observed acceptance, refusal or inclusion.
+	pub unknown_submissions: u64,
 	/// Later seen in a best block.
 	pub included: u64,
 	/// Of those, with an `ExtrinsicFailed` event.
@@ -140,7 +145,9 @@ pub fn final_step(st: &StepStats) -> FinalStep {
 			st.sent as f64 / (st.target_rate * seconds)
 		},
 		included: st.included,
-		included_ratio: ratio(st.included, st.sent, 1.0),
+		unknown_submissions: st.unknown_submissions,
+		included_ratio: (st.sent > st.unknown_submissions)
+			.then(|| st.included as f64 / (st.sent - st.unknown_submissions) as f64),
 		// The step's own txs, wherever they were included: not the step before's backlog.
 		included_per_s: st.included as f64 / seconds,
 		failed_in_block: st.failed_in_block,
