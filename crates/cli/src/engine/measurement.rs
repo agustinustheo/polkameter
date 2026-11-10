@@ -261,10 +261,11 @@ pub async fn run(
 		(None, None) => None,
 	};
 	let mut warnings = tracker.warnings.clone();
-	warnings.extend(rules::untimed_warning(&finals));
+	let cause = tracker.untimed_cause();
+	warnings.extend(rules::untimed_warning(&finals, cause));
 	if base.max_ms.is_none() {
 		warnings.push(format!(
-			"the baseline has no result: {} timed none of its {} probes (it was paused, or reconnecting, while they landed)",
+			"the baseline has no result: {} timed none of its {} probes ({cause} while they landed)",
 			crate::PRODUCT_NAME,
 			base.probes
 		));

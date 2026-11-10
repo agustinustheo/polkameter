@@ -15,7 +15,7 @@ use polkameter::load::{
 	Plan, QueueSource, Tx, TxHash,
 	follower::BlockEvent,
 	reconnect::{Backoff, Reconnect, reconnect},
-	rules::{RULES, breaking_point, check_step},
+	rules::{RULES, breaking_point, check_step, untimed_warning},
 	runner::{Io, Mode, RunOptions, baseline, load, recover, watch},
 	sender::{Reply, Sender},
 	steps::final_step,
@@ -913,4 +913,52 @@ fn the_loss_check_walks_from_below_every_flood_transaction() {
 	t.start_step(0, 1.0, start).unwrap();
 	assert!(t.send_next(start + 1));
 	assert!(t.walk_from.is_some_and(|from| from <= 2323), "walks from {:?}", t.walk_from);
+}
+
+// What PolkaMeter says names what it saw.
+
+/// E1. The node restarted during the baseline: the run's error names node down and why, not only
+/// the probes it left. (It said "baseline: 0 of 1 probes landed".)
+#[tokio::test(start_paused = true)]
+async fn a_node_down_in_the_baseline_is_named() {
+	let faults = [Fault::Reconnect(3, Answer::Restarted)];
+	let (mut t, mut io, opts) = on_chain("attribution-baseline-restart", &faults, (2.0, 6), 3);
+	let error = baseline(&mut t, &mut io, &opts).await.unwrap_err().to_string();
+	assert!(error.contains("node down: the node restarted"), "{error}");
+}
+
+/// E2. Only PolkaMeter's own pause left txs untimed: the warning says it was paused, not that it
+/// was reconnecting. (It said "it was paused, or reconnecting to the node".)
+#[tokio::test(start_paused = true)]
+async fn a_pause_is_not_called_a_reconnect() {
+	let faults = [Fault::Slow(3_000), Fault::Paused(11_500, 4_900)];
+	let (mut t, mut io, opts) = on_chain("attribution-pause-wording", &faults, (20.0, 30), 0);
+	load(&mut t, &mut io, &opts).await.unwrap();
+	recover(&mut t, &mut io, &opts, Some(12_000)).await.unwrap();
+	let finals: Vec<_> = t.steps.iter().map(final_step).collect();
+	let warning = untimed_warning(&finals, t.untimed_cause()).expect("untimed txs");
+	assert!(warning.contains("it was paused") && !warning.contains("reconnect"), "{warning}");
+}
+
+/// E3. In recovery the node announced new blocks, but none was read in time: the detail says
+/// so, not that no new block came. (It said "no new block in 13 s".)
+#[tokio::test(start_paused = true)]
+async fn heads_without_a_block_read_are_not_no_new_block() {
+	let (replies_tx, replies) = mpsc::unbounded_channel();
+	let (blocks_tx, blocks) = mpsc::unbounded_channel();
+	let node = Node { replies: replies_tx, pool: Pool::default(), link: None };
+	let (mut t, mut io, mut opts) =
+		runner("attribution-heads-only", node, replies, blocks, (1.0, 6), 0);
+	opts.recovery_s = 13;
+	tokio::spawn(async move {
+		for number in 1.. {
+			tokio::time::sleep(Duration::from_secs(6)).await;
+			if blocks_tx.send(BlockEvent::Head { number, seen_at: now_ms() }).is_err() {
+				return;
+			}
+		}
+	});
+	let r = recover(&mut t, &mut io, &opts, Some(12_000)).await.unwrap();
+	assert!(r.detail.starts_with("no block read in 13 s"), "{}", r.detail);
+	assert!(r.detail.contains("announced new blocks up to block 2"), "{}", r.detail);
 }

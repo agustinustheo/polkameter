@@ -109,6 +109,15 @@ fn blocks_unobserved_for_longer_than_a_stall_are_no_result() {
 	let (status, overall) = check(&s);
 	assert_eq!(status, Status::NoResult);
 	assert_ne!(overall, OverallStatus::Pass);
+	// PolkaMeter's own pauses count in that time too: the detail doesn't call it reconnecting.
+	// (It said "not observed for 42.0 s in all while reconnecting".)
+	let results = run(&all(), &RunData::new(Store::new(), s.clone()));
+	let r = results.iter().find(|r| r.check == "monitors recorded everything").unwrap();
+	assert!(
+		r.verdict.detail.starts_with("PolkaMeter did not observe blocks for 42.0 s"),
+		"{}",
+		r.verdict.detail
+	);
 }
 
 /// C. A baseline PolkaMeter timed none of the probes of has no result, and the verdict is at most

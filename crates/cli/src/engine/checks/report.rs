@@ -244,7 +244,7 @@ fn baseline_line(s: &Summary) -> String {
 			to_fixed(max as f64 / 1000.0, 1)
 		),
 		_ => format!(
-			"{} probes before the load, **no result**: {} timed none of them (it was paused, or reconnecting, while they landed)",
+			"{} probes before the load, **no result**: {} timed none of them (see the warnings)",
 			b.probes,
 			crate::PRODUCT_NAME
 		),

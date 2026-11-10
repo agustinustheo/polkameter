@@ -329,7 +329,12 @@ pub async fn baseline<S: Submit>(
 			(opts.baseline_probes as u64 + 10) * (opts.block_interval_s * 1000.0) as u64,
 		);
 	let mut ticks = Ticks::new(io, 200);
-	while Instant::now() < deadline {
+	let down = |t: &Tracker<S>, io: &Io| {
+		node_down(t, io).map(|why| format!("node down: {why}")).or_else(|| {
+			t.unreachable.as_ref().map(|why| format!("node or network unreachable: {why}"))
+		})
+	};
+	while Instant::now() < deadline && down(t, io).is_none() {
 		let tick = ticks.next(t, io, &opts.rules).await?;
 		if let Some(why) = ticks.long_pause() {
 			crate::redact::diag!("baseline: {why}");
@@ -344,6 +349,14 @@ pub async fn baseline<S: Submit>(
 		}
 	}
 	let bad = t.probes.iter().filter(|p| p.outcome != Outcome::Included).count();
+	// What ended the baseline is the cause, and is named, not only the probes it left.
+	if let Some(why) = down(t, io) {
+		let landed = t.probes.len() - bad;
+		return Err(RunError::Baseline(format!(
+			"{why}; {landed} of {} probes landed",
+			opts.baseline_probes
+		)));
+	}
 	if t.probes.len() < opts.baseline_probes || bad > 0 {
 		return Err(RunError::Baseline(format!(
 			"{} of {} probes landed; the network is not healthy before the load",
@@ -479,7 +492,16 @@ pub async fn recover<S: Submit>(
 		(None, Some(why), _) => why.clone(),
 		(None, None, Some(_)) => landed,
 		(None, None, None) if t.recovery_blocks.is_empty() => {
-			format!("no new block in {} s", ended_at.saturating_sub(stopped_at).div_ceil(1000))
+			let s = ended_at.saturating_sub(stopped_at).div_ceil(1000);
+			// New heads came, but no block was read: the chain went on, the reads did not.
+			if t.last_head.0 > stopped_at {
+				format!(
+					"no block read in {s} s, though the node announced new blocks up to block {}: reading them was delayed",
+					t.last_head.1
+				)
+			} else {
+				format!("no new block in {s} s")
+			}
 		},
 		(None, None, None) => format!("after {} s no {landed}", opts.recovery_s),
 	};

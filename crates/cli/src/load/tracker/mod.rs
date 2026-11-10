@@ -346,6 +346,16 @@ impl<S: Submit> Tracker<S> {
 			.map(|_| format!("a probe landed that {} could not time", crate::PRODUCT_NAME))
 	}
 
+	/// What kept PolkaMeter from timing what it saw, for a warning: its own pauses, reconnects
+	/// to the node, or both.
+	pub fn untimed_cause(&self) -> &'static str {
+		match (self.pauses.is_empty(), self.observation_gaps.is_empty()) {
+			(false, true) => "it was paused",
+			(true, _) => "it was reconnecting to the node",
+			(false, false) => "it was paused, and reconnecting to the node",
+		}
+	}
+
 	/// Whether PolkaMeter was paused across a time measured from `from` to `to`.
 	pub(super) fn paused_across(&self, from: Millis, to: Millis) -> bool {
 		self.pauses.iter().any(|p| across(*p, from, to))

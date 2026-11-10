@@ -323,9 +323,10 @@ pub fn breaking_point(finals: &[FinalStep], rules: &Rules) -> Option<BreakingPoi
 }
 
 /// What the steps' latency leaves out, for the run's warnings: txs seen late, after PolkaMeter
-/// was paused or while it caught up after a reconnect. It says nothing about whose fault the
+/// was paused or while it caught up after a reconnect, as `cause` says
+/// ([`crate::load::tracker::Tracker::untimed_cause`]). It says nothing about whose fault the
 /// reconnect was: a node that restarted is node down on its own.
-pub fn untimed_warning(finals: &[FinalStep]) -> Option<String> {
+pub fn untimed_warning(finals: &[FinalStep], cause: &str) -> Option<String> {
 	let steps: Vec<String> = finals
 		.iter()
 		.filter(|f| f.untimed > 0)
@@ -333,7 +334,7 @@ pub fn untimed_warning(finals: &[FinalStep]) -> Option<String> {
 		.collect();
 	(!steps.is_empty()).then(|| {
 		format!(
-			"latency leaves out included txs {} could not time ({}): it was paused, or reconnecting to the node, when they were sent or included",
+			"latency leaves out included txs {} could not time ({}): {cause} when they were sent or included",
 			crate::PRODUCT_NAME,
 			steps.join(", ")
 		)
@@ -499,7 +500,7 @@ mod tests {
 		assert_eq!(stop.rule, Rule::PoolIntake);
 		assert!(stop.detail.contains("the node, or the network between"), "{}", stop.detail);
 		let untimed = final_step(&step(0, |s| s.untimed = 3));
-		let warning = untimed_warning(&[untimed]).unwrap();
+		let warning = untimed_warning(&[untimed], "it was paused").unwrap();
 		assert!(!warning.contains("not the chain's"), "{warning}");
 	}
 
