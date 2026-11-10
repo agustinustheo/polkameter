@@ -862,6 +862,80 @@ async fn a_finality_stall_while_the_loss_check_runs_fails_the_run() {
 	);
 }
 
+/// B5. The verified local node stops or dies only after reconciliation starts. It answers
+/// nothing for 36 s, past the 15 s budget, then all 48 transactions finalize. That cannot
+/// excuse the node fault. Without process evidence the same outage is still inconclusive.
+#[tokio::test(start_paused = true)]
+async fn a_node_that_stops_during_the_loss_check_fails_even_if_every_tx_finalizes() {
+	for evidence in ["stopped", "ended", "none"] {
+		let (replies_tx, replies) = mpsc::unbounded_channel();
+		let (blocks_tx, blocks) = mpsc::unbounded_channel();
+		let node = Node { replies: replies_tx, pool: Pool::default(), link: None };
+		let (mut t, mut io, opts) =
+			runner("attribution-loss-check-node-down", node, replies, blocks, (48.0, 1), 0);
+		let start = now_ms();
+		t.start_step(0, 48.0, start).unwrap();
+		for _ in 0..48 {
+			assert!(t.send_next(start));
+		}
+		t.end_step(start);
+		t.set_phase(Phase::Done, start).unwrap();
+		assert!(io.node.why().is_none(), "no fault before the loss check");
+		let process = io.node.clone();
+		tokio::spawn(async move {
+			blocks_tx
+				.send(BlockEvent::Disconnected { at: now_ms(), reason: "no answers".into() })
+				.unwrap();
+			// The process sampler's next sample, during the loss check, supplies evidence.
+			tokio::time::sleep(Duration::from_secs(5)).await;
+			match evidence {
+				"stopped" => process.stopped(Some("the node's process 42 is stopped".into())),
+				"ended" => process.ended("the node's process 42 ended".into()),
+				_ => {},
+			}
+			tokio::time::sleep(Duration::from_secs(10)).await;
+			blocks_tx
+				.send(BlockEvent::Unreachable("answered nothing for 15 s".into()))
+				.unwrap();
+			tokio::time::sleep(Duration::from_secs(21)).await;
+			process.stopped(None); // Resuming must keep the stopped evidence.
+			blocks_tx.send(BlockEvent::Reconnected { at: now_ms() }).unwrap();
+			let txs = (0u32..48).map(|n| (Tx::new(n.to_le_bytes().to_vec()).hash, false)).collect();
+			for event in block(1, now_ms(), txs) {
+				blocks_tx.send(event).unwrap();
+			}
+		});
+		let check = tokio::time::sleep(Duration::from_secs(37));
+		let ((), failed) = watch(&mut t, &mut io, &opts, check).await.unwrap();
+		// After recording a failure the watcher leaves later blocks queued. Read them as the
+		// loss check does, to verify that every transaction finalized after the outage.
+		while let Ok(event) = io.blocks.try_recv() {
+			t.on_block(event, now_ms()).unwrap();
+		}
+		assert_eq!(t.steps[0].included, 48);
+		assert_eq!(t.last_finalized.1, 1);
+		if evidence == "none" {
+			assert!(failed.is_none(), "a network outage is not a chain failure");
+			assert!(polkameter::load::runner::node_down(&t, &io).is_none());
+			assert!(t.unreachable.is_some(), "the outage must still be reported");
+		} else {
+			let failed = failed.expect("node down during the loss check");
+			assert_eq!((failed.rule, failed.class), (Rule::NodeDown, Some(Class::Hard)));
+			assert!(failed.detail.contains(evidence), "{}", failed.detail);
+			assert!(failed.detail.contains("15 s"), "{}", failed.detail);
+		}
+	}
+	// The runner can only attribute this fault if measurement keeps its evidence producer
+	// alive. Guard the wiring too: watch() alone already handled this case before the fix.
+	let measurement = include_str!("../src/engine/measurement.rs");
+	let watched = measurement.find("watch(&mut tracker").unwrap();
+	let sampling_stopped = measurement.find("monitors.stop_sampling().await?").unwrap();
+	assert!(
+		sampling_stopped > watched,
+		"process sampling ends before the loss check watcher: no stopped/dead node evidence can arrive during reconciliation"
+	);
+}
+
 /// Four flood transactions, included at the given offsets from stop, delivered late without
 /// any reconnect. `None` is a block without Timestamp.Now. Probes keep waiting for the budget.
 async fn delayed_drain(delay: u64, offsets: [Option<i64>; 4]) -> Recovery {

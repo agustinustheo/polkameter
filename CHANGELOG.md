@@ -6,6 +6,8 @@ User-visible changes in each release. The GitHub release notes list every merged
 
 ### Fixed
 
+- A node that stops or dies during the loss check and stays unreachable for more than 15 s now fails the run when its local process shows the fault, even if every transaction later finalizes. Without node evidence, the outage remains inconclusive.
+
 - Recovery backlog and drain now use finalized inclusion blocks. When a fork replaces a block across load stop, its first observed inclusion no longer decides the drain. Missing finalized inclusions or timestamps leave the drain unmeasured with a reason. Latency still measures submission to the first observed inclusion.
 
 ## 0.4.6 (2026-11-10)

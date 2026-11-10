@@ -1,7 +1,8 @@
 //! Starts the monitors next to the load and connects them: run events to the scraper, tool
 //! errors to the load loop. They stop in stages, as the run needs their files: the process
-//! sampler before the step records are written, the chain recorders after the loss check, the
-//! rest at the end. The load module knows nothing of the monitors.
+//! sampler and the chain recorders after the loss check, the rest at the end. The sampler's
+//! process evidence must remain live as long as the loss check watches for node down. The load
+//! module knows nothing of the monitors.
 
 use std::future::Future;
 

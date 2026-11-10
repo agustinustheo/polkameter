@@ -209,11 +209,6 @@ pub async fn run(
 	tracker.set_phase(Phase::Done, now_ms())?;
 	// The run window ends here: scrape now, so it ends on fresh samples.
 	monitors.scraper.scrape_now().await;
-	// The node's CPU and memory per step come from node.jsonl, complete once the sampler stopped.
-	monitors.stop_sampling().await?;
-	let samples: Vec<NodeSample> = dir.read_jsonl("node.jsonl")?;
-	recovery.node = NodeMax::over(&samples, recovery_window.0, recovery_window.1);
-	let finals = write_steps(dir, &tracker, &samples, redactor)?;
 	progress("reconciliation")?;
 	// The connection of the start may have dropped during the run (the follower and the sender
 	// reconnect on their own): every read of the loss check that fails is made again on a
@@ -243,6 +238,12 @@ pub async fn run(
 	let ((loss, lost, canonical), reconciling) =
 		watch(&mut tracker, &mut io, &run_opts, check).await?;
 	follow.cancel();
+	// Keep process evidence live with the follower through the loss check: a node stopped or
+	// dead beyond the reconnect budget fails there too, even if every tx later finalizes.
+	monitors.stop_sampling().await?;
+	let samples: Vec<NodeSample> = dir.read_jsonl("node.jsonl")?;
+	recovery.node = NodeMax::over(&samples, recovery_window.0, recovery_window.1);
+	let finals = write_steps(dir, &tracker, &samples, redactor)?;
 	let stopped_at = tracker.steps.last().expect("load step").ended_at;
 	canonical.apply_drain(&mut recovery, &sent, stopped_at);
 	(tracker.flood, tracker.included_in) = (sent, included_in);

@@ -86,6 +86,7 @@ PolkaMeter asserts only what its evidence shows, from the one place it watches t
 | B. A node restart is node down in any phase | `a_restarted_node_is_node_down_in_any_phase`; `a_node_restart_is_node_down_in_load_and_recovery` in `load_runner.rs` |
 | B. The reconnect budget is a hard limit; resuming a node keeps its stopped evidence | `a_reconnect_reserves_time_for_the_last_handshake`, `a_reconnect_that_finishes_after_the_budget_is_too_late`, `a_resumed_node_does_not_erase_its_stopped_evidence` |
 | B. An unreachable node whose process here ended, stopped or serves the RPC port is node down | `an_unreachable_node_whose_process_failed_is_node_down` |
+| B. A node that stops or dies beyond the 15 s budget during the loss check fails, even if every transaction later finalizes; without node evidence the outage is inconclusive | `a_node_that_stops_during_the_loss_check_fails_even_if_every_tx_finalizes` |
 | B. A finality stall fails the run in recovery and in the loss check, also when PolkaMeter paused | `a_finality_stall_in_recovery_fails_even_when_polkameter_paused`, `a_finality_stall_while_the_loss_check_runs_fails_the_run` |
 | C. A baseline or recovery PolkaMeter didn't observe has no result, and no drain rate | `i3_a_pause_in_the_baseline_or_recovery_is_not_the_chains`, `a_baseline_polkameter_did_not_observe_has_no_result`, `a_recovery_polkameter_did_not_observe_is_not_measured` |
 | C. A baseline with no time makes the verdict at most INCONCLUSIVE | `a_baseline_with_no_time_is_at_most_inconclusive` in `engine/checks/tests.rs` |
