@@ -144,9 +144,11 @@ impl NodeProcess {
 		self.facts().ended.get_or_insert(why);
 	}
 
-	/// The node's process is stopped now (`why`), or runs (`None`).
+	/// Records a stopped process (`why`). A later running sample (`None`) keeps this evidence.
 	pub fn stopped(&self, why: Option<String>) {
-		self.facts().stopped = why;
+		if let Some(why) = why {
+			self.facts().stopped.get_or_insert(why);
+		}
 	}
 
 	/// Why the node itself is to blame for not answering, if its process shows it.

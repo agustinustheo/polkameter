@@ -58,6 +58,8 @@ The max sustained rate is the target rate of the step before the failure onset, 
 
 A transaction counts in the rate step that sent it, even when a later block includes it.
 
+The included share leaves out submissions without an observed acceptance, refusal or inclusion. The summary warns with the count per step. With none observed, the share has no result (`includedRatio: null`).
+
 ## How slow did it get?
 
 The p50 and p95 columns show the time from submission until a best block includes the transaction. A best block is the newest block the node knows. It may not be finalized yet. p50 is the median time. 95% of the included transactions took the p95 time or less.
@@ -83,7 +85,7 @@ After the load, PolkaMeter gives each sent flood transaction the first status in
 | `unverified` | Seen in a best block, but neither finalization nor loss is proven. |
 | `unknown` | Not enough evidence for another status. |
 
-A reorg can drop a best block; a finalized block is permanent. Without evidence of loss, a transaction stays `unknown` or `unverified`. An accepted transaction whose nonce is not yet used may still finalize, even when absent from READY. The summary counts these transactions. Unknown or unverified transactions make the no-loss check INCONCLUSIVE. A lost transaction, or one that failed after inclusion, makes the verdict FAIL.
+A reorg can drop a best block; a finalized block is permanent. Without evidence of loss, a transaction stays `unknown` or `unverified`. An accepted transaction whose nonce is not yet used may still finalize, even when absent from READY. The summary counts these transactions. Every unknown transaction has a `statusReason` in `transactions.jsonl`. Unknown or unverified transactions make the no-loss check INCONCLUSIVE. A lost transaction, or one that failed after inclusion, makes the verdict FAIL.
 
 `lost.jsonl` lists the first 1000 lost transactions. An empty file means no confirmed loss, not proof that nothing was lost.
 
@@ -128,7 +130,7 @@ A dropped connection that reconnects is not a stop. See [blocks: RPC connection 
 PolkaMeter watches the chain from one place, through its own connections and clock. It asserts only what that evidence shows:
 
 - A. Never the chain for a fault outside it: a pause of PolkaMeter, the network or a proxy in between, or a reconnect. Block pace comes from the chain itself. Slow blocks use the chain's own timestamps, and a stall is no new block while the node keeps answering. A delay on the way can't fake either.
-- B. Never excuse the chain for a fault in it. A stall, a finality stall or node down fails the run in any phase, also when PolkaMeter paused or reconnected too. Node down needs evidence that it was the node: it came back restarted, or its process on this machine ended, is stopped, or serves the RPC port itself.
+- B. Never excuse the chain for a fault in it. A stall, a finality stall or node down fails the run in any phase, also when PolkaMeter paused or reconnected too. Node down needs evidence that it was the node: it came back restarted, or its process on this machine ended, was observed stopped, or serves the RPC port itself.
 - C. No evidence, no number. A measure PolkaMeter couldn't observe has no result, never a stand-in such as 0 ms. The verdict is then at most INCONCLUSIVE.
 - D. Each sent flood transaction gets one loss status: sent = finalized + in pool + refused + lost + unverified + unknown.
 
@@ -140,7 +142,7 @@ What one place can't show:
 
 In a run, this means:
 
-1. A disconnection shorter than 15 s is never node down, in the load or the loss check. A connection that keeps dropping, while the node doesn't restart, ends the load on `generator limit: connection unstable`.
+1. A disconnection shorter than 15 s is never node down, in the load or the loss check. A reconnect completing after that budget is too late. Resuming the node does not erase evidence that its process was stopped. A connection that keeps dropping, while the node doesn't restart, ends the load on `generator limit: connection unstable`.
 2. The node's identity after a reconnect tells a restart: the same peer ID with a new sync starting block. A restarted proxy changes neither. A new peer ID is another node behind a load balancer, and only a warning.
 3. A transaction, reply or probe timed across a pause of PolkaMeter, or read late after a reconnect, counts but has no time. Latency, reply time, the baseline and the exports leave it out, and the `Warnings:` line counts it. A pause of more than 5 s ends the load on `generator limit`.
 4. A baseline with no timed probe has no result. A recovery PolkaMeter didn't observe until the chain was back is `not measured`, with no drain rate.

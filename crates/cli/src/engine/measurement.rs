@@ -263,6 +263,7 @@ pub async fn run(
 	let mut warnings = tracker.warnings.clone();
 	let cause = tracker.untimed_cause();
 	warnings.extend(rules::untimed_warning(&finals, cause));
+	warnings.extend(rules::inclusion_warning(&finals));
 	if base.max_ms.is_none() {
 		warnings.push(format!(
 			"the baseline has no result: {} timed none of its {} probes ({cause} while they landed)",

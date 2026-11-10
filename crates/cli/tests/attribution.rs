@@ -962,3 +962,84 @@ async fn heads_without_a_block_read_are_not_no_new_block() {
 	assert!(r.detail.starts_with("no block read in 13 s"), "{}", r.detail);
 	assert!(r.detail.contains("announced new blocks up to block 2"), "{}", r.detail);
 }
+
+/// A proxy drops one of six submissions before its reply. Five observed submissions land;
+/// the sixth is no evidence of failed inclusion. Later replies or blocks resolve the ambiguity.
+#[test]
+fn unknown_submissions_are_not_failed_inclusions() {
+	let (_replies_tx, replies) = mpsc::unbounded_channel();
+	let (_blocks_tx, blocks) = mpsc::unbounded_channel();
+	let link = Some(Arc::new(Mutex::new(Link::default())));
+	let node = Node { replies: mpsc::unbounded_channel().0, pool: Pool::default(), link };
+	let (mut t, ..) = runner("attribution-unknown-inclusion", node, replies, blocks, (1.0, 6), 0);
+	let start = now_ms();
+	t.start_step(0, 1.0, start).unwrap();
+	for n in 0..6 {
+		assert!(t.send_next(start + n));
+	}
+	for id in 1..=5 {
+		t.on_reply(Reply::Accepted { id, at: start + 10 });
+	}
+	t.on_reply(Reply::Interrupted { connection: 0, ids: vec![6], reason: "proxy dropped".into() });
+	let txs = (0u32..5).map(|n| (Tx::new(n.to_le_bytes().to_vec()).hash, false)).collect();
+	let record = BlockRecord { number: 1, seen_at: start + 20, ..Default::default() };
+	t.on_block(BlockEvent::Fetched { record, txs }, start + 20).unwrap();
+	t.end_step(start + 6_000);
+	let f = final_step(&t.steps[0]);
+	assert_eq!(
+		breaking_point(std::slice::from_ref(&f), &RULES),
+		None,
+		"unknown send caused inclusion failure"
+	);
+	assert_eq!(serde_json::to_value(&f).unwrap()["includedRatio"], 1.0);
+	// A refusal of a resend doesn't prove whether the original submission was accepted.
+	t.on_reply(Reply::Refused { id: 6, at: start + 30, code: 1010, error: "outdated".into() });
+	assert_eq!(breaking_point(&[final_step(&t.steps[0])], &RULES), None);
+	// A block resolves it even though there was never an acceptance reply.
+	let record = BlockRecord { number: 2, seen_at: start + 40, ..Default::default() };
+	let hash = Tx::new(5u32.to_le_bytes().to_vec()).hash;
+	t.on_block(BlockEvent::Fetched { record, txs: vec![(hash, false)] }, start + 40)
+		.unwrap();
+	let f = serde_json::to_value(final_step(&t.steps[0])).unwrap();
+	assert_eq!(f["includedRatio"], 1.0);
+	assert_eq!(f["unknownSubmissions"], 0);
+	// Controls: an accepted transaction that doesn't land still fails inclusion; no observed
+	// submission gives no ratio, rather than a passing or failing stand-in.
+	t.start_step(1, 1.0, start + 6_000).unwrap();
+	assert!(t.send_next(start + 6_001));
+	t.end_step(start + 7_000);
+	let f = serde_json::to_value(final_step(&t.steps[1])).unwrap();
+	assert!(f["includedRatio"].is_null(), "{f}");
+	t.on_reply(Reply::Accepted { id: 7, at: start + 7_001 });
+	assert_eq!(breaking_point(&[final_step(&t.steps[1])], &RULES).unwrap().measure, "included");
+}
+
+/// An open connection's handshake only completes when the frozen node resumes after 16 s.
+/// It cannot turn a recovery beyond the hard 15 s budget into an in-budget success.
+#[tokio::test(start_paused = true)]
+async fn a_reconnect_that_finishes_after_the_budget_is_too_late() {
+	let start = Instant::now();
+	let back = start + Duration::from_secs(16);
+	let attempt = || async {
+		tokio::time::sleep_until(back).await;
+		Ok::<_, &str>(())
+	};
+	let r = reconnect(attempt, &Backoff::default(), &CancellationToken::new()).await;
+	assert!(matches!(r, Reconnect::GaveUp(_)), "{r:?} after {:?}", start.elapsed());
+	assert_eq!(start.elapsed(), Duration::from_secs(15));
+}
+
+/// Sampling the resumed process before the runner handles an exhausted reconnect must not
+/// erase the evidence of why the verified local node answered nothing during the window.
+#[tokio::test(start_paused = true)]
+async fn a_resumed_node_does_not_erase_its_stopped_evidence() {
+	let (mut t, mut io, opts) = on_chain("attribution-resumed-node", &[], (2.0, 6), 0);
+	io.node
+		.stopped(Some("the node's process 42 was stopped during the outage".into()));
+	io.node.stopped(None);
+	t.on_block(BlockEvent::Unreachable("answered nothing for 15 s".into()), now_ms())
+		.unwrap();
+	let stop = load(&mut t, &mut io, &opts).await.unwrap();
+	assert_eq!((stop.rule, stop.class), (Rule::NodeDown, Some(Class::Hard)), "{}", stop.detail);
+	assert!(stop.detail.contains("process 42 was stopped"), "{}", stop.detail);
+}

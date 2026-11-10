@@ -2,6 +2,14 @@
 
 User-visible changes in each release. The GitHub release notes list every merged pull request.
 
+## Unreleased
+
+### Fixed
+
+- Submissions whose outcome wasn't observed no longer cause an inclusion failure. Inclusion ratios leave them out, with a warning and count per rate step. A step with no observed submissions has no inclusion result.
+- Reconnect attempts must finish within the 15 s budget. A node frozen longer than that fails as node down when its local process was observed stopped, even if it resumes before the next sample.
+- Every transaction with `unknown` status now includes a reason, including a submission without an observed reply.
+
 ## 0.4.4 (2026-11-10)
 
 ### Fixed

@@ -3,8 +3,8 @@
 //! Each attempt has its own deadline, the whole recovery has one too (15 s), and both race the
 //! run's cancellation: a node that accepts TCP and never finishes the WebSocket handshake cannot
 //! hold the run. The budget is used in full: a wait that would pass the deadline is cut short,
-//! and the last attempt is made at the deadline (with its own attempt time), so a node back
-//! within 15 s is never down. A connection that keeps dropping is reported too: more than
+//! and no attempt may finish beyond it. A connection ready at the deadline still counts. A
+//! connection that keeps dropping is reported too: more than
 //! [`MAX_DROPS`] drops within [`DROP_WINDOW`] make it unstable, which ends the load without
 //! blaming the chain. Only the node's own identity tells that it restarted.
 
@@ -26,7 +26,7 @@ pub struct Backoff {
 	pub waits: Vec<Duration>,
 	/// One attempt's deadline: connecting, the handshake and subscribing.
 	pub attempt: Duration,
-	/// The deadline of the whole recovery: the node is down when an attempt made at it fails.
+	/// The hard deadline of the whole recovery, including the final attempt.
 	pub total: Duration,
 }
 
@@ -72,11 +72,12 @@ where
 			() = stop.cancelled() => return Reconnect::Stopped,
 			() = tokio::time::sleep_until(at) => {},
 		}
-		let ends = Instant::now() + backoff.attempt;
+		let ends = (Instant::now() + backoff.attempt).min(deadline);
 		tokio::select! {
 			() = stop.cancelled() => return Reconnect::Stopped,
 			result = tokio::time::timeout_at(ends, connect()) => match result {
-				Ok(Ok(t)) => return Reconnect::Connected(t),
+				Ok(Ok(t)) if Instant::now() <= deadline => return Reconnect::Connected(t),
+				Ok(Ok(_)) => break,
 				Ok(Err(e)) => last = e.to_string(),
 				Err(_) => last = "the attempt got no answer in time".into(),
 			},

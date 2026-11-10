@@ -407,6 +407,9 @@ fn ledger<'a>(
 						"finalization or nonce consumption could not be verified — may still finalize"
 					})
 				},
+				Status::Unknown => Some(
+					"submission outcome not observed: no acceptance reply or block inclusion was observed",
+				),
 				_ => None,
 			};
 			let failed_finalized = finalized.map(|_| evidence.finalized_failed.contains(hash));
@@ -650,6 +653,31 @@ mod tests {
 		let evidence = nonces_at(&at, &[(hash, bytes), ([0; 32], vec![0xff])]).await.unwrap();
 		assert_eq!(evidence.get(&hash), Some(&(nonce + 1, nonce)));
 		assert!(!evidence.contains_key(&[0; 32]), "undecodable bytes supply no evidence");
+	}
+
+	#[test]
+	fn every_unknown_transaction_has_a_reason() {
+		let hash = [7; 32];
+		let flood = HashMap::from([(hash, FloodTx::default())]);
+		let found = HashMap::new();
+		let none = HashSet::new();
+		let evidence = Evidence {
+			found: Some(&found),
+			finalized_failed: &none,
+			settled: true,
+			nonces: &HashMap::new(),
+		};
+		for ready in [None, Some(&none)] {
+			let rows = ledger(&flood, &HashMap::new(), &evidence, ready, Some(12));
+			assert_eq!(rows[0].status, Unknown);
+			assert!(
+				rows[0].json["statusReason"]
+					.as_str()
+					.is_some_and(|s| s.contains("submission outcome not observed")),
+				"unknown transaction without a reason: {}",
+				rows[0].json
+			);
+		}
 	}
 
 	#[test]
