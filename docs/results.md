@@ -49,6 +49,8 @@ PolkaMeter doesn't redact:
 | `resolved-targets.json`, `scrapes.jsonl`, `chain.jsonl` | With `<monitors>`: each node's metrics URL, the raw metrics read from it, and the relay chain's record of the parachain. |
 | `plugins/<id>/series.jsonl`, `metrics.json` | Extra data a plugin recorded. |
 
+`transactions.jsonl` records `nonce`, `finalizedAccountNonce` and `statusReason` for loss evidence. Unavailable nonce evidence is `null`.
+
 ## execution.json
 
 PolkaMeter writes `execution.json` after teardown. When you stop a run, it writes a temporary one with the state `stopping` at once. It replaces that file when the run ends.
@@ -108,7 +110,7 @@ Checks run on the recorded data, in this order. The `block production`, `pvf` an
 | pvf: no timed-out candidates or disputes | Timed-out candidates and relay disputes. | `fail` if any. |
 | pvf: PVF time on validators (level 2, all parachains) | Validation time. | `warn`: a validation over 2 s, or an invalid result. |
 | pvf: collation funnel | Expired parachain block candidates, and mean backing-to-inclusion time. | `warn`: any expired, or mean over 1.5 relay blocks. |
-| pool: no silent loss | Accepted transactions in no block, without error. | `fail`: confirmed loss. Otherwise `no result` when evidence or the requested state check is missing. |
+| pool: no silent loss | Transactions proven unable to finalize, with hashes absent from the finalized chain. | `fail`: confirmed loss. Otherwise `no result` when transactions remain unknown or unverified, or the requested state check is missing. |
 | pool: the burst drains | Probes in time, backlog drained, no empty block while more than 10 transactions waited. | `fail` unless all three hold. |
 | pool: refusals are clean | Refusals by error code. | `fail`: a refusal without an error code. `warn`: the run stopped on pool intake. |
 | pool: pool work leaves time for blocks | Pool maintenance p95, and validation backlog. | `fail`: p95 over half the block interval. `warn`: over 1000 waiting for validation. |

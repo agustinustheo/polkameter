@@ -462,3 +462,33 @@ fn unmonitored_nodes_are_optional_and_silent_ones_are_required() {
 		assert!(!r.optional, "{name}");
 	}
 }
+
+#[test]
+fn unresolved_transactions_are_inconclusive_but_proven_loss_fails() {
+	let mut s = summary();
+	s.breaking_point = None;
+	s.failure_modes.clear();
+	s.stop = polkameter_plugin_sdk::observers::summary::Stop::new(
+		Rule::RateCap,
+		Some(2),
+		"all 3 steps ran",
+	);
+	s.loss.state_error = None;
+	for (unknown, unverified, lost, want) in [
+		(1, 0, 0, OverallStatus::Inconclusive),
+		(0, 1, 0, OverallStatus::Inconclusive),
+		(1, 1, 1, OverallStatus::Fail),
+	] {
+		s.loss.unknown = unknown;
+		s.loss.unverified = unverified;
+		s.loss.lost = Some(lost);
+		let results = run(&all(), &RunData::new(Store::new(), s.clone()));
+		let loss = results.into_iter().find(|r| r.check == "no silent loss").unwrap();
+		assert!(
+			loss.verdict
+				.detail
+				.contains(&format!("{} unknown or unverified", unknown + unverified))
+		);
+		assert_eq!(overall_status(&s, &[loss]), want);
+	}
+}

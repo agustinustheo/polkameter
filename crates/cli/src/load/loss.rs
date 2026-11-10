@@ -9,7 +9,7 @@ use std::{
 	time::Duration,
 };
 
-use polkameter_plugin_sdk::chain::{ChainError, Client, tx_hash};
+use polkameter_plugin_sdk::chain::{AtBlock, ChainError, Client, account_at, tx_hash};
 use polkameter_plugin_sdk::observers::summary::{Finality, Loss, LostTx, NodePool, StateSample};
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
@@ -152,16 +152,45 @@ where
 	if run.walk_from.is_none() {
 		notes.push("no flood transaction was sent, so the finalized chain was not walked".into());
 	}
-	// Lost needs both the pool and the finalized chain: without the walk, a tx the tracker
-	// missed in a reorg would count as lost.
-	let known = ready.is_some()
-		&& on_chain.is_some()
-		&& loss.finalized.as_ref().is_some_and(|f| f.waited_for_it);
 	let found = on_chain.as_ref().map(|(_, _, found)| found);
-	// Finalized dispatch evidence settles every tx: the walk ran up to the head it needed.
+	// Absence is useful only after the walk reached the required finalized head. READY
+	// says nothing about FUTURE transactions: loss also needs a consumed finalized nonce.
 	let settled = on_chain.is_some() && loss.finalized.as_ref().is_some_and(|f| f.waited_for_it);
-	let evidence = Evidence { found, finalized_failed: &finalized_failed, settled };
-	let rows = ledger(run.flood, run.included_in, &evidence, ready.as_ref(), cutoff, known);
+	let mut nonces = HashMap::new();
+	if settled && let Ok((_, at)) = &finalized {
+		let candidates: Vec<_> = run
+			.flood
+			.iter()
+			.filter(|(hash, tx)| {
+				!found.is_some_and(|f| f.contains_key(*hash))
+					&& !ready.as_ref().is_some_and(|r| r.contains(*hash))
+					&& !tx.refused && (tx.accepted || run.included_in.contains_key(*hash))
+			})
+			.map(|(hash, tx)| (*hash, tx.bytes.clone()))
+			.collect();
+		if !candidates.is_empty() {
+			match live
+				.read(|c: Client| {
+					let candidates = &candidates;
+					async move { nonces_at(&c.at(*at).await?, candidates).await }
+				})
+				.await
+			{
+				Ok(read) => nonces = read,
+				Err(e) => notes.push(format!("finalized account nonces could not be read: {e}")),
+			}
+		}
+	}
+	let evidence =
+		Evidence { found, finalized_failed: &finalized_failed, settled, nonces: &nonces };
+	let rows = ledger(run.flood, run.included_in, &evidence, ready.as_ref(), cutoff);
+	let may_finalize = rows
+		.iter()
+		.filter(|r| r.tx.accepted && matches!(r.status, Status::Unknown | Status::Unverified))
+		.count();
+	if may_finalize > 0 {
+		notes.push(format!("{may_finalize} accepted txs not verified final or lost — may still finalize; see transactions.jsonl for nonce evidence"));
+	}
 	let count = |status: Status| rows.iter().filter(|r| r.status == status).count() as u64;
 	loss.accepted = run.flood.values().filter(|tx| tx.accepted).count() as u64;
 	loss.included = count(Status::Finalized);
@@ -169,7 +198,7 @@ where
 	loss.unverified = count(Status::Unverified);
 	loss.unknown = count(Status::Unknown);
 	loss.in_pool = ready.is_some().then(|| count(Status::InPool));
-	loss.lost = known.then(|| count(Status::Lost));
+	loss.lost = settled.then(|| count(Status::Lost));
 	loss.failed_in_block = rows.iter().filter(|r| r.failed).count() as u64;
 	if let Some((first, last, _)) = &on_chain {
 		let c = &mut loss.on_chain;
@@ -282,13 +311,11 @@ enum Status {
 	InPool,
 	/// Refused at submit.
 	Refused,
-	/// Accepted or seen in a best block, in no finalized block, not ready: with the chain and the
-	/// pool read, it is gone.
+	/// Absent from the finalized walk, with a finalized signer nonce past its own.
 	Lost,
-	/// Seen in a best block, but finality was not verified: the wait timed out or the chain was
-	/// not walked.
+	/// Seen in a best block, but neither finalization nor loss is proven.
 	Unverified,
-	/// No evidence either way: no reply and no inclusion, or the chain or pool was not read.
+	/// Not enough evidence for another status; an accepted tx may still finalize.
 	Unknown,
 }
 
@@ -297,7 +324,7 @@ fn classify(
 	best: Option<u32>,
 	finalized: Option<u32>,
 	ready: Option<bool>,
-	known: bool,
+	nonce_consumed: bool,
 ) -> Status {
 	if finalized.is_some() {
 		Status::Finalized
@@ -305,7 +332,7 @@ fn classify(
 		Status::InPool
 	} else if tx.refused {
 		Status::Refused
-	} else if known && (tx.accepted || best.is_some()) {
+	} else if nonce_consumed && (tx.accepted || best.is_some()) {
 		Status::Lost
 	} else if best.is_some() {
 		Status::Unverified
@@ -330,6 +357,8 @@ struct Row<'a> {
 
 /// What the finalized chain says, for the ledger.
 struct Evidence<'a> {
+	/// Transaction nonce and signer account nonce, read at the walk's finalized upper bound.
+	nonces: &'a HashMap<TxHash, (u64, u64)>,
 	/// The finalized walk: the block each of our txs is in (`None` when it did not run).
 	found: Option<&'a HashMap<TxHash, u32>>,
 	/// Of those, the ones with an `ExtrinsicFailed` event.
@@ -357,7 +386,6 @@ fn ledger<'a>(
 	evidence: &Evidence<'_>,
 	ready: Option<&HashSet<TxHash>>,
 	cutoff: Option<u32>,
-	known: bool,
 ) -> Vec<Row<'a>> {
 	flood
 		.iter()
@@ -365,7 +393,22 @@ fn ledger<'a>(
 			let best = included_in.get(hash).copied();
 			let finalized = evidence.found.and_then(|f| f.get(hash)).copied();
 			let ready = ready.map(|pool| pool.contains(hash));
-			let status = classify(tx, best, finalized, ready, known);
+			let nonces = evidence.nonces.get(hash).copied();
+			let consumed = evidence.settled && nonces.is_some_and(|(tx, account)| account > tx);
+			let status = classify(tx, best, finalized, ready, consumed);
+			let reason = match status {
+				Status::Lost => Some(
+					"absent from finalized chain; finalized signer nonce has passed transaction nonce",
+				),
+				Status::Unknown | Status::Unverified if tx.accepted || best.is_some() => {
+					Some(if nonces.is_some_and(|(tx, account)| account <= tx) {
+						"accepted, not finalized, nonce not yet used — may still finalize"
+					} else {
+						"finalization or nonce consumption could not be verified — may still finalize"
+					})
+				},
+				_ => None,
+			};
 			let failed_finalized = finalized.map(|_| evidence.finalized_failed.contains(hash));
 			let (failed, failed_on_fork) =
 				dispatch(tx.failed_in_block, failed_finalized, evidence.settled);
@@ -375,10 +418,59 @@ fn ledger<'a>(
 				"replyMs":tx.reply_ms,"inclusionMs":tx.inclusion_ms,"untimed":tx.untimed,"bestBlock":best,
 				"failedInBestBlock":tx.failed_in_block,"finalizedBlock":finalized,
 				"failedInFinalizedBlock":failed_finalized,"failedOnlyOnFork":failed_on_fork,
-				"inReadyPool":ready,"status":status});
+				"nonce":nonces.map(|n| n.0),"finalizedAccountNonce":nonces.map(|n| n.1),
+				"inReadyPool":ready,"status":status,"statusReason":reason});
 			Row { hash: *hash, tx, status, best, finalized, failed, failed_on_fork, json }
 		})
 		.collect()
+}
+
+/// Decode the signed bytes using runtime metadata, not plugin-specific metadata (which may
+/// contain only a signer index). Unsupported formats stay unknown, never guessed from offsets.
+async fn nonces_at(
+	at: &AtBlock,
+	candidates: &[(TxHash, Vec<u8>)],
+) -> Result<HashMap<TxHash, (u64, u64)>, ChainError> {
+	use subxt::ext::{
+		frame_decode::extrinsics::ExtrinsicTypeInfo as _, scale_decode::DecodeAsType,
+	};
+	#[derive(DecodeAsType)]
+	#[decode_as_type(crate_path = "subxt::ext::scale_decode")]
+	enum Address {
+		Id([u8; 32]),
+	}
+
+	let metadata = at.metadata_ref();
+	let Ok(signature) = metadata.extrinsic_signature_info() else { return Ok(HashMap::new()) };
+	let mut accounts = HashMap::new();
+	let mut nonces = HashMap::new();
+	for (hash, bytes) in candidates {
+		let exts = at.extrinsics().from_bytes(vec![bytes.clone()]).await;
+		let Some(Ok(ext)) = exts.iter().next() else { continue };
+		let Some(address) = ext.address_bytes() else { continue };
+		let account =
+			Address::decode_as_type(&mut &*address, signature.address_id, metadata.types())
+				.map(|Address::Id(id)| id)
+				.or_else(|_| {
+					<[u8; 32]>::decode_as_type(
+						&mut &*address,
+						signature.address_id,
+						metadata.types(),
+					)
+				});
+		let Ok(account) = account else { continue };
+		let Some(nonce) = ext.transaction_extensions().and_then(|e| e.nonce()) else { continue };
+		let finalized = match accounts.get(&account) {
+			Some(nonce) => *nonce,
+			None => {
+				let nonce = account_at(at, account).await?.nonce;
+				accounts.insert(account, nonce);
+				nonce
+			},
+		};
+		nonces.insert(*hash, (nonce, finalized));
+	}
+	Ok(nonces)
 }
 
 /// Our flood txs in the finalized blocks `first..=last`, with the block each is in.
@@ -471,7 +563,7 @@ mod tests {
 
 	/// A flood tx of a scenario: its reply, the best block the tracker saw it in, the finalized
 	/// block that has it, whether it is ready in the pool, and the status it must get.
-	type Case = (bool, bool, Option<u32>, Option<u32>, bool, Status);
+	type Case = (bool, bool, Option<u32>, Option<u32>, bool, bool, Status);
 
 	/// Runs the ledger over one scenario and checks each status, and that the statuses partition
 	/// the sent txs.
@@ -480,10 +572,16 @@ mod tests {
 		let mut included_in = HashMap::new();
 		let mut found = HashMap::new();
 		let mut ready = HashSet::new();
-		for (index, &(accepted, refused, best, finalized, in_pool, _)) in cases.iter().enumerate() {
+		let mut nonces = HashMap::new();
+		for (index, &(accepted, refused, best, finalized, in_pool, consumed, _)) in
+			cases.iter().enumerate()
+		{
 			let hash = [index as u8; 32];
 			let tx = FloodTx { sent_at: index as u64, accepted, refused, ..Default::default() };
 			flood.insert(hash, tx);
+			if consumed {
+				nonces.insert(hash, (7, 8));
+			}
 			if let Some(block) = best {
 				included_in.insert(hash, block);
 			}
@@ -495,12 +593,16 @@ mod tests {
 			}
 		}
 		let failed = HashSet::new();
-		let evidence =
-			Evidence { found: walked.then_some(&found), finalized_failed: &failed, settled: known };
+		let evidence = Evidence {
+			found: walked.then_some(&found),
+			finalized_failed: &failed,
+			settled: known,
+			nonces: &nonces,
+		};
 		let pool = pool_listed.then_some(&ready);
-		let rows = ledger(&flood, &included_in, &evidence, pool, Some(12), known);
+		let rows = ledger(&flood, &included_in, &evidence, pool, Some(12));
 		for row in &rows {
-			let want = cases[row.tx.sent_at as usize].5;
+			let want = cases[row.tx.sent_at as usize].6;
 			assert_eq!(row.status, want, "{name}: tx {}", row.tx.sent_at);
 		}
 		let total: u64 = [Finalized, InPool, Refused, Lost, Unverified, Unknown]
@@ -508,6 +610,87 @@ mod tests {
 			.map(|s| rows.iter().filter(|r| r.status == *s).count() as u64)
 			.sum();
 		assert_eq!(total, flood.len() as u64, "{name}: statuses partition sent");
+	}
+
+	/// Acceptance and absence from READY do not rule out waiting behind a nonce gap.
+	#[test]
+	fn an_accepted_transaction_absent_from_ready_may_still_finalize() {
+		check(
+			"future pool or not observable",
+			true,
+			true,
+			true,
+			&[(true, false, None, None, false, false, Unknown)],
+		);
+	}
+
+	#[tokio::test]
+	#[ignore = "needs a dev chain: scripts/dev-chain.sh start"]
+	async fn signed_bytes_supply_nonce_evidence() {
+		use polkameter_plugin_sdk::chain::{Call, TxParams, account_id, keypair};
+		let target = std::env::var("POLKAMETER_DEV_CHAIN_WS")
+			.unwrap_or_else(|_| "ws://127.0.0.1:9944".into());
+		let client = Client::connect(&target).await.unwrap();
+		let key = keypair("//Alice").unwrap();
+		let at = client.finalized().await.unwrap();
+		let nonce = account_at(&at, account_id(&key)).await.unwrap().nonce;
+		let builder = client.tx_builder().await.unwrap();
+		let bytes = builder
+			.sign(
+				&Call::new(
+					"System",
+					"remark",
+					vec![subxt::dynamic::Value::from_bytes(b"nonce evidence")],
+				),
+				&key,
+				&TxParams::nonce(nonce + 1),
+			)
+			.unwrap();
+		let hash = tx_hash(&bytes);
+		let evidence = nonces_at(&at, &[(hash, bytes), ([0; 32], vec![0xff])]).await.unwrap();
+		assert_eq!(evidence.get(&hash), Some(&(nonce + 1, nonce)));
+		assert!(!evidence.contains_key(&[0; 32]), "undecodable bytes supply no evidence");
+	}
+
+	#[test]
+	fn loss_requires_a_consumed_finalized_nonce() {
+		let hash = [7; 32];
+		let flood = HashMap::from([(hash, FloodTx { accepted: true, ..Default::default() })]);
+		let found = HashMap::new();
+		let failed = HashSet::new();
+		let ready = HashSet::new();
+		// Same signed tx (nonce 7): a gap, exactly next, consumed, or unreadable state.
+		for (nonce, want) in
+			[(Some(6), Unknown), (Some(7), Unknown), (Some(8), Lost), (None, Unknown)]
+		{
+			let nonces = nonce.map(|n| HashMap::from([(hash, (7, n))])).unwrap_or_default();
+			let evidence = Evidence {
+				found: Some(&found),
+				finalized_failed: &failed,
+				settled: true,
+				nonces: &nonces,
+			};
+			let rows = ledger(&flood, &HashMap::new(), &evidence, Some(&ready), Some(12));
+			assert_eq!(rows[0].status, want, "finalized account nonce {nonce:?}");
+			if matches!(nonce, Some(6 | 7)) {
+				assert!(
+					rows[0].json["statusReason"].as_str().unwrap().contains("nonce not yet used")
+				);
+			}
+			// A missing pool read cannot undo positive nonce evidence.
+			assert_eq!(ledger(&flood, &HashMap::new(), &evidence, None, Some(12))[0].status, want);
+			// Without a completed finalized walk, a consumed nonce cannot establish absence.
+			let evidence = Evidence { found: None, settled: false, ..evidence };
+			assert_eq!(
+				ledger(&flood, &HashMap::new(), &evidence, Some(&ready), Some(12))[0].status,
+				Unknown
+			);
+			assert_eq!(
+				ledger(&flood, &HashMap::from([(hash, 10)]), &evidence, Some(&ready), Some(12))[0]
+					.status,
+				Unverified
+			);
+		}
 	}
 
 	#[test]
@@ -519,12 +702,12 @@ mod tests {
 			true,
 			true,
 			&[
-				(true, false, Some(10), Some(10), false, Finalized),
-				(true, false, None, Some(11), false, Finalized), // included, the tracker missed it
-				(true, false, Some(10), None, true, InPool),
-				(false, true, None, None, false, Refused),
-				(true, false, None, None, false, Lost),
-				(false, false, None, None, false, Unknown), // no reply
+				(true, false, Some(10), Some(10), false, false, Finalized),
+				(true, false, None, Some(11), false, false, Finalized), // included, the tracker missed it
+				(true, false, Some(10), None, true, false, InPool),
+				(false, true, None, None, false, false, Refused),
+				(true, false, None, None, false, true, Lost),
+				(false, false, None, None, false, false, Unknown), // no reply
 			],
 		);
 		// Fork-only: the tracker saw these in block 10, which the chain dropped.
@@ -534,9 +717,9 @@ mod tests {
 			true,
 			true,
 			&[
-				(true, false, Some(10), None, false, Lost),
-				(true, false, Some(10), Some(11), false, Finalized), // moved
-				(true, false, Some(10), None, true, InPool),
+				(true, false, Some(10), None, false, true, Lost),
+				(true, false, Some(10), Some(11), false, false, Finalized), // moved
+				(true, false, Some(10), None, true, false, InPool),
 			],
 		);
 		// Finality timed out: the walk ran, but the head it needed was not final.
@@ -546,10 +729,10 @@ mod tests {
 			false,
 			true,
 			&[
-				(true, false, Some(10), None, false, Unverified),
-				(true, false, Some(10), Some(9), false, Finalized),
-				(true, false, None, None, false, Unknown),
-				(true, false, None, None, true, InPool),
+				(true, false, Some(10), None, false, false, Unverified),
+				(true, false, Some(10), Some(9), false, false, Finalized),
+				(true, false, None, None, false, false, Unknown),
+				(true, false, None, None, true, false, InPool),
 			],
 		);
 		// The walk failed: no finalized evidence, and the pool was not listed.
@@ -559,9 +742,9 @@ mod tests {
 			false,
 			false,
 			&[
-				(true, false, Some(10), None, false, Unverified),
-				(false, true, None, None, false, Refused),
-				(true, false, None, None, false, Unknown),
+				(true, false, Some(10), None, false, false, Unverified),
+				(false, true, None, None, false, false, Refused),
+				(true, false, None, None, false, false, Unknown),
 			],
 		);
 	}
@@ -575,16 +758,26 @@ mod tests {
 		let included_in = HashMap::from([(hash, 10)]);
 		let found = HashMap::from([(hash, 11)]);
 		let none = HashSet::new();
-		let evidence = Evidence { found: Some(&found), finalized_failed: &none, settled: true };
-		let rows = ledger(&flood, &included_in, &evidence, Some(&HashSet::new()), Some(12), true);
+		let evidence = Evidence {
+			found: Some(&found),
+			finalized_failed: &none,
+			settled: true,
+			nonces: &HashMap::new(),
+		};
+		let rows = ledger(&flood, &included_in, &evidence, Some(&HashSet::new()), Some(12));
 		assert_eq!(rows[0].status, Finalized);
 		assert!(!rows[0].failed, "finalized success wins over the fork's failure");
 		assert!(rows[0].failed_on_fork, "the fork failure is counted apart");
 		assert_eq!(rows[0].json["failedOnlyOnFork"], true);
 		// Failed in the finalized block too: a failure, and not a fork-only one.
 		let failed = HashSet::from([hash]);
-		let evidence = Evidence { found: Some(&found), finalized_failed: &failed, settled: true };
-		let rows = ledger(&flood, &included_in, &evidence, Some(&HashSet::new()), Some(12), true);
+		let evidence = Evidence {
+			found: Some(&found),
+			finalized_failed: &failed,
+			settled: true,
+			nonces: &HashMap::new(),
+		};
+		let rows = ledger(&flood, &included_in, &evidence, Some(&HashSet::new()), Some(12));
 		assert!(rows[0].failed && !rows[0].failed_on_fork);
 	}
 

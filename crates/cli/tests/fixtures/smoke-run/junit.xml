@@ -51,7 +51,7 @@
       <system-out>warn: expired after advertised 0 (delivery), after fetched 2 (validation or backing), after backed 0 (availability); backed to included 1.00 relay blocks on average</system-out>
     </testcase>
     <testcase classname="load test" name="pool: no silent loss" time="0.000">
-      <system-out>pass: 0 of 360 txs accepted, in no block, and without any error; the node&apos;s mempool holds 1 txs, 0 ready</system-out>
+      <system-out>pass: 0 of 360 txs proven unable to finalize and absent from the finalized chain; the node&apos;s mempool holds 1 txs, 0 ready</system-out>
     </testcase>
     <testcase classname="load test" name="pool: the burst drains" time="0.000">
       <system-out>pass: probes back in time 1 s after the load stopped; backlog 37 at the stop, drained after 7 s</system-out>
