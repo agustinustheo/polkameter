@@ -83,7 +83,7 @@ impl<S: Submit> Tracker<S> {
 	) -> Result<(), FileError> {
 		self.block_times.insert(record.number, record.timestamp);
 		for (tx, failed) in txs {
-			if self.on_tx(tx, record.number, record.seen_at, *failed) {
+			if self.on_tx(tx, &record, *failed) {
 				record.ours += 1;
 				record.ours_failed += u32::from(*failed);
 			}
@@ -106,7 +106,8 @@ impl<S: Submit> Tracker<S> {
 	}
 
 	/// Whether `hash` is one of ours.
-	fn on_tx(&mut self, hash: &TxHash, block: u32, seen_at: Millis, failed: bool) -> bool {
+	fn on_tx(&mut self, hash: &TxHash, record: &BlockRecord, failed: bool) -> bool {
+		let (block, seen_at) = (record.number, record.seen_at);
 		let Some(tx) = self.sent.remove(hash) else { return false };
 		self.last_ours_block = self.last_ours_block.max(block);
 		let latency = seen_at.saturating_sub(tx.sent_at);
@@ -126,6 +127,7 @@ impl<S: Submit> Tracker<S> {
 		self.included_in.insert(*hash, block);
 		let mut untimed = late;
 		if let Some(flood) = self.flood.get_mut(hash) {
+			flood.included_at = (record.timestamp > 0).then_some(record.timestamp);
 			flood.failed_in_block = failed;
 			flood.untimed |= late;
 			untimed = flood.untimed;
@@ -155,24 +157,26 @@ impl<S: Submit> Tracker<S> {
 		if !self.unreadable.is_empty() {
 			return None;
 		}
-		let boundary = self.block_times.iter().zip(self.block_times.iter().skip(1)).find_map(
+		let boundary_known = self.block_times.iter().zip(self.block_times.iter().skip(1)).any(
 			|((&n, &at), (&next, &after))| {
-				(n.checked_add(1) == Some(next) && at > 0 && at <= stopped_at && after > stopped_at)
-					.then_some(n)
+				n.checked_add(1) == Some(next) && at > 0 && at <= stopped_at && after > stopped_at
 			},
-		)?;
+		);
+		if !boundary_known {
+			return None;
+		}
 		let (mut backlog, mut last, mut pending) = (0, stopped_at, false);
 		for (hash, tx) in &self.flood {
 			if tx.sent_at > stopped_at {
 				continue;
 			}
-			match self.included_in.get(hash) {
-				Some(&n) if n <= boundary => {},
-				Some(n) => {
-					let at = *self.block_times.get(n).filter(|&&at| at > stopped_at)?;
+			match tx.included_at {
+				Some(at) if at <= stopped_at => {},
+				Some(at) => {
 					backlog += 1;
 					last = last.max(at);
 				},
+				None if self.included_in.contains_key(hash) => return None,
 				None => {
 					backlog += 1;
 					pending = true;

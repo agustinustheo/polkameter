@@ -993,6 +993,11 @@ fn inclusions_seen_before_recovery_are_not_its_drain() {
 		.unwrap();
 	t.on_block(fetched(4, at(17_000), 3), at(17_000)).unwrap();
 	assert_eq!(t.recovery_drain(at(10_000)), Some((1, Some(7_000))), "only block 4 drains");
+	// A later fork reuses block 4's number, but not the first inclusion's timestamp.
+	let record =
+		BlockRecord { number: 4, timestamp: at(25_000), seen_at: at(25_000), ..Default::default() };
+	t.on_block(BlockEvent::Fetched { record, txs: vec![] }, at(25_000)).unwrap();
+	assert_eq!(t.recovery_drain(at(10_000)), Some((1, Some(7_000))), "first inclusion stays timed");
 }
 
 // D. Each sent flood transaction gets one loss status, from its own evidence.

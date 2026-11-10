@@ -55,6 +55,8 @@ pub struct FloodTx {
 	pub reply_ms: Option<u64>,
 	/// Send to first observed inclusion; `None` when not included yet, or [`FloodTx::untimed`].
 	pub inclusion_ms: Option<u64>,
+	/// Timestamp of the first including block; `None` without a chain timestamp.
+	pub included_at: Option<Millis>,
 	/// Dispatch failure in the best block observation.
 	pub failed_in_block: bool,
 	/// Its time to inclusion is not known: timed across a pause of PolkaMeter, in flight on a
