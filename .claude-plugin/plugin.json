@@ -1,7 +1,7 @@
 {
   "name": "polkameter",
   "displayName": "PolkaMeter",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Set up and run PolkaMeter load tests for Polkadot SDK chains, with the substrate plugin or a custom plugin, locally and in CI",
   "author": {
     "name": "Agustinus Theodorus",
