@@ -9,12 +9,12 @@ You need `bash` and `curl`. The dev chain script pins node builds for Linux x86-
 ## 1. Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh | sh -s -- 0.4.7
+curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh | sh -s -- 0.4.8
 export PATH="$HOME/.local/bin:$PATH"
 polkameter --version
 ```
 
-Every command on this page uses release 0.4.7, as [Versions](install.md#versions) asks. [Install](install.md) has other methods.
+Every command on this page uses release 0.4.8, as [Versions](install.md#versions) asks. [Install](install.md) has other methods.
 
 ## 2. Start a dev chain
 
@@ -43,7 +43,7 @@ export POLKAMETER_SUBSTRATE_SEED='//Alice'
 ```
 
 ```text
-Installed plugin substrate 0.4.7 (5 operations) from ~/.local/bin/polkameter-substrate-plugin
+Installed plugin substrate 0.4.8 (5 operations) from ~/.local/bin/polkameter-substrate-plugin
 Credential profile substrate-dev reads POLKAMETER_SUBSTRATE_SEED.
 ```
 
