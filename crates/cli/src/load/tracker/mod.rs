@@ -107,8 +107,6 @@ pub struct Tracker<S> {
 	pub drained: u64,
 	/// The highest block with one of our txs.
 	pub last_ours_block: u32,
-	/// Connections the node closed.
-	pub closed_by_node: usize,
 	/// Last new best head: when, and the highest number.
 	pub last_head: (Millis, u32),
 	/// The highest block read so far (the drain waits for it to reach the last head).
@@ -120,9 +118,12 @@ pub struct Tracker<S> {
 	/// Times the block follower lost the node and followed it again: not observed, so not a
 	/// chain stall. Also sender connections that dropped and were opened again.
 	pub observation_gaps: Vec<ObservationGap>,
-	/// The node is down: the follower could not reach it within the reconnect backoff, or saw it
-	/// restart.
+	/// The node is down: the follower saw it restart.
 	pub node_down: Option<String>,
+	/// The node, or the network between, did not answer for the reconnect budget: the follower
+	/// or a sender connection could not reach it. Node down only with evidence that it was the
+	/// node ([`crate::load::runner::NodeProcess`]).
+	pub unreachable: Option<String>,
 	/// A connection to the node kept dropping, while the node did not restart: not the chain's
 	/// failure, but no measure can be trusted, so the load ends on "generator limit".
 	pub unstable: Option<String>,
@@ -216,13 +217,13 @@ impl<S: Submit> Tracker<S> {
 			recovery_blocks: Vec::new(),
 			drained: 0,
 			last_ours_block: 0,
-			closed_by_node: 0,
 			last_head: (now, 0),
 			last_fetched: 0,
 			last_finalized: (now, 0),
 			unreadable: Vec::new(),
 			observation_gaps: Vec::new(),
 			node_down: None,
+			unreachable: None,
 			unstable: None,
 			warnings: Vec::new(),
 			catching_up: None,
@@ -576,7 +577,11 @@ impl<S: Submit> Tracker<S> {
 	}
 
 	fn on_closed(&mut self, connection: usize, by_node: bool) {
-		self.closed_by_node += usize::from(by_node);
+		if by_node {
+			self.unreachable.get_or_insert(format!(
+				"sender connection {connection} could not be opened again within 15 s"
+			));
+		}
 		// An interrupted request has an unknown outcome. Keep observing its hash;
 		// calling it refused here would conceal possible chain inclusion or loss.
 		self.requests.retain(|_, r| r.connection != connection);

@@ -11,15 +11,16 @@
 //!   slow blocks     blocks 2x slower than at the start, by the chain's clock  hard
 //!   stall           no new best block for 30 s of observed time               hard
 //!   finality stall  no new finalized block for 60 s, same                      hard
-//!   node down       unreachable for the reconnect budget, or restarted        hard
+//!   node down       restarted, or unreachable and its process here failed     hard
 //!
 //! A dropped RPC connection that opens again is an observation gap (a problem), not a failure:
 //! the stall rules leave its time out, time with no connection open is not "pool intake", and
 //! txs seen late as the follower catches up or sent again after a sender reconnect are left out
 //! of the latency, as are txs timed across a pause of PolkaMeter itself, of any length. A
 //! connection that keeps dropping, with the node not restarted, ends the load on "generator
-//! limit". The stall, finality stall and node down rules also hold in recovery and while the
-//! loss check runs.
+//! limit". So does a node or network that does not answer for the reconnect budget (15 s), with
+//! no evidence that it was the node. The stall, finality stall and node down rules also hold in
+//! recovery and while the loss check runs.
 //!
 //! The ramp also ends without a failure on: rate cap, budget used up, generator limit, smoke error.
 
@@ -112,10 +113,6 @@ pub struct LiveState {
 	pub step: u32,
 	/// Now.
 	pub now: Millis,
-	/// Connections the node closed.
-	pub closed_by_node: usize,
-	/// Connections opened.
-	pub connections: usize,
 	/// Last new best block.
 	pub last_block_at: Millis,
 	/// Last new finalized block.
@@ -131,8 +128,11 @@ pub struct LiveState {
 	pub unobserved_since_block: Millis,
 	/// The same, since the last new finalized block.
 	pub unobserved_since_finalized: Millis,
-	/// The node is down: unreachable for the reconnect backoff, or restarted.
+	/// The node is down: it restarted, or it was unreachable and its process here shows why.
 	pub node_down: Option<String>,
+	/// The node, or the network between, did not answer for the reconnect budget: a connection
+	/// could not be opened again, or one stayed open with no answer.
+	pub unreachable: Option<String>,
 	/// A connection to the node kept dropping, while the node did not restart.
 	pub unstable: Option<String>,
 }
@@ -141,18 +141,16 @@ pub struct LiveState {
 pub fn live_failure(s: &LiveState, rules: &Rules) -> Option<Stop> {
 	let ago = |t: Millis| (s.now.saturating_sub(t) as f64 / 1000.0).round();
 	let step = Some(s.step);
-	if s.closed_by_node > 0 {
-		return Some(Stop::new(
-			Rule::NodeDown,
-			step,
-			format!(
-				"{} of {} RPC connections dropped and could not be opened again",
-				s.closed_by_node, s.connections
-			),
-		));
-	}
 	if let Some(why) = &s.node_down {
 		return Some(Stop::new(Rule::NodeDown, step, why.clone()));
+	}
+	// From one place, a node that is down and a network that is down look the same.
+	if let Some(why) = &s.unreachable {
+		let detail = format!(
+			"node or network unreachable: {why}; {} watches from one place, so it can't tell the node from the network between, and no process on this machine shows that the node failed",
+			crate::PRODUCT_NAME
+		);
+		return Some(Stop::new(Rule::GeneratorLimit, step, detail));
 	}
 	// Observed time only: a reconnect neither hides a stall nor makes one.
 	let since_block =
@@ -435,7 +433,6 @@ mod tests {
 	fn live() -> LiveState {
 		LiveState {
 			now: 100_000,
-			connections: 4,
 			last_block_at: 60_000,
 			last_finalized_at: 90_000,
 			..Default::default()

@@ -47,8 +47,11 @@ impl<S: Submit> Tracker<S> {
 					gap.to = Some(at);
 				}
 			},
-			BlockEvent::Unreachable(why) | BlockEvent::Restarted(why) => {
+			BlockEvent::Restarted(why) => {
 				self.node_down.get_or_insert(why);
+			},
+			BlockEvent::Unreachable(why) => {
+				self.unreachable.get_or_insert(why);
 			},
 			BlockEvent::Unstable(why) => {
 				self.unstable.get_or_insert(why);

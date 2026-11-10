@@ -8,7 +8,7 @@ use std::future::Future;
 use crate::engine::monitors::{
 	MonitorError, Scraper, ScraperHandle, Target, chain_series, process, relay,
 };
-use crate::load::runner::RunEvent;
+use crate::load::runner::{NodeProcess, RunEvent};
 use crate::redact::{Redactor, diag, records};
 use anyhow::Context as _;
 use polkameter_plugin_sdk::chain::Client;
@@ -37,6 +37,9 @@ pub struct Chains<'a> {
 	pub node_url: &'a str,
 	/// The relay's WebSocket URL, for the relay recorder.
 	pub relay_url: Option<&'a str>,
+	/// The TCP ports the node listens on for its peers: a process on the node's port that holds
+	/// none of them is not the node.
+	pub p2p_ports: Vec<u16>,
 }
 
 /// The running monitors.
@@ -47,6 +50,8 @@ pub struct Monitors {
 	pub problems: Problems,
 	/// Cancelled when a monitor fails with an error of our own: the load loop stops at once.
 	pub tool_failed: CancellationToken,
+	/// What the process sampler sees of the node's process.
+	pub node: NodeProcess,
 	stop_sampling: CancellationToken,
 	stop_chain: CancellationToken,
 	stop: CancellationToken,
@@ -114,11 +119,13 @@ impl Monitors {
 			spawn(step_edges(events.subscribe(), handle.clone(), stop.clone()), &failed),
 		];
 
-		let ps = process::Ps::new(chains.node_url);
+		let ps = process::Ps::new(chains.node_url, chains.p2p_ports);
+		let node = NodeProcess::default();
 		let sampler = match process::find_pid(chains.node_url, &ps).await {
 			Ok(pid) => {
+				let out = jsonl("node.jsonl")?;
 				let sampler =
-					process::NodeSampler::new(pid, ps, jsonl("node.jsonl")?, problems.clone());
+					process::NodeSampler::new(pid, ps, out, problems.clone(), node.clone());
 				Some(spawn(sampler.run(stop_sampling.clone()), &failed))
 			},
 			Err(why) => {
@@ -147,6 +154,7 @@ impl Monitors {
 			scraper: handle,
 			problems,
 			tool_failed: failed,
+			node,
 			stop_sampling,
 			stop_chain,
 			stop,

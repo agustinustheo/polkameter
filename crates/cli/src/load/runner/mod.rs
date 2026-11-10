@@ -111,6 +111,49 @@ pub struct Io {
 	/// A clock that counts sleep ([`crate::load::clock::boot_ms`]), only to see that the
 	/// machine was suspended; a test changes it.
 	pub boot: fn() -> Option<Millis>,
+	/// What a monitor on this machine saw of the node's own process.
+	pub node: NodeProcess,
+}
+
+/// What a monitor on this machine saw of the node's own process: the only evidence PolkaMeter
+/// has that the node, not the network between, failed when the node can't be reached. Empty
+/// when no process here is known to be the node.
+#[derive(Debug, Clone, Default)]
+pub struct NodeProcess(std::sync::Arc<std::sync::Mutex<NodeFacts>>);
+
+#[derive(Debug, Default)]
+struct NodeFacts {
+	serves_rpc: Option<String>,
+	ended: Option<String>,
+	stopped: Option<String>,
+}
+
+impl NodeProcess {
+	fn facts(&self) -> std::sync::MutexGuard<'_, NodeFacts> {
+		self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+	}
+
+	/// The node's process serves the RPC endpoint itself, on this machine (`why`): nothing
+	/// between PolkaMeter and the node can hold its answers.
+	pub fn serves_rpc(&self, why: String) {
+		self.facts().serves_rpc = Some(why);
+	}
+
+	/// The node's process ended (`why`); the first time counts.
+	pub fn ended(&self, why: String) {
+		self.facts().ended.get_or_insert(why);
+	}
+
+	/// The node's process is stopped now (`why`), or runs (`None`).
+	pub fn stopped(&self, why: Option<String>) {
+		self.facts().stopped = why;
+	}
+
+	/// Why the node itself is to blame for not answering, if its process shows it.
+	pub fn why(&self) -> Option<String> {
+		let f = self.facts();
+		f.ended.clone().or_else(|| f.stopped.clone()).or_else(|| f.serves_rpc.clone())
+	}
 }
 
 /// No result: the network was not healthy before the load, or a raw file could not be written.
@@ -222,10 +265,11 @@ impl Ticks {
 	}
 }
 
-/// Why the node is down, if it is: the block follower lost it for the reconnect budget, or saw
-/// it restart. Both the load and recovery end on it.
-pub(super) fn node_down<S: Submit>(t: &Tracker<S>) -> Option<String> {
-	t.node_down.clone()
+/// Why the node is down, if it is: it restarted, or it could not be reached for the reconnect
+/// budget and its process here shows that it failed. Both the load and recovery end on it.
+pub fn node_down<S: Submit>(t: &Tracker<S>, io: &Io) -> Option<String> {
+	let unreachable = || Some(format!("{}; {}", t.unreachable.clone()?, io.node.why()?));
+	t.node_down.clone().or_else(unreachable)
 }
 
 /// What the live rules read, now.
@@ -234,15 +278,14 @@ pub(super) fn live<S: Submit>(t: &Tracker<S>, io: &Io, opts: &RunOptions, step: 
 	LiveState {
 		step,
 		now,
-		closed_by_node: t.closed_by_node,
-		connections: opts.connections,
 		last_block_at: t.last_head.0,
 		last_finalized_at: t.last_finalized.0,
 		best: t.last_head.1,
 		finalized: t.last_finalized.1,
 		unobserved_since_block: t.unobserved_between(t.last_head.0, now),
 		unobserved_since_finalized: t.unobserved_between(t.last_finalized.0, now),
-		node_down: node_down(t),
+		node_down: node_down(t, io),
+		unreachable: t.unreachable.clone(),
 		unstable: t.unstable.clone(),
 		smoke_problems: if opts.mode == Mode::Smoke { io.problems.all() } else { Vec::new() },
 	}

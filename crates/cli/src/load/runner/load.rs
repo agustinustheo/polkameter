@@ -50,7 +50,7 @@ pub async fn load<S: Submit>(
 		}
 		// The follower may have seen the node restart only as the step ended: that, not the
 		// step's low send rate, is why it sent too little.
-		if let Some(why) = node_down(t) {
+		if let Some(why) = node_down(t, io) {
 			return Ok(Stop::new(Rule::NodeDown, Some(k), why));
 		}
 		// After the last step an empty flood only means it was sized to the plan.

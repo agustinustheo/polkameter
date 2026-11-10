@@ -60,6 +60,7 @@ fn runner<S: Submit>(
 		problems: Problems::default(),
 		tool_failed: CancellationToken::new(),
 		boot: || Some(now_ms()),
+		node: Default::default(),
 	};
 	let opts = RunOptions {
 		rules: RULES,
@@ -163,6 +164,11 @@ enum Fault {
 	/// The follower loses the node at second `.0` and is back 2 s later, with `.1` about who
 	/// answers: the same node restarted, or another one.
 	Reconnect(u64, Answer),
+	/// The follower loses the node at second `.0`, and nothing answers it for the 15 s budget:
+	/// the node is down, or the network between is.
+	Unreachable(u64),
+	/// Sender connection 0 drops at second `.0` and can't be opened again within the budget.
+	SenderGone(u64),
 }
 
 /// Who answers the follower after a [`Fault::Reconnect`].
@@ -184,6 +190,7 @@ fn chain(
 ) {
 	let (mut delay_ms, mut down, mut sender_down) = (0, None, None);
 	let (mut frozen, mut halted, mut reconnect) = (u64::MAX, u64::MAX, None);
+	let (mut unreachable, mut sender_gone) = (u64::MAX, u64::MAX);
 	for fault in faults {
 		match *fault {
 			Fault::Paused(at, ms) => {
@@ -199,6 +206,11 @@ fn chain(
 			Fault::FinalityFrozen(from) => frozen = from,
 			Fault::Halted(from) => halted = from,
 			Fault::Reconnect(at, answer) => reconnect = Some((at, answer)),
+			Fault::Unreachable(at) => {
+				down = Some((at, u64::MAX));
+				unreachable = at + 15;
+			},
+			Fault::SenderGone(at) => sender_gone = at,
 		}
 	}
 	tokio::spawn(async move {
@@ -223,6 +235,10 @@ fn chain(
 					l.down = false;
 					let _ = replies
 						.send(Reply::Reconnected { connection: 0, down_ms: (to - from) * 1_000 });
+				}
+				if second == sender_gone {
+					l.down = true;
+					let _ = replies.send(Reply::Closed { connection: 0, by_node: true });
 				}
 				// The node reads a request 2 s after it was sent, or at once when it is sent again.
 				let (resent, down) = (second == to, l.down);
@@ -251,6 +267,10 @@ fn chain(
 			}
 			if down.is_some_and(|(from, _)| from == second) {
 				events.push(BlockEvent::Disconnected { at: now, reason: "stream ended".into() });
+			}
+			if second == unreachable {
+				let why = "the block follower lost the node (stream ended), and the node answered nothing for 15 s";
+				events.push(BlockEvent::Unreachable(why.into()));
 			}
 			if down.is_some_and(|(_, to)| to == second) {
 				events.push(BlockEvent::Reconnected { at: now });
@@ -307,7 +327,7 @@ fn on_chain(
 	let pool = Pool::default();
 	let link = faults
 		.iter()
-		.any(|f| matches!(f, Fault::SenderDown(..) | Fault::Linked))
+		.any(|f| matches!(f, Fault::SenderDown(..) | Fault::Linked | Fault::SenderGone(_)))
 		.then(|| Arc::new(Mutex::new(Link::default())));
 	let node = Node { replies: replies_tx.clone(), pool: pool.clone(), link: link.clone() };
 	chain(pool, link.map(|l| (l, replies_tx)), faults, blocks_tx);
@@ -737,6 +757,20 @@ async fn a_restarted_proxy_is_not_a_restarted_node() {
 	assert_eq!(stop.rule, Rule::RateCap, "{}", stop.detail);
 }
 
+/// A12. The block follower lost the node at second 10, and nothing answered it for the 15 s
+/// budget; or a sender connection could not be opened again within it. From PolkaMeter's one
+/// place, a node that is down and a network that is down look the same: the load ends on
+/// "generator limit: node or network unreachable", not on node down. (A healthy node behind a
+/// proxy that dropped for 15.5 s was "node down".)
+#[tokio::test(start_paused = true)]
+async fn a_node_or_network_unreachable_is_not_node_down() {
+	for fault in [Fault::Unreachable(10), Fault::SenderGone(10)] {
+		let (stop, _) = chain_run("attribution-unreachable", fault).await;
+		assert_eq!((stop.rule, stop.class), (Rule::GeneratorLimit, None), "{}", stop.detail);
+		assert!(stop.detail.starts_with("node or network unreachable"), "{}", stop.detail);
+	}
+}
+
 // B. Never excuse the chain for a fault in it.
 
 /// B1. The node restarted (the same peer ID, a new sync starting block) while every
@@ -755,6 +789,28 @@ async fn a_restarted_node_is_node_down_in_any_phase() {
 
 	let faults = [Fault::Reconnect(10, Answer::Restarted)];
 	let (mut t, mut io, opts) = on_chain("attribution-restarted-recovery", &faults, (2.0, 6), 0);
+	load(&mut t, &mut io, &opts).await.unwrap();
+	let r = recover(&mut t, &mut io, &opts, Some(12_000)).await.unwrap();
+	assert!(r.measured && !r.recovered && r.detail.starts_with("node down"), "{r:?}");
+}
+
+/// B4. The node answered nothing for the budget, and its process on this machine shows that
+/// it failed: it is stopped (as by SIGSTOP), it ended, or it serves the RPC port itself, so
+/// nothing between could hold its answers. That is node down, in the load and in recovery.
+/// (A node frozen for 16 to 20 s with its socket open passed.)
+#[tokio::test(start_paused = true)]
+async fn an_unreachable_node_whose_process_failed_is_node_down() {
+	let faults = [Fault::Unreachable(10)];
+	let (mut t, mut io, opts) = on_chain("attribution-unreachable-stopped", &faults, (20.0, 30), 0);
+	io.node.stopped(Some("the node's process 42 is stopped".into()));
+	let stop = load(&mut t, &mut io, &opts).await.unwrap();
+	assert_eq!((stop.rule, stop.class), (Rule::NodeDown, Some(Class::Hard)), "{}", stop.detail);
+	assert!(stop.detail.contains("answered nothing"), "{}", stop.detail);
+	assert!(stop.detail.contains("process 42 is stopped"), "{}", stop.detail);
+
+	let faults = [Fault::Unreachable(10)];
+	let (mut t, mut io, opts) = on_chain("attribution-unreachable-recovery", &faults, (2.0, 6), 0);
+	io.node.serves_rpc("the node's process 42 serves the RPC port itself".into());
 	load(&mut t, &mut io, &opts).await.unwrap();
 	let r = recover(&mut t, &mut io, &opts, Some(12_000)).await.unwrap();
 	assert!(r.measured && !r.recovered && r.detail.starts_with("node down"), "{r:?}");
