@@ -12,7 +12,7 @@ Each run writes a new directory in `--output`, named `run-<milliseconds>-<pid>-<
 | `events.jsonl` | Every event, one JSON object per line. |
 | `plan.json` | The plan as parsed. |
 | `resolved-plan.json` | Plugin manifests and registry records, `<monitors>` settings, and the CLI's version and BLAKE2 hash. |
-| `samples.jtl` | [One CSV row per plan step](#samplesjtl), and per transaction in a load test. |
+| `samples.jtl` | [One CSV row per plan step](#samplesjtl), and per timed transaction in a load test. |
 | `plugins/<id>/stderr.log` | Standard error of each plugin that started. |
 
 ## Redaction
@@ -122,11 +122,13 @@ Plugin checks come after the built-in ones and count toward the verdict the same
 
 `samples.jtl` uses the CSV columns of JMeter, a common load-testing tool, so JMeter's report tools can chart a run. The file has one header row, then 13 columns.
 
+JMeter needs a number in every row. So a transaction without a measured time has no row: one PolkaMeter couldn't time, one it never saw in a best block, or one with no reply time. `transactions.jsonl` has every transaction and its status.
+
 | Column | Step rows | Transaction rows (load test) |
 | --- | --- | --- |
 | `timeStamp` | Start time, in milliseconds since the Unix epoch | Time of submission |
-| `elapsed` | Step duration, in milliseconds | Time from submission to inclusion, or to the reply without inclusion. `0` for a transaction PolkaMeter couldn't time |
-| `label` | `step:<step id>` | `load:step:<step index>`, or `load:step:<step index>:untimed` for a transaction PolkaMeter couldn't time |
+| `elapsed` | Step duration, in milliseconds | Time from submission to the best block that included it, or to the node's refusal |
+| `label` | `step:<step id>` | `load:step:<step index>` |
 | `responseCode` | `STEP_OK` or `STEP_FAILED` | Transaction status |
 | `responseMessage` | Step error, or empty | Transaction hash |
 | `threadName` | `steps` | `load` |

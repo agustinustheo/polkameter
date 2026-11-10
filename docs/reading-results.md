@@ -11,7 +11,7 @@ Look at the `Verdict:` line in `summary.md`, or `verdict.result` in `summary.jso
   - a graceful or hard [stop rule](#stop-rules) ended the load;
   - a transaction was [lost or failed](#did-transactions-get-lost);
   - a check failed.
-- INCONCLUSIVE: nothing failed, but the result is incomplete. The load ended before its last rate step finished, or a required check has no result.
+- INCONCLUSIVE: nothing failed, but the result is incomplete. The load ended before its last rate step finished, the baseline has no result, or a required check has no result.
 - WARN: every rate step ran and a check warned.
 - PASS: every rate step ran, and no check failed, warned or lacks a result.
 
@@ -34,7 +34,7 @@ The outcome checks table at the end of `summary.md` gives each check a status: `
 Read the `Load stop:` line and the checks with no result. Fix the cause before you run the test again:
 
 - `budget used up: all N prepared transactions sent`. The flood ran out before the last rate step finished. Raise the prepare step's `count` above the total that the rate steps send (each rate times its seconds), or shorten or slow the rate steps.
-- `generator limit`. PolkaMeter, the load generator, sent less than 95% of the target rate, its machine paused, or its connection to the node kept dropping (`connection unstable`). Use a faster machine, lower the rate, keep the machine awake, or fix the network or proxy in between.
+- `generator limit`. PolkaMeter, the load generator, sent less than 95% of the target rate, or its machine paused. Or its connection to the node kept dropping (`connection unstable`), or nothing answered for 15 s (`node or network unreachable`). Use a faster machine, lower the rate, keep the machine awake, or fix the network or proxy in between.
 - `smoke error`. A smoke-mode run stopped at the first monitor problem. The `smoke:` lines that `run` prints name it.
 - A required check has no result. Its detail says why. Usually a monitored node didn't answer when PolkaMeter read its metrics, a node restarted, or the plan's state check failed.
 
@@ -62,7 +62,7 @@ A transaction counts in the rate step that sent it, even when a later block incl
 
 The p50 and p95 columns show the time from submission until a best block includes the transaction. A best block is the newest block the node knows. It may not be finalized yet. p50 is the median time. 95% of the included transactions took the p95 time or less.
 
-The `reply p95` column, and the `step` lines that `run` prints, show how long the node took to answer a submission. In the remarks run it stayed at 0.0 s, even at 600 tx/s. So the node accepted the transactions quickly, but full blocks made them wait.
+The `reply p95` column, and the `step` lines that `run` prints, show how long the node took to answer a submission. Both times include the network between PolkaMeter and the node: see [Whose fault is it](#whose-fault-is-it). In the remarks run it stayed at 0.0 s, even at 600 tx/s. So the node accepted the transactions quickly, but full blocks made them wait.
 
 ## Did transactions get lost?
 
@@ -110,13 +110,13 @@ Failure-onset rules only mark the failure onset, and the load goes on. The other
 | Refused: refused share above the maximum | failure onset |
 | Pool refuses: refused share above the limit, in this step or the last | graceful |
 | Pool intake: the node, or the network between, answered or read submissions too slowly, with bytes unsent on an open connection | graceful |
-| Slow blocks: mean block gap above `max-block-gap-factor` times `block-interval-seconds` | hard |
-| Stall: no new best block for the limit, not counting time PolkaMeter didn't observe | hard |
+| Slow blocks: mean block gap, by the chain's own timestamps, above `max-block-gap-factor` times `block-interval-seconds` | hard |
+| Stall: no new best block for the limit, not counting time the node didn't answer or PolkaMeter didn't observe | hard |
 | Finality stall: no new finalized block for the limit, the same way | hard |
-| Node down: the node was unreachable for 15 s, or restarted | hard |
+| Node down: the node restarted, or it answered nothing for 15 s and its process on this machine shows that it failed | hard |
 | Rate cap: every rate step ran | end, no failure |
 | Budget used up: the prepared flood ran out before the last rate step finished | end, no failure |
-| Generator limit: PolkaMeter sent too little of the target rate, paused more than 5 s, had no connection open, or its connection kept dropping | end, no failure |
+| Generator limit: PolkaMeter sent too little of the target rate, paused more than 5 s, or had no connection open. Or its connection kept dropping, or the node or network answered nothing for 15 s | end, no failure |
 | Smoke error: a monitor problem, in smoke mode only | end, no failure |
 
 A graceful stop ends the load when the node refuses or delays transactions but still makes blocks. A hard stop ends the load when the node goes down, or blocks or finality slow down or stop for everyone. Stall, finality stall and node down also hold in recovery and while the loss check runs, and fail the run there.
@@ -125,18 +125,27 @@ A dropped connection that reconnects is not a stop. See [blocks: RPC connection 
 
 ## Whose fault is it
 
-PolkaMeter sees the chain only through its own connections and clock. Four rules decide what a run blames:
+PolkaMeter watches the chain from one place, through its own connections and clock. It asserts only what that evidence shows:
 
-- A. Never the chain for a fault outside it: a pause of PolkaMeter of any length (a stopped process, CPU starvation, a suspended machine), the network or a proxy in between, or a reconnect.
-- B. Never excuse the chain for a fault in it. A stall, a finality stall, or a node that restarted or stayed unreachable for 15 s fails the run in any phase: baseline, load, recovery or the loss check. That holds also when PolkaMeter paused or reconnected too.
-- C. No evidence, no number. A measure PolkaMeter couldn't observe has no result, never a number such as a 0 ms baseline. The verdict is then at most INCONCLUSIVE.
+- A. Never the chain for a fault outside it: a pause of PolkaMeter, the network or a proxy in between, or a reconnect. Block pace comes from the chain itself. Slow blocks use the chain's own timestamps, and a stall is no new block while the node keeps answering. A delay on the way can't fake either.
+- B. Never excuse the chain for a fault in it. A stall, a finality stall or node down fails the run in any phase, also when PolkaMeter paused or reconnected too. Node down needs evidence that it was the node: it came back restarted, or its process on this machine ended, is stopped, or serves the RPC port itself.
+- C. No evidence, no number. A measure PolkaMeter couldn't observe has no result, never a stand-in such as 0 ms. The verdict is then at most INCONCLUSIVE.
 - D. Each sent flood transaction gets one loss status: sent = finalized + in pool + refused + lost + unverified + unknown.
+
+What one place can't show:
+
+- If the node, or the network between, answers nothing for 15 s, PolkaMeter can't tell which failed. Without the evidence of rule B, the load ends on `generator limit: node or network unreachable`, and the verdict is INCONCLUSIVE. A connection that stays open with no answer counts the same as one that closed.
+- Latency and reply times are measured from PolkaMeter's side. They include the network between PolkaMeter and the node, and PolkaMeter can't see a delay on an open connection. Run PolkaMeter close to the node.
+- PolkaMeter detects its own pauses longer than about 1 s, and leaves out every time measured across one. A shorter pause goes unseen and can add up to that much to a time.
 
 In a run, this means:
 
-1. A disconnection shorter than 15 s is never "node down", in the load or the loss check. A connection that keeps dropping, while the node doesn't restart, ends the load on `generator limit: connection unstable`.
+1. A disconnection shorter than 15 s is never node down, in the load or the loss check. A connection that keeps dropping, while the node doesn't restart, ends the load on `generator limit: connection unstable`.
 2. The node's identity after a reconnect tells a restart: the same peer ID with a new sync starting block. A restarted proxy changes neither. A new peer ID is another node behind a load balancer, and only a warning.
-3. A transaction, reply or probe timed across a pause of PolkaMeter, or read late after a reconnect, counts but has no time. Latency, reply time, block gaps, the baseline and the exports leave it out, and the `Warnings:` line counts it. A pause of more than 5 s ends the load on `generator limit`. A recovery PolkaMeter didn't observe until the chain was back is `not measured`.
-4. Time with no connection open is never pool intake or latency. A transaction sent again after its connection dropped has no latency.
+3. A transaction, reply or probe timed across a pause of PolkaMeter, or read late after a reconnect, counts but has no time. Latency, reply time, the baseline and the exports leave it out, and the `Warnings:` line counts it. A pause of more than 5 s ends the load on `generator limit`.
+4. A baseline with no timed probe has no result. A recovery PolkaMeter didn't observe until the chain was back is `not measured`, with no drain rate.
+5. Time with no connection open is never pool intake or latency. A transaction sent again after its connection dropped has no latency.
+
+The default `fail-on` policy, `verdict-or-inconclusive`, fails on INCONCLUSIVE too. So a node or network that was unreachable still fails a CI job, without a FAIL verdict.
 
 Tests guard each rule. `AGENTS.md` in the repository names them.
