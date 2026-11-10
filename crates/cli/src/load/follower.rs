@@ -5,15 +5,20 @@
 //!   filled in;
 //! - fetcher: reads each queued block (body, weight, timestamp, events) strictly in arrival
 //!   order and sends [`BlockEvent::Fetched`]. In order, so a source never sees a later block
-//!   before the inclusions of an earlier one.
+//!   before the inclusions of an earlier one. A block's gap is the chain's own time per block,
+//!   from its `Timestamp.Now`, since the highest block read before it: when PolkaMeter received
+//!   either, and whatever delayed that, plays no part.
 //!
 //! When the connection drops, the heads task sends [`BlockEvent::Disconnected`], opens it again
 //! with backoff, subscribes, and only then sends [`BlockEvent::Reconnected`]: the time between is
-//! an observation gap, not a chain stall, and the first block after it has no gap to the block
-//! before. The blocks missed meanwhile are filled in below the next best block. A node that stays
-//! unreachable for the backoff (about 15 s) is [`BlockEvent::Unreachable`]: node down. A
-//! connection that drops again and again is [`BlockEvent::Unstable`]: the follower goes on, and
-//! the load ends without blaming the chain.
+//! an observation gap, not a chain stall. The blocks missed meanwhile are filled in below the
+//! next best block. A connection that stays open but on which the node answers nothing, neither
+//! a block nor the best block asked for every [`REQUEST`], for [`SILENT`], is lost the same way,
+//! from its last answer: a node that stops answering is unreachable, not a chain that stalled.
+//! Nothing answered for the reconnect budget (15 s from the last answer) is
+//! [`BlockEvent::Unreachable`], once; the follower keeps trying, so a node that comes back
+//! restarted is still seen. A connection that drops again and again is [`BlockEvent::Unstable`]:
+//! the follower goes on, and the load ends without blaming the chain.
 //!
 //! After a reconnect the node's own identity tells what changed ([`Identity`]): the same peer ID
 //! with a new sync starting block is the same node restarted, [`BlockEvent::Restarted`]: node
@@ -83,7 +88,8 @@ pub enum BlockEvent {
 		/// When.
 		at: Millis,
 	},
-	/// The node stayed unreachable for the whole reconnect backoff: the node is down.
+	/// The node, or the network between, answered nothing for the reconnect budget: not node
+	/// down by itself, since the follower can't tell the two apart.
 	Unreachable(String),
 	/// After a reconnect the node is the same node, restarted: node down.
 	Restarted(String),
@@ -115,9 +121,8 @@ struct PerClass {
 /// The running runtime's normal class limit (ref time, proof size), from `System.BlockWeights`.
 pub type Limit = (u64, u64);
 
-/// A block for the fetcher: hash, number, when it arrived, filled in, and the first after the
-/// follower reconnected (its gap to the block before is not known).
-type Queued = ([u8; 32], u32, Millis, bool, bool);
+/// A block for the fetcher: hash, number, when it arrived, and whether it is filled in.
+type Queued = ([u8; 32], u32, Millis, bool);
 
 /// Blocks filled in below one best block at most; a longer walk is an unreadable stretch.
 const MAX_FILL: usize = 64;
@@ -125,8 +130,43 @@ const MAX_FILL: usize = 64;
 /// Best-block read errors in a row that count as a lost connection.
 const ERRORS_IN_A_ROW: u32 = 3;
 
-/// The longest one read of the heads task may take, as one reconnect attempt.
+/// The longest one read of the heads task may take, as one reconnect attempt; also how often the
+/// follower asks the node for its best block.
 pub const REQUEST: Duration = Duration::from_secs(5);
+
+/// A connection on which the node answered nothing for this long is lost.
+pub const SILENT: Duration = Duration::from_secs(10);
+
+/// When the node last answered anything on the follower's connection: a block, or its best block
+/// asked for.
+#[derive(Debug, Clone, Copy)]
+struct Liveness {
+	at: tokio::time::Instant,
+	wall: Millis,
+}
+
+impl Liveness {
+	/// The node answers now.
+	fn new() -> Self {
+		Self { at: tokio::time::Instant::now(), wall: now_ms() }
+	}
+
+	/// The node answered.
+	fn answered(&mut self) {
+		*self = Self::new();
+	}
+
+	/// When the node last answered, if it has answered nothing for [`SILENT`] since: the
+	/// connection is lost from then.
+	fn silent_since(&self) -> Option<Millis> {
+		(self.at.elapsed() >= SILENT).then_some(self.wall)
+	}
+
+	/// What is left of `budget` (the reconnect budget) after the time with no answer.
+	fn left_of(&self, budget: &Backoff) -> Backoff {
+		Backoff { total: budget.total.saturating_sub(self.at.elapsed()), ..budget.clone() }
+	}
+}
 
 /// `read`, failed as a timeout if the node does not answer within [`REQUEST`].
 async fn bounded<T>(
@@ -292,11 +332,11 @@ impl Session {
 	}
 }
 
-/// Follows best and finalized blocks; when the connection drops, reports it, opens it again
-/// (connected means subscribed) and follows on. Blocks below the first new best block after a
-/// reconnect are filled in, as after a reorg. A node that cannot be reached within the backoff,
-/// or that keeps dropping the connection, is down; one that came back as another process is a
-/// warning.
+/// Follows best and finalized blocks; when the connection drops or goes silent, reports it,
+/// opens it again (connected means subscribed) and follows on. Blocks below the first new best
+/// block after a reconnect are filled in, as after a reorg. A node that answers nothing for the
+/// budget is unreachable, one that keeps dropping the connection unstable, one that came back
+/// restarted is down, and one that came back as another process a warning.
 async fn heads(
 	client: Client,
 	url: String,
@@ -314,33 +354,46 @@ async fn heads(
 		Some(Ok(session)) => session,
 		Some(Err(_)) => Err("subscribing got no answer in time".into()),
 	};
+	let mut unreachable = false;
 	loop {
+		let mut alive = Liveness::new();
 		let reason = match session {
 			Ok(s) => {
 				followed.identity.get_or_insert_with(|| s.identity.clone());
 				let _ = clients.send(s.client.clone());
-				match follow(s, &out, &queue, &stop, &mut followed).await {
+				match follow(s, &out, &queue, &stop, &mut followed, &mut alive).await {
 					None => return,
 					Some(reason) => reason,
 				}
 			},
 			Err(reason) => reason,
 		};
-		let lost_at = now_ms();
+		// A silent connection was lost at the node's last answer, and the budget counts from it.
+		let silent = alive.silent_since();
+		let lost_at = silent.unwrap_or_else(now_ms);
 		crate::redact::diag!("blocks: lost the node ({reason}); reconnecting");
 		let _ = out.send(BlockEvent::Disconnected { at: lost_at, reason: reason.clone() });
 		if !drops.record() && !std::mem::replace(&mut unstable, true) {
 			let _ = out.send(BlockEvent::Unstable(format!("blocks: {}", Drops::reason())));
 		}
-		let s = match reconnect(|| Session::open(&url), &backoff, &stop).await {
-			Reconnect::Connected(s) => s,
-			Reconnect::Stopped => return,
-			Reconnect::GaveUp(why) => {
-				let _ = out.send(BlockEvent::Unreachable(format!(
-					"the block follower lost the node ({reason}) and it was {why}"
-				)));
-				return;
-			},
+		// Past the budget, the follower keeps trying.
+		let mut budget = if silent.is_some() { alive.left_of(&backoff) } else { backoff.clone() };
+		let s = loop {
+			match reconnect(|| Session::open(&url), &budget, &stop).await {
+				Reconnect::Connected(s) => break s,
+				Reconnect::Stopped => return,
+				Reconnect::GaveUp(why) => {
+					if !std::mem::replace(&mut unreachable, true) {
+						let why = format!(
+							"the block follower lost the node ({reason}), and the node answered nothing for {} s: {why}",
+							backoff.total.as_secs()
+						);
+						crate::redact::diag!("blocks: {why}; still trying");
+						let _ = out.send(BlockEvent::Unreachable(why));
+					}
+					budget = backoff.clone();
+				},
+			}
 		};
 		if let Some(id) = followed.identity.as_mut() {
 			if let Some(why) = id.restarted(&s.identity) {
@@ -358,7 +411,6 @@ async fn heads(
 			at.saturating_sub(lost_at) as f64 / 1000.0
 		);
 		let _ = out.send(BlockEvent::Reconnected { at });
-		followed.after_gap = true;
 		session = Ok(s);
 	}
 }
@@ -370,21 +422,25 @@ struct Followed {
 	seen: HashSet<[u8; 32]>,
 	/// The first best block followed.
 	first: Option<u32>,
-	/// The next block queued is the first after a reconnect.
-	after_gap: bool,
 	/// Who the node was on the last connection.
 	identity: Option<Identity>,
 }
 
-/// Follows on one session. `None` at `stop`; else why the connection was lost.
+/// Follows on one session. `None` at `stop`; else why the connection was lost. `alive` is when
+/// the node last answered: it asks the node for its best block every [`REQUEST`], and a node that
+/// answers nothing for [`SILENT`] loses the connection.
 async fn follow(
 	session: Session,
 	out: &mpsc::UnboundedSender<BlockEvent>,
 	queue: &mpsc::UnboundedSender<Queued>,
 	stop: &CancellationToken,
 	f: &mut Followed,
+	alive: &mut Liveness,
 ) -> Option<String> {
 	let Session { client, mut best, mut finalized, .. } = session;
+	let mut every = tokio::time::interval(REQUEST);
+	every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+	let mut asked: Option<std::pin::Pin<Box<dyn Future<Output = bool> + Send>>> = None;
 	// At start the stream goes back to the finalized block; record from the best one on, or
 	// the first probes would be sent on old blocks and land "fast".
 	let first = match f.first {
@@ -398,14 +454,29 @@ async fn follow(
 	loop {
 		tokio::select! {
 			() = stop.cancelled() => return None,
+			_ = every.tick(), if asked.is_none() => {
+				let client = client.clone();
+				// An error is an answer too: only a read with none counts as silence.
+				let read = async move { !matches!(bounded("best number", client.best_number()).await, Err(ChainError::Timeout(_))) };
+				asked = Some(Box::pin(read));
+			},
+			answered = async { asked.as_mut().expect("asked").await }, if asked.is_some() => {
+				asked = None;
+				if answered {
+					alive.answered();
+				} else if alive.silent_since().is_some() {
+					return Some(format!("the node answered nothing for {} s on an open connection", SILENT.as_secs()));
+				}
+			},
 			block = finalized.next() => match block {
-				Some(Ok(b)) => { let _ = out.send(BlockEvent::Finalized { number: b.number() as u32, seen_at: now_ms() }); }
-				Some(Err(e)) => { let _ = out.send(BlockEvent::Unreadable(format!("finalized: {e}"))); }
+				Some(Ok(b)) => { alive.answered(); let _ = out.send(BlockEvent::Finalized { number: b.number() as u32, seen_at: now_ms() }); }
+				Some(Err(e)) => { alive.answered(); let _ = out.send(BlockEvent::Unreadable(format!("finalized: {e}"))); }
 				None => return Some("the finalized block stream ended".into()),
 			},
 			block = best.next() => match block {
 				None => return Some("the best block stream ended".into()),
 				Some(Err(e)) => {
+					alive.answered();
 					errors += 1;
 					if errors >= ERRORS_IN_A_ROW {
 						return Some(format!("{errors} best block errors in a row, the last: {e}"));
@@ -413,21 +484,21 @@ async fn follow(
 					let _ = out.send(BlockEvent::Unreadable(format!("best: {e}")));
 				},
 				Some(Ok(b)) => {
+					alive.answered();
 					errors = 0;
 					if b.number() as u32 >= first && !f.seen.contains(&b.hash().0) {
 						let (number, hash, seen_at) = (b.number() as u32, b.hash().0, now_ms());
 						let _ = out.send(BlockEvent::Head { number, seen_at });
-						let after_gap = std::mem::take(&mut f.after_gap);
 						let walk = fill_in(b.header().parent_hash.0, number, first, &f.seen, |h| bounded("parent header", parent(&client, h)));
 						match until_stopped(stop, walk).await? {
 							Ok(missing) => for (h, n) in missing {
 								f.seen.insert(h);
-								let _ = queue.send((h, n, seen_at, true, false));
+								let _ = queue.send((h, n, seen_at, true));
 							},
 							Err(e) => { let _ = out.send(BlockEvent::Unreadable(format!("blocks below {number}: {e}"))); }
 						}
 						f.seen.insert(hash);
-						let _ = queue.send((hash, number, seen_at, false, after_gap));
+						let _ = queue.send((hash, number, seen_at, false));
 					}
 				},
 			},
@@ -466,6 +537,9 @@ where
 	Ok(missing)
 }
 
+/// The longest one read of a block may take: a full block under load takes a while.
+const READ: Duration = Duration::from_secs(30);
+
 /// Reads up to 4 blocks at a time; results still come out in arrival order.
 const FETCH_AHEAD: usize = 4;
 
@@ -484,13 +558,22 @@ async fn fetcher(
 	use futures_util::StreamExt;
 	let blocks = futures_util::stream::poll_fn(move |cx| queue.poll_recv(cx));
 	let mut reads = blocks
-		.map(|(hash, number, seen_at, filled_in, after_gap)| {
+		.map(|(hash, number, seen_at, filled_in)| {
 			let clients = clients.clone();
 			async move {
 				let mut attempt = 1;
 				let result = loop {
 					let client = clients.borrow().clone();
-					match read(&client, hash, number, seen_at, limit).await {
+					// A read on a connection that went silent would wait for good.
+					let read =
+						tokio::time::timeout(READ, read(&client, hash, number, seen_at, limit));
+					let read = read.await.unwrap_or_else(|_| {
+						Err(ChainError::Timeout(format!(
+							"block {number}: no answer in {} s",
+							READ.as_secs()
+						)))
+					});
+					match read {
 						Err(e) if e.fault() != Fault::Tool && attempt < READ_ATTEMPTS => {
 							attempt += 1;
 							tokio::time::sleep(Duration::from_secs(1)).await;
@@ -498,26 +581,24 @@ async fn fetcher(
 						result => break result,
 					}
 				};
-				(number, seen_at, filled_in, after_gap, result)
+				(number, seen_at, filled_in, result)
 			}
 		})
 		.buffered(FETCH_AHEAD);
-	let mut last: Option<Millis> = None; // when the last best block arrived
+	// The highest block read, and its `Timestamp.Now`.
+	let mut last: Option<(u32, Millis)> = None;
 	loop {
-		let (number, seen_at, filled_in, after_gap, result) = tokio::select! {
+		let (number, seen_at, filled_in, result) = tokio::select! {
 			() = stop.cancelled() => return,
 			Some(r) = reads.next() => r,
 		};
-		if after_gap {
-			last = None; // the follower was disconnected: the gap is not known
-		}
 		match result {
 			Ok((mut record, txs)) => {
 				record.fetch_lag_ms = Some(now_ms().saturating_sub(seen_at));
 				record.filled_in = filled_in;
-				if !filled_in {
-					record.gap_ms = last.map(|s| seen_at.saturating_sub(s));
-					last = Some(seen_at);
+				record.gap_ms = chain_gap(last, record.number, record.timestamp);
+				if record.timestamp > 0 && last.is_none_or(|(n, _)| record.number > n) {
+					last = Some((record.number, record.timestamp));
 				}
 				let _ = out.send(BlockEvent::Fetched { record, txs });
 			},
@@ -529,6 +610,14 @@ async fn fetcher(
 			},
 		}
 	}
+}
+
+/// The chain's own time per block from `last`, the highest block read before (its number and
+/// `Timestamp.Now`), to block `number` with `timestamp`. `None` for a block at or below it (a
+/// fork), or without a timestamp.
+pub fn chain_gap(last: Option<(u32, Millis)>, number: u32, timestamp: Millis) -> Option<Millis> {
+	let (n, at) = last?;
+	(number > n && timestamp > 0).then(|| timestamp.saturating_sub(at) / u64::from(number - n))
 }
 
 async fn read(
@@ -596,6 +685,32 @@ mod tests {
 		}))
 		.expect("ready")
 		.expect("walks")
+	}
+
+	/// A connection on which the node answered nothing for 10 s is lost from its last answer, and
+	/// the reconnect budget counts from then: a node frozen with its socket open is unreachable
+	/// 15 s after it last answered, as one that closed it. (The follower waited on it for good: a
+	/// node frozen for 16 to 20 s passed.)
+	#[tokio::test(start_paused = true)]
+	async fn a_silent_connection_is_lost_from_the_last_answer() {
+		let mut alive = Liveness::new();
+		tokio::time::advance(Duration::from_secs(9)).await;
+		assert_eq!(alive.silent_since(), None, "answered 9 s ago");
+		alive.answered();
+		let answered_at = now_ms();
+		tokio::time::advance(SILENT).await;
+		assert_eq!(alive.silent_since(), Some(answered_at));
+		assert_eq!(alive.left_of(&Backoff::default()).total, Duration::from_secs(5));
+	}
+
+	/// A block's gap is the chain's time per block since the highest block read before it.
+	#[test]
+	fn a_block_gap_is_the_chains_own_time() {
+		assert_eq!(chain_gap(None, 10, 60_000), None, "the first block read");
+		assert_eq!(chain_gap(Some((10, 60_000)), 11, 66_000), Some(6_000));
+		assert_eq!(chain_gap(Some((10, 60_000)), 13, 78_000), Some(6_000), "two filled in");
+		assert_eq!(chain_gap(Some((12, 72_000)), 12, 73_000), None, "a fork block");
+		assert_eq!(chain_gap(Some((10, 60_000)), 11, 0), None, "no timestamp");
 	}
 
 	#[test]

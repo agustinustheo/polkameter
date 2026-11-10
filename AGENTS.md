@@ -71,20 +71,27 @@ scripts/dev-chain.sh stop
 
 ## Measurement integrity
 
-PolkaMeter's core claim is two-sided: it never blames the chain for a fault of its own, of the network or of the RPC connection, and it never excuses the chain for a fault in it. [Whose fault is it](docs/reading-results.md#whose-fault-is-it) states the rules. These tests guard them. If a change makes one fail, fix the change, not the test. Tests without a file are in `crates/cli/tests/attribution.rs`.
+PolkaMeter asserts only what its evidence shows, from the one place it watches the chain. So it never blames the chain for a fault of its own, of the network or of the RPC connection, and it never excuses the chain for a fault in it. [Whose fault is it](docs/reading-results.md#whose-fault-is-it) states the rules. These tests guard them. If a change makes one fail, fix the change, not the test. Tests without a file are in `crates/cli/tests/attribution.rs`.
 
 | Rule | Test |
 | --- | --- |
 | A. A disconnection shorter than 15 s is not node down, in the load and the loss check | `i1_a_node_back_within_the_reconnect_budget_is_not_down`, `the_loss_check_reconnects_within_the_budget`; `tests/rpc-outage.py` in the CI dev-chain job (an 8 s outage through a TCP proxy) |
 | A. A connection that keeps dropping is unstable, not node down | `a_connection_that_keeps_dropping_is_unstable_not_node_down` |
 | A. A restarted proxy is not a restarted node | `a_restarted_proxy_is_not_a_restarted_node` |
-| A. A pause of PolkaMeter, of any length, is not latency, reply time or a block gap | `i3_time_polkameter_did_not_observe_never_makes_a_latency_failure`, `a_pause_of_any_length_never_makes_a_latency_failure`, `a_pause_is_never_the_nodes_reply_time`, `a_pause_never_counts_in_block_gaps`; `a_pause_leaves_out_every_time_measured_across_it` in `load_tracker.rs` |
+| A. A pause of PolkaMeter longer than about 1 s is not latency or reply time | `i3_time_polkameter_did_not_observe_never_makes_a_latency_failure`, `a_pause_of_any_length_never_makes_a_latency_failure`, `a_pause_is_never_the_nodes_reply_time`; `a_pause_leaves_out_every_time_measured_across_it` in `load_tracker.rs` |
+| A. Block pace is the chain's own: no pause or delay on the way makes slow blocks | `a_pause_never_counts_in_block_gaps`, `a_delay_on_the_way_never_makes_slow_blocks`; `a_block_gap_is_the_chains_own_time` in `follower.rs` |
+| A. A node or network that answers nothing for 15 s is not node down without evidence; a proxy is not the node's process | `a_node_or_network_unreachable_is_not_node_down`; `a_silent_connection_is_lost_from_the_last_answer` in `follower.rs`; `a_proxy_on_the_rpc_port_is_not_the_node` in `monitors/process.rs` |
 | A. Reconnecting is not pool intake, and a resend has no latency | `i4_a_reconnecting_sender_is_never_pool_intake`, `i4_time_to_resend_after_a_reconnect_is_not_latency` |
 | B. A node restart is node down in any phase | `a_restarted_node_is_node_down_in_any_phase`; `a_node_restart_is_node_down_in_load_and_recovery` in `load_runner.rs` |
+| B. An unreachable node whose process here ended, stopped or serves the RPC port is node down | `an_unreachable_node_whose_process_failed_is_node_down` |
 | B. A finality stall fails the run in recovery and in the loss check, also when PolkaMeter paused | `a_finality_stall_in_recovery_fails_even_when_polkameter_paused`, `a_finality_stall_while_the_loss_check_runs_fails_the_run` |
-| C. A baseline or recovery PolkaMeter didn't observe has no result | `i3_a_pause_in_the_baseline_or_recovery_is_not_the_chains`, `a_baseline_polkameter_did_not_observe_has_no_result`, `a_recovery_polkameter_did_not_observe_is_not_measured` |
-| C. An untimed transaction has no time in any export | `untimed_transactions_have_no_time_in_any_export` |
+| C. A baseline or recovery PolkaMeter didn't observe has no result, and no drain rate | `i3_a_pause_in_the_baseline_or_recovery_is_not_the_chains`, `a_baseline_polkameter_did_not_observe_has_no_result`, `a_recovery_polkameter_did_not_observe_is_not_measured` |
+| C. A baseline with no time makes the verdict at most INCONCLUSIVE | `a_baseline_with_no_time_is_at_most_inconclusive` in `engine/checks/tests.rs` |
+| C. Inclusions seen before recovery are not its drain | `inclusions_seen_before_recovery_are_not_its_drain` |
+| C. A transaction without a measured time has no time in any export | `untimed_transactions_have_no_time_in_any_export` |
 | D. Loss statuses partition what was sent | `statuses_partition_sent_in_every_scenario` in `crates/cli/src/load/loss.rs` |
+| D. The loss check walks from below every flood transaction | `the_loss_check_walks_from_below_every_flood_transaction` |
+| Diagnostics name what PolkaMeter saw | `a_node_down_in_the_baseline_is_named`, `a_pause_is_not_called_a_reconnect`, `heads_without_a_block_read_are_not_no_new_block`; `blocks_unobserved_for_longer_than_a_stall_are_no_result` in `engine/checks/tests.rs` |
 
 ## Conventions
 

@@ -2,6 +2,24 @@
 
 User-visible changes in each release. The GitHub release notes list every merged pull request.
 
+## Unreleased
+
+### Fixed
+
+- The loss check no longer calls finalized transactions lost when a fork below the first block PolkaMeter read finalized them. It walks the finalized chain from the block above the one finalized before the first flood transaction.
+- Slow blocks and the recovery's block pace use the chain's own timestamps. A proxy that delayed blocks by 2 s made a 13 s rate step "slow blocks" on a chain that was on time.
+- A node or network that answers nothing for 15 s, on a closed or an open connection, now ends the load on `generator limit: node or network unreachable` (INCONCLUSIVE). PolkaMeter watches from one place and can't tell the two apart. It's node down only when the node came back restarted, or its process on this machine ended, is stopped, or serves the RPC port itself. A healthy node behind a proxy cut for 15.5 s was node down, and a node frozen for 20 s with its socket open passed.
+- Node CPU and memory come only from a process that also listens on one of the node's p2p ports. A proxy on the RPC port was sampled as the node.
+- `samples.jtl` has no row for a transaction without a measured time. It wrote 0 ms for one PolkaMeter couldn't time, and the 1 ms reply time for one it saw only on the finalized chain.
+- A recovery that isn't measured has no drain rate (`drainPerS` is `null`). The drain counts only blocks announced in recovery, not blocks read late after a reconnect.
+- A baseline with no timed probe makes the verdict at most INCONCLUSIVE. It passed.
+- A node restart in the baseline is named in the run's error. Warnings say whether PolkaMeter paused or reconnected. A recovery whose new blocks were announced but not read says so, not "no new block".
+
+### Changed
+
+- Plugin SDK: `Recovery::drain_per_s` is `Option<f64>`, `None` when the recovery isn't measured. `BlockRecord::gap_ms` is the chain's own gap from block timestamps, not the time between arrivals. Summaries from earlier versions still read.
+- [Whose fault is it](docs/reading-results.md#whose-fault-is-it) states what PolkaMeter can't see from one place. Latency and reply times include the network between PolkaMeter and the node. Pauses of PolkaMeter shorter than about 1 s go unseen and can add up to that much to a time.
+
 ## 0.4.2 (2026-11-10)
 
 ### Fixed

@@ -151,7 +151,7 @@ fn a_dropped_sender_connection_resends_and_is_not_node_down() {
 	// Requests 1 and 2 were written and not answered; 3 still waits in the queue.
 	t.on_reply(Reply::Interrupted { connection: 0, ids: vec![1, 2], reason: "reset".into() });
 	assert_eq!(t.inflight(), 3, "sent again, not given up");
-	assert_eq!(t.closed_by_node, 0);
+	assert_eq!(t.unreachable, None);
 	assert_eq!(t.oldest_pending_ms(10_000), 0, "nothing waits on the node while it is down");
 	let from = t.observation_gaps[0].from;
 	t.on_reply(Reply::Reconnected { connection: 0, down_ms: 500 });
@@ -194,12 +194,12 @@ fn a_refusal_is_redacted_whole_before_it_is_cut_to_its_error_key() {
 fn live(t: &Tracker<FakeSender>, now: u64) -> polkameter::load::rules::LiveState {
 	polkameter::load::rules::LiveState {
 		now,
-		connections: 1,
 		last_block_at: t.last_head.0,
 		last_finalized_at: t.last_finalized.0,
 		unobserved_since_block: t.unobserved_between(t.last_head.0, now),
 		unobserved_since_finalized: t.unobserved_between(t.last_finalized.0, now),
 		node_down: t.node_down.clone(),
+		unreachable: t.unreachable.clone(),
 		..Default::default()
 	}
 }
@@ -226,7 +226,8 @@ fn observing(name: &str) -> Tracker<FakeSender> {
 }
 
 /// Time not observed is left out of the stall clocks and never restarts them, whichever node
-/// answers after a reconnect; a node that stays unreachable is down.
+/// answers after a reconnect. A node that stays unreachable, with no evidence that the node
+/// failed, ends the load without blaming the chain: the network between may be down.
 #[test]
 fn reconnects_never_hide_a_stall() {
 	// A drop-and-reconnect every 10 s, with best blocks (finality stall) or without (stall).
@@ -270,8 +271,8 @@ fn reconnects_never_hide_a_stall() {
 	assert_eq!(rule(&t, 70_000), Some(Rule::Stall), "32 s observed, across the reconnect");
 	block(&mut t, 9, 41_000, None, &[]);
 	t.end_step(60_000);
-	assert_eq!((t.steps[0].unobserved_ms, t.steps[0].max_gap_ms), (38_000, Some(19_000)));
+	assert_eq!(t.unobserved_between(0, 60_000), 38_000, "the outage is not observed");
 	t.on_block(BlockEvent::Unreachable("not reachable for 15 s".into()), 61_000)
 		.unwrap();
-	assert_eq!(rule(&t, 61_000), Some(Rule::NodeDown));
+	assert_eq!(rule(&t, 61_000), Some(Rule::GeneratorLimit));
 }

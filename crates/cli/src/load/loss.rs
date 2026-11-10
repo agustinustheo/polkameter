@@ -84,8 +84,8 @@ pub struct Settled<'a> {
 	pub included_in: &'a HashMap<TxHash, u32>,
 	/// The highest block with one of ours.
 	pub last_ours_block: u32,
-	/// The first block the tracker read.
-	pub first_fetched: Option<u32>,
+	/// The lowest block a flood tx can be in ([`crate::load::tracker::Tracker::walk_from`]).
+	pub walk_from: Option<u32>,
 }
 
 /// Runs the loss check, and gives the lost txs for lost.jsonl and the ledger rows. `node_pool`
@@ -137,7 +137,7 @@ where
 				finalized_at: *number,
 				waited_for_it,
 			});
-			if let Some(first) = run.first_fetched {
+			if let Some(first) = run.walk_from {
 				match finalized_txs(live, run.flood, first, *number).await {
 					Ok((found, failed)) => {
 						on_chain = Some((first, *number, found));
@@ -149,8 +149,8 @@ where
 		},
 		Err(e) => notes.push(format!("finalized block: {e}")),
 	}
-	if run.first_fetched.is_none() {
-		notes.push("no block was read, so the finalized chain was not walked".into());
+	if run.walk_from.is_none() {
+		notes.push("no flood transaction was sent, so the finalized chain was not walked".into());
 	}
 	// Lost needs both the pool and the finalized chain: without the walk, a tx the tracker
 	// missed in a reorg would count as lost.

@@ -109,6 +109,30 @@ fn blocks_unobserved_for_longer_than_a_stall_are_no_result() {
 	let (status, overall) = check(&s);
 	assert_eq!(status, Status::NoResult);
 	assert_ne!(overall, OverallStatus::Pass);
+	// PolkaMeter's own pauses count in that time too: the detail doesn't call it reconnecting.
+	// (It said "not observed for 42.0 s in all while reconnecting".)
+	let results = run(&all(), &RunData::new(Store::new(), s.clone()));
+	let r = results.iter().find(|r| r.check == "monitors recorded everything").unwrap();
+	assert!(
+		r.verdict.detail.starts_with("PolkaMeter did not observe blocks for 42.0 s"),
+		"{}",
+		r.verdict.detail
+	);
+}
+
+/// C. A baseline PolkaMeter timed none of the probes of has no result, and the verdict is at most
+/// INCONCLUSIVE: nothing shows that the chain was healthy before the load. (It passed.)
+#[test]
+fn a_baseline_with_no_time_is_at_most_inconclusive() {
+	use polkameter_plugin_sdk::observers::summary::Stop;
+	let mut s = summary();
+	s.breaking_point = None;
+	s.stop = Stop::new(Rule::RateCap, Some(2), "all 3 steps ran");
+	assert_eq!(overall_status(&s, &[]), OverallStatus::Pass);
+	(s.baseline.p50_ms, s.baseline.max_ms) = (None, None);
+	assert_eq!(overall_status(&s, &[]), OverallStatus::Inconclusive);
+	let why = crate::engine::measurement::verdict_reason(&s, &[]);
+	assert!(why.contains("the baseline has no result"), "{why}");
 }
 
 /// The verdict of the built-in check `name` on `samples`.

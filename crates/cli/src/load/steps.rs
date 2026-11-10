@@ -94,29 +94,8 @@ pub struct StepStats {
 	pub disconnected_ticks: u64,
 	/// Longest wait for a submit reply during the step.
 	pub max_oldest_pending_ms: Millis,
-	/// Blocks seen while the step ran.
+	/// Blocks announced while the step ran, with the chain's own gaps.
 	pub blocks: Vec<BlockRecord>,
-	/// The step ended.
-	pub closed: bool,
-	/// New best blocks that arrived while the step ran.
-	pub heads: u64,
-	/// The longest time without a new best block inside the step's own time: a gap that spans
-	/// a step edge counts in each step for the part inside it.
-	pub max_gap_ms: Option<Millis>,
-	/// Time the block follower was disconnected, or PolkaMeter paused, while the step ran.
-	pub unobserved_ms: Millis,
-}
-
-impl StepStats {
-	/// No new best block from `from` to `to`: keeps the part inside the step's time, less
-	/// `paused`, the part of it PolkaMeter was paused in.
-	pub fn gap_portion(&mut self, from: Millis, to: Millis, paused: Millis) {
-		let end = if self.closed { to.min(self.ended_at) } else { to };
-		let part = end.saturating_sub(from.max(self.started_at)).saturating_sub(paused);
-		if end > self.started_at && part > 0 {
-			self.max_gap_ms = Some(self.max_gap_ms.map_or(part, |m| m.max(part)));
-		}
-	}
 }
 
 /// The p-th percentile (nearest rank); `None` for no values: no evidence is no number.
@@ -130,7 +109,8 @@ pub fn percentile(values: &[Millis], p: f64) -> Option<Millis> {
 	Some(sorted[i.min(sorted.len() - 1)])
 }
 
-/// What a run of best blocks held.
+/// What a run of best blocks held. The gaps are the chain's own time per block, from its
+/// timestamps: no delay in reaching PolkaMeter, and no pause of PolkaMeter, can make them slow.
 pub fn block_stats(blocks: &[BlockRecord]) -> BlockStats {
 	let gaps: Vec<u64> = blocks.iter().filter_map(|b| b.gap_ms).collect();
 	BlockStats {
@@ -174,20 +154,8 @@ pub fn final_step(st: &StepStats) -> FinalStep {
 		errors: st.errors.clone(),
 		starved_ticks: st.starved_ticks,
 		backpressure_ticks: st.backpressure_ticks,
-		blocks: step_blocks(st),
+		blocks: block_stats(&st.blocks),
 		node: NodeMax::default(),
-	}
-}
-
-/// A step's blocks; the gaps by the step's own time: the mean is the time observed over the new
-/// best blocks that arrived in it (all of it when none did, so a step without a block is as slow
-/// as it is long), the max the longest stretch inside it without one.
-fn step_blocks(st: &StepStats) -> BlockStats {
-	let observed = st.ended_at.saturating_sub(st.started_at).saturating_sub(st.unobserved_ms);
-	BlockStats {
-		mean_block_gap_ms: (observed > 0).then(|| observed as f64 / st.heads.max(1) as f64),
-		max_block_gap_ms: st.max_gap_ms,
-		..block_stats(&st.blocks)
 	}
 }
 

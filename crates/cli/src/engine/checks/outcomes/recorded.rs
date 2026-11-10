@@ -21,7 +21,8 @@ fn monitors_recorded_everything(d: &RunData) -> Result<Verdict, CounterReset> {
 	let stall_ms = s.rules.get("stallMs").and_then(serde_json::Value::as_u64).unwrap_or(STALL_MS);
 	if s.unobserved_ms > stall_ms {
 		detail = format!(
-			"blocks were not observed for {} s in all while reconnecting, longer than the {} s stall limit, so chain health is not established; {detail}",
+			"{} did not observe blocks for {} s in all, longer than the {} s stall limit, so chain health is not established; {detail}",
+			crate::PRODUCT_NAME,
 			to_fixed(s.unobserved_ms as f64 / 1000.0, 1),
 			to_fixed(stall_ms as f64 / 1000.0, 0),
 		);

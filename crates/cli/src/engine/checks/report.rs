@@ -192,7 +192,8 @@ pub fn overall_status(s: &Summary, checks: &[CheckResult]) -> OverallStatus {
 	{
 		return OverallStatus::Fail;
 	}
-	if s.stop.rule != Rule::RateCap {
+	// Without a baseline time, nothing shows the chain was healthy before the load.
+	if s.stop.rule != Rule::RateCap || s.baseline.max_ms.is_none() {
 		return OverallStatus::Inconclusive;
 	}
 	let required_gap = checks.iter().any(|r| r.verdict.status == Status::NoResult && !r.optional);
@@ -220,7 +221,7 @@ fn recovery_line(s: &Summary) -> String {
 			fmt(r.seconds.map(|x| x as f64), 0),
 			r.detail,
 			r.backlog_at_stop,
-			to_fixed(r.drain_per_s, 1)
+			fmt(r.drain_per_s, 1)
 		)
 	} else {
 		format!(
@@ -228,7 +229,7 @@ fn recovery_line(s: &Summary) -> String {
 			r.detail,
 			r.backlog_at_stop,
 			r.backlog_at_end,
-			to_fixed(r.drain_per_s, 1)
+			fmt(r.drain_per_s, 1)
 		)
 	}
 }
@@ -243,7 +244,7 @@ fn baseline_line(s: &Summary) -> String {
 			to_fixed(max as f64 / 1000.0, 1)
 		),
 		_ => format!(
-			"{} probes before the load, **no result**: {} timed none of them (it was paused, or reconnecting, while they landed)",
+			"{} probes before the load, **no result**: {} timed none of them (see the warnings)",
 			b.probes,
 			crate::PRODUCT_NAME
 		),

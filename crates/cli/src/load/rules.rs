@@ -8,18 +8,19 @@
 //! Failures. The first one ends the ramp:
 //!   pool refuses    > 10% of a step's submits refused                         graceful
 //!   pool intake     p95 submit reply > 5 s, or submits stop going out          graceful
-//!   slow blocks     blocks arrive 2x slower than at the start (wall clock)    hard
+//!   slow blocks     blocks 2x slower than at the start, by the chain's clock  hard
 //!   stall           no new best block for 30 s of observed time               hard
 //!   finality stall  no new finalized block for 60 s, same                      hard
-//!   node down       unreachable for the reconnect budget, or restarted        hard
+//!   node down       restarted, or unreachable and its process here failed     hard
 //!
 //! A dropped RPC connection that opens again is an observation gap (a problem), not a failure:
 //! the stall rules leave its time out, time with no connection open is not "pool intake", and
 //! txs seen late as the follower catches up or sent again after a sender reconnect are left out
 //! of the latency, as are txs timed across a pause of PolkaMeter itself, of any length. A
 //! connection that keeps dropping, with the node not restarted, ends the load on "generator
-//! limit". The stall, finality stall and node down rules also hold in recovery and while the
-//! loss check runs.
+//! limit". So does a node or network that does not answer for the reconnect budget (15 s), with
+//! no evidence that it was the node. The stall, finality stall and node down rules also hold in
+//! recovery and while the loss check runs.
 //!
 //! The ramp also ends without a failure on: rate cap, budget used up, generator limit, smoke error.
 
@@ -112,10 +113,6 @@ pub struct LiveState {
 	pub step: u32,
 	/// Now.
 	pub now: Millis,
-	/// Connections the node closed.
-	pub closed_by_node: usize,
-	/// Connections opened.
-	pub connections: usize,
 	/// Last new best block.
 	pub last_block_at: Millis,
 	/// Last new finalized block.
@@ -131,8 +128,11 @@ pub struct LiveState {
 	pub unobserved_since_block: Millis,
 	/// The same, since the last new finalized block.
 	pub unobserved_since_finalized: Millis,
-	/// The node is down: unreachable for the reconnect backoff, or restarted.
+	/// The node is down: it restarted, or it was unreachable and its process here shows why.
 	pub node_down: Option<String>,
+	/// The node, or the network between, did not answer for the reconnect budget: a connection
+	/// could not be opened again, or one stayed open with no answer.
+	pub unreachable: Option<String>,
 	/// A connection to the node kept dropping, while the node did not restart.
 	pub unstable: Option<String>,
 }
@@ -141,18 +141,16 @@ pub struct LiveState {
 pub fn live_failure(s: &LiveState, rules: &Rules) -> Option<Stop> {
 	let ago = |t: Millis| (s.now.saturating_sub(t) as f64 / 1000.0).round();
 	let step = Some(s.step);
-	if s.closed_by_node > 0 {
-		return Some(Stop::new(
-			Rule::NodeDown,
-			step,
-			format!(
-				"{} of {} RPC connections dropped and could not be opened again",
-				s.closed_by_node, s.connections
-			),
-		));
-	}
 	if let Some(why) = &s.node_down {
 		return Some(Stop::new(Rule::NodeDown, step, why.clone()));
+	}
+	// From one place, a node that is down and a network that is down look the same.
+	if let Some(why) = &s.unreachable {
+		let detail = format!(
+			"node or network unreachable: {why}; {} watches from one place, so it can't tell the node from the network between, and no process on this machine shows that the node failed",
+			crate::PRODUCT_NAME
+		);
+		return Some(Stop::new(Rule::GeneratorLimit, step, detail));
 	}
 	// Observed time only: a reconnect neither hides a stall nor makes one.
 	let since_block =
@@ -325,9 +323,10 @@ pub fn breaking_point(finals: &[FinalStep], rules: &Rules) -> Option<BreakingPoi
 }
 
 /// What the steps' latency leaves out, for the run's warnings: txs seen late, after PolkaMeter
-/// was paused or while it caught up after a reconnect. It says nothing about whose fault the
+/// was paused or while it caught up after a reconnect, as `cause` says
+/// ([`crate::load::tracker::Tracker::untimed_cause`]). It says nothing about whose fault the
 /// reconnect was: a node that restarted is node down on its own.
-pub fn untimed_warning(finals: &[FinalStep]) -> Option<String> {
+pub fn untimed_warning(finals: &[FinalStep], cause: &str) -> Option<String> {
 	let steps: Vec<String> = finals
 		.iter()
 		.filter(|f| f.untimed > 0)
@@ -335,7 +334,7 @@ pub fn untimed_warning(finals: &[FinalStep]) -> Option<String> {
 		.collect();
 	(!steps.is_empty()).then(|| {
 		format!(
-			"latency leaves out included txs {} could not time ({}): it was paused, or reconnecting to the node, when they were sent or included",
+			"latency leaves out included txs {} could not time ({}): {cause} when they were sent or included",
 			crate::PRODUCT_NAME,
 			steps.join(", ")
 		)
@@ -435,7 +434,6 @@ mod tests {
 	fn live() -> LiveState {
 		LiveState {
 			now: 100_000,
-			connections: 4,
 			last_block_at: 60_000,
 			last_finalized_at: 90_000,
 			..Default::default()
@@ -443,34 +441,27 @@ mod tests {
 	}
 
 	#[test]
-	fn slow_blocks_and_stalls_count_only_observed_time() {
-		// 10 s with one new best block against 4 s at the start; 20 s with none against 6 s.
-		for (slow, start_gap_ms) in [
-			(
-				step(0, |s| {
-					s.heads = 1;
-					s.closed = true;
-				}),
-				4_000.0,
-			),
-			(
-				step(0, |s| {
-					s.ended_at = 20_000;
-					s.closed = true;
-				}),
-				6_000.0,
-			),
-		] {
-			let stop = check_step(&[slow], &source(), 0, start_gap_ms, &RULES, false).unwrap();
-			assert_eq!((stop.rule, stop.class), (Rule::SlowBlocks, Some(Class::Hard)));
-		}
-		// A step not observed at all has nothing to judge.
-		let unobserved = step(0, |s| {
-			s.ended_at = 20_000;
-			s.closed = true;
-			s.unobserved_ms = 20_000;
-		});
-		assert_eq!(final_step(&unobserved).blocks.mean_block_gap_ms, None);
+	fn slow_blocks_are_the_chains_own_gaps_and_stalls_count_only_observed_time() {
+		use polkameter_plugin_sdk::observers::BlockRecord;
+		let gaps = |gaps: &[u64]| {
+			step(0, |s| {
+				s.blocks = gaps
+					.iter()
+					.map(|g| BlockRecord { gap_ms: Some(*g), ..Default::default() })
+					.collect();
+			})
+		};
+		let judge = |st, start_gap_ms| {
+			check_step(&[st], &source(), 0, start_gap_ms, &RULES, false).map(|s| (s.rule, s.class))
+		};
+		// The chain made a block every 10 s, against 4 s at the start.
+		assert_eq!(
+			judge(gaps(&[10_000, 10_000]), 4_000.0),
+			Some((Rule::SlowBlocks, Some(Class::Hard)))
+		);
+		assert_eq!(judge(gaps(&[6_000]), 6_000.0), None);
+		// A step without a block read has no pace to judge.
+		assert_eq!(final_step(&gaps(&[])).blocks.mean_block_gap_ms, None);
 		// 40 s since the last block; time spent reconnecting does not count.
 		let down = Some("blocks: the node did not answer for 15 s".to_owned());
 		for (state, expected) in [
@@ -496,7 +487,6 @@ mod tests {
 			let st = step(0, |s| {
 				(s.target_rate, s.ended_at, s.sent, s.included) =
 					(target_rate, seconds * 1000, sent, sent);
-				s.heads = seconds / 6;
 			});
 			check_step(&[st], &source(), 0, 6_000.0, &RULES, false).unwrap().detail
 		};
@@ -510,7 +500,7 @@ mod tests {
 		assert_eq!(stop.rule, Rule::PoolIntake);
 		assert!(stop.detail.contains("the node, or the network between"), "{}", stop.detail);
 		let untimed = final_step(&step(0, |s| s.untimed = 3));
-		let warning = untimed_warning(&[untimed]).unwrap();
+		let warning = untimed_warning(&[untimed], "it was paused").unwrap();
 		assert!(!warning.contains("not the chain's"), "{warning}");
 	}
 

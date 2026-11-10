@@ -111,6 +111,49 @@ pub struct Io {
 	/// A clock that counts sleep ([`crate::load::clock::boot_ms`]), only to see that the
 	/// machine was suspended; a test changes it.
 	pub boot: fn() -> Option<Millis>,
+	/// What a monitor on this machine saw of the node's own process.
+	pub node: NodeProcess,
+}
+
+/// What a monitor on this machine saw of the node's own process: the only evidence PolkaMeter
+/// has that the node, not the network between, failed when the node can't be reached. Empty
+/// when no process here is known to be the node.
+#[derive(Debug, Clone, Default)]
+pub struct NodeProcess(std::sync::Arc<std::sync::Mutex<NodeFacts>>);
+
+#[derive(Debug, Default)]
+struct NodeFacts {
+	serves_rpc: Option<String>,
+	ended: Option<String>,
+	stopped: Option<String>,
+}
+
+impl NodeProcess {
+	fn facts(&self) -> std::sync::MutexGuard<'_, NodeFacts> {
+		self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+	}
+
+	/// The node's process serves the RPC endpoint itself, on this machine (`why`): nothing
+	/// between PolkaMeter and the node can hold its answers.
+	pub fn serves_rpc(&self, why: String) {
+		self.facts().serves_rpc = Some(why);
+	}
+
+	/// The node's process ended (`why`); the first time counts.
+	pub fn ended(&self, why: String) {
+		self.facts().ended.get_or_insert(why);
+	}
+
+	/// The node's process is stopped now (`why`), or runs (`None`).
+	pub fn stopped(&self, why: Option<String>) {
+		self.facts().stopped = why;
+	}
+
+	/// Why the node itself is to blame for not answering, if its process shows it.
+	pub fn why(&self) -> Option<String> {
+		let f = self.facts();
+		f.ended.clone().or_else(|| f.stopped.clone()).or_else(|| f.serves_rpc.clone())
+	}
 }
 
 /// No result: the network was not healthy before the load, or a raw file could not be written.
@@ -222,10 +265,11 @@ impl Ticks {
 	}
 }
 
-/// Why the node is down, if it is: the block follower lost it for the reconnect budget, or saw
-/// it restart. Both the load and recovery end on it.
-pub(super) fn node_down<S: Submit>(t: &Tracker<S>) -> Option<String> {
-	t.node_down.clone()
+/// Why the node is down, if it is: it restarted, or it could not be reached for the reconnect
+/// budget and its process here shows that it failed. Both the load and recovery end on it.
+pub fn node_down<S: Submit>(t: &Tracker<S>, io: &Io) -> Option<String> {
+	let unreachable = || Some(format!("{}; {}", t.unreachable.clone()?, io.node.why()?));
+	t.node_down.clone().or_else(unreachable)
 }
 
 /// What the live rules read, now.
@@ -234,15 +278,14 @@ pub(super) fn live<S: Submit>(t: &Tracker<S>, io: &Io, opts: &RunOptions, step: 
 	LiveState {
 		step,
 		now,
-		closed_by_node: t.closed_by_node,
-		connections: opts.connections,
 		last_block_at: t.last_head.0,
 		last_finalized_at: t.last_finalized.0,
 		best: t.last_head.1,
 		finalized: t.last_finalized.1,
 		unobserved_since_block: t.unobserved_between(t.last_head.0, now),
 		unobserved_since_finalized: t.unobserved_between(t.last_finalized.0, now),
-		node_down: node_down(t),
+		node_down: node_down(t, io),
+		unreachable: t.unreachable.clone(),
 		unstable: t.unstable.clone(),
 		smoke_problems: if opts.mode == Mode::Smoke { io.problems.all() } else { Vec::new() },
 	}
@@ -286,7 +329,12 @@ pub async fn baseline<S: Submit>(
 			(opts.baseline_probes as u64 + 10) * (opts.block_interval_s * 1000.0) as u64,
 		);
 	let mut ticks = Ticks::new(io, 200);
-	while Instant::now() < deadline {
+	let down = |t: &Tracker<S>, io: &Io| {
+		node_down(t, io).map(|why| format!("node down: {why}")).or_else(|| {
+			t.unreachable.as_ref().map(|why| format!("node or network unreachable: {why}"))
+		})
+	};
+	while Instant::now() < deadline && down(t, io).is_none() {
 		let tick = ticks.next(t, io, &opts.rules).await?;
 		if let Some(why) = ticks.long_pause() {
 			crate::redact::diag!("baseline: {why}");
@@ -301,6 +349,14 @@ pub async fn baseline<S: Submit>(
 		}
 	}
 	let bad = t.probes.iter().filter(|p| p.outcome != Outcome::Included).count();
+	// What ended the baseline is the cause, and is named, not only the probes it left.
+	if let Some(why) = down(t, io) {
+		let landed = t.probes.len() - bad;
+		return Err(RunError::Baseline(format!(
+			"{why}; {landed} of {} probes landed",
+			opts.baseline_probes
+		)));
+	}
 	if t.probes.len() < opts.baseline_probes || bad > 0 {
 		return Err(RunError::Baseline(format!(
 			"{} of {} probes landed; the network is not healthy before the load",
@@ -436,7 +492,16 @@ pub async fn recover<S: Submit>(
 		(None, Some(why), _) => why.clone(),
 		(None, None, Some(_)) => landed,
 		(None, None, None) if t.recovery_blocks.is_empty() => {
-			format!("no new block in {} s", ended_at.saturating_sub(stopped_at).div_ceil(1000))
+			let s = ended_at.saturating_sub(stopped_at).div_ceil(1000);
+			// New heads came, but no block was read: the chain went on, the reads did not.
+			if t.last_head.0 > stopped_at {
+				format!(
+					"no block read in {s} s, though the node announced new blocks up to block {}: reading them was delayed",
+					t.last_head.1
+				)
+			} else {
+				format!("no new block in {s} s")
+			}
 		},
 		(None, None, None) => format!("after {} s no {landed}", opts.recovery_s),
 	};
@@ -450,8 +515,9 @@ pub async fn recover<S: Submit>(
 		backlog_at_stop,
 		backlog_at_end: t.outstanding().len() as u64,
 		drained_seconds: seconds(drained_at.filter(|_| measured)),
-		drain_per_s: t.drained as f64
-			/ (now_ms().saturating_sub(stopped_at) as f64 / 1000.0).max(0.001),
+		drain_per_s: measured.then(|| {
+			t.drained as f64 / (ended_at.saturating_sub(stopped_at) as f64 / 1000.0).max(0.001)
+		}),
 		probes: t.probes.iter().filter(|p| p.phase == ProbePhase::Recovery).cloned().collect(),
 		blocks: block_stats(&t.recovery_blocks),
 		node: NodeMax::default(),

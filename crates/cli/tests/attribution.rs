@@ -15,7 +15,7 @@ use polkameter::load::{
 	Plan, QueueSource, Tx, TxHash,
 	follower::BlockEvent,
 	reconnect::{Backoff, Reconnect, reconnect},
-	rules::{RULES, breaking_point, check_step},
+	rules::{RULES, breaking_point, check_step, untimed_warning},
 	runner::{Io, Mode, RunOptions, baseline, load, recover, watch},
 	sender::{Reply, Sender},
 	steps::final_step,
@@ -60,6 +60,7 @@ fn runner<S: Submit>(
 		problems: Problems::default(),
 		tool_failed: CancellationToken::new(),
 		boot: || Some(now_ms()),
+		node: Default::default(),
 	};
 	let opts = RunOptions {
 		rules: RULES,
@@ -163,6 +164,11 @@ enum Fault {
 	/// The follower loses the node at second `.0` and is back 2 s later, with `.1` about who
 	/// answers: the same node restarted, or another one.
 	Reconnect(u64, Answer),
+	/// The follower loses the node at second `.0`, and nothing answers it for the 15 s budget:
+	/// the node is down, or the network between is.
+	Unreachable(u64),
+	/// Sender connection 0 drops at second `.0` and can't be opened again within the budget.
+	SenderGone(u64),
 }
 
 /// Who answers the follower after a [`Fault::Reconnect`].
@@ -184,6 +190,7 @@ fn chain(
 ) {
 	let (mut delay_ms, mut down, mut sender_down) = (0, None, None);
 	let (mut frozen, mut halted, mut reconnect) = (u64::MAX, u64::MAX, None);
+	let (mut unreachable, mut sender_gone) = (u64::MAX, u64::MAX);
 	for fault in faults {
 		match *fault {
 			Fault::Paused(at, ms) => {
@@ -199,6 +206,11 @@ fn chain(
 			Fault::FinalityFrozen(from) => frozen = from,
 			Fault::Halted(from) => halted = from,
 			Fault::Reconnect(at, answer) => reconnect = Some((at, answer)),
+			Fault::Unreachable(at) => {
+				down = Some((at, u64::MAX));
+				unreachable = at + 15;
+			},
+			Fault::SenderGone(at) => sender_gone = at,
 		}
 	}
 	tokio::spawn(async move {
@@ -223,6 +235,10 @@ fn chain(
 					l.down = false;
 					let _ = replies
 						.send(Reply::Reconnected { connection: 0, down_ms: (to - from) * 1_000 });
+				}
+				if second == sender_gone {
+					l.down = true;
+					let _ = replies.send(Reply::Closed { connection: 0, by_node: true });
 				}
 				// The node reads a request 2 s after it was sent, or at once when it is sent again.
 				let (resent, down) = (second == to, l.down);
@@ -251,6 +267,10 @@ fn chain(
 			}
 			if down.is_some_and(|(from, _)| from == second) {
 				events.push(BlockEvent::Disconnected { at: now, reason: "stream ended".into() });
+			}
+			if second == unreachable {
+				let why = "the block follower lost the node (stream ended), and the node answered nothing for 15 s";
+				events.push(BlockEvent::Unreachable(why.into()));
 			}
 			if down.is_some_and(|(_, to)| to == second) {
 				events.push(BlockEvent::Reconnected { at: now });
@@ -307,7 +327,7 @@ fn on_chain(
 	let pool = Pool::default();
 	let link = faults
 		.iter()
-		.any(|f| matches!(f, Fault::SenderDown(..) | Fault::Linked))
+		.any(|f| matches!(f, Fault::SenderDown(..) | Fault::Linked | Fault::SenderGone(_)))
 		.then(|| Arc::new(Mutex::new(Link::default())));
 	let node = Node { replies: replies_tx.clone(), pool: pool.clone(), link: link.clone() };
 	chain(pool, link.map(|l| (l, replies_tx)), faults, blocks_tx);
@@ -482,9 +502,10 @@ async fn a_pause_is_never_the_nodes_reply_time() {
 	assert!(f.max_oldest_pending_ms <= 3_000, "{}", f.max_oldest_pending_ms);
 }
 
-/// A3. PolkaMeter paused for 18 s in a step, and the node sent one new head for the blocks it
-/// made meanwhile. The pause is not a block gap: the step's blocks are not slow. (They were: a
-/// mean gap of 15 s against 6 s.)
+/// A3. PolkaMeter paused for 18 s in a step; the chain made a block every 6 s meanwhile, and the
+/// node sent one new head for them. A block's gap is the chain's own time per block, from its
+/// timestamps: the pause is not in it, so the step's blocks are not slow. (They were: a mean gap
+/// of 15 s against 6 s.)
 #[test]
 fn a_pause_never_counts_in_block_gaps() {
 	let (_replies_tx, replies) = mpsc::unbounded_channel();
@@ -493,29 +514,59 @@ fn a_pause_never_counts_in_block_gaps() {
 	let (mut t, ..) = runner("attribution-gap-pause", node, replies, blocks, (1.0, 30), 0);
 	let start = now_ms();
 	t.start_step(0, 1.0, start).unwrap();
-	let fetched = |number, seen_at, gap_ms| {
-		let record = BlockRecord { number, seen_at, gap_ms, ..Default::default() };
-		BlockEvent::Fetched { record, txs: vec![] }
-	};
 	t.on_block(BlockEvent::Head { number: 1, seen_at: start + 6_000 }, start + 6_000)
 		.unwrap();
-	t.on_block(fetched(1, start + 6_000, None), start + 6_000).unwrap();
+	t.on_block(chain_block(1, start + 6_000), start + 6_000).unwrap();
 	t.paused(start + 7_000, start + 25_000);
 	t.on_block(BlockEvent::Head { number: 4, seen_at: start + 25_100 }, start + 25_100)
 		.unwrap();
-	t.on_block(fetched(4, start + 25_100, Some(19_100)), start + 25_100).unwrap();
+	for number in 2..=4 {
+		t.on_block(chain_block(number, start + 25_100), start + 25_100).unwrap();
+	}
 	t.end_step(start + 30_000);
 	let f = final_step(&t.steps[0]);
 	assert!(f.blocks.mean_block_gap_ms.is_some_and(|g| g <= 6_000.0), "{:?}", f.blocks);
 	assert!(f.blocks.max_block_gap_ms.is_some_and(|g| g <= 6_000), "{:?}", f.blocks);
-	assert_eq!(t.steps[0].blocks[1].gap_ms, None, "a gap with the pause in it is not known");
 	let stop = check_step(&t.steps, t.source(), 0, 6_000.0, &RULES, true).unwrap();
 	assert_ne!(stop.rule, Rule::SlowBlocks, "{}", stop.detail);
 }
 
+/// Block `number` of a chain that makes one every 6 s, as the follower reads it at `seen_at`:
+/// its gap is the chain's own, 6 s.
+fn chain_block(number: u32, seen_at: u64) -> BlockEvent {
+	let record = BlockRecord { number, seen_at, gap_ms: Some(6_000), ..Default::default() };
+	BlockEvent::Fetched { record, txs: vec![] }
+}
+
+/// A11. A proxy holds everything from the node for 2 s, and the reads queue behind it: in a 13 s
+/// rate step only one new block reaches PolkaMeter, and it is read after the step ends. The
+/// chain made a block every 6 s by its own timestamps, so its blocks are not slow. (They were
+/// "slow blocks": one new block in 13 s, against 6 s.)
+#[test]
+fn a_delay_on_the_way_never_makes_slow_blocks() {
+	let (_replies_tx, replies) = mpsc::unbounded_channel();
+	let (_blocks_tx, blocks) = mpsc::unbounded_channel();
+	let node = Node { replies: mpsc::unbounded_channel().0, pool: Pool::default(), link: None };
+	let (mut t, ..) = runner("attribution-delayed-blocks", node, replies, blocks, (1.0, 13), 0);
+	let start = now_ms();
+	t.start_step(0, 1.0, start).unwrap();
+	t.on_block(BlockEvent::Head { number: 7, seen_at: start + 11_000 }, start + 11_000)
+		.unwrap();
+	t.end_step(start + 13_000);
+	for judged_at in ["the step's end", "after its block was read"] {
+		let stop = check_step(&t.steps, t.source(), 0, 6_000.0, &RULES, true);
+		let rule = stop.map(|stop| stop.rule);
+		assert_ne!(rule, Some(Rule::SlowBlocks), "judged at {judged_at}");
+		t.on_block(chain_block(7, start + 11_000), start + 14_000).unwrap();
+	}
+}
+
 /// A4. A tx PolkaMeter could not time (here: read as the follower caught up after a reconnect)
 /// has no time in any export: no inclusion time in the ledger, no sample in the inclusion
-/// histogram, and a samples.jtl row apart from the step's timed ones. (They kept the time.)
+/// histogram, and no samples.jtl row. Nor has a tx whose inclusion PolkaMeter never saw, or one
+/// with no reply time: samples.jtl gives no stand-in for a time it did not measure. A refusal
+/// is a sample: the time to the node's refusal. (Untimed txs were 0 ms samples, and txs found
+/// only on the finalized chain took their 1 to 2 ms reply time as their elapsed time.)
 #[tokio::test(start_paused = true)]
 async fn untimed_transactions_have_no_time_in_any_export() {
 	let (mut t, mut io, opts) =
@@ -533,16 +584,33 @@ async fn untimed_transactions_have_no_time_in_any_export() {
 	let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("attribution-jtl");
 	std::fs::create_dir_all(&dir).unwrap();
 	std::fs::write(dir.join("events.jsonl"), "").unwrap();
+	let row = |hash: &str, reply: &str, inclusion: &str, untimed: bool, status: &str| {
+		format!(
+			r#"{{"hash":"{hash}","step":0,"sentAt":1,"replyMs":{reply},"inclusionMs":{inclusion},"untimed":{untimed},"status":"{status}","failedInFinalizedBlock":false}}"#
+		)
+	};
 	let rows = [
-		r#"{"hash":"aa","step":0,"sentAt":1,"replyMs":5,"inclusionMs":900,"untimed":false,"status":"finalized","failedInFinalizedBlock":false}"#,
-		r#"{"hash":"bb","step":0,"sentAt":2,"replyMs":5,"inclusionMs":null,"untimed":true,"status":"finalized","failedInFinalizedBlock":false}"#,
+		row("timed", "5", "900", false, "finalized"),
+		row("untimed", "5", "null", true, "finalized"),
+		row("only-on-the-finalized-chain", "2", "null", false, "finalized"),
+		row("no-reply-time", "null", "800", false, "finalized"),
+		row("lost", "1", "null", false, "lost"),
+		row("refused", "7", "null", false, "refused"),
 	];
 	std::fs::write(dir.join("transactions.jsonl"), rows.join("\n") + "\n").unwrap();
 	polkameter::engine::artifacts::write_samples(&dir).unwrap();
 	let jtl = std::fs::read_to_string(dir.join("samples.jtl")).unwrap();
 	let cells: Vec<Vec<&str>> = jtl.lines().skip(1).map(|l| l.split(',').collect()).collect();
-	assert_eq!((cells[0][1], cells[0][2]), ("900", "load:step:0"), "{jtl}");
-	assert_eq!((cells[1][1], cells[1][2]), ("0", "load:step:0:untimed"), "{jtl}");
+	// timeStamp, elapsed, label, responseCode, responseMessage, ..., success, ..., Latency
+	let samples: Vec<_> = cells.iter().map(|c| (c[4], c[1], c[2], c[6], c[9])).collect();
+	assert_eq!(
+		samples,
+		[
+			("timed", "900", "load:step:0", "true", "5"),
+			("refused", "7", "load:step:0", "false", "7")
+		],
+		"{jtl}"
+	);
 }
 
 /// A5. Baseline probes all landed while PolkaMeter was paused: the baseline has no time, never
@@ -559,9 +627,9 @@ async fn a_baseline_polkameter_did_not_observe_has_no_result() {
 }
 
 /// A6. The block follower lost the node for the whole recovery and was back within the budget:
-/// PolkaMeter saw no block, so the recovery is not measured, never a recovery that failed. A
-/// chain that makes no block while PolkaMeter watches still fails it (control). (It failed:
-/// "no new block in 20 s".)
+/// PolkaMeter saw no block, so the recovery is not measured, never a recovery that failed, and
+/// it has no drain rate. A chain that makes no block while PolkaMeter watches still fails it
+/// (control). (It failed: "no new block in 20 s". Then, not measured, it kept a drain rate.)
 #[tokio::test(start_paused = true)]
 async fn a_recovery_polkameter_did_not_observe_is_not_measured() {
 	for (name, fault, measured) in [
@@ -573,6 +641,9 @@ async fn a_recovery_polkameter_did_not_observe_is_not_measured() {
 		load(&mut t, &mut io, &opts).await.unwrap();
 		let r = recover(&mut t, &mut io, &opts, Some(12_000)).await.unwrap();
 		assert_eq!((r.measured, r.recovered), (measured, false), "{name}: {r:?}");
+		// No evidence, no number: an unmeasured recovery has no drain rate, not 0 tx/s.
+		let drain = &serde_json::to_value(&r).unwrap()["drainPerS"];
+		assert_eq!(drain.is_null(), !measured, "{name}: {drain}");
 	}
 }
 
@@ -686,6 +757,20 @@ async fn a_restarted_proxy_is_not_a_restarted_node() {
 	assert_eq!(stop.rule, Rule::RateCap, "{}", stop.detail);
 }
 
+/// A12. The block follower lost the node at second 10, and nothing answered it for the 15 s
+/// budget; or a sender connection could not be opened again within it. From PolkaMeter's one
+/// place, a node that is down and a network that is down look the same: the load ends on
+/// "generator limit: node or network unreachable", not on node down. (A healthy node behind a
+/// proxy that dropped for 15.5 s was "node down".)
+#[tokio::test(start_paused = true)]
+async fn a_node_or_network_unreachable_is_not_node_down() {
+	for fault in [Fault::Unreachable(10), Fault::SenderGone(10)] {
+		let (stop, _) = chain_run("attribution-unreachable", fault).await;
+		assert_eq!((stop.rule, stop.class), (Rule::GeneratorLimit, None), "{}", stop.detail);
+		assert!(stop.detail.starts_with("node or network unreachable"), "{}", stop.detail);
+	}
+}
+
 // B. Never excuse the chain for a fault in it.
 
 /// B1. The node restarted (the same peer ID, a new sync starting block) while every
@@ -704,6 +789,28 @@ async fn a_restarted_node_is_node_down_in_any_phase() {
 
 	let faults = [Fault::Reconnect(10, Answer::Restarted)];
 	let (mut t, mut io, opts) = on_chain("attribution-restarted-recovery", &faults, (2.0, 6), 0);
+	load(&mut t, &mut io, &opts).await.unwrap();
+	let r = recover(&mut t, &mut io, &opts, Some(12_000)).await.unwrap();
+	assert!(r.measured && !r.recovered && r.detail.starts_with("node down"), "{r:?}");
+}
+
+/// B4. The node answered nothing for the budget, and its process on this machine shows that
+/// it failed: it is stopped (as by SIGSTOP), it ended, or it serves the RPC port itself, so
+/// nothing between could hold its answers. That is node down, in the load and in recovery.
+/// (A node frozen for 16 to 20 s with its socket open passed.)
+#[tokio::test(start_paused = true)]
+async fn an_unreachable_node_whose_process_failed_is_node_down() {
+	let faults = [Fault::Unreachable(10)];
+	let (mut t, mut io, opts) = on_chain("attribution-unreachable-stopped", &faults, (20.0, 30), 0);
+	io.node.stopped(Some("the node's process 42 is stopped".into()));
+	let stop = load(&mut t, &mut io, &opts).await.unwrap();
+	assert_eq!((stop.rule, stop.class), (Rule::NodeDown, Some(Class::Hard)), "{}", stop.detail);
+	assert!(stop.detail.contains("answered nothing"), "{}", stop.detail);
+	assert!(stop.detail.contains("process 42 is stopped"), "{}", stop.detail);
+
+	let faults = [Fault::Unreachable(10)];
+	let (mut t, mut io, opts) = on_chain("attribution-unreachable-recovery", &faults, (2.0, 6), 0);
+	io.node.serves_rpc("the node's process 42 serves the RPC port itself".into());
 	load(&mut t, &mut io, &opts).await.unwrap();
 	let r = recover(&mut t, &mut io, &opts, Some(12_000)).await.unwrap();
 	assert!(r.measured && !r.recovered && r.detail.starts_with("node down"), "{r:?}");
@@ -740,4 +847,118 @@ async fn a_finality_stall_while_the_loss_check_runs_fails_the_run() {
 		"{}",
 		failed.detail
 	);
+}
+
+/// C1. Recovery drains what blocks announced after the load stopped include. A block announced
+/// in the load and read in recovery is not its drain, nor are the blocks read as the follower
+/// caught up after a reconnect: they may have been made before the load stopped. (They were: a
+/// drain of 0.38 tx/s from txs all included before recovery.)
+#[test]
+fn inclusions_seen_before_recovery_are_not_its_drain() {
+	let (_replies_tx, replies) = mpsc::unbounded_channel();
+	let (_blocks_tx, blocks) = mpsc::unbounded_channel();
+	let link = Some(Arc::new(Mutex::new(Link::default())));
+	let node = Node { replies: mpsc::unbounded_channel().0, pool: Pool::default(), link };
+	let (mut t, ..) = runner("attribution-catch-up-drain", node, replies, blocks, (1.0, 30), 0);
+	let start = now_ms();
+	t.start_step(0, 1.0, start).unwrap();
+	for n in 0..4 {
+		assert!(t.send_next(start + n));
+	}
+	let fetched = |number, seen_at, n: u32| {
+		let record = BlockRecord { number, seen_at, ..Default::default() };
+		BlockEvent::Fetched { record, txs: vec![(Tx::new(n.to_le_bytes().to_vec()).hash, false)] }
+	};
+	let at = |ms| start + ms;
+	t.on_block(BlockEvent::Head { number: 1, seen_at: at(3_000) }, at(3_000))
+		.unwrap();
+	t.on_block(BlockEvent::Disconnected { at: at(4_000), reason: "reset".into() }, at(4_000))
+		.unwrap();
+	t.on_block(BlockEvent::Reconnected { at: at(9_000) }, at(9_000)).unwrap();
+	t.end_step(at(10_000));
+	t.set_phase(Phase::Recovery, at(10_000)).unwrap();
+	// Block 1, announced in the load, is read now.
+	t.on_block(fetched(1, at(3_000), 0), at(10_500)).unwrap();
+	// The first new block after the reconnect, and the one below it, filled in.
+	t.on_block(BlockEvent::Head { number: 3, seen_at: at(11_000) }, at(11_000))
+		.unwrap();
+	t.on_block(fetched(2, at(11_000), 1), at(11_000)).unwrap();
+	t.on_block(fetched(3, at(11_000), 2), at(11_000)).unwrap();
+	assert_eq!(t.drained, 0, "nothing shows these were included after the load stopped");
+	t.on_block(BlockEvent::Head { number: 4, seen_at: at(17_000) }, at(17_000))
+		.unwrap();
+	t.on_block(fetched(4, at(17_000), 3), at(17_000)).unwrap();
+	assert_eq!(t.drained, 1, "a block announced in recovery drains");
+}
+
+// D. Each sent flood transaction gets one loss status, from its own evidence.
+
+/// D1. The run starts with block 2322 finalized and 2324 the best; the first block read is 2324.
+/// A fork from 2322 wins, and its block 2323, made after a flood tx was sent, has the tx and is
+/// finalized. The loss check walks the finalized chain from the block above the one finalized
+/// before the first flood tx, so it finds the tx. (It walked from the first block read, 2324, and
+/// called six finalized txs lost.)
+#[test]
+fn the_loss_check_walks_from_below_every_flood_transaction() {
+	let (_replies_tx, replies) = mpsc::unbounded_channel();
+	let (_blocks_tx, blocks) = mpsc::unbounded_channel();
+	let link = Some(Arc::new(Mutex::new(Link::default())));
+	let node = Node { replies: mpsc::unbounded_channel().0, pool: Pool::default(), link };
+	let (mut t, ..) = runner("attribution-walk-from", node, replies, blocks, (1.0, 30), 0);
+	let start = now_ms();
+	t.on_block(BlockEvent::Finalized { number: 2322, seen_at: start }, start)
+		.unwrap();
+	let record = BlockRecord { number: 2324, seen_at: start, ..Default::default() };
+	t.on_block(BlockEvent::Fetched { record, txs: vec![] }, start).unwrap();
+	t.start_step(0, 1.0, start).unwrap();
+	assert!(t.send_next(start + 1));
+	assert!(t.walk_from.is_some_and(|from| from <= 2323), "walks from {:?}", t.walk_from);
+}
+
+// What PolkaMeter says names what it saw.
+
+/// E1. The node restarted during the baseline: the run's error names node down and why, not only
+/// the probes it left. (It said "baseline: 0 of 1 probes landed".)
+#[tokio::test(start_paused = true)]
+async fn a_node_down_in_the_baseline_is_named() {
+	let faults = [Fault::Reconnect(3, Answer::Restarted)];
+	let (mut t, mut io, opts) = on_chain("attribution-baseline-restart", &faults, (2.0, 6), 3);
+	let error = baseline(&mut t, &mut io, &opts).await.unwrap_err().to_string();
+	assert!(error.contains("node down: the node restarted"), "{error}");
+}
+
+/// E2. Only PolkaMeter's own pause left txs untimed: the warning says it was paused, not that it
+/// was reconnecting. (It said "it was paused, or reconnecting to the node".)
+#[tokio::test(start_paused = true)]
+async fn a_pause_is_not_called_a_reconnect() {
+	let faults = [Fault::Slow(3_000), Fault::Paused(11_500, 4_900)];
+	let (mut t, mut io, opts) = on_chain("attribution-pause-wording", &faults, (20.0, 30), 0);
+	load(&mut t, &mut io, &opts).await.unwrap();
+	recover(&mut t, &mut io, &opts, Some(12_000)).await.unwrap();
+	let finals: Vec<_> = t.steps.iter().map(final_step).collect();
+	let warning = untimed_warning(&finals, t.untimed_cause()).expect("untimed txs");
+	assert!(warning.contains("it was paused") && !warning.contains("reconnect"), "{warning}");
+}
+
+/// E3. In recovery the node announced new blocks, but none was read in time: the detail says
+/// so, not that no new block came. (It said "no new block in 13 s".)
+#[tokio::test(start_paused = true)]
+async fn heads_without_a_block_read_are_not_no_new_block() {
+	let (replies_tx, replies) = mpsc::unbounded_channel();
+	let (blocks_tx, blocks) = mpsc::unbounded_channel();
+	let node = Node { replies: replies_tx, pool: Pool::default(), link: None };
+	let (mut t, mut io, mut opts) =
+		runner("attribution-heads-only", node, replies, blocks, (1.0, 6), 0);
+	opts.recovery_s = 13;
+	tokio::spawn(async move {
+		for number in 1.. {
+			tokio::time::sleep(Duration::from_secs(6)).await;
+			if blocks_tx.send(BlockEvent::Head { number, seen_at: now_ms() }).is_err() {
+				return;
+			}
+		}
+	});
+	let r = recover(&mut t, &mut io, &opts, Some(12_000)).await.unwrap();
+	assert!(r.detail.starts_with("no block read in 13 s"), "{}", r.detail);
+	assert!(r.detail.contains("announced new blocks up to block 2"), "{}", r.detail);
 }

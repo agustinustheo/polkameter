@@ -96,16 +96,17 @@ pub struct Tracker<S> {
 	pub flood: HashMap<TxHash, FloodTx>,
 	/// The block each included flood tx was seen in.
 	pub included_in: HashMap<TxHash, u32>,
-	/// The first block read.
-	pub first_fetched: Option<u32>,
+	/// The lowest block a flood tx can be in, where the loss check walks the finalized chain
+	/// from: the one above the highest block finalized when the first flood tx was sent. Blocks
+	/// up to that one were final before any flood tx existed. A block below the first one read
+	/// can still have one: a fork built below it can win. `None` until a flood tx is sent.
+	pub walk_from: Option<u32>,
 	/// Blocks seen while recovering.
 	pub recovery_blocks: Vec<BlockRecord>,
 	/// Flood txs included while recovering.
 	pub drained: u64,
 	/// The highest block with one of our txs.
 	pub last_ours_block: u32,
-	/// Connections the node closed.
-	pub closed_by_node: usize,
 	/// Last new best head: when, and the highest number.
 	pub last_head: (Millis, u32),
 	/// The highest block read so far (the drain waits for it to reach the last head).
@@ -117,17 +118,18 @@ pub struct Tracker<S> {
 	/// Times the block follower lost the node and followed it again: not observed, so not a
 	/// chain stall. Also sender connections that dropped and were opened again.
 	pub observation_gaps: Vec<ObservationGap>,
-	/// The node is down: the follower could not reach it within the reconnect backoff, or saw it
-	/// restart.
+	/// The node is down: the follower saw it restart.
 	pub node_down: Option<String>,
+	/// The node, or the network between, did not answer for the reconnect budget: the follower
+	/// or a sender connection could not reach it. Node down only with evidence that it was the
+	/// node ([`crate::load::runner::NodeProcess`]).
+	pub unreachable: Option<String>,
 	/// A connection to the node kept dropping, while the node did not restart: not the chain's
 	/// failure, but no measure can be trusted, so the load ends on "generator limit".
 	pub unstable: Option<String>,
 	/// What the run should show but is not a problem: a reconnect that reached another node
 	/// (a load balancer, or the node restarted).
 	pub warnings: Vec<String>,
-	/// When the last new best block arrived while the follower was connected, for block gaps.
-	prev_head_at: Option<Millis>,
 	/// The follower reconnected after losing the node at this time; the next new best block
 	/// ends the catch-up.
 	catching_up: Option<Millis>,
@@ -211,20 +213,19 @@ impl<S: Submit> Tracker<S> {
 			probes: Vec::new(),
 			flood: HashMap::new(),
 			included_in: HashMap::new(),
-			first_fetched: None,
+			walk_from: None,
 			recovery_blocks: Vec::new(),
 			drained: 0,
 			last_ours_block: 0,
-			closed_by_node: 0,
 			last_head: (now, 0),
 			last_fetched: 0,
 			last_finalized: (now, 0),
 			unreadable: Vec::new(),
 			observation_gaps: Vec::new(),
 			node_down: None,
+			unreachable: None,
 			unstable: None,
 			warnings: Vec::new(),
-			prev_head_at: None,
 			catching_up: None,
 			read_late: Vec::new(),
 			untimed_probes: Default::default(),
@@ -287,24 +288,17 @@ impl<S: Submit> Tracker<S> {
 		self.load.gauge(&STEP, [], f64::from(k), now)
 	}
 
-	/// Ends the running step. The time since the last new best block counts as a block gap in
-	/// the step now, so a stall at its end is seen in its own numbers.
+	/// Ends the running step.
 	pub fn end_step(&mut self, now: Millis) {
-		let Some(started) = self.steps.last().map(|st| st.started_at) else { return };
-		let unobserved = self.unobserved_between(started, now);
-		let st = self.steps.last_mut().expect("a step");
-		st.ended_at = now;
-		st.closed = true;
-		st.unobserved_ms = unobserved;
-		if let Some(prev) = self.prev_head_at {
-			self.gap_until(prev, now);
+		if let Some(st) = self.steps.last_mut() {
+			st.ended_at = now;
 		}
 	}
 
 	/// The time from `from` to `to` that PolkaMeter did not observe the chain: the block
-	/// follower was disconnected, or PolkaMeter itself was paused. The stall rules and the
-	/// block gaps leave it out: no block could be seen then. Every other moment since the last
-	/// new block counts, also across reconnects.
+	/// follower was disconnected, or PolkaMeter itself was paused. The stall rules leave it out:
+	/// no block could be seen then. Every other moment since the last new block counts, also
+	/// across reconnects.
 	pub fn unobserved_between(&self, from: Millis, to: Millis) -> Millis {
 		let mut spans: Vec<(Millis, Millis)> = self
 			.observation_gaps
@@ -350,6 +344,16 @@ impl<S: Submit> Tracker<S> {
 			.iter()
 			.find(untimed)
 			.map(|_| format!("a probe landed that {} could not time", crate::PRODUCT_NAME))
+	}
+
+	/// What kept PolkaMeter from timing what it saw, for a warning: its own pauses, reconnects
+	/// to the node, or both.
+	pub fn untimed_cause(&self) -> &'static str {
+		match (self.pauses.is_empty(), self.observation_gaps.is_empty()) {
+			(false, true) => "it was paused",
+			(true, _) => "it was reconnecting to the node",
+			(false, false) => "it was paused, and reconnecting to the node",
+		}
 	}
 
 	/// Whether PolkaMeter was paused across a time measured from `from` to `to`.
@@ -411,6 +415,7 @@ impl<S: Submit> Tracker<S> {
 		self.requests
 			.insert(id, Request { hash, kind, connection, waiting_since, resent: false });
 		if let Kind::Flood { step } = kind {
+			self.walk_from.get_or_insert(self.last_finalized.1 + 1);
 			let flood = FloodTx { step, sent_at: now, bytes: bytes.to_vec(), ..Default::default() };
 			self.flood.insert(hash, flood);
 		}
@@ -582,7 +587,11 @@ impl<S: Submit> Tracker<S> {
 	}
 
 	fn on_closed(&mut self, connection: usize, by_node: bool) {
-		self.closed_by_node += usize::from(by_node);
+		if by_node {
+			self.unreachable.get_or_insert(format!(
+				"sender connection {connection} could not be opened again within 15 s"
+			));
+		}
 		// An interrupted request has an unknown outcome. Keep observing its hash;
 		// calling it refused here would conceal possible chain inclusion or loss.
 		self.requests.retain(|_, r| r.connection != connection);

@@ -128,7 +128,13 @@ pub async fn run(
 	};
 	// Monitors and the load.
 	let (events, _) = tokio::sync::broadcast::channel(64);
-	let chains = Chains { node_url: &url, relay_url: relay_url.as_deref() };
+	// The node's p2p ports tell its process from a proxy on its RPC port.
+	let addresses: Vec<String> = client
+		.request("system_localListenAddresses", subxt::rpcs::rpc_params![])
+		.await
+		.unwrap_or_default();
+	let p2p_ports = crate::engine::monitors::process::p2p_ports(&addresses);
+	let chains = Chains { node_url: &url, relay_url: relay_url.as_deref(), p2p_ports };
 	let mut monitors = Monitors::start(dir, targets, &events, chains, redactor).await?;
 	let (replies_tx, replies) = tokio::sync::mpsc::unbounded_channel();
 	let (blocks_tx, blocks) = tokio::sync::mpsc::unbounded_channel();
@@ -151,6 +157,12 @@ pub async fn run(
 		now_ms(),
 	);
 	tracker.redact_with(redactor.clone());
+	// The block finalized now, before any flood tx: the loss check walks from the one above it.
+	let finalized = client.finalized().await?.block_number() as u32;
+	tracker.on_block(
+		follower::BlockEvent::Finalized { number: finalized, seen_at: now_ms() },
+		now_ms(),
+	)?;
 	let mut io = Io {
 		replies,
 		blocks,
@@ -158,6 +170,7 @@ pub async fn run(
 		problems: monitors.problems.clone(),
 		tool_failed: monitors.tool_failed.clone(),
 		boot: crate::load::clock::boot_ms,
+		node: monitors.node.clone(),
 	};
 
 	let phases = async {
@@ -216,7 +229,7 @@ pub async fn run(
 		last_ours_block: tracker.last_ours_block.max(tracker.last_fetched),
 		flood: &sent,
 		included_in: &included_in,
-		first_fetched: tracker.first_fetched,
+		walk_from: tracker.walk_from,
 	};
 	let check = loss_check(
 		&mut live,
@@ -238,20 +251,34 @@ pub async fn run(
 	let unreadable = tracker.unreadable.clone();
 	let gaps: Vec<String> = tracker.observation_gaps.iter().map(ToString::to_string).collect();
 	let unobserved_ms = tracker.unobserved_ms(now_ms());
-	// A node that went down is a problem too: smoke mode exits 1 on it. A reconnect to another
-	// node is a warning only: behind a load balancer it is a healthy node.
-	let node_down = tracker.node_down.clone().map(|why| format!("node down: {why}"));
+	// A node that went down is a problem too: smoke mode exits 1 on it, and on a node or network
+	// that could not be reached. A reconnect to another node is a warning only: behind a load
+	// balancer it is a healthy node.
+	let down = crate::load::runner::node_down(&tracker, &io);
+	let node_down = match (&down, &tracker.unreachable) {
+		(Some(why), _) => Some(format!("node down: {why}")),
+		(None, Some(why)) => Some(format!("node or network unreachable: {why}")),
+		(None, None) => None,
+	};
 	let mut warnings = tracker.warnings.clone();
-	warnings.extend(rules::untimed_warning(&finals));
+	let cause = tracker.untimed_cause();
+	warnings.extend(rules::untimed_warning(&finals, cause));
 	if base.max_ms.is_none() {
 		warnings.push(format!(
-			"the baseline has no result: {} timed none of its {} probes (it was paused, or reconnecting, while they landed)",
+			"the baseline has no result: {} timed none of its {} probes ({cause} while they landed)",
 			crate::PRODUCT_NAME,
 			base.probes
 		));
 	}
-	// A chain failure while the loss check ran fails the run like one in the load.
+	// A chain failure while the loss check ran fails the run like one in the load. So does a node
+	// seen down after the load stopped on something else: one that came back restarted after it
+	// was unreachable, or restarted in recovery.
 	let mut failure_modes = rules::failure_modes(&stop, &loss, &finals);
+	let reported = stop.rule == Rule::NodeDown
+		|| reconciling.as_ref().is_some_and(|f| f.rule == Rule::NodeDown);
+	if let Some(why) = down.filter(|_| !reported) {
+		failure_modes.push(FailureMode { class: Class::Hard, what: format!("node down: {why}") });
+	}
 	failure_modes.extend(reconciling.map(|f| FailureMode {
 		class: f.class.unwrap_or(Class::Hard),
 		what: format!("{} during the loss check: {}", f.rule.name(), f.detail),
@@ -576,6 +603,9 @@ pub fn verdict_reason(summary: &Summary, checks: &[CheckResult]) -> String {
 				stop.rule.name(),
 				stop.detail
 			));
+		}
+		if summary.baseline.max_ms.is_none() {
+			reasons.push("the baseline has no result".into());
 		}
 		reasons.extend(names("required checks with no result", &|c| {
 			c.verdict.status == Status::NoResult && !c.optional

@@ -104,6 +104,7 @@ fn setup_with(
 		problems: Problems::default(),
 		tool_failed: tokio_util::sync::CancellationToken::new(),
 		boot,
+		node: Default::default(),
 	};
 	let opts = RunOptions {
 		rules: RULES,
