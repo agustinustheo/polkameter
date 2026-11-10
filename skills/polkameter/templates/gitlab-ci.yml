@@ -1,13 +1,13 @@
 # Load-test a dev chain with PolkaMeter's substrate plugin. Add this job to .gitlab-ci.yml.
 # Use a Linux x86-64 runner. Commit these files at your repository root:
 #   dev-chain.sh, from the same PolkaMeter version:
-#     curl -fsSLO https://raw.githubusercontent.com/agustinustheo/polkameter/v0.4.3/scripts/dev-chain.sh
+#     curl -fsSLO https://raw.githubusercontent.com/agustinustheo/polkameter/v0.4.4/scripts/dev-chain.sh
 #   plans/substrate-remarks-ci.polkameter.xml, the short CI plan from the skill's templates.
 # Keep POLKAMETER_VERSION equal to the plan's <plugin id="substrate" version="...">.
 load-test:
   image: debian:bookworm-slim
   variables:
-    POLKAMETER_VERSION: "0.4.3"
+    POLKAMETER_VERSION: "0.4.4"
     POLKAMETER_PLUGIN_REGISTRY: /tmp/polkameter-plugins.json
     # //Alice is funded on the dev chain. On a shared network, use a masked CI/CD variable.
     POLKAMETER_SUBSTRATE_SEED: //Alice
