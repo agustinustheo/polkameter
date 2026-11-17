@@ -666,7 +666,7 @@ async fn run_script(
 		.stdout(std::process::Stdio::piped())
 		.kill_on_drop(true)
 		.spawn()
-		.context("cannot start node (calls mode needs Node.js 22.6 or later on PATH)")?;
+		.context("cannot start node (calls mode needs Node.js 22.18 or later on PATH)")?;
 	let mut stdin = child.stdin.take().context("runner stdin")?;
 	let mut lines =
 		tokio::io::BufReader::new(child.stdout.take().context("runner stdout")?).lines();

@@ -6,7 +6,7 @@ Calls mode is a prototype on the `feat/calls-mode` branch.
 
 ## Run a call file
 
-A call file is a JavaScript or TypeScript module. It builds calls with [polkadot-api](https://papi.how) (PAPI) and its generated types. You need Node.js 22.6 or later; Node.js runs `.ts` files without a build step.
+A call file is a JavaScript or TypeScript module. It builds calls with [polkadot-api](https://papi.how) (PAPI) and its generated types. You need Node.js 22.18 or later; Node.js runs `.ts` files without a build step.
 
 In the directory of the call file, install PAPI and generate the types for your chain:
 
