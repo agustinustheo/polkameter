@@ -45,6 +45,8 @@ pub struct FloodTx {
 	pub step: usize,
 	/// When.
 	pub sent_at: Millis,
+	/// The best block number when it was sent (0 when none was seen yet).
+	pub sent_head: u32,
 	/// Its bytes, to validate it again.
 	pub bytes: Vec<u8>,
 	/// A successful RPC reply, separate from inclusion.
@@ -431,7 +433,13 @@ impl<S: Submit> Tracker<S> {
 			.insert(id, Request { hash, kind, connection, waiting_since, resent: false });
 		if let Kind::Flood { step } = kind {
 			self.walk_from.get_or_insert(self.last_finalized.1 + 1);
-			let flood = FloodTx { step, sent_at: now, bytes: bytes.to_vec(), ..Default::default() };
+			let flood = FloodTx {
+				step,
+				sent_at: now,
+				sent_head: self.last_head.1,
+				bytes: bytes.to_vec(),
+				..Default::default()
+			};
 			self.flood.insert(hash, flood);
 		}
 		self.sent.insert(hash, Sent { kind, sent_at: now });

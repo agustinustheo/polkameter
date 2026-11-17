@@ -161,6 +161,8 @@ where
 	let settled = on_chain.is_some() && loss.finalized.as_ref().is_some_and(|f| f.waited_for_it);
 	let mut nonces = HashMap::new();
 	let mut expired = HashSet::new();
+	// Expired, but sent too late in their era for that to be the chain's loss.
+	let mut expired_early = HashSet::new();
 	if settled && let Ok((number, at)) = &finalized {
 		let candidates: Vec<_> = run
 			.flood
@@ -194,11 +196,17 @@ where
 				.await
 			{
 				Ok(deaths) => {
-					expired = deaths
-						.into_iter()
-						.filter(|(_, death)| *death <= u64::from(*number))
-						.map(|(hash, _)| hash)
-						.collect();
+					for (hash, (death, period)) in deaths {
+						if death > u64::from(*number) {
+							continue;
+						}
+						let sent_head = run.flood.get(&hash).map_or(0, |tx| tx.sent_head);
+						if expiry_is_loss(death, period, sent_head) {
+							expired.insert(hash);
+						} else {
+							expired_early.insert(hash);
+						}
+					}
 				},
 				Err(e) => notes.push(format!("transaction eras could not be read: {e}")),
 			}
@@ -211,7 +219,12 @@ where
 		nonces: &nonces,
 		expired: &expired,
 	};
-	let rows = ledger(run.flood, run.included_in, &evidence, ready.as_ref(), cutoff);
+	let mut rows = ledger(run.flood, run.included_in, &evidence, ready.as_ref(), cutoff);
+	for row in rows.iter_mut().filter(|r| expired_early.contains(&r.hash)) {
+		if matches!(row.status, Status::Unknown | Status::Unverified) {
+			row.json["statusReason"] = "expired before it was included, but it was sent with less than half its era left: the mortality it was signed with ended it, not the chain".into();
+		}
+	}
 	let may_finalize = rows
 		.iter()
 		.filter(|r| r.tx.accepted && matches!(r.status, Status::Unknown | Status::Unverified))
@@ -452,27 +465,51 @@ fn ledger<'a>(
 			let (failed, failed_on_fork) =
 				dispatch(tx.failed_in_block, failed_finalized, evidence.settled);
 			// An untimed tx has no inclusion time here either (`inclusionMs` is null).
+			let category = category(status, failed_finalized);
 			let json = serde_json::json!({"version":1,"hash":hex::encode(hash),"step":tx.step,
 				"sentAt":tx.sent_at,"poolSnapshotBlock":cutoff,"accepted":tx.accepted,
 				"replyMs":tx.reply_ms,"inclusionMs":tx.inclusion_ms,"untimed":tx.untimed,"bestBlock":best,
 				"failedInBestBlock":tx.failed_in_block,"finalizedBlock":finalized,
 				"failedInFinalizedBlock":failed_finalized,"failedOnlyOnFork":failed_on_fork,
 				"nonce":nonces.map(|n| n.0),"finalizedAccountNonce":nonces.map(|n| n.1),
-				"inReadyPool":ready,"status":status,"statusReason":reason});
+				"inReadyPool":ready,"status":status,"statusReason":reason,"category":category});
 			Row { hash: *hash, tx, status, best, finalized, failed, failed_on_fork, json }
 		})
 		.collect()
 }
 
-/// The first block each mortal candidate can no longer be in: one past its era, from its
-/// `CheckMortality` extension. `current` is a block no later than the one it was signed at, or
+/// The one category of a flood tx in `transactions.jsonl`, with stable names: `finalized-ok`
+/// and `failed-in-block` (in a finalized block, whose dispatch succeeded or failed there),
+/// `lost` (proven: absent from the finalized chain, which can no longer include it), `refused`
+/// (the node rejected it at submit, so it was never in a block) and `unresolved` (anything
+/// else: it may still be included, or its end has no proof).
+fn category(status: Status, failed_finalized: Option<bool>) -> &'static str {
+	match status {
+		Status::Finalized if failed_finalized == Some(true) => "failed-in-block",
+		Status::Finalized => "finalized-ok",
+		Status::Lost => "lost",
+		Status::Refused => "refused",
+		Status::InPool | Status::Unverified | Status::Unknown => "unresolved",
+	}
+}
+
+/// Whether a mortal tx that expired absent from the finalized chain was lost by the chain: it
+/// was sent with at least half its era left, so the chain had that long to include it. A tx
+/// sent near the end of its era, or when the best block was not known, expired because of the
+/// mortality it was signed with, which is the tool's choice, not the chain's fault.
+fn expiry_is_loss(death: u64, period: u64, sent_head: u32) -> bool {
+	sent_head > 0 && death.saturating_sub(u64::from(sent_head)) >= period / 2
+}
+
+/// The first block each mortal candidate can no longer be in (one past its era, from its
+/// `CheckMortality` extension), and its era's period. `current` is a block no later than the one it was signed at, or
 /// within its era: the finalized head before the first flood tx (a later one gives a later
 /// birth, so it never makes a tx expire early). Immortal or undecodable txs have none.
 async fn deaths_at(
 	at: &AtBlock,
 	candidates: &[(TxHash, Vec<u8>)],
 	current: u64,
-) -> HashMap<TxHash, u64> {
+) -> HashMap<TxHash, (u64, u64)> {
 	use parity_scale_codec::Decode as _;
 	let mut deaths = HashMap::new();
 	for (hash, bytes) in candidates {
@@ -484,7 +521,7 @@ async fn deaths_at(
 		});
 		if let Some(subxt::utils::Era::Mortal { period, phase }) = era {
 			let birth = (current.max(phase) - phase) / period * period + phase;
-			deaths.insert(*hash, birth + period);
+			deaths.insert(*hash, (birth + period, period));
 		}
 	}
 	deaths
@@ -779,6 +816,45 @@ mod tests {
 				rows[0].json
 			);
 		}
+	}
+
+	/// An expiry is the chain's loss only when the tx was sent with at least half its era left;
+	/// one sent late in a short era expired because of the mortality it was signed with.
+	#[test]
+	fn an_expiry_from_a_short_era_is_not_a_chain_loss() {
+		// Signed at block 100 with a 32-block era (dies at 132), as on a fork that builds a
+		// block per tx: sent at block 125, it had 7 blocks left.
+		assert!(!expiry_is_loss(132, 32, 125));
+		assert!(expiry_is_loss(132, 32, 110));
+		// The best block at send is not known: no proof that the chain had the time.
+		assert!(!expiry_is_loss(132, 32, 0));
+		// The default 4096-block era: every tx of a run is sent with nearly all of it left.
+		assert!(expiry_is_loss(100 + 4096, 4096, 400));
+	}
+
+	/// Every row has one category with a stable name, the ones calls mode counts.
+	#[test]
+	fn every_transaction_has_one_category() {
+		assert_eq!(category(Finalized, Some(false)), "finalized-ok");
+		assert_eq!(category(Finalized, Some(true)), "failed-in-block");
+		assert_eq!(category(Lost, None), "lost");
+		assert_eq!(category(Refused, None), "refused");
+		for status in [InPool, Unverified, Unknown] {
+			assert_eq!(category(status, None), "unresolved");
+		}
+		let hash = [7; 32];
+		let flood = HashMap::from([(hash, FloodTx { accepted: true, ..Default::default() })]);
+		let found = HashMap::from([(hash, 12)]);
+		let failed = HashSet::from([hash]);
+		let evidence = Evidence {
+			found: Some(&found),
+			finalized_failed: &failed,
+			settled: true,
+			nonces: &HashMap::new(),
+			expired: &HashSet::new(),
+		};
+		let rows = ledger(&flood, &HashMap::new(), &evidence, None, Some(12));
+		assert_eq!(rows[0].json["category"], "failed-in-block");
 	}
 
 	#[test]

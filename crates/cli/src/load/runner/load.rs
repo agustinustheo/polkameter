@@ -74,13 +74,13 @@ async fn send_step<S: Submit>(
 	rate: f64,
 	seconds: u32,
 ) -> Result<Option<Stop>, RunError> {
-	// Monotonic time for the step's end and the token bucket: a wall-clock step neither ends the
-	// step early nor sends a burst.
+	// Monotonic time for the step's end and its schedule: a wall-clock step neither ends the
+	// step early nor sends a burst. Transaction k of the step is due at start + k / rate, so
+	// exactly rate × seconds are sent when the generator keeps up, whatever the tick timing.
 	let start = Instant::now();
 	let end = start + Duration::from_secs(u64::from(seconds));
+	let mut schedule = Schedule::new(rate, seconds);
 	let mut ticks = Ticks::new(io, 20);
-	let mut tokens = 0.0_f64;
-	let mut last = start;
 	let step = t.steps.last().expect("started").step;
 	while Instant::now() < end {
 		let tick = ticks.next(t, io, &opts.rules).await?;
@@ -90,22 +90,47 @@ async fn send_step<S: Submit>(
 		if !tick {
 			continue;
 		}
-		let (at, now) = (Instant::now(), now_ms());
-		let elapsed = at.duration_since(last);
-		tokens = (tokens + rate * elapsed.as_secs_f64()).min(rate.max(1.0)); // at most 1 s of catch-up
-		while tokens >= 1.0 && t.send_next(now) {
-			tokens -= 1.0;
-		}
-		if tokens >= 1.0 {
-			tokens = 0.0; // nothing ready, or backed up
-		}
-		last = at;
+		let now = now_ms();
+		schedule.send(Instant::now().duration_since(start), |_| t.send_next(now));
 		t.tick(now)?;
 		if let Some(stop) = live_failure(&live(t, io, opts, step), &opts.rules) {
 			return Ok(Some(stop));
 		}
 	}
+	// The last ones due, when the step's last tick came just before its end.
+	let now = now_ms();
+	schedule.send(end.duration_since(start), |_| t.send_next(now));
 	Ok(None)
+}
+
+/// A step's send schedule on its own clock: transaction `k` is due at `k / rate` seconds, for
+/// `rate × seconds` transactions. What could not be sent (nothing ready, or the sender backed
+/// up) is not sent later, and neither is more than 1 s of a schedule fallen behind: the load is
+/// then short, and the step's send ratio shows it.
+pub struct Schedule {
+	rate: f64,
+	total: u64,
+	/// Transactions sent or given up so far.
+	done: u64,
+}
+
+impl Schedule {
+	/// The schedule of `rate` tx/s for `seconds`.
+	pub fn new(rate: f64, seconds: u32) -> Self {
+		let total = (rate * f64::from(seconds) + 1e-9).floor().max(0.0) as u64;
+		Self { rate, total, done: 0 }
+	}
+
+	/// Sends what is due at `elapsed` through `send`, which says whether it sent one.
+	pub fn send(&mut self, elapsed: Duration, mut send: impl FnMut(u64) -> bool) {
+		let due = ((elapsed.as_secs_f64() * self.rate + 1e-9).floor() as u64 + 1).min(self.total);
+		let late = self.rate.max(1.0).floor() as u64;
+		self.done = self.done.max(due.saturating_sub(late));
+		while self.done < due && send(self.done) {
+			self.done += 1;
+		}
+		self.done = self.done.max(due);
+	}
 }
 
 fn log_step<S: Submit>(t: &Tracker<S>) {
@@ -121,4 +146,51 @@ fn log_step<S: Submit>(t: &Tracker<S>) {
 		t.inflight(),
 		t.outstanding().len()
 	);
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// 1 tx/s for 120 s with ticks every 20 ms that drift (each a little late): exactly 120,
+	/// all within the step.
+	#[test]
+	fn the_schedule_sends_rate_times_seconds() {
+		for (rate, seconds) in [(1.0, 120), (5.0, 120), (0.5, 120), (3.0, 20), (120.0, 10)] {
+			let mut schedule = Schedule::new(rate, seconds);
+			let mut sent = Vec::new();
+			let mut ms = 0u64;
+			while ms < u64::from(seconds) * 1000 {
+				ms += 20 + ms % 7; // late ticks
+				let at = Duration::from_millis(ms.min(u64::from(seconds) * 1000));
+				schedule.send(at, |k| {
+					sent.push((k, at));
+					true
+				});
+			}
+			let want = (rate * f64::from(seconds)) as u64;
+			assert_eq!(sent.len() as u64, want, "{rate} tx/s for {seconds} s");
+			assert!(sent.iter().all(|(_, at)| *at <= Duration::from_secs(u64::from(seconds))));
+		}
+	}
+
+	/// What could not be sent is not sent later, and a schedule more than 1 s behind skips
+	/// ahead: no catch-up burst.
+	#[test]
+	fn the_schedule_never_catches_up_more_than_a_second() {
+		let mut schedule = Schedule::new(10.0, 60);
+		let mut sent = 0;
+		schedule.send(Duration::from_secs(1), |_| {
+			sent += 1;
+			true
+		});
+		assert_eq!(sent, 10, "1 s of a 10 tx/s schedule after the first tick at 1 s");
+		schedule.send(Duration::from_secs(2), |_| false);
+		let mut later = 0;
+		schedule.send(Duration::from_secs(12), |_| {
+			later += 1;
+			true
+		});
+		assert_eq!(later, 10, "10 s behind: only the last second is sent");
+	}
 }

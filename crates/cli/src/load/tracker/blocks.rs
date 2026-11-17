@@ -149,6 +149,16 @@ impl<S: Submit> Tracker<S> {
 		true
 	}
 
+	/// Sends the first recovery probe now, without waiting for a new head: a chain that builds
+	/// blocks only for transactions (a Chopsticks fork, instant seal) builds none after the
+	/// load, so a probe sent on the next head would never be sent, and the run would call the
+	/// chain stalled for our own silence. Every later probe goes on the head its block makes.
+	pub fn first_recovery_probe(&mut self, now: Millis) {
+		if self.phase() == Phase::Recovery {
+			self.send_probe(now);
+		}
+	}
+
 	fn send_probe(&mut self, now: Millis) {
 		let phase = match self.phase() {
 			Phase::Baseline if self.probes.len() < self.baseline_probes => ProbePhase::Baseline,

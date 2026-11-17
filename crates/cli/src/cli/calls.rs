@@ -48,19 +48,22 @@ pub struct Args {
 	/// transaction's index, "$account" its signer; {"Id": "$account"} is a variant.
 	#[arg(long, requires = "call")]
 	args: Option<String>,
-	/// FAIL when the p95 time from submit to finality is above this, such as 30s.
-	#[arg(long, value_parser = seconds, default_value = "60s")]
+	/// FAIL when the p95 time from submit to finality is above this, such as 30s, 29.5s or
+	/// 29500ms; PASS needs it at most this.
+	#[arg(long, value_parser = millis, default_value = "60s")]
 	max_p95: u64,
 	/// Amount (smallest unit) each test account is topped up to. Default: a share of what the
 	/// seed can spend, at most a million existential deposits.
 	#[arg(long)]
 	fund: Option<String>,
-	/// Mortality in blocks (a power of two up to 4096), 0 for immortal. Default: covers the run.
+	/// Mortality in blocks (a power of two up to 4096), 0 for immortal. Default: the longest the
+	/// chain keeps, at most 4096 blocks.
 	#[arg(long)]
 	mortality: Option<u64>,
-	/// Seconds to watch the chain after the load.
-	#[arg(long, default_value_t = 60)]
-	recovery: u32,
+	/// At most this many seconds to keep watching the chain after the load, until every
+	/// transaction is in a block. Default: the longer of 300 s and the duration.
+	#[arg(long)]
+	recovery: Option<u32>,
 	/// The directory that receives the run-* directory.
 	#[arg(long, default_value = "polkameter-runs")]
 	output: PathBuf,
@@ -97,6 +100,38 @@ fn seconds(text: &str) -> Result<u64, String> {
 	Ok(total)
 }
 
+/// A time limit in milliseconds: `30s`, `29.5s`, `29500ms`, `1m`, or a number of seconds.
+fn millis(text: &str) -> Result<u64, String> {
+	let text = text.trim();
+	let bad = || format!("{text:?} is not a time such as 30s, 29.5s or 29500ms");
+	let split = text.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(text.len());
+	let (number, unit) = text.split_at(split);
+	let number: f64 = number.parse().map_err(|_| bad())?;
+	let scale = match unit {
+		"ms" => 1.0,
+		"" | "s" => 1000.0,
+		"m" => 60_000.0,
+		"h" => 3_600_000.0,
+		_ => return Err(bad()),
+	};
+	let ms = (number * scale).round();
+	if !(ms.is_finite() && ms >= 1.0) {
+		return Err(format!("{text:?} must be at least 1 ms"));
+	}
+	Ok(ms as u64)
+}
+
+/// A time in milliseconds as the shortest text that says it: `30 s`, `29.5 s`, `250 ms`.
+fn show_ms(ms: u64) -> String {
+	if ms < 1000 { format!("{ms} ms") } else { format!("{} s", ms as f64 / 1000.0) }
+}
+
+/// The default bound on recovery: the longer of 300 s and the load's duration.
+fn recovery_bound(args: &Args) -> u32 {
+	args.recovery
+		.unwrap_or_else(|| u32::try_from(args.duration.max(300)).unwrap_or(u32::MAX))
+}
+
 /// Escapes text for an XML attribute.
 fn attr(text: &str) -> String {
 	text.replace('&', "&amp;")
@@ -130,22 +165,21 @@ fn plugin_path(given: Option<PathBuf>) -> Result<PathBuf, CliError> {
 /// The plan of the run, as XML.
 fn plan_xml(args: &Args, version: &str, block_s: f64) -> Result<String, CliError> {
 	let count = (args.rate * args.duration as f64 * 1.05).ceil() as u64 + u64::from(args.accounts);
-	// Valid from signing through the last send (setup is before signing), with a margin.
-	let expected = args.duration + 120;
-	let mortality = args.mortality.unwrap_or_else(|| {
-		let blocks = (expected as f64 / block_s.max(0.1)).ceil() as u64;
-		let period = blocks.max(16).next_power_of_two();
-		if period > 4096 { 0 } else { period }
-	});
+	let recovery = recovery_bound(args);
+	// Valid from signing through the last send and recovery (setup is before signing).
+	let expected = args.duration + u64::from(recovery) + 120;
 	let mut inputs = vec![
 		("target", r#"ref="targets.chain""#.to_owned()),
 		("seed", r#"ref="credentials.seed""#.to_owned()),
 		("probes", r#"ref="run.probeBudget""#.to_owned()),
 		("count", format!(r#"value="{count}""#)),
 		("flood-signers", format!(r#"value="{}""#, args.accounts)),
-		("mortality", format!(r#"value="{mortality}""#)),
 		("expected-seconds", format!(r#"value="{expected}""#)),
 	];
+	// Without --mortality the plugin picks the longest the chain keeps (see its prepare-calls).
+	if let Some(mortality) = args.mortality {
+		inputs.push(("mortality", format!(r#"value="{mortality}""#)));
+	}
 	match (&args.calls, &args.call) {
 		(Some(file), _) => {
 			let file = file
@@ -179,7 +213,7 @@ fn plan_xml(args: &Args, version: &str, block_s: f64) -> Result<String, CliError
 		.iter()
 		.map(|(name, source)| format!("\n      <input name=\"{name}\" {source}/>"))
 		.collect();
-	let timeout_ms = (args.duration + u64::from(args.recovery) + 3600) * 1000;
+	let timeout_ms = (args.duration + u64::from(recovery) + 3600) * 1000;
 	Ok(format!(
 		r#"<?xml version="1.0" encoding="UTF-8"?>
 <polkameter-plan xmlns="https://polkameter.dev/schema/plan" version="1" name="calls" mode="stress" timeout-ms="{timeout_ms}">
@@ -198,11 +232,26 @@ fn plan_xml(args: &Args, version: &str, block_s: f64) -> Result<String, CliError
 </polkameter-plan>
 "#,
 		chain = attr(&args.chain),
-		recovery = args.recovery,
 		rate = args.rate,
 		duration = args.duration,
-		max_ms = args.max_p95 * 1000,
+		max_ms = args.max_p95,
 	))
+}
+
+/// The categories of `transactions.jsonl` and how many transactions each has.
+pub const CATEGORIES: [&str; 5] =
+	["finalized-ok", "failed-in-block", "lost", "unresolved", "refused"];
+
+/// How many transactions of the ledger (`transactions.jsonl`) are in each category.
+fn categories(ledger: &str) -> serde_json::Value {
+	let mut counts: serde_json::Map<String, serde_json::Value> =
+		CATEGORIES.iter().map(|c| ((*c).to_owned(), 0.into())).collect();
+	for row in ledger.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()) {
+		let category = row["category"].as_str().unwrap_or("unresolved");
+		let n = counts.get(category).and_then(serde_json::Value::as_u64).unwrap_or(0);
+		counts.insert(category.to_owned(), (n + 1).into());
+	}
+	counts.into()
 }
 
 /// The verdict of a finished run: exit code and one line why.
@@ -227,11 +276,7 @@ fn verdict(summary: &Summary, max_p95_ms: u64) -> (i32, &'static str, String) {
 		return (
 			1,
 			"FAIL",
-			format!(
-				"p95 submit to finalized {:.1} s > {} s",
-				p95 as f64 / 1000.0,
-				max_p95_ms / 1000
-			),
+			format!("p95 submit to finalized {} > {}", show_ms(p95), show_ms(max_p95_ms)),
 		);
 	}
 	// The load was not delivered: it stopped before the rate ran its full time, such as on
@@ -261,6 +306,29 @@ fn verdict(summary: &Summary, max_p95_ms: u64) -> (i32, &'static str, String) {
 	(0, "PASS", "every transaction resolved, none lost, p95 within the limit".into())
 }
 
+/// The chain's block interval, measured as preflight measures it (on a chain just started, it
+/// waits for enough blocks). A connection that drops is opened again for up to 90 s.
+async fn block_seconds(chain: &str) -> Result<f64, CliError> {
+	let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+	loop {
+		let measured = async {
+			let client = polkameter_plugin_sdk::chain::Client::connect(chain).await?;
+			crate::engine::execute::block_interval_s(&client).await
+		}
+		.await;
+		match measured {
+			Ok(seconds) => return Ok((seconds * 100.0).round() / 100.0),
+			Err(polkameter_plugin_sdk::chain::ChainError::Timeout(why)) => {
+				return Err(CliError::preflight(format!("{chain}: {why}")));
+			},
+			Err(e) if tokio::time::Instant::now() >= deadline => {
+				return Err(CliError::preflight(format!("cannot read blocks of {chain}: {e}")));
+			},
+			Err(_) => tokio::time::sleep(Duration::from_secs(2)).await,
+		}
+	}
+}
+
 /// `polkameter calls`.
 pub async fn run(args: Args) -> Result<i32, CliError> {
 	if !(args.chain.starts_with("ws://") || args.chain.starts_with("wss://")) {
@@ -286,11 +354,7 @@ pub async fn run(args: Args) -> Result<i32, CliError> {
 	let (manifest, installation) = Registry::describe(&plugin)
 		.await
 		.map_err(|e| CliError::invalid(format!("{e:#}")))?;
-	let client = polkameter_plugin_sdk::chain::Client::connect(&args.chain)
-		.await
-		.map_err(|e| CliError::preflight(format!("cannot connect to {}: {e}", args.chain)))?;
-	let block_s = client.recent_block_seconds().await.ok().flatten().unwrap_or(6.0);
-	let block_s = (block_s * 10.0).round() / 10.0;
+	let block_s = block_seconds(&args.chain).await?;
 	let xml = plan_xml(&args, &manifest.version, block_s)?;
 	let plan = Plan::parse(&xml)
 		.map_err(|e| CliError::runtime(format!("the generated plan does not parse: {e:#}")))?;
@@ -330,11 +394,13 @@ pub async fn run(args: Args) -> Result<i32, CliError> {
 		);
 		return Ok(code);
 	};
-	let (code, name, mut why) = verdict(&summary, args.max_p95 * 1000);
+	let (code, name, mut why) = verdict(&summary, args.max_p95);
 	if let Some(engine) = summary.verdict.map(|v| v.result).filter(|r| *r != OverallStatus::Pass) {
 		why = format!("{why} (engine verdict {engine:?}; see summary.md)");
 	}
 	let loss = &summary.loss;
+	let counts =
+		categories(&std::fs::read_to_string(dir.join("transactions.jsonl")).unwrap_or_default());
 	let report = json!({
 		"verdict": name,
 		"exitCode": code,
@@ -345,22 +411,25 @@ pub async fn run(args: Args) -> Result<i32, CliError> {
 		"lost": loss.lost,
 		"unresolved": loss.unknown + loss.unverified + loss.in_pool.unwrap_or(0),
 		"refused": loss.refused,
+		"categories": counts,
+		"maxP95Ms": args.max_p95,
 		"p95FinalizedMs": loss.p95_finalized_ms,
 		"finalizedTimed": loss.finalized_timed,
 		"engineVerdict": summary.verdict.map(|v| v.result),
 		"stop": summary.stop.rule.name(),
 	});
 	std::fs::write(dir.join("calls-verdict.json"), format!("{report:#}\n")).ok();
+	let count = |c: &str| counts[c].as_u64().unwrap_or(0);
 	write_stdout(&format!(
-		"{name}: {why}\nsent {}, finalized {} ({} failed in block), refused {}, lost {}, unresolved {}; p95 submit to finalized {}\nArtifacts: {}",
+		"{name}: {why}\nsent {}: finalized-ok {}, failed-in-block {}, lost {}, unresolved {}, refused {}; p95 submit to finalized {} (limit {})\nArtifacts: {}",
 		loss.sent,
-		loss.included,
-		loss.failed_in_block,
-		loss.refused,
-		loss.lost.map_or("not counted".into(), |l| l.to_string()),
-		report["unresolved"],
-		loss.p95_finalized_ms
-			.map_or("none".into(), |ms| format!("{:.1} s", ms as f64 / 1000.0)),
+		count("finalized-ok"),
+		count("failed-in-block"),
+		count("lost"),
+		count("unresolved"),
+		count("refused"),
+		loss.p95_finalized_ms.map_or("none".into(), show_ms),
+		show_ms(args.max_p95),
 		dir.display()
 	));
 	Ok(code)
@@ -385,14 +454,49 @@ mod tests {
 			calls: None,
 			call: Some("System.remark".into()),
 			args: Some(r#"["0x01"]"#.into()),
-			max_p95: 30,
+			max_p95: 30_000,
 			fund: Some("1000".into()),
 			mortality: None,
-			recovery: 30,
+			recovery: Some(30),
 			output: PathBuf::from("runs"),
 			plugin: None,
 		};
-		let plan = Plan::parse(&plan_xml(&args, "0.4.8", 6.0).unwrap()).unwrap();
+		let xml = plan_xml(&args, "0.4.8", 6.0).unwrap();
+		let plan = Plan::parse(&xml).unwrap();
 		crate::engine::execute::validate_core_contracts(&plan).unwrap();
+		// Without --mortality the plugin picks it; it is not sized from the block time.
+		assert!(!xml.contains(r#"name="mortality""#), "{xml}");
+		assert!(xml.contains(r#"max-p95-latency-ms="30000""#), "{xml}");
+		let args = Args { mortality: Some(1024), recovery: None, ..args };
+		let xml = plan_xml(&args, "0.4.8", 6.0).unwrap();
+		assert!(xml.contains(r#"<input name="mortality" value="1024"/>"#), "{xml}");
+		assert!(xml.contains(r#"recovery-seconds="300""#), "{xml}");
+	}
+
+	#[test]
+	fn time_limits_take_milliseconds_and_fractions() {
+		assert_eq!(millis("30s"), Ok(30_000));
+		assert_eq!(millis("29.5s"), Ok(29_500));
+		assert_eq!(millis("29500ms"), Ok(29_500));
+		assert_eq!(millis("30"), Ok(30_000));
+		assert_eq!(millis("1m"), Ok(60_000));
+		assert_eq!(millis("0.25"), Ok(250));
+		assert!(millis("0s").is_err() && millis("1x").is_err() && millis("s").is_err());
+		assert_eq!(show_ms(29_500), "29.5 s");
+		assert_eq!(show_ms(250), "250 ms");
+	}
+
+	/// The counts of calls-verdict.json are the categories of transactions.jsonl.
+	#[test]
+	fn categories_are_counted_from_the_ledger() {
+		let ledger =
+			["finalized-ok", "finalized-ok", "failed-in-block", "lost", "refused", "unresolved"]
+				.map(|c| format!(r#"{{"hash":"00","category":"{c}"}}"#))
+				.join("\n");
+		let counts = categories(&ledger);
+		assert_eq!(
+			counts,
+			json!({"finalized-ok": 2, "failed-in-block": 1, "lost": 1, "unresolved": 1, "refused": 1})
+		);
 	}
 }

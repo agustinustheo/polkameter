@@ -12,5 +12,7 @@ export async function setup({ api, accounts, submit }: Ctx) {
 	await Promise.all(accounts.map((_, n) => submit(api.tx.TemplatePallet.do_something({ bn: 1000 + n }), n)))
 }
 
+// With several chains in @polkadot-api/descriptors, name one: export const chain = "dev"
+
 // Transaction i stores i.
 export const call = ({ api, i }: Ctx) => api.tx.TemplatePallet.do_something({ bn: i })

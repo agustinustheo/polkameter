@@ -434,6 +434,24 @@ impl Signer {
 	}
 }
 
+/// The longest mortality calls mode signs with: 4096 blocks, or less on a chain that keeps
+/// fewer block hashes (`System.BlockHashCount`), since a transaction whose era starts at a
+/// block hash the chain no longer keeps is invalid.
+pub fn safe_period(metadata: &subxt::Metadata) -> u64 {
+	let kept = metadata
+		.pallet_by_name("System")
+		.and_then(|p| p.constant_by_name("BlockHashCount"))
+		.and_then(|c| match c.value().len() {
+			4 => <[u8; 4]>::try_from(c.value()).ok().map(|b| u64::from(u32::from_le_bytes(b))),
+			8 => <[u8; 8]>::try_from(c.value()).ok().map(u64::from_le_bytes),
+			_ => None,
+		})
+		// Every FRAME runtime has it; without it, a mortality any chain keeps.
+		.unwrap_or(256);
+	let largest = kept.clamp(4, 4096);
+	1 << (63 - largest.leading_zeros())
+}
+
 /// Extensions whose values the signer knows.
 const KNOWN: [&str; 6] = [
 	"CheckNonce",
@@ -444,11 +462,117 @@ const KNOWN: [&str; 6] = [
 	"CheckTxVersion",
 ];
 
+/// How long setup waits for a dropped connection to come back before it fails.
+const RECONNECT_BUDGET: Duration = Duration::from_secs(90);
+
+type BoxFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
+
+/// The connection of `prepare-calls`. When a read or a send fails and the node no longer
+/// answers on the connection, it opens a new one (for up to [`RECONNECT_BUDGET`]) and makes the
+/// same request again: a dropped connection during setup is not a reason to stop. Every request
+/// made through it must be safe to repeat: a read, or a send of the same signed bytes.
+pub struct Conn<C = Client> {
+	conn: C,
+	connect: Box<dyn Fn() -> BoxFuture<Result<C>> + Send + Sync>,
+	alive: Box<dyn Fn(C) -> BoxFuture<bool> + Send + Sync>,
+	budget: Duration,
+	every: Duration,
+}
+
+impl Conn<Client> {
+	/// A connection to `target`, opened again when it drops.
+	pub async fn open(target: &str) -> Result<Self> {
+		let deadline = tokio::time::Instant::now() + RECONNECT_BUDGET;
+		let client = loop {
+			match crate::connect(target).await {
+				Ok(client) => break client,
+				Err(e) if tokio::time::Instant::now() >= deadline => return Err(e),
+				Err(_) => tokio::time::sleep(Duration::from_secs(1)).await,
+			}
+		};
+		let url = target.to_owned();
+		Ok(Conn {
+			conn: client,
+			connect: Box::new(move || {
+				let url = url.clone();
+				Box::pin(async move { crate::connect(&url).await })
+			}),
+			alive: Box::new(|c: Client| {
+				Box::pin(async move {
+					c.request::<Value>("system_health", subxt::rpcs::rpc_params![]).await.is_ok()
+				})
+			}),
+			budget: RECONNECT_BUDGET,
+			every: Duration::from_secs(1),
+		})
+	}
+}
+
+impl<C: Clone + Send + 'static> Conn<C> {
+	/// `request` on the connection. When it fails and the connection is down, `request` is
+	/// made again on a new connection; an error from a live node is returned as it is.
+	pub async fn call<T, Fut>(&mut self, request: impl Fn(C) -> Fut) -> Result<T>
+	where
+		Fut: std::future::Future<Output = Result<T>>,
+	{
+		let deadline = tokio::time::Instant::now() + self.budget;
+		loop {
+			let error = match request(self.conn.clone()).await {
+				Ok(value) => return Ok(value),
+				Err(e) => e,
+			};
+			if (self.alive)(self.conn.clone()).await {
+				return Err(error);
+			}
+			eprintln!("the connection dropped ({error:#}); opening it again");
+			loop {
+				if tokio::time::Instant::now() >= deadline {
+					return Err(error.context(format!(
+						"the connection did not come back within {} s",
+						self.budget.as_secs()
+					)));
+				}
+				tokio::time::sleep(self.every).await;
+				if let Ok(conn) = (self.connect)().await
+					&& (self.alive)(conn.clone()).await
+				{
+					self.conn = conn;
+					break;
+				}
+			}
+		}
+	}
+}
+
+/// Whether the node's refusal of a send of signed bytes means they were sent already: they are
+/// in the pool (or were, and are banned for a while after inclusion), or, when the same bytes
+/// are sent again after a dropped connection, their nonce is used (by them).
+fn sent_already(error: &str, again: bool) -> bool {
+	let error = error.to_ascii_lowercase();
+	error.contains("already imported")
+		|| error.contains("temporarily banned")
+		|| (again && (error.contains("outdated") || error.contains("stale")))
+}
+
 /// The next nonce of `account`, with the node's pool.
-async fn next_nonce(client: &Client, account: &[u8]) -> Result<u64> {
-	Ok(client
-		.request("system_accountNextIndex", subxt::rpcs::rpc_params![show(account)])
-		.await?)
+async fn next_nonce(conn: &mut Conn, account: &[u8]) -> Result<u64> {
+	let who = show(account);
+	conn.call(|c| {
+		let who = who.clone();
+		async move { Ok(c.request("system_accountNextIndex", subxt::rpcs::rpc_params![who]).await?) }
+	})
+	.await
+}
+
+/// The finalized head's number now.
+async fn finalized_number(conn: &mut Conn) -> Result<u64> {
+	conn.call(|c| async move { Ok(c.finalized_now().await?.block_number()) }).await
+}
+
+/// `System.Account` of `account` at the finalized head now: its nonce and what it can spend.
+async fn finalized_account(conn: &mut Conn, account: &[u8]) -> Result<(u64, u128)> {
+	conn.call(|c| async move { account_at(&c.finalized_now().await?, account).await })
+		.await
 }
 
 /// `System.Account` of `account` at `at`: its nonce and what it can spend.
@@ -481,6 +605,16 @@ struct Pending {
 /// Which of `pending` are final now: `(index, Ok or the failure)`. A transaction is final when
 /// its signer's finalized nonce is past it; it failed when its block has `ExtrinsicFailed`.
 async fn resolve(
+	conn: &mut Conn,
+	pending: &[Pending],
+	timeout: Duration,
+) -> Result<Vec<(usize, Result<()>)>> {
+	// Only reads: safe to make again on a new connection.
+	conn.call(|client| async move { resolve_on(&client, pending, timeout).await })
+		.await
+}
+
+async fn resolve_on(
 	client: &Client,
 	pending: &[Pending],
 	timeout: Duration,
@@ -516,9 +650,10 @@ async fn resolve(
 		.collect())
 }
 
-/// Signs and submits `call` from `key` with its next nonce (tracked in `nonces`).
+/// Signs and submits `call` from `key` with its next nonce (tracked in `nonces`). It is signed
+/// once: after a dropped connection the same bytes are sent again, never a new transaction.
 async fn send(
-	client: &Client,
+	conn: &mut Conn,
 	signer: &Signer,
 	key: &Key,
 	call: &[u8],
@@ -527,13 +662,27 @@ async fn send(
 	let account = key.account();
 	let nonce = match nonces.get(&account) {
 		Some(n) => *n,
-		None => next_nonce(client, &account).await?,
+		None => next_nonce(conn, &account).await?,
 	};
 	let bytes = signer.sign(call, key, nonce)?;
-	let from = client.finalized_now().await?.block_number() + 1;
-	client.submit(&bytes).await.map_err(|e| {
-		anyhow!("{}{}", crate::describe(&e, signer.period.is_some()), defaulted_note(signer))
-	})?;
+	let from = finalized_number(conn).await? + 1;
+	let attempts = std::sync::atomic::AtomicU32::new(0);
+	conn.call(|client| {
+		let (bytes, attempts) = (&bytes, &attempts);
+		async move {
+			let again = attempts.fetch_add(1, std::sync::atomic::Ordering::Relaxed) > 0;
+			match client.submit(bytes).await {
+				Ok(_) => Ok(()),
+				Err(e) if sent_already(&e.to_string(), again) => Ok(()),
+				Err(e) => Err(anyhow!(
+					"{}{}",
+					crate::describe(&e, signer.period.is_some()),
+					defaulted_note(signer)
+				)),
+			}
+		}
+	})
+	.await?;
 	nonces.insert(account.clone(), nonce + 1);
 	Ok(Pending {
 		hash: tx_hash(&bytes),
@@ -558,17 +707,16 @@ fn defaulted_note(signer: &Signer) -> String {
 /// Tops up every account in `accounts` to `amount` spendable from `funder`, and waits until
 /// the top-ups are final. Returns how many it topped up.
 async fn fund(
-	client: &Client,
+	conn: &mut Conn,
 	signer: &Signer,
 	funder: &Key,
 	accounts: &[Vec<u8>],
 	amount: u128,
 	timeout: Duration,
 ) -> Result<usize> {
-	let head = client.finalized_now().await?;
 	let mut transfers = Vec::new();
 	for account in accounts {
-		let spendable = account_at(&head, account).await?.1;
+		let spendable = finalized_account(conn, account).await?.1;
 		if spendable < amount {
 			transfers.push(signer.transfer(account, amount - spendable)?);
 		}
@@ -606,21 +754,20 @@ async fn fund(
 	let mut nonces = HashMap::new();
 	let mut pending = Vec::new();
 	for call in &batches {
-		pending.push(send(client, signer, funder, call, &mut nonces).await.context("funding")?);
+		pending.push(send(conn, signer, funder, call, &mut nonces).await.context("funding")?);
 	}
 	eprintln!("submitted {} funding transactions for {topped} accounts", pending.len());
 	while !pending.is_empty() {
 		tokio::time::sleep(Duration::from_secs(1)).await;
-		let mut done = resolve(client, &pending, timeout).await?;
+		let mut done = resolve(conn, &pending, timeout).await?;
 		done.sort_by_key(|(i, _)| std::cmp::Reverse(*i));
 		for (i, result) in done {
 			result.context("funding transaction")?;
 			pending.remove(i);
 		}
 	}
-	let head = client.finalized_now().await?;
 	for account in accounts {
-		let spendable = account_at(&head, account).await?.1;
+		let spendable = finalized_account(conn, account).await?.1;
 		ensure!(
 			spendable >= amount,
 			"funding failed: {} can spend {spendable}, less than {amount}",
@@ -638,10 +785,99 @@ impl Drop for Remove {
 	}
 }
 
+/// One line of the call file's runner.
+#[derive(Debug, PartialEq, Eq)]
+enum FromRunner {
+	/// A setup transaction to sign (by the seed, or test account `from`), send and wait for.
+	Submit { id: u64, call: Vec<u8>, from: Option<u64> },
+	/// The call data of the next transaction.
+	Call(Vec<u8>),
+	/// Every call was written: how many.
+	Done(u64),
+}
+
+/// Reads one line of the runner.
+fn from_runner(line: &str) -> Result<FromRunner> {
+	let message: Value = serde_json::from_str(line).with_context(|| {
+		let start: String = line.chars().take(200).collect();
+		format!("the call file's runner wrote a line that is not JSON: {start:?}")
+	})?;
+	let hex = |v: &Value, what: &str| {
+		hex::decode(polkameter_plugin_sdk::strip_0x(v.as_str().unwrap_or_default()))
+			.with_context(|| format!("{what} must be hex call data"))
+	};
+	if let Some(error) = message["error"].as_str() {
+		bail!("the call file failed: {error}");
+	}
+	if !message["call"].is_null() {
+		return Ok(FromRunner::Call(hex(&message["call"], "a call")?));
+	}
+	if let Some(done) = message["done"].as_u64() {
+		return Ok(FromRunner::Done(done));
+	}
+	let id = message["id"].as_u64().context("runner message without id")?;
+	Ok(FromRunner::Submit {
+		id,
+		call: hex(&message["submit"], "submit")?,
+		from: message["from"].as_u64(),
+	})
+}
+
+/// The call file's runner, started by node next to the call file, and its init line sent.
+struct Runner {
+	child: tokio::process::Child,
+	stdin: tokio::process::ChildStdin,
+	_remove: Remove,
+}
+
+/// What the runner writes, line by line.
+type RunnerLines = tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>;
+
+/// The next line of the runner, or an error when it exited without saying it was done.
+async fn next_from(lines: &mut RunnerLines) -> Result<FromRunner> {
+	let line = lines.next_line().await?.context(
+		"the call file's runner exited before it returned every call; see the plugin log",
+	)?;
+	from_runner(&line)
+}
+
+impl Runner {
+	async fn start(script: &Path, target: &str, init: &Value) -> Result<(Self, RunnerLines)> {
+		let script = script
+			.canonicalize()
+			.with_context(|| format!("call file {}", script.display()))?;
+		let dir = script.parent().context("call file has no directory")?;
+		let runner = dir.join(format!(".polkameter-calls-{}.mjs", std::process::id()));
+		std::fs::write(&runner, RUNNER)
+			.with_context(|| format!("cannot write {}", runner.display()))?;
+		let remove = Remove(runner.clone());
+		let mut child = tokio::process::Command::new("node")
+			.arg(&runner)
+			.arg(&script)
+			.arg(target)
+			.current_dir(dir)
+			.stdin(std::process::Stdio::piped())
+			.stdout(std::process::Stdio::piped())
+			.kill_on_drop(true)
+			.spawn()
+			.context("cannot start node (calls mode needs Node.js 22.18 or later on PATH)")?;
+		let mut stdin = child.stdin.take().context("runner stdin")?;
+		let lines =
+			tokio::io::BufReader::new(child.stdout.take().context("runner stdout")?).lines();
+		stdin.write_all(format!("{init}\n").as_bytes()).await?;
+		Ok((Self { child, stdin, _remove: remove }, lines))
+	}
+
+	async fn reply(&mut self, reply: &Value) -> Result<()> {
+		Ok(self.stdin.write_all(format!("{reply}\n").as_bytes()).await?)
+	}
+}
+
 /// Runs the call file with node: its `setup` (whose transactions this signs, sends and waits
-/// for), then `call` for each of `count` transactions. Returns the call data.
+/// for), then `call` for each of `count` transactions, streamed one per line. Returns the call
+/// data.
 async fn run_script(
-	client: &Client,
+	conn: &mut Conn,
 	script: &Path,
 	target: &str,
 	seed: &Key,
@@ -649,87 +885,56 @@ async fn run_script(
 	count: u32,
 	timeout: Duration,
 ) -> Result<Vec<Vec<u8>>> {
-	let script = script
-		.canonicalize()
-		.with_context(|| format!("call file {}", script.display()))?;
-	let dir = script.parent().context("call file has no directory")?;
-	let runner = dir.join(format!(".polkameter-calls-{}.mjs", std::process::id()));
-	std::fs::write(&runner, RUNNER)
-		.with_context(|| format!("cannot write {}", runner.display()))?;
-	let _remove = Remove(runner.clone());
-	let mut child = tokio::process::Command::new("node")
-		.arg(&runner)
-		.arg(&script)
-		.arg(target)
-		.current_dir(dir)
-		.stdin(std::process::Stdio::piped())
-		.stdout(std::process::Stdio::piped())
-		.kill_on_drop(true)
-		.spawn()
-		.context("cannot start node (calls mode needs Node.js 22.18 or later on PATH)")?;
-	let mut stdin = child.stdin.take().context("runner stdin")?;
-	let mut lines =
-		tokio::io::BufReader::new(child.stdout.take().context("runner stdout")?).lines();
 	let accounts: Vec<String> = keys.iter().map(|k| show(&k.account())).collect();
 	let init = json!({"accounts": accounts, "seedAccount": show(&seed.account()), "count": count});
-	stdin.write_all(format!("{init}\n").as_bytes()).await?;
+	let (mut runner, mut lines) = Runner::start(script, target, &init).await?;
 	// Setup transactions are signed against the head when they are sent.
-	let mut signer = Signer::new(client, Some(64)).await?;
+	let mut signer = conn.call(|c| async move { Signer::new(&c, Some(64)).await }).await?;
 	let mut nonces = HashMap::new();
 	let mut pending: Vec<(u64, Pending)> = Vec::new();
 	let mut tick = tokio::time::interval(Duration::from_secs(1));
-	let mut calls = None;
-	while calls.is_none() || !pending.is_empty() {
+	let mut calls = Vec::with_capacity(count as usize);
+	let mut done = false;
+	while !done || !pending.is_empty() {
 		tokio::select! {
-			line = lines.next_line(), if calls.is_none() => {
-				let line = line?.context("the call file's runner exited without returning calls; see the plugin log")?;
-				let message: Value = serde_json::from_str(&line).with_context(|| format!("runner wrote {line:?}"))?;
-				if let Some(error) = message["error"].as_str() {
-					bail!("the call file failed: {error}");
-				}
-				if let Some(list) = message["calls"].as_array() {
-					let decoded = list
-						.iter()
-						.map(|c| hex::decode(polkameter_plugin_sdk::strip_0x(c.as_str().unwrap_or_default())))
-						.collect::<Result<Vec<_>, _>>()
-						.context("calls must be hex call data")?;
-					calls = Some(decoded);
-					continue;
-				}
-				let id = message["id"].as_u64().context("runner message without id")?;
-				let call = hex::decode(polkameter_plugin_sdk::strip_0x(message["submit"].as_str().unwrap_or_default()))
-					.context("submit must be hex call data")?;
-				let key = match message["from"].as_u64() {
-					None => seed,
-					Some(i) => keys.get(i as usize).with_context(|| format!("setup sends from account {i}, but there are {}", keys.len()))?,
-				};
-				if signer.block_number() + 32 < client.finalized_now().await?.block_number() {
-					signer = Signer::new(client, Some(64)).await?;
-				}
-				match send(client, &signer, key, &call, &mut nonces).await {
-					Ok(p) => pending.push((id, p)),
-					Err(e) => stdin.write_all(format!("{}\n", json!({"id": id, "error": e.to_string()})).as_bytes()).await?,
-				}
+			message = next_from(&mut lines), if !done => match message? {
+				FromRunner::Call(call) => calls.push(call),
+				FromRunner::Done(n) => {
+					ensure!(n == calls.len() as u64, "the call file's runner wrote {} calls and said {n}", calls.len());
+					done = true;
+				},
+				FromRunner::Submit { id, call, from } => {
+					let key = match from {
+						None => seed,
+						Some(i) => keys.get(i as usize).with_context(|| format!("setup sends from account {i}, but there are {}", keys.len()))?,
+					};
+					if signer.block_number() + 32 < finalized_number(conn).await? {
+						signer = conn.call(|c| async move { Signer::new(&c, Some(64)).await }).await?;
+					}
+					match send(conn, &signer, key, &call, &mut nonces).await {
+						Ok(p) => pending.push((id, p)),
+						Err(e) => runner.reply(&json!({"id": id, "error": format!("{e:#}")})).await?,
+					}
+				},
 			},
 			_ = tick.tick(), if !pending.is_empty() => {
 				let list: Vec<Pending> = pending.iter().map(|(_, p)| Pending { hash: p.hash, signer: p.signer.clone(), nonce: p.nonce, from: p.from, sent: p.sent }).collect();
-				let mut done = resolve(client, &list, timeout).await?;
-				done.sort_by_key(|(i, _)| std::cmp::Reverse(*i));
-				for (i, result) in done {
+				let mut resolved = resolve(conn, &list, timeout).await?;
+				resolved.sort_by_key(|(i, _)| std::cmp::Reverse(*i));
+				for (i, result) in resolved {
 					let (id, p) = pending.remove(i);
 					let reply = match result {
 						Ok(()) => json!({"id": id, "ok": true, "hash": hex0x(p.hash)}),
 						Err(e) => json!({"id": id, "error": e.to_string()}),
 					};
 					// The runner may have exited after it returned its calls.
-					let _ = stdin.write_all(format!("{reply}\n").as_bytes()).await;
+					let _ = runner.reply(&reply).await;
 				}
 			},
 		}
 	}
-	drop(stdin);
-	let _ = child.wait().await;
-	let calls = calls.expect("loop ends with calls");
+	drop(runner.stdin);
+	let _ = runner.child.wait().await;
 	ensure!(
 		calls.len() == count as usize,
 		"the call file returned {} calls, expected {count}",
@@ -834,11 +1039,19 @@ pub async fn prepare_calls(inputs: &Value, context: &Context) -> Result<Value> {
 	let count = inputs::small(inputs, "count", 1..=inputs::MAX_COUNT, None)?;
 	let probes = inputs::small(inputs, "probes", 1..=inputs::MAX_PROBES, None)?;
 	let signers = inputs::Signers::parse(inputs)?;
-	let mortality = inputs::mortality(inputs)?;
+	let given = match &inputs["mortality"] {
+		Value::Null => None,
+		_ => Some(inputs::mortality(inputs)?),
+	};
 	let timeout =
 		Duration::from_secs(inputs::integer(inputs, "timeout-seconds", 1..=3_600, Some(120))?);
-	let client = crate::connect(&target).await?;
-	let signer = Signer::new(&client, mortality).await?;
+	let mut conn = Conn::open(&target).await?;
+	let mut signer = conn.call(|c| async move { Signer::new(&c, None).await }).await?;
+	// Without a mortality given, the longest that stays valid on this chain: it does not depend
+	// on the block time, which on some chains follows the load (a fork that builds a block per
+	// transaction), so the run and its reconciliation end long before it.
+	let mortality = given.unwrap_or_else(|| Some(safe_period(signer.metadata())));
+	signer.period = mortality;
 	let seed = seed_key(inputs::text(inputs, "seed")?, signer.format.eth)?;
 	let total = signers.flood + signers.probe;
 	let mut keys = derive(&seed, &signers.derivation, 0..total)?;
@@ -852,17 +1065,20 @@ pub async fn prepare_calls(inputs: &Value, context: &Context) -> Result<Value> {
 	// existential deposits each.
 	let amount = match &inputs["amount"] {
 		Value::Null => {
-			let spendable = account_at(&client.finalized_now().await?, &seed.account()).await?.1;
-			let ed = client.existential_deposit().await.unwrap_or(1);
+			let spendable = finalized_account(&mut conn, &seed.account()).await?.1;
+			let ed = conn
+				.call(|c| async move { Ok(c.existential_deposit().await?) })
+				.await
+				.unwrap_or(1);
 			(spendable / (2 * (u128::from(total) + 1))).min(ed.saturating_mul(1_000_000))
 		},
 		_ => inputs::amount(inputs, "amount", None)?,
 	};
-	let funded = fund(&client, &signer, &seed, &accounts, amount, timeout).await?;
+	let funded = fund(&mut conn, &signer, &seed, &accounts, amount, timeout).await?;
 	eprintln!("funded {funded} of {} test accounts with {amount}", accounts.len());
 	let calls = match (&inputs["script"], &inputs["call"]) {
 		(Value::String(script), Value::Null) => {
-			run_script(&client, Path::new(script), &target, &seed, &keys, count, timeout).await?
+			run_script(&mut conn, Path::new(script), &target, &seed, &keys, count, timeout).await?
 		},
 		(Value::Null, Value::String(name)) => {
 			let args: Value = match &inputs["args"] {
@@ -874,12 +1090,14 @@ pub async fn prepare_calls(inputs: &Value, context: &Context) -> Result<Value> {
 		_ => bail!("give exactly one of the inputs script (a call file) or call (Pallet.call)"),
 	};
 	// Signed against the finalized head after setup, at the nonces the pool expects now.
-	let signer = Signer::new(&client, mortality).await?;
-	if let (Some(period), Ok(expected)) = (
-		mortality,
-		inputs::integer(inputs, "expected-seconds", 1..=inputs::MAX_EXPECTED_SECONDS, None),
-	) {
-		let block_s = client.recent_block_seconds().await?.unwrap_or(6.0);
+	let signer = conn.call(|c| async move { Signer::new(&c, mortality).await }).await?;
+	if let (Some(Some(period)), Ok(expected)) =
+		(given, inputs::integer(inputs, "expected-seconds", 1..=inputs::MAX_EXPECTED_SECONDS, None))
+	{
+		let block_s = conn
+			.call(|c| async move { Ok(c.recent_block_seconds().await?) })
+			.await?
+			.unwrap_or(6.0);
 		let lasts = era_period(period) as f64 * block_s;
 		ensure!(
 			lasts >= expected as f64,
@@ -888,7 +1106,7 @@ pub async fn prepare_calls(inputs: &Value, context: &Context) -> Result<Value> {
 	}
 	let mut base = Vec::new();
 	for key in keys.iter().chain(&probe_keys) {
-		base.push(next_nonce(&client, &key.account()).await?);
+		base.push(next_nonce(&mut conn, &key.account()).await?);
 	}
 	let n = keys.len();
 	let started = std::time::Instant::now();
@@ -921,9 +1139,17 @@ pub async fn prepare_calls(inputs: &Value, context: &Context) -> Result<Value> {
 		vec![("the first call", &flood[0].0), ("the last call", &flood[flood.len() - 1].0)];
 	checks.extend(probe_txs.iter().take(probe_keys.len()).map(|(b, _)| ("a probe", b)));
 	for (what, bytes) in checks {
-		client.validate(bytes, what).await.map_err(|e| {
-			anyhow!("{what} is refused: {}{}", crate::describe(&e, mortal), defaulted_note(&signer))
-		})?;
+		let signer = &signer;
+		conn.call(|c| async move {
+			c.validate(bytes, what).await.map_err(|e| {
+				anyhow!(
+					"{what} is refused: {}{}",
+					crate::describe(&e, mortal),
+					defaulted_note(signer)
+				)
+			})
+		})
+		.await?;
 	}
 	let prepared = |txs: Vec<(Vec<u8>, Value)>| -> Vec<PreparedTx> {
 		txs.into_iter()
@@ -935,7 +1161,7 @@ pub async fn prepare_calls(inputs: &Value, context: &Context) -> Result<Value> {
 	Ok(json!({
 		"flood": Artifact::write(dir, "calls-flood.json", &flood)?,
 		"probes": Artifact::write(dir, "calls-probes.json", &probe_txs)?,
-		"identity": crate::identity(&client).await?,
+		"identity": conn.call(|c| async move { crate::identity(&c).await }).await?,
 		"summary": {
 			"calls": flood.len(),
 			"probes": probe_txs.len(),
@@ -967,6 +1193,190 @@ mod tests {
 		assert!(eth::verify(&signature, b"payload", &k.public_key()));
 		assert!(seed_key("//Alice", true).is_err());
 		assert!(matches!(seed_key("//Alice", false).unwrap(), Key::Sr(_)));
+	}
+
+	/// A connection whose node stops answering: the request fails, the node is down for a few
+	/// tries, and the same request is made again on a new connection. An error from a node that
+	/// answers is returned at once.
+	#[tokio::test]
+	async fn a_dropped_connection_is_opened_again_and_the_request_made_again() {
+		use std::sync::{
+			Arc,
+			atomic::{AtomicBool, AtomicU32, Ordering},
+		};
+		// The connection: whether it still works. Opening a new one fails 5 times.
+		let opened = Arc::new(AtomicU32::new(0));
+		let tries = opened.clone();
+		let mut conn: Conn<Arc<AtomicBool>> = Conn {
+			conn: Arc::new(AtomicBool::new(false)),
+			connect: Box::new(move || {
+				let n = tries.fetch_add(1, Ordering::SeqCst);
+				Box::pin(async move {
+					if n < 5 {
+						bail!("connection refused")
+					} else {
+						Ok(Arc::new(AtomicBool::new(true)))
+					}
+				})
+			}),
+			alive: Box::new(|c: Arc<AtomicBool>| Box::pin(async move { c.load(Ordering::SeqCst) })),
+			budget: Duration::from_secs(2),
+			every: Duration::from_millis(10),
+		};
+		let sent = AtomicU32::new(0);
+		let value = conn
+			.call(|c| {
+				sent.fetch_add(1, Ordering::SeqCst);
+				async move { if c.load(Ordering::SeqCst) { Ok(7) } else { bail!("connection closed") } }
+			})
+			.await
+			.unwrap();
+		assert_eq!((value, sent.load(Ordering::SeqCst), opened.load(Ordering::SeqCst)), (7, 2, 6));
+		// The node answers with an error: not made again.
+		let error = conn.call(|_| async { Err::<(), _>(anyhow!("refused: bad nonce")) }).await;
+		assert!(error.unwrap_err().to_string().contains("bad nonce"));
+		assert_eq!(opened.load(Ordering::SeqCst), 6);
+		// Down for longer than the budget: an error that says so.
+		conn.conn.store(false, Ordering::SeqCst);
+		opened.store(0, Ordering::SeqCst);
+		conn.connect = Box::new(|| Box::pin(async { bail!("connection refused") }));
+		let error = conn.call(|_| async { Err::<(), _>(anyhow!("connection closed")) }).await;
+		assert!(format!("{:#}", error.unwrap_err()).contains("did not come back within 2 s"));
+	}
+
+	/// Sending the same signed bytes again is not a new transaction: the node's "already in the
+	/// pool" or, after a dropped connection, "nonce used" means they were sent.
+	#[test]
+	fn the_same_bytes_sent_again_count_as_sent() {
+		let imported = "author_submitExtrinsic: RPC error: 1013: Transaction Already Imported";
+		let stale =
+			"author_submitExtrinsic: RPC error: 1010: Invalid Transaction: Transaction is outdated";
+		assert!(sent_already(imported, false));
+		assert!(sent_already("1012: Transaction is temporarily banned", false));
+		assert!(!sent_already(stale, false), "a first send with a used nonce is an error");
+		assert!(sent_already(stale, true));
+		assert!(!sent_already("1010: Invalid Transaction: Inability to pay some fees", true));
+	}
+
+	/// A directory with a stand-in `polkadot-api` and `@polkadot-api/descriptors` (two chains),
+	/// and a call file: what a call file's runner needs, without a chain.
+	fn stub_project(name: &str, call_file: &str) -> PathBuf {
+		let dir =
+			std::env::temp_dir().join(format!("polkameter-runner-{name}-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&dir);
+		let write = |path: &str, text: &str| {
+			let path = dir.join(path);
+			std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+			std::fs::write(path, text).unwrap();
+		};
+		let package = |name: &str| {
+			format!(
+				r#"{{"name":"{name}","type":"module","exports":{{".":"./index.js","./ws":"./ws.js"}}}}"#
+			)
+		};
+		write("package.json", r#"{"type":"module"}"#);
+		write("node_modules/polkadot-api/package.json", &package("polkadot-api"));
+		// getTypedApi keys a WeakMap by the descriptor, as polkadot-api does.
+		write(
+			"node_modules/polkadot-api/index.js",
+			"const seen = new WeakMap();
+export const createClient = () => ({ getTypedApi: (d) => { seen.set(d, 1); return { chain: d.name } }, destroy() {} });
+",
+		);
+		write(
+			"node_modules/polkadot-api/ws.js",
+			"export const getWsProvider = () => ({});
+",
+		);
+		write(
+			"node_modules/@polkadot-api/descriptors/package.json",
+			&package("@polkadot-api/descriptors"),
+		);
+		write(
+			"node_modules/@polkadot-api/descriptors/index.js",
+			"export const alpha = { name: 'alpha', descriptors: {} };
+export const beta = { name: 'beta', descriptors: {} };
+",
+		);
+		write("calls.mjs", call_file);
+		dir
+	}
+
+	/// Runs a call file's runner to its end: replies ok to every setup transaction.
+	async fn run_runner(dir: &Path, count: u32) -> Result<Vec<Vec<u8>>> {
+		let init = json!({"accounts": ["a", "b"], "seedAccount": "s", "count": count});
+		let (mut runner, mut lines) =
+			Runner::start(&dir.join("calls.mjs"), "ws://x", &init).await?;
+		let mut calls = Vec::new();
+		loop {
+			match next_from(&mut lines).await? {
+				FromRunner::Call(call) => calls.push(call),
+				FromRunner::Done(n) => {
+					assert_eq!(n, calls.len() as u64);
+					return Ok(calls);
+				},
+				FromRunner::Submit { id, .. } => {
+					runner.reply(&json!({"id": id, "ok": true, "hash": "0x00"})).await?
+				},
+			}
+		}
+	}
+
+	fn have_node() -> bool {
+		std::process::Command::new("node")
+			.arg("--version")
+			.output()
+			.is_ok_and(|o| o.status.success())
+	}
+
+	/// 2000 calls of 300 bytes (1.2 MB of hex): far more than one pipe buffer, and every one
+	/// comes back whole, in order.
+	#[tokio::test]
+	async fn a_call_file_returns_calls_of_any_total_size() {
+		if !have_node() {
+			eprintln!("skipped: no node on PATH");
+			return;
+		}
+		let dir = stub_project(
+			"big",
+			"export const chain = 'alpha';
+export const call = ({ i }) => { const b = new Uint8Array(300).fill(i % 256); b[0] = i & 255; b[1] = i >> 8; return b };
+",
+		);
+		let calls = run_runner(&dir, 2000).await.unwrap();
+		assert_eq!(calls.len(), 2000);
+		for (i, call) in calls.iter().enumerate() {
+			assert_eq!((call.len(), call[0], call[1]), (300, (i & 255) as u8, (i >> 8) as u8));
+		}
+		let _ = std::fs::remove_dir_all(dir);
+	}
+
+	/// `export const chain = "beta"` names a chain of the descriptors; a name that is not one
+	/// is an error that lists them.
+	#[tokio::test]
+	async fn a_call_file_names_its_chain_by_key() {
+		if !have_node() {
+			eprintln!("skipped: no node on PATH");
+			return;
+		}
+		let dir = stub_project(
+			"key",
+			"export const chain = 'beta';
+export async function setup({ api, submit }) { await submit('0x0102'); return api.chain }
+export const call = ({ data }) => '0x' + Buffer.from(data).toString('hex');
+",
+		);
+		assert_eq!(run_runner(&dir, 1).await.unwrap(), vec![b"beta".to_vec()]);
+		std::fs::write(
+			dir.join("calls.mjs"),
+			"export const chain = 'gamma';
+export const call = () => '0x00';
+",
+		)
+		.unwrap();
+		let error = format!("{:#}", run_runner(&dir, 1).await.unwrap_err());
+		assert!(error.contains(r#"no chain "gamma"; it has alpha, beta"#), "{error}");
+		let _ = std::fs::remove_dir_all(dir);
 	}
 
 	#[test]
