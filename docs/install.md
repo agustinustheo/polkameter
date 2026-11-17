@@ -29,7 +29,7 @@ curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/insta
 
 ```sh
 cargo binstall polkameter --version 0.5.0    # or: cargo install --locked polkameter --version 0.5.0
-cargo install --locked --git https://github.com/agustinustheo/polkameter --tag v0.4.8 polkameter-substrate-plugin
+cargo install --locked --git https://github.com/agustinustheo/polkameter --tag v0.5.0 polkameter-substrate-plugin
 ```
 
 ## Download release archives
@@ -57,4 +57,4 @@ polkameter plugin install "$(command -v polkameter-substrate-plugin)"
 
 ## Versions
 
-Use one release everywhere. The plan's `<plugin id="substrate" version="…">` must equal the installed plugin's version. That's also the CLI's version, which `polkameter --version` prints. Fetch `dev-chain.sh` and the example plans from that release's tag, such as `v0.4.8`. In CI, set the action's `version` input to it too.
+Use one release everywhere. The plan's `<plugin id="substrate" version="…">` must equal the installed plugin's version. That's also the CLI's version, which `polkameter --version` prints. Fetch `dev-chain.sh` and the example plans from that release's tag, such as `v0.5.0`. In CI, set the action's `version` input to it too.
