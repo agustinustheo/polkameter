@@ -1,0 +1,13 @@
+{
+  "name": "darwinia-stress",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@noble/curves": "^2.4.0",
+    "@noble/hashes": "^2.4.0",
+    "@polkadot-api/descriptors": "file:.papi/descriptors",
+    "@polkadot-api/metadata-builders": "0.15.2",
+    "@polkadot-api/substrate-bindings": "0.21.2",
+    "polkadot-api": "3.3.0"
+  }
+}

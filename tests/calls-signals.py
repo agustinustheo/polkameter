@@ -7,7 +7,7 @@ runner (node) is alive, and one during the load. Each must exit within the shutd
 
 Needs the dev chain (scripts/dev-chain.sh start), the CLI and the substrate plugin built next to
 each other, and the template call file's dependencies with descriptors for the dev chain (npm
-install and npx papi add dev -w ws://127.0.0.1:9944 in examples/calls). From the repository root:
+install and npx papi add dev -w ws://127.0.0.1:9944 in examples/dev-chain). From the repository root:
 
     tests/calls-signals.py target/debug/polkameter target/dev-chain-runs/calls-signals
 """
@@ -19,7 +19,7 @@ import sys
 import time
 
 GRACE_S = 20
-CALLS = "examples/calls/template.calls.ts"
+CALLS = "examples/dev-chain/template.calls.ts"
 
 
 def ours(pattern):

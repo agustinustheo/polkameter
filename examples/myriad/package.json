@@ -1,0 +1,11 @@
+{
+  "name": "myriad-stress",
+  "version": "1.0.0",
+  "description": "",
+  "keywords": [],
+  "type": "module",
+  "dependencies": {
+    "@polkadot-api/descriptors": "file:.papi/descriptors",
+    "polkadot-api": "^3.3.0"
+  }
+}
