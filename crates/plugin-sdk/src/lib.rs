@@ -341,6 +341,12 @@ impl Response {
 	fn err(id: u64, error: impl Into<String>) -> Self {
 		Self { protocol: PROTOCOL, id, result: None, error: Some(error.into()) }
 	}
+	/// The response to request `id`: its result, or its error with every context, so a cause
+	/// such as a dispatch error is not lost behind the outermost message.
+	fn of(id: u64, result: Result<Value>) -> Self {
+		result
+			.map_or_else(|error| Self::err(id, format!("{error:#}")), |result| Self::ok(id, result))
+	}
 }
 /// A plugin: a manifest and the code behind its operations. Pass it to [`serve`].
 ///
@@ -399,10 +405,7 @@ pub async fn serve(mut plugin: impl Plugin) -> Result<()> {
 			Ok(result)
 		}
 		.await;
-		let response = result.map_or_else(
-			|error| Response::err(request.id, error.to_string()),
-			|result| Response::ok(request.id, result),
-		);
+		let response = Response::of(request.id, result);
 		let encoded = serde_json::to_vec(&response)?;
 		ensure!(
 			encoded.len() <= MAX_MESSAGE_BYTES,
@@ -578,6 +581,19 @@ pub struct StateCheckInput {
 mod tests {
 	use super::*;
 	use serde_json::json;
+
+	/// An operation error reaches PolkaMeter with its causes, such as the dispatch error of a
+	/// failed transaction.
+	#[test]
+	fn an_error_response_keeps_every_context() {
+		use anyhow::Context as _;
+		let error = Err::<Value, _>(anyhow::anyhow!("failed in block 7: Arithmetic(Underflow)"))
+			.context("funding transaction");
+		assert_eq!(
+			Response::of(1, error).error.as_deref(),
+			Some("funding transaction: failed in block 7: Arithmetic(Underflow)")
+		);
+	}
 
 	#[test]
 	fn manifest_round_trips_and_ignores_unknown_fields() {
