@@ -2668,7 +2668,7 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "polkameter"
-version = "0.5.0-rc.1"
+version = "0.5.0"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -2693,7 +2693,7 @@ dependencies = [
 
 [[package]]
 name = "polkameter-example-plugin"
-version = "0.5.0-rc.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "polkameter",
@@ -2704,7 +2704,7 @@ dependencies = [
 
 [[package]]
 name = "polkameter-plugin-sdk"
-version = "0.5.0-rc.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "hex",
@@ -2721,7 +2721,7 @@ dependencies = [
 
 [[package]]
 name = "polkameter-substrate-plugin"
-version = "0.5.0-rc.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "hex",

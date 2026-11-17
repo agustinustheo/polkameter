@@ -876,7 +876,7 @@ mod tests {
 			output: PathBuf::from("runs"),
 			plugin: None,
 		};
-		let xml = plan_xml(&args, "0.5.0-rc.1", 6.0).unwrap();
+		let xml = plan_xml(&args, "0.5.0", 6.0).unwrap();
 		let plan = Plan::parse(&xml).unwrap();
 		crate::engine::execute::validate_core_contracts(&plan).unwrap();
 		// Without --mortality the plugin picks it; it is not sized from the block time.
@@ -885,7 +885,7 @@ mod tests {
 		// At most 4 probe accounts are funded, however many probes the run has.
 		assert!(xml.contains(r#"<input name="probe-signers" value="4"/>"#), "{xml}");
 		let args = Args { mortality: Some(1024), recovery: None, ..args };
-		let xml = plan_xml(&args, "0.5.0-rc.1", 6.0).unwrap();
+		let xml = plan_xml(&args, "0.5.0", 6.0).unwrap();
 		assert!(xml.contains(r#"<input name="mortality" value="1024"/>"#), "{xml}");
 		assert!(xml.contains(r#"recovery-seconds="300""#), "{xml}");
 		// 1000 tx/s for 120 s is 126,064 calls: above the limit, refused before any setup.
@@ -961,7 +961,7 @@ mod tests {
 	}
 
 	/// Calls that fail in their blocks past the delivery tolerance (a tip below the chain's
-	/// minimum failed all 50 on Myriad and passed in 0.5.0-rc.1) cannot pass.
+	/// minimum failed all 50 on Myriad and passed in 0.5.0) cannot pass.
 	#[test]
 	fn calls_failing_in_their_blocks_cannot_pass() {
 		let ledger = rows(50, &row("failed-in-block", Some(1_000), Some(1_000), None));
