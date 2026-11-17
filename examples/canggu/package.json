@@ -1,0 +1,10 @@
+{
+  "name": "canggu-payroll-stress",
+  "private": true,
+  "type": "module",
+  "scripts": { "postinstall": "papi" },
+  "dependencies": {
+    "@polkadot-api/descriptors": "file:.papi/descriptors",
+    "polkadot-api": "3.3.0"
+  }
+}
