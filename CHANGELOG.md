@@ -6,7 +6,7 @@ User-visible changes in each release. The GitHub release notes list every merged
 
 ### Added
 
-- `polkameter calls` loads a chain with your own calls from a polkadot-api call file, without a plan or a plugin. PolkaMeter funds and signs for the test accounts, sends at a constant rate, reconciles every transaction against the finalized chain and exits 0 (PASS), 1 (FAIL), 4 (cannot tell) or 3 (setup failed). See [Calls mode](docs/calls-mode.md).
+- `polkameter calls` loads a chain with your own calls from a polkadot-api call file, without a plan or a plugin. PolkaMeter funds and signs for the test accounts, sends at a constant rate, reconciles every transaction against the finalized chain and exits 0 (PASS), 1 (FAIL), 4 (cannot tell) or 3 (setup failed). See [Calls mode](docs/calls-mode.md). A run that would sign more than 100,000 calls is refused with exit 2 before setup.
 
 ## 0.4.7 (2026-11-10)
 
