@@ -16,7 +16,7 @@ outages. The outage leaves the load short, so the verdict must be CANNOT TELL (e
 (exit 1), and summary.md must lead with the verdict of calls-verdict.json:
 
     tests/rpc-outage.py target/debug/polkameter target/dev-chain-runs/calls-outage \
-        --calls examples/calls/template.calls.ts
+        --calls examples/dev-chain/template.calls.ts
 """
 
 import asyncio

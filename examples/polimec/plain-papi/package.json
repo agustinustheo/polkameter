@@ -1,0 +1,12 @@
+{
+  "name": "polimec-stress",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@polkadot-api/metadata-builders": "0.15.2",
+    "@polkadot-api/substrate-bindings": "0.21.2",
+    "@polkadot-labs/hdkd": "0.0.32",
+    "@polkadot-labs/hdkd-helpers": "0.0.34",
+    "polkadot-api": "3.3.0"
+  }
+}
