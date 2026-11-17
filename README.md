@@ -48,7 +48,7 @@ echo 'export const call = ({ api, i }) => api.tx.TemplatePallet.do_something({ b
 polkameter calls --chain ws://127.0.0.1:9944 --seed //Alice --rate 5 --duration 60s --calls ./calls.ts --max-p95 30s
 ```
 
-It exits 0 on PASS, 1 on FAIL, 4 when it cannot tell and 3 when setup failed. [Calls mode](docs/calls-mode.md) has the call file's interface, the flags and the limits.
+It exits 0 on PASS, 1 on FAIL, 4 when it cannot tell and 3 when setup failed. [Calls mode](docs/calls-mode.md) has the call file's interface, the flags and the limits. [examples/](examples/) has calls-mode tests of nine real chains next to the plain polkadot-api tests they replace: a median of 43 lines against 309.
 
 ## Install
 

@@ -64,6 +64,8 @@ jobs:
         run: |
           cargo +${{ env.RUST_VERSION }} build -p polkameter --bin polkameter
           python3 tests/validate-plans.py
+      - name: Examples table matches the code
+        run: python3 examples/count-lines.py --check examples/README.md
       - name: Distribution tests
         run: |
           shellcheck install.sh

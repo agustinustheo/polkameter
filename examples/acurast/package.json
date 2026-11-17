@@ -1,0 +1,9 @@
+{
+  "name": "acurast-stress",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@polkadot-api/descriptors": "file:.papi/descriptors",
+    "polkadot-api": "3.3.0"
+  }
+}

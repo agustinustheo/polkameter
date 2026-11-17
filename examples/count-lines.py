@@ -1,30 +1,67 @@
 #!/usr/bin/env python3
-"""Fixed line-count rule (00-protocol.md). usage: count-lines.py <dir>
-Counts non-blank, non-comment lines of files the subject wrote. Excludes node_modules, .papi, generated
-descriptors, lockfiles, package.json, *.md, data/output files (.jsonl .log .csv .json except *config*.json), and
-anything under dirs named out/ results/ logs/ evidence/."""
+"""Count the lines of a stress test, the rule the examples' table uses.
+
+usage: count-lines.py <dir>                 every file in <dir>, file by file
+       count-lines.py --check <README.md>   recount every linked row of the table; exit 1 on a mismatch
+
+Counts non-blank, non-comment lines of code and config. Skips node_modules, .papi, generated
+descriptors, lockfiles, package.json, markdown, data and output files, and plain-papi/ when it
+counts a calls-mode test.
+"""
 import os, re, sys
+
 CODE = {".ts", ".mts", ".js", ".mjs", ".cjs", ".py", ".sh", ".toml", ".yaml", ".yml", ".xml", ".rs"}
 SKIPD = {"node_modules", ".papi", "descriptors", "out", "results", "logs", "evidence", ".git", "target"}
-tot = {}; per = []
-for root, ds, fs in os.walk(sys.argv[1]):
-    ds[:] = [d for d in ds if d not in SKIPD]
-    for f in fs:
-        ext = os.path.splitext(f)[1]
-        ok = ext in CODE or (ext == ".json" and "config" in f and f not in ("package.json", "package-lock.json"))
-        if not ok: continue
-        p = os.path.join(root, f); n = 0; blk = False
-        for line in open(p, errors="ignore"):
-            s = line.strip()
-            if blk:
-                if "*/" in s: blk = False
-                continue
-            if not s or s.startswith(("//", "#")): continue
-            if s.startswith("/*"):
-                if "*/" not in s: blk = True
-                continue
-            n += 1
-        per.append((n, os.path.relpath(p, sys.argv[1]))); kind = "config" if ext in {".toml", ".yaml", ".yml", ".json", ".xml"} else "code"
-        tot[kind] = tot.get(kind, 0) + n
-for n, p in sorted(per, reverse=True): print(f"{n:6d}  {p}")
-print(f"TOTAL code={tot.get('code',0)} config={tot.get('config',0)} all={sum(tot.values())}")
+
+
+def lines(path):
+    n, block = 0, False
+    for line in open(path, errors="ignore"):
+        s = line.strip()
+        if block:
+            block = "*/" not in s
+            continue
+        if not s or s.startswith(("//", "#")):
+            continue
+        if s.startswith("/*"):
+            block = "*/" not in s
+            continue
+        n += 1
+    return n
+
+
+def count(top, skip=()):
+    per = []
+    for root, dirs, files in os.walk(top):
+        dirs[:] = [d for d in dirs if d not in SKIPD and d not in skip]
+        for f in files:
+            ext = os.path.splitext(f)[1]
+            config = ext == ".json" and "config" in f and f not in ("package.json", "package-lock.json")
+            if ext in CODE or config:
+                p = os.path.join(root, f)
+                per.append((lines(p), os.path.relpath(p, top)))
+    return per
+
+
+def check(readme):
+    here, bad = os.path.dirname(os.path.abspath(readme)), 0
+    for row in open(readme):
+        m = re.match(r"\| \[[^]]+\]\(([^)/]+)/\) \|[^|]*\| (\d+) \| \d+ \| (\d+) \|", row)
+        if not m:
+            continue
+        name, plain, calls = m.group(1), int(m.group(2)), int(m.group(3))
+        got_plain = sum(n for n, _ in count(os.path.join(here, name, "plain-papi")))
+        got_calls = sum(n for n, _ in count(os.path.join(here, name), skip={"plain-papi"}))
+        ok = (got_plain, got_calls) == (plain, calls)
+        bad += not ok
+        print(f"{'ok ' if ok else 'BAD'} {name}: plain-papi {got_plain} (table {plain}), calls mode {got_calls} (table {calls})")
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    if sys.argv[1:2] == ["--check"]:
+        sys.exit(check(sys.argv[2]))
+    per = count(sys.argv[1])
+    for n, p in sorted(per, reverse=True):
+        print(f"{n:6d}  {p}")
+    print(f"TOTAL {sum(n for n, _ in per)}")
