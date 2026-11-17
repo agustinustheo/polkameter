@@ -162,9 +162,17 @@ fn plugin_path(given: Option<PathBuf>) -> Result<PathBuf, CliError> {
 /// Accounts that sign the probes, funded with the test accounts.
 const PROBE_SIGNERS: u32 = 4;
 
+/// The engine's limit on the transactions of one run.
+const MAX_CALLS: u64 = 100_000;
+
+/// The calls one run signs: the load with 5% headroom, plus one per account.
+fn call_count(args: &Args) -> u64 {
+	(args.rate * args.duration as f64 * 1.05).ceil() as u64 + u64::from(args.accounts)
+}
+
 /// The plan of the run, as XML.
 fn plan_xml(args: &Args, version: &str, block_s: f64) -> Result<String, CliError> {
-	let count = (args.rate * args.duration as f64 * 1.05).ceil() as u64 + u64::from(args.accounts);
+	let count = call_count(args);
 	let recovery = recovery_bound(args);
 	// Valid from signing through the last send and recovery (setup is before signing).
 	let expected = args.duration + u64::from(recovery) + 120;
@@ -374,6 +382,18 @@ fn verdict(rows: &[serde_json::Value], in_window: u64, target: u64, max_p95_ms: 
 			CANNOT_TELL,
 			"CANNOT TELL",
 			format!("the node refused {} transactions at submit", count("refused")),
+		);
+	}
+	// A call that fails in its block was run, but not as the load asked for: past the delivery
+	// tolerance, the chain was not shown to carry the load (for example a call below a minimum).
+	let failed = count("failed-in-block");
+	if (failed as f64) > (1.0 - DELIVERED) * sent as f64 {
+		return make(
+			CANNOT_TELL,
+			"CANNOT TELL",
+			format!(
+				"{failed} of {sent} transactions failed in their blocks (dispatch errors): check the calls; the events are in transactions.jsonl"
+			),
 		);
 	}
 	match p95_at_most {
@@ -662,6 +682,12 @@ pub async fn run(args: Args) -> Result<i32, CliError> {
 	if !(args.rate.is_finite() && args.rate > 0.0) || args.accounts == 0 {
 		return Err(CliError::invalid("--rate and --accounts must be above 0".into()));
 	}
+	if call_count(&args) > MAX_CALLS {
+		return Err(CliError::invalid(format!(
+			"{} calls (rate × duration + 5% + one per account) is above the limit of {MAX_CALLS} per run; lower --rate or --duration",
+			call_count(&args)
+		)));
+	}
 	let seed = args
 		.seed
 		.clone()
@@ -850,7 +876,7 @@ mod tests {
 			output: PathBuf::from("runs"),
 			plugin: None,
 		};
-		let xml = plan_xml(&args, "0.4.8", 6.0).unwrap();
+		let xml = plan_xml(&args, "0.5.0-rc.1", 6.0).unwrap();
 		let plan = Plan::parse(&xml).unwrap();
 		crate::engine::execute::validate_core_contracts(&plan).unwrap();
 		// Without --mortality the plugin picks it; it is not sized from the block time.
@@ -859,9 +885,14 @@ mod tests {
 		// At most 4 probe accounts are funded, however many probes the run has.
 		assert!(xml.contains(r#"<input name="probe-signers" value="4"/>"#), "{xml}");
 		let args = Args { mortality: Some(1024), recovery: None, ..args };
-		let xml = plan_xml(&args, "0.4.8", 6.0).unwrap();
+		let xml = plan_xml(&args, "0.5.0-rc.1", 6.0).unwrap();
 		assert!(xml.contains(r#"<input name="mortality" value="1024"/>"#), "{xml}");
 		assert!(xml.contains(r#"recovery-seconds="300""#), "{xml}");
+		// 1000 tx/s for 120 s is 126,064 calls: above the limit, refused before any setup.
+		let big = Args { rate: 1000.0, duration: 120, accounts: 64, ..args };
+		assert!(call_count(&big) > MAX_CALLS);
+		let small = Args { duration: 90, ..big };
+		assert!(call_count(&small) <= MAX_CALLS);
 	}
 
 	#[test]
@@ -924,9 +955,19 @@ mod tests {
 	#[test]
 	fn a_delivered_load_within_the_limit_passes() {
 		let mut ledger = rows(94, &row("finalized-ok", Some(5_000), Some(5_000), None));
-		ledger.extend(rows(6, &row("failed-in-block", None, Some(9_000), None)));
-		let v = verdict(&ledger, ledger.len() as u64, 100, 30_000);
-		assert_eq!((v.code, v.p95_at_least, v.p95_at_most), (0, Some(5_000), Some(9_000)), "{v:?}");
+		ledger.extend(rows(4, &row("failed-in-block", None, Some(9_000), None)));
+		let v = verdict(&ledger, ledger.len() as u64, 98, 30_000);
+		assert_eq!((v.code, v.p95_at_least, v.p95_at_most), (0, Some(5_000), Some(5_000)), "{v:?}");
+	}
+
+	/// Calls that fail in their blocks past the delivery tolerance (a tip below the chain's
+	/// minimum failed all 50 on Myriad and passed in 0.5.0-rc.1) cannot pass.
+	#[test]
+	fn calls_failing_in_their_blocks_cannot_pass() {
+		let ledger = rows(50, &row("failed-in-block", Some(1_000), Some(1_000), None));
+		let v = verdict(&ledger, 50, 50, 60_000);
+		assert_eq!(v.code, CANNOT_TELL, "{v:?}");
+		assert!(v.why.contains("50 of 50 transactions failed in their blocks"), "{}", v.why);
 	}
 
 	/// A chain proven slow on what it was given fails, even when the load fell short.

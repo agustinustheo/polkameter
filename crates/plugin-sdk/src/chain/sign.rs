@@ -269,7 +269,7 @@ impl TxBuilder {
 				let variant = pallet.error_variant_by_index(u8::try_from(code).ok()?)?;
 				Some(format!("{}.{}", pallet.name(), variant.name))
 			});
-		module.unwrap_or_else(|| {
+		module.or_else(|| crate::chain::value::variant_path(error)).unwrap_or_else(|| {
 			let text = error.to_string();
 			if text.len() > 200 { format!("{}...", &text[..200]) } else { text }
 		})

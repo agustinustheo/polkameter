@@ -1029,9 +1029,11 @@ async fn run_script(
 
 /// What each of `accounts` test accounts is topped up to by default: a share of what the seed
 /// can spend, at most a million existential deposits. With an existential deposit of 0 there
-/// is no such cap (a cap of 0 would fund nothing).
-fn default_amount(spendable: u128, accounts: u32, ed: u128) -> u128 {
-	let share = spendable / (2 * (u128::from(accounts) + 1));
+/// is no such cap (a cap of 0 would fund nothing). The share is of at most the total issuance:
+/// a seed can hold more (a fork's storage override), but pallet_balances refuses to transfer
+/// more than the issuance (`Arithmetic(Underflow)`).
+fn default_amount(spendable: u128, accounts: u32, ed: u128, issuance: u128) -> u128 {
+	let share = spendable.min(issuance) / (2 * (u128::from(accounts) + 1));
 	if ed == 0 { share } else { share.min(ed.saturating_mul(1_000_000)) }
 }
 
@@ -1064,8 +1066,8 @@ pub async fn prepare_calls(inputs: &Value, context: &Context) -> Result<Value> {
 		!accounts.contains(&seed.account()),
 		"the seed is one of the test accounts; use another derivation"
 	);
-	// Fund: the amount given, or a share of what the seed can spend, at most a million
-	// existential deposits each.
+	// Fund: the amount given, or a share of what the seed can spend (at most the total
+	// issuance), at most a million existential deposits each.
 	let amount = match &inputs["amount"] {
 		Value::Null => {
 			let spendable = finalized_account(&mut conn, &seed.account()).await?.1;
@@ -1073,7 +1075,21 @@ pub async fn prepare_calls(inputs: &Value, context: &Context) -> Result<Value> {
 				.call(|c| async move { Ok(c.existential_deposit().await?) })
 				.await
 				.unwrap_or(1);
-			default_amount(spendable, total, ed)
+			let issuance = conn
+				.call(|c| async move {
+					Ok(fetch::<(), u128>(
+						&c.finalized_now().await?,
+						"Balances",
+						"TotalIssuance",
+						(),
+					)
+					.await?)
+				})
+				.await
+				.ok()
+				.flatten()
+				.unwrap_or(u128::MAX);
+			default_amount(spendable, total, ed, issuance)
 		},
 		_ => inputs::amount(inputs, "amount", None)?,
 	};
@@ -1375,8 +1391,18 @@ export const call = () => '0x00';
 	/// An existential deposit of 0 does not cap the default funding at 0.
 	#[test]
 	fn default_funding_is_never_zero_for_a_seed_that_can_spend() {
-		assert_eq!(default_amount(1_000, 4, 0), 100);
-		assert_eq!(default_amount(1_000_000_000, 4, 1), 1_000_000);
-		assert_eq!(default_amount(1_000, 4, 1), 100);
+		assert_eq!(default_amount(1_000, 4, 0, u128::MAX), 100);
+		assert_eq!(default_amount(1_000_000_000, 4, 1, u128::MAX), 1_000_000);
+		assert_eq!(default_amount(1_000, 4, 1, u128::MAX), 100);
+	}
+
+	/// A seed given more than the total issuance (a fork's storage override) is funded from a
+	/// share of the issuance: pallet_balances refuses a transfer above it (`Underflow`).
+	#[test]
+	fn default_funding_stays_below_the_total_issuance() {
+		let (spendable, issuance) = (10u128.pow(27), 4_812_440_939_415_299_892_889_423);
+		let amount = default_amount(spendable, 12, 0, issuance);
+		assert!(amount > 0 && amount * 12 < issuance, "{amount}");
+		assert_eq!(default_amount(1_000, 4, 0, 10_000), 100);
 	}
 }

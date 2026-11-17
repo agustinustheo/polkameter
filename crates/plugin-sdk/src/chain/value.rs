@@ -56,6 +56,16 @@ pub fn variant_name(v: &Value) -> Option<&str> {
 	}
 }
 
+/// An enum of unit or single-field enums written as nested names, such as
+/// `Arithmetic(Underflow)` or `Token(FundsUnavailable)`; `None` for any other value.
+pub fn variant_path(v: &Value) -> Option<String> {
+	let name = variant_name(v)?;
+	match only_child(v) {
+		Some(inner) => Some(format!("{name}({})", variant_path(inner)?)),
+		None => children(v).next().is_none().then(|| name.to_owned()),
+	}
+}
+
 /// A number, through any single-field wrappers (`ParaId(u32)`, `Compact<u64>`).
 pub fn as_u64(v: &Value) -> Option<u64> {
 	match &v.value {
@@ -85,4 +95,21 @@ pub fn as_bytes32(v: &Value) -> Option<[u8; 32]> {
 		return bytes.try_into().ok();
 	}
 	as_bytes32(only_child(v)?)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn a_nested_unit_enum_reads_as_its_names() {
+		let underflow =
+			Value::unnamed_variant("Arithmetic", [Value::unnamed_variant("Underflow", [])]);
+		assert_eq!(variant_path(&underflow).as_deref(), Some("Arithmetic(Underflow)"));
+		assert_eq!(
+			variant_path(&Value::unnamed_variant("BadOrigin", [])).as_deref(),
+			Some("BadOrigin")
+		);
+		assert_eq!(variant_path(&Value::unnamed_variant("Other", [Value::u128(1)])), None);
+	}
 }
