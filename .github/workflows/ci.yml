@@ -122,6 +122,26 @@ jobs:
       # An 8 s RPC outage through a TCP proxy, the node fine: the run must not blame the chain.
       - name: RPC outage is not the chain's fault
         run: tests/rpc-outage.py target/debug/polkameter target/dev-chain-runs/rpc-outage
+      # Calls mode runs TypeScript call files with Node.js 22.18 or later.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Calls mode passes on the dev chain
+        run: |
+          (cd examples/calls && npm install --no-audit --no-fund && npx papi add dev -w ws://127.0.0.1:9944)
+          target/debug/polkameter calls --chain ws://127.0.0.1:9944 --seed //Alice --accounts 4 \
+            --rate 2 --duration 40s --calls examples/calls/template.calls.ts --max-p95 30s \
+            --output target/dev-chain-runs/calls
+          # 4 test accounts and at most 4 probe accounts are funded.
+          funded=$(sed -n 's/.*funded [0-9]* of \([0-9]*\) test accounts.*/\1/p' \
+            target/dev-chain-runs/calls/run-*/plugins/substrate/stderr.log)
+          test "$funded" -le 8
+          cat target/dev-chain-runs/calls/run-*/summary.md >> "$GITHUB_STEP_SUMMARY"
+      # The outage leaves the load short: CANNOT TELL (exit 4), never FAIL.
+      - name: Calls mode through an RPC outage
+        run: tests/rpc-outage.py target/debug/polkameter target/dev-chain-runs/calls-outage --calls examples/calls/template.calls.ts
+      - name: Calls mode stops on SIGTERM
+        run: tests/calls-signals.py target/debug/polkameter target/dev-chain-runs/calls-signals
       - name: Stop the dev chain
         if: always()
         run: scripts/dev-chain.sh stop

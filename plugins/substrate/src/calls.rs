@@ -1,5 +1,5 @@
 //! `prepare-calls`, the prepare step of `polkameter calls`: the user supplies only what to send
-//! (call data, from a call file or a `Pallet.call` with JSON arguments), and this does the rest:
+//! (call data, from a call file), and this does the rest:
 //! derives and funds the test accounts, runs the call file's setup, and signs every call at
 //! explicit, consecutive nonces with a mortality, for any runtime.
 //!
@@ -483,11 +483,27 @@ impl Conn<Client> {
 	/// A connection to `target`, opened again when it drops.
 	pub async fn open(target: &str) -> Result<Self> {
 		let deadline = tokio::time::Instant::now() + RECONNECT_BUDGET;
+		let mut progress = Progress::every(Duration::from_secs(10));
 		let client = loop {
 			match crate::connect(target).await {
 				Ok(client) => break client,
-				Err(e) if tokio::time::Instant::now() >= deadline => return Err(e),
-				Err(_) => tokio::time::sleep(Duration::from_secs(1)).await,
+				Err(e) if tokio::time::Instant::now() >= deadline => {
+					return Err(e.context(format!(
+						"no connection within {} s",
+						RECONNECT_BUDGET.as_secs()
+					)));
+				},
+				Err(e) => {
+					progress.say(|| {
+						format!(
+							"{e:#}; trying again for up to {} s",
+							deadline
+								.saturating_duration_since(tokio::time::Instant::now())
+								.as_secs()
+						)
+					});
+					tokio::time::sleep(Duration::from_secs(1)).await;
+				},
 			}
 		};
 		let url = target.to_owned();
@@ -524,11 +540,22 @@ impl<C: Clone + Send + 'static> Conn<C> {
 			if (self.alive)(self.conn.clone()).await {
 				return Err(error);
 			}
-			eprintln!("the connection dropped ({error:#}); opening it again");
+			eprintln!(
+				"the connection dropped ({error:#}); opening it again for up to {} s",
+				self.budget.as_secs()
+			);
+			let mut progress = Progress::every(Duration::from_secs(10));
+			progress.said();
 			loop {
+				progress.say(|| {
+					format!(
+						"still no connection; trying for up to {} s more",
+						deadline.saturating_duration_since(tokio::time::Instant::now()).as_secs()
+					)
+				});
 				if tokio::time::Instant::now() >= deadline {
 					return Err(error.context(format!(
-						"the connection did not come back within {} s",
+						"the connection to the node dropped and did not come back within {} s",
 						self.budget.as_secs()
 					)));
 				}
@@ -543,6 +570,34 @@ impl<C: Clone + Send + 'static> Conn<C> {
 		}
 	}
 }
+
+/// Prints a line of progress at most once per period, so that a long wait is never silent.
+struct Progress {
+	every: Duration,
+	last: Option<tokio::time::Instant>,
+}
+
+impl Progress {
+	fn every(every: Duration) -> Self {
+		Self { every, last: None }
+	}
+
+	/// Counts as having just printed.
+	fn said(&mut self) {
+		self.last = Some(tokio::time::Instant::now());
+	}
+
+	/// Prints `line()` unless a line was printed less than a period ago.
+	fn say(&mut self, line: impl FnOnce() -> String) {
+		if self.last.is_none_or(|t| t.elapsed() >= self.every) {
+			eprintln!("{}", line());
+			self.said();
+		}
+	}
+}
+
+/// How often a long wait says what it waits for.
+const PROGRESS: Duration = Duration::from_secs(20);
 
 /// Whether the node's refusal of a send of signed bytes means they were sent already: they are
 /// in the pool (or were, and are banned for a while after inclusion), or, when the same bytes
@@ -757,8 +812,18 @@ async fn fund(
 		pending.push(send(conn, signer, funder, call, &mut nonces).await.context("funding")?);
 	}
 	eprintln!("submitted {} funding transactions for {topped} accounts", pending.len());
+	let (started, mut progress) = (tokio::time::Instant::now(), Progress::every(PROGRESS));
+	progress.said();
 	while !pending.is_empty() {
 		tokio::time::sleep(Duration::from_secs(1)).await;
+		progress.say(|| {
+			format!(
+				"waiting for {} funding transactions to be final ({} s; at most {} s each)",
+				pending.len(),
+				started.elapsed().as_secs(),
+				timeout.as_secs()
+			)
+		});
 		let mut done = resolve(conn, &pending, timeout).await?;
 		done.sort_by_key(|(i, _)| std::cmp::Reverse(*i));
 		for (i, result) in done {
@@ -895,9 +960,16 @@ async fn run_script(
 	let mut tick = tokio::time::interval(Duration::from_secs(1));
 	let mut calls = Vec::with_capacity(count as usize);
 	let mut done = false;
+	let started = tokio::time::Instant::now();
+	let mut progress = Progress::every(PROGRESS);
+	progress.said();
+	// The call file must say something within `timeout` while no setup transaction is pending.
+	let mut heard = tokio::time::Instant::now();
 	while !done || !pending.is_empty() {
 		tokio::select! {
-			message = next_from(&mut lines), if !done => match message? {
+			message = next_from(&mut lines), if !done => {
+			heard = tokio::time::Instant::now();
+			match message? {
 				FromRunner::Call(call) => calls.push(call),
 				FromRunner::Done(n) => {
 					ensure!(n == calls.len() as u64, "the call file's runner wrote {} calls and said {n}", calls.len());
@@ -916,8 +988,20 @@ async fn run_script(
 						Err(e) => runner.reply(&json!({"id": id, "error": format!("{e:#}")})).await?,
 					}
 				},
-			},
-			_ = tick.tick(), if !pending.is_empty() => {
+			}},
+			_ = tick.tick() => {
+				if pending.is_empty() {
+					ensure!(
+						heard.elapsed() < timeout,
+						"the call file returned nothing for {} s ({} of {count} calls)",
+						timeout.as_secs(),
+						calls.len()
+					);
+					progress.say(|| format!("the call file returned {} of {count} calls ({} s)", calls.len(), started.elapsed().as_secs()));
+					continue;
+				}
+				heard = tokio::time::Instant::now();
+				progress.say(|| format!("waiting for {} setup transactions to be final ({} s; at most {} s each)", pending.len(), started.elapsed().as_secs(), timeout.as_secs()));
 				let list: Vec<Pending> = pending.iter().map(|(_, p)| Pending { hash: p.hash, signer: p.signer.clone(), nonce: p.nonce, from: p.from, sent: p.sent }).collect();
 				let mut resolved = resolve(conn, &list, timeout).await?;
 				resolved.sort_by_key(|(i, _)| std::cmp::Reverse(*i));
@@ -943,93 +1027,12 @@ async fn run_script(
 	Ok(calls)
 }
 
-/// A JSON argument as a SCALE value, with `$i` and `$account` replaced: numbers and digit
-/// strings are integers, `0x` strings bytes, arrays unnamed composites, an object with one
-/// capitalised key a variant (`{"Id": "$account"}`), any other object a named composite.
-pub fn json_value(json: &Value, i: u32, account: &[u8]) -> Result<ScaleValue> {
-	Ok(match json {
-		Value::Bool(b) => ScaleValue::bool(*b),
-		Value::Number(n) => match (n.as_u64(), n.as_i64()) {
-			(Some(u), _) => ScaleValue::u128(u.into()),
-			(None, Some(s)) => ScaleValue::i128(s.into()),
-			_ => bail!("argument {n} is not a whole number"),
-		},
-		Value::String(s) if s == "$i" => ScaleValue::u128(i.into()),
-		Value::String(s) if s == "$account" => ScaleValue::from_bytes(account),
-		Value::String(s) if s.starts_with("0x") => ScaleValue::from_bytes(
-			hex::decode(&s[2..]).with_context(|| format!("argument {s} is not hex"))?,
-		),
-		Value::String(s) if !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) => {
-			ScaleValue::u128(s.parse().with_context(|| format!("argument {s}"))?)
-		},
-		Value::String(s) => ScaleValue::string(s.clone()),
-		Value::Array(items) => ScaleValue::unnamed_composite(
-			items.iter().map(|v| json_value(v, i, account)).collect::<Result<Vec<_>>>()?,
-		),
-		Value::Object(map)
-			if map.len() == 1 && map.keys().all(|k| k.starts_with(char::is_uppercase)) =>
-		{
-			let (name, inner) = map.iter().next().expect("one key");
-			let fields = match inner {
-				Value::Null => Vec::new(),
-				Value::Array(items) => {
-					items.iter().map(|v| json_value(v, i, account)).collect::<Result<_>>()?
-				},
-				other => vec![json_value(other, i, account)?],
-			};
-			ScaleValue::unnamed_variant(name.clone(), fields)
-		},
-		Value::Object(map) => ScaleValue::named_composite(
-			map.iter()
-				.map(|(k, v)| Ok((k.clone(), json_value(v, i, account)?)))
-				.collect::<Result<Vec<_>>>()?,
-		),
-		Value::Null => bail!("argument null is not supported"),
-	})
-}
-
-/// `count` calls of `pallet.call(args)` without a call file. `args` is a JSON array of the
-/// call's arguments in order, or an object of them by name.
-fn simple_calls(
-	signer: &Signer,
-	name: &str,
-	args: &Value,
-	keys: &[Key],
-	count: u32,
-) -> Result<Vec<Vec<u8>>> {
-	let (pallet, call) = name
-		.split_once('.')
-		.with_context(|| format!("input call must be Pallet.call, got {name:?}"))?;
-	let variant = signer
-		.metadata()
-		.pallet_by_name(pallet)
-		.and_then(|p| p.call_variant_by_name(call))
-		.with_context(|| format!("the runtime has no call {name}"))?;
-	let names: Vec<String> =
-		variant.fields.iter().map(|f| f.name.clone().unwrap_or_default()).collect();
-	(0..count)
-		.map(|i| {
-			let account = keys[i as usize % keys.len()].account();
-			let fields = match args {
-				Value::Array(items) => {
-					items.iter().map(|v| json_value(v, i, &account)).collect::<Result<Vec<_>>>()?
-				},
-				Value::Object(map) => names
-					.iter()
-					.map(|n| {
-						json_value(
-							map.get(n).with_context(|| format!("input args has no {n}"))?,
-							i,
-							&account,
-						)
-					})
-					.collect::<Result<Vec<_>>>()?,
-				Value::Null => Vec::new(),
-				other => bail!("input args must be a JSON array or object, got {other}"),
-			};
-			signer.call_data(pallet, call, fields)
-		})
-		.collect()
+/// What each of `accounts` test accounts is topped up to by default: a share of what the seed
+/// can spend, at most a million existential deposits. With an existential deposit of 0 there
+/// is no such cap (a cap of 0 would fund nothing).
+fn default_amount(spendable: u128, accounts: u32, ed: u128) -> u128 {
+	let share = spendable / (2 * (u128::from(accounts) + 1));
+	if ed == 0 { share } else { share.min(ed.saturating_mul(1_000_000)) }
 }
 
 /// The `prepare-calls` operation.
@@ -1070,25 +1073,15 @@ pub async fn prepare_calls(inputs: &Value, context: &Context) -> Result<Value> {
 				.call(|c| async move { Ok(c.existential_deposit().await?) })
 				.await
 				.unwrap_or(1);
-			(spendable / (2 * (u128::from(total) + 1))).min(ed.saturating_mul(1_000_000))
+			default_amount(spendable, total, ed)
 		},
 		_ => inputs::amount(inputs, "amount", None)?,
 	};
 	let funded = fund(&mut conn, &signer, &seed, &accounts, amount, timeout).await?;
 	eprintln!("funded {funded} of {} test accounts with {amount}", accounts.len());
-	let calls = match (&inputs["script"], &inputs["call"]) {
-		(Value::String(script), Value::Null) => {
-			run_script(&mut conn, Path::new(script), &target, &seed, &keys, count, timeout).await?
-		},
-		(Value::Null, Value::String(name)) => {
-			let args: Value = match &inputs["args"] {
-				Value::String(s) => serde_json::from_str(s).context("input args must be JSON")?,
-				other => other.clone(),
-			};
-			simple_calls(&signer, name, &args, &keys, count)?
-		},
-		_ => bail!("give exactly one of the inputs script (a call file) or call (Pallet.call)"),
-	};
+	let script = inputs::text(inputs, "script")?;
+	let calls =
+		run_script(&mut conn, Path::new(script), &target, &seed, &keys, count, timeout).await?;
 	// Signed against the finalized head after setup, at the nonces the pool expects now.
 	let signer = conn.call(|c| async move { Signer::new(&c, mortality).await }).await?;
 	if let (Some(Some(period)), Ok(expected)) =
@@ -1379,17 +1372,11 @@ export const call = () => '0x00';
 		let _ = std::fs::remove_dir_all(dir);
 	}
 
+	/// An existential deposit of 0 does not cap the default funding at 0.
 	#[test]
-	fn json_arguments_become_values() {
-		let v = json_value(&json!({"Id": "$account"}), 3, &[7; 32]).unwrap();
-		assert_eq!(
-			v.to_string(),
-			ScaleValue::unnamed_variant("Id", [ScaleValue::from_bytes([7; 32])]).to_string()
-		);
-		assert_eq!(json_value(&json!("$i"), 3, &[]).unwrap(), ScaleValue::u128(3));
-		assert_eq!(
-			json_value(&json!("1000000000000000000000"), 0, &[]).unwrap(),
-			ScaleValue::u128(10u128.pow(21))
-		);
+	fn default_funding_is_never_zero_for_a_seed_that_can_spend() {
+		assert_eq!(default_amount(1_000, 4, 0), 100);
+		assert_eq!(default_amount(1_000_000_000, 4, 1), 1_000_000);
+		assert_eq!(default_amount(1_000, 4, 1), 100);
 	}
 }

@@ -161,12 +161,13 @@ pub fn manifest() -> Manifest {
 			(
 				"prepare-calls".into(),
 				operation(
-					"Fund test accounts, run a call file's setup, and sign its calls (or Pallet.call with JSON args) for any runtime",
+					"Fund test accounts, run a call file's setup, and sign its calls for any runtime",
 					&[
 						("target", Schema::String),
 						("seed", Schema::String),
 						("count", Schema::Integer),
 						("probes", Schema::Integer),
+						("script", Schema::String),
 					],
 					&[
 						("derivation", Schema::String),
@@ -176,9 +177,6 @@ pub fn manifest() -> Manifest {
 						("expected-seconds", Schema::Integer),
 						("timeout-seconds", Schema::Integer),
 						("amount", Schema::Json),
-						("script", Schema::String),
-						("call", Schema::String),
-						("args", Schema::Json),
 					],
 					&[
 						("flood", Schema::Json),

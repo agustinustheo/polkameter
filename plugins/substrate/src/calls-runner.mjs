@@ -4,8 +4,14 @@
 // {id, ok, hash} or {id, error}. Out: {id, submit: <hex call>, from: null | <account index>} for
 // setup transactions, then one {call: <hex call>} per transaction in order, then {done: <count>};
 // or {error}. Calls are streamed one per line, so there is no limit on their total size.
+import { unlinkSync } from "node:fs";
 import { createInterface } from "node:readline";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+// Loaded: this file is not needed any more, and a plugin killed by a signal can't remove it.
+try {
+	unlinkSync(fileURLToPath(import.meta.url));
+} catch {}
 
 const [file, url] = process.argv.slice(2);
 // Waits until the line is handed to the pipe: on macOS a pipe is asynchronous, and exiting with

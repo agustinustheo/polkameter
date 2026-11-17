@@ -2,8 +2,6 @@
 
 Calls mode loads a chain with your own calls, without a plan or a plugin. You say what to send. PolkaMeter does the rest: it funds the test accounts, signs every call, sends at a constant rate and reconciles each transaction against the finalized chain.
 
-Calls mode is a prototype on the `feat/calls-mode` branch.
-
 ## Run a call file
 
 A call file is a JavaScript or TypeScript module. It builds calls with [polkadot-api](https://papi.how) (PAPI) and its generated types. You need Node.js 22.18 or later; Node.js runs `.ts` files without a build step.
@@ -56,24 +54,14 @@ Transaction `i` is signed by test account `i % accounts`. Calls must not depend 
 
 `call` runs once per transaction before the clock starts, and PolkaMeter reads the calls one by one, so their number and size have no limit.
 
-## One call without a file
-
-For a call whose arguments need no code, skip the file:
-
-```sh
-polkameter calls --chain ws://127.0.0.1:9944 --seed //Alice --rate 5 --duration 60s \
-  --call TemplatePallet.do_something --args '{"bn": "$i"}'
-```
-
-`--args` is a JSON array of the arguments in order, or an object by name. `"$i"` is the transaction's index and `"$account"` its signer. Numbers and digit strings are integers, `0x` strings are bytes, and an object with one capitalized key is a variant, such as `{"Id": "$account"}`.
-
 ## What PolkaMeter does
 
-- Measures the block time as the run's preflight does. On a chain that has just started, it waits for enough blocks first (at most 2 minutes).
-- Derives `--accounts` test accounts from `--seed` (`//polkameter//0`, `//polkameter//1`, and so on), plus probe accounts, and tops each up from the seed.
+- Checks the runtime and measures the block time from blocks built after it starts, watching for up to 30 seconds. A chain that builds no block in that time, such as a Chopsticks fork that builds blocks only on demand, gets the runtime's slot duration (or 6 seconds), and PolkaMeter prints that it did.
+- Derives `--accounts` test accounts from `--seed` (`//polkameter//0`, `//polkameter//1`, and so on), plus at most 4 probe accounts, and tops each up from the seed.
 - Signs each call against a finalized block, at consecutive nonces per account. It never skips or re-signs a nonce. After a dropped connection, it sends the same signed bytes again.
 - Signs with the longest mortality the chain keeps: 4096 blocks, or less when `System.BlockHashCount` is lower. It doesn't depend on the block time, which on some chains follows the load (a Chopsticks fork builds a block per transaction).
-- Opens a dropped connection again during setup, for up to 90 seconds, and repeats the read or sends the same signed bytes. Funding and setup transactions are never sent twice.
+- Opens a dropped connection again before and during setup, for up to 90 seconds, and repeats the read or sends the same signed bytes. Funding and setup transactions are never sent twice. When the connection doesn't come back, it exits 3 and names the cause.
+- Prints progress at least every 30 seconds, including the substrate plugin's progress during setup, so that no wait is silent.
 - Sends at `--rate` for `--duration`: exactly rate × duration transactions, each at its own time from the start. If fewer than 95% of them are sent, the verdict is CANNOT TELL, not PASS. Transactions it could not send during an outage are not sent later.
 - After the load, keeps watching the chain until every transaction is in a block, for at most `--recovery` seconds.
 - Reconciles every hash against the finalized chain and gives each one category (see [Output](#output)).
@@ -88,7 +76,7 @@ It signs for `AccountId32` runtimes with sr25519 keys and for `AccountId20` runt
 | 0 | PASS | The load was delivered, every transaction resolved, none lost, and the p95 is proven at most `--max-p95` |
 | 1 | FAIL | The chain is proven to miss a threshold on the load it was given |
 | 4 | CANNOT TELL | Not a proven FAIL, and the load was not delivered or something is unresolved |
-| 3 | | Setup failed (connection, funding, the call file), before the load |
+| 3 | | Setup failed (connection, funding, the call file, an unsupported runtime), before the load |
 | 2 | | Invalid flags |
 
 ### How the verdict is decided
@@ -107,7 +95,9 @@ One rule, in this order. The first that holds decides.
    - the p95 is not proven within the limit, because transactions PolkaMeter could not time might be slower.
 3. **PASS** otherwise.
 
-The verdict is computed from `transactions.jsonl` alone. PolkaMeter's own problems can't give a FAIL: its reconnects and pauses (a transaction it could not time proves nothing), a load it could not deliver, its probes, or a chain that builds no block until a transaction arrives, such as a Chopsticks fork. The engine's own verdict in `summary.md` can FAIL on these. It is reported as `engineVerdict` but not used.
+The verdict is computed from `transactions.jsonl` alone. PolkaMeter's own problems can't give a FAIL: its reconnects and pauses (a transaction it could not time proves nothing), a load it could not deliver, its probes, or a chain that builds no block until a transaction arrives, such as a Chopsticks fork. The engine's own verdict can FAIL on these. `summary.md` starts with the calls verdict and keeps the engine's report below it as diagnostics; `calls-verdict.json` has the engine's result as `engineVerdict`, which is not used.
+
+SIGINT or SIGTERM stops the run, the substrate plugin and the call file's runner, within the shutdown grace of 20 seconds. The run has no verdict and exits 130 or 143.
 
 ## Output
 
@@ -138,7 +128,7 @@ The run directory under `--output` (default `polkameter-runs`) holds the usual f
 | `refused` | The node rejected it at submit; it was never in a block |
 | `unresolved` | Anything else: it may still be included, or its end has no proof |
 
-`calls-verdict.json` counts the categories in `categories`, which add up to `sent`. It also has `verdict`, `exitCode`, `reason`, `target` (rate × duration) and `sent`. For latency it has `p95FinalizedMs` (over the timed transactions) and the proven bounds `p95AtLeastMs` and `p95AtMostMs` (over every transaction sent; `null` means no bound).
+`calls-verdict.json` counts the categories in `categories`, which add up to `sent`. It also has `verdict`, `exitCode`, `reason`, `target` (rate × duration), `sent`, `sentInWindow` (first submitted in the load window, up to 2 s after its end) and `deliveredRate` (`sentInWindow` per second of the duration). The same delivered rate is printed on standard output. For latency it has `p95FinalizedMs` (over the timed transactions) and the proven bounds `p95AtLeastMs` and `p95AtMostMs` (over every transaction sent; `null` means no bound).
 
 A transaction that expired after being sent with less than half its mortality left is `unresolved`, not `lost`: the mortality it was signed with ended it, not the chain.
 
@@ -152,9 +142,8 @@ A transaction that expired after being sent with less than half its mortality le
 | `--rate` | | Transactions per second |
 | `--duration` | | How long to send, such as `60s` or `2m` |
 | `--calls` | | The call file |
-| `--call`, `--args` | | One call and its JSON arguments, instead of a file |
-| `--max-p95` | `60s` | Limit on p95 submit to finalized, such as `30s`, `29.5s` or `29500ms`. PASS needs the p95 at most this |
-| `--fund` | a share of the seed's balance | Spendable amount each test account is topped up to |
+| `--max-p95` | `60s` | Limit on p95 submit to finalized, such as `30s`, `29.5s` or `29500ms`. PASS needs the p95 at most this; for p95 < 60 s, pass `59999ms` |
+| `--fund` | a share of the seed's balance, at most a million existential deposits (no cap when the existential deposit is 0) | Spendable amount each test account is topped up to |
 | `--mortality` | the longest the chain keeps, up to 4096 | Blocks each transaction stays valid, a power of two up to 4096; 0 for immortal |
 | `--recovery` | the longer of 300 and the duration | At most this many seconds to watch the chain after the load, until every transaction is in a block |
 | `--output` | `polkameter-runs` | Where the run directory goes |
@@ -167,4 +156,5 @@ A transaction that expired after being sent with less than half its mortality le
 - A mortality above 4096 blocks isn't supported.
 - A transaction its chain dropped stays `unresolved` until its signer's finalized nonce passes it or its mortality ends, so the last transaction of a signer can stay `unresolved` with a long mortality.
 - After a connection outage during the load, the transactions not sent then are not sent later. The verdict is CANNOT TELL when that leaves the load short.
+- Old runtimes are not supported: one without the `Metadata_metadata_versions` runtime API, or with single-value weights (no `proof_size`), exits 3 at once with an error that names the cause.
 - Signers are sr25519 on `AccountId32` or Ethereum ECDSA on `AccountId20`. A runtime with another signature, or an extension whose value must be computed (not a default), needs a plugin.

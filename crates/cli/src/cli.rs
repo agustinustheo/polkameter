@@ -119,7 +119,7 @@ enum Command {
 	/// Load a chain with your own calls: PolkaMeter funds and signs for the test accounts.
 	///
 	/// Give the calls as a call file (`--calls`, a .ts or .js module that exports `call`, built
-	/// with polkadot-api) or as one call with JSON arguments (`--call Pallet.call --args`).
+	/// with polkadot-api).
 	/// Exits 0 on PASS, 1 on FAIL (the verdict, p95 time to finality above --max-p95, or any
 	/// proven loss), 4 when it cannot tell (the load was not delivered, or a transaction is
 	/// unresolved), 3 when setup failed, 2 on invalid input.

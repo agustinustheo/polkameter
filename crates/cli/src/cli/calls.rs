@@ -8,7 +8,11 @@ use polkameter_plugin_sdk::observers::summary::{OverallStatus, Summary};
 use serde_json::json;
 
 use super::{CliError, write_stdout};
-use crate::engine::{execute::FailOn, plan::Plan, plugins::Registry};
+use crate::engine::{
+	execute::{FailOn, RunState},
+	plan::Plan,
+	plugins::Registry,
+};
 use crate::shutdown::{self, Signals};
 
 /// Exit code when the run cannot tell whether the chain passed.
@@ -39,15 +43,8 @@ pub struct Args {
 	duration: u64,
 	/// The call file: a module exporting `call({ api, i, account, data })`, and optionally
 	/// `setup({ api, accounts, submit })`. polkadot-api must resolve from its directory.
-	#[arg(long, conflicts_with = "call")]
-	calls: Option<PathBuf>,
-	/// One call instead of a call file, as Pallet.call.
-	#[arg(long, required_unless_present = "calls")]
-	call: Option<String>,
-	/// The call's arguments as JSON: an array in order or an object by name. "$i" is the
-	/// transaction's index, "$account" its signer; {"Id": "$account"} is a variant.
-	#[arg(long, requires = "call")]
-	args: Option<String>,
+	#[arg(long)]
+	calls: PathBuf,
 	/// FAIL when the p95 time from submit to finality is above this, such as 30s, 29.5s or
 	/// 29500ms; PASS needs it at most this.
 	#[arg(long, value_parser = millis, default_value = "60s")]
@@ -162,6 +159,9 @@ fn plugin_path(given: Option<PathBuf>) -> Result<PathBuf, CliError> {
 		})
 }
 
+/// Accounts that sign the probes, funded with the test accounts.
+const PROBE_SIGNERS: u32 = 4;
+
 /// The plan of the run, as XML.
 fn plan_xml(args: &Args, version: &str, block_s: f64) -> Result<String, CliError> {
 	let count = (args.rate * args.duration as f64 * 1.05).ceil() as u64 + u64::from(args.accounts);
@@ -174,35 +174,21 @@ fn plan_xml(args: &Args, version: &str, block_s: f64) -> Result<String, CliError
 		("probes", r#"ref="run.probeBudget""#.to_owned()),
 		("count", format!(r#"value="{count}""#)),
 		("flood-signers", format!(r#"value="{}""#, args.accounts)),
+		("probe-signers", format!(r#"value="{PROBE_SIGNERS}""#)),
 		("expected-seconds", format!(r#"value="{expected}""#)),
 	];
 	// Without --mortality the plugin picks the longest the chain keeps (see its prepare-calls).
 	if let Some(mortality) = args.mortality {
 		inputs.push(("mortality", format!(r#"value="{mortality}""#)));
 	}
-	match (&args.calls, &args.call) {
-		(Some(file), _) => {
-			let file = file
-				.canonicalize()
-				.map_err(|e| CliError::invalid(format!("--calls {}: {e}", file.display())))?;
-			let file = file
-				.to_str()
-				.ok_or_else(|| CliError::invalid("--calls path is not UTF-8".into()))?;
-			inputs.push(("script", format!(r#"value="{}""#, attr(file))));
-		},
-		(None, Some(call)) => {
-			inputs.push(("call", format!(r#"value="{}""#, attr(call))));
-			let json = args.args.clone().unwrap_or_else(|| "[]".into());
-			serde_json::from_str::<serde_json::Value>(&json)
-				.map_err(|e| CliError::invalid(format!("--args is not JSON: {e}")))?;
-			// A JSON literal stays a string input: the plugin parses it.
-			inputs.push((
-				"args",
-				format!(r#"value="{}""#, attr(&serde_json::to_string(&json).unwrap_or_default())),
-			));
-		},
-		(None, None) => return Err(CliError::invalid("give --calls or --call".into())),
-	}
+	let file = args
+		.calls
+		.canonicalize()
+		.map_err(|e| CliError::invalid(format!("--calls {}: {e}", args.calls.display())))?;
+	let file = file
+		.to_str()
+		.ok_or_else(|| CliError::invalid("--calls path is not UTF-8".into()))?;
+	inputs.push(("script", format!(r#"value="{}""#, attr(file))));
 	if let Some(fund) = &args.fund {
 		inputs.push((
 			"amount",
@@ -289,6 +275,24 @@ fn p95_of(mut times: Vec<Option<u64>>) -> Option<u64> {
 	times[rank.clamp(1, times.len()) - 1]
 }
 
+/// How much of the load was delivered: the transactions first submitted in the load window
+/// (from its start in `load.jsonl` to 2 s after its end), and that count per second of the
+/// duration. Without a recorded start, the window starts at the first submit.
+fn delivery(rows: &[serde_json::Value], load: &str, duration_s: u64) -> (u64, f64) {
+	let started = load
+		.lines()
+		.filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+		.find(|m| {
+			m["name"] == "polkameter_phase" && m["labels"]["phase"] == "ramp" && m["value"] == 1.0
+		})
+		.and_then(|m| m["t"].as_u64());
+	let firsts = rows.iter().filter_map(|r| r["firstSubmitMs"].as_u64());
+	let Some(start) = started.or_else(|| firsts.clone().min()) else { return (0, 0.0) };
+	let end = start + duration_s * 1000 + 2000;
+	let in_window = firsts.filter(|t| (start..=end).contains(t)).count() as u64;
+	(in_window, in_window as f64 / duration_s.max(1) as f64)
+}
+
 /// A finished run's verdict.
 #[derive(Debug, PartialEq, Eq)]
 struct Verdict {
@@ -307,15 +311,15 @@ struct Verdict {
 ///    proven lost, or a p95 from first submit to finality proven above `--max-p95`. Proven means
 ///    more than 5% of the txs sent took longer, counting only times PolkaMeter measured, or a
 ///    tx the node's pool held ready (a stall that is the chain's).
-/// 2. CANNOT TELL (exit 4) when the load was not delivered (fewer than 95% of rate × duration
-///    first submitted), or anything is unresolved: a tx not resolved, a tx the node refused, or a
+/// 2. CANNOT TELL (exit 4) when the load was not delivered (`in_window`, the txs first
+///    submitted in the load window, is under 95% of rate × duration), or anything is unresolved: a tx not resolved, a tx the node refused, or a
 ///    p95 not proven within the limit (txs PolkaMeter could not time).
 /// 3. PASS (exit 0) otherwise.
 ///
 /// The engine's own verdict is not an input. PolkaMeter's reconnects, pauses, under-delivery and
 /// probes, and a chain that builds no block until a tx arrives, can make it FAIL, but none of
 /// them is a chain problem on the delivered load.
-fn verdict(rows: &[serde_json::Value], target: u64, max_p95_ms: u64) -> Verdict {
+fn verdict(rows: &[serde_json::Value], in_window: u64, target: u64, max_p95_ms: u64) -> Verdict {
 	let count = |c: &str| rows.iter().filter(|r| r["category"] == c).count();
 	let (lows, highs): (Vec<u64>, Vec<Option<u64>>) = rows.iter().map(latency_bounds).unzip();
 	let p95_at_least = p95_of(lows.iter().copied().map(Some).collect());
@@ -347,13 +351,13 @@ fn verdict(rows: &[serde_json::Value], target: u64, max_p95_ms: u64) -> Verdict 
 			),
 		);
 	}
-	if (sent as f64) < DELIVERED * target as f64 {
+	if (in_window as f64) < DELIVERED * target as f64 {
 		return make(
 			CANNOT_TELL,
 			"CANNOT TELL",
 			format!(
-				"the load was not delivered: {sent} of {target} transactions sent ({:.1}%, {:.0}% needed)",
-				100.0 * sent as f64 / target.max(1) as f64,
+				"the load was not delivered: {in_window} of {target} transactions sent in the load window ({:.1}%, {:.0}% needed)",
+				100.0 * in_window as f64 / target.max(1) as f64,
 				100.0 * DELIVERED
 			),
 		);
@@ -396,27 +400,255 @@ fn verdict(rows: &[serde_json::Value], target: u64, max_p95_ms: u64) -> Verdict 
 	}
 }
 
-/// The chain's block interval, measured as preflight measures it (on a chain just started, it
-/// waits for enough blocks). A connection that drops is opened again for up to 90 s.
-async fn block_seconds(chain: &str) -> Result<f64, CliError> {
-	let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+/// How long `polkameter calls` keeps trying a chain whose connection drops before setup.
+const RECONNECT: Duration = Duration::from_secs(90);
+/// How long one look at the chain may take: the runtime checks and the block watch.
+const LOOK: Duration = Duration::from_secs(60);
+/// How long it watches for new blocks to measure the block time.
+const WATCH: Duration = Duration::from_secs(30);
+/// New blocks that are enough to measure the block time.
+const NEW_BLOCKS: u32 = 3;
+/// The block time of a chain that builds no block while it is watched and whose runtime names
+/// no slot duration.
+const FALLBACK_BLOCK_S: f64 = 6.0;
+
+/// Why a look at the chain failed.
+enum Problem {
+	/// The runtime is one calls mode does not support: no reason to try again.
+	Unsupported(String),
+	/// The connection failed or dropped: worth trying again.
+	Connection(String),
+}
+
+impl From<polkameter_plugin_sdk::chain::ChainError> for Problem {
+	fn from(e: polkameter_plugin_sdk::chain::ChainError) -> Self {
+		Problem::Connection(e.to_string())
+	}
+}
+
+/// The block time of `chain`, in seconds, after checking that calls mode supports its runtime.
+/// A dropped connection is tried again for up to [`RECONNECT`], saying so at least every 10 s.
+async fn check_chain(chain: &str) -> Result<f64, CliError> {
+	let deadline = tokio::time::Instant::now() + RECONNECT;
+	let mut said: Option<tokio::time::Instant> = None;
 	loop {
-		let measured = async {
-			let client = polkameter_plugin_sdk::chain::Client::connect(chain).await?;
-			crate::engine::execute::block_interval_s(&client).await
+		let why = match tokio::time::timeout(LOOK, look(chain)).await {
+			Ok(Ok(seconds)) => return Ok(seconds),
+			Ok(Err(Problem::Unsupported(why))) => {
+				return Err(CliError::preflight(format!(
+					"{chain}: calls mode does not support this runtime: {why}"
+				)));
+			},
+			Ok(Err(Problem::Connection(why))) => why,
+			Err(_) => format!("no answer within {} s", LOOK.as_secs()),
+		};
+		let now = tokio::time::Instant::now();
+		if now >= deadline {
+			return Err(CliError::preflight(format!(
+				"cannot read {chain}: {why}; gave up after {} s",
+				RECONNECT.as_secs()
+			)));
 		}
+		if said.is_none_or(|t| now - t >= Duration::from_secs(10)) {
+			eprintln!(
+				"{chain}: {why}; trying again for up to {} s more",
+				(deadline - now).as_secs()
+			);
+			said = Some(now);
+		}
+		tokio::time::sleep(Duration::from_secs(2)).await;
+	}
+}
+
+/// One look at the chain: its runtime checks, then its block time.
+async fn look(chain: &str) -> Result<f64, Problem> {
+	use polkameter_plugin_sdk::chain::Client;
+	use subxt::rpcs::{RpcClient, rpc_params};
+	let rpc = RpcClient::from_insecure_url(chain)
+		.await
+		.map_err(|e| Problem::Connection(e.to_string()))?;
+	// Without this runtime API the client below waits for metadata forever.
+	let versions = rpc
+		.request::<String>("state_call", rpc_params!["Metadata_metadata_versions", "0x"])
 		.await;
-		match measured {
-			Ok(seconds) => return Ok((seconds * 100.0).round() / 100.0),
-			Err(polkameter_plugin_sdk::chain::ChainError::Timeout(why)) => {
-				return Err(CliError::preflight(format!("{chain}: {why}")));
-			},
-			Err(e) if tokio::time::Instant::now() >= deadline => {
-				return Err(CliError::preflight(format!("cannot read blocks of {chain}: {e}")));
-			},
-			Err(_) => tokio::time::sleep(Duration::from_secs(2)).await,
+	match versions {
+		Ok(_) => {},
+		Err(subxt::rpcs::Error::User(e)) => {
+			return Err(Problem::Unsupported(format!(
+				"it has no Metadata_metadata_versions runtime API ({}), so it is too old",
+				e.message
+			)));
+		},
+		Err(e) => return Err(Problem::Connection(e.to_string())),
+	}
+	let client = Client::connect(chain).await?;
+	let at = client.finalized().await?;
+	if let Some(why) = single_value_weights(at.metadata_ref()) {
+		return Err(Problem::Unsupported(why));
+	}
+	eprintln!(
+		"measuring the block time from blocks built from now on (up to {} s)",
+		WATCH.as_secs()
+	);
+	let started = tokio::time::Instant::now();
+	let mut seen: Vec<(u32, u64)> = Vec::new();
+	loop {
+		let best = client.best_number().await?;
+		if seen.last().is_none_or(|(n, _)| best > *n) {
+			let block = client.at(client.block_hash(best).await?).await?;
+			let now: u64 = polkameter_plugin_sdk::chain::fetch(&block, "Timestamp", "Now", ())
+				.await?
+				.unwrap_or(0);
+			// A genesis block has no time.
+			if now > 0 {
+				seen.push((best, now));
+			}
+		}
+		let new = match (seen.first(), seen.last()) {
+			(Some(first), Some(last)) => last.0 - first.0,
+			_ => 0,
+		};
+		if new >= NEW_BLOCKS || started.elapsed() >= WATCH {
+			break;
+		}
+		tokio::time::sleep(Duration::from_millis(500)).await;
+	}
+	if let Some(seconds) = interval_s(&seen) {
+		let seconds = (seconds * 100.0).round() / 100.0;
+		eprintln!("block time {seconds} s, over {} new blocks", seen[seen.len() - 1].0 - seen[0].0);
+		return Ok(seconds);
+	}
+	let (seconds, source) = match slot_seconds(at.metadata_ref()) {
+		Some(s) => (s, "the runtime's slot duration"),
+		None => (FALLBACK_BLOCK_S, "a default"),
+	};
+	eprintln!(
+		"no new block in {} s: the chain builds blocks only on demand (such as a Chopsticks fork); using a block time of {seconds} s, {source}",
+		WATCH.as_secs()
+	);
+	Ok(seconds)
+}
+
+/// The block time over `seen` (block number, `Timestamp.Now` ms, oldest first); `None` without
+/// two blocks or with a zero span.
+fn interval_s(seen: &[(u32, u64)]) -> Option<f64> {
+	let (first, last) = (seen.first()?, seen.last()?);
+	let blocks = last.0.checked_sub(first.0).filter(|n| *n > 0)?;
+	let span = last.1.checked_sub(first.1).filter(|ms| *ms > 0)?;
+	Some(span as f64 / f64::from(blocks) / 1000.0)
+}
+
+/// A `u64` constant of the runtime.
+fn constant_u64(metadata: &subxt::Metadata, pallet: &str, name: &str) -> Option<u64> {
+	let value = metadata.pallet_by_name(pallet)?.constant_by_name(name)?.value();
+	<[u8; 8]>::try_from(value).ok().map(u64::from_le_bytes)
+}
+
+/// The runtime's block time, in seconds: BABE's expected block time, Aura's slot duration, or
+/// twice the minimum timestamp period.
+fn slot_seconds(metadata: &subxt::Metadata) -> Option<f64> {
+	let ms = constant_u64(metadata, "Babe", "ExpectedBlockTime")
+		.or_else(|| constant_u64(metadata, "Aura", "SlotDuration"))
+		.or_else(|| constant_u64(metadata, "Timestamp", "MinimumPeriod").map(|p| 2 * p))
+		.filter(|ms| *ms > 0)?;
+	Some(ms as f64 / 1000.0)
+}
+
+/// Why the runtime's weights are not supported: `System.BlockWeights` with a single value per
+/// weight (`Weight { ref_time }`, before `proof_size`). `None` when they have two, or when the
+/// runtime has no such constant to tell.
+fn single_value_weights(metadata: &subxt::Metadata) -> Option<String> {
+	let constant = metadata.pallet_by_name("System")?.constant_by_name("BlockWeights")?;
+	let value = subxt::ext::scale_value::scale::decode_as_type(
+		&mut constant.value(),
+		constant.ty(),
+		metadata.types(),
+	)
+	.ok()?
+	.remove_context();
+	single_value(&value)
+		.then(|| "its weights are single values (no proof_size), so it is too old".to_owned())
+}
+
+/// Whether a decoded `System.BlockWeights` has a `max_block` weight without `proof_size`.
+fn single_value(block_weights: &subxt::dynamic::Value) -> bool {
+	use subxt::ext::scale_value::{Composite, ValueDef};
+	let field = |v: &subxt::dynamic::Value, name: &str| match &v.value {
+		ValueDef::Composite(Composite::Named(fields)) => {
+			fields.iter().find(|(n, _)| n == name).map(|(_, v)| v.clone())
+		},
+		_ => None,
+	};
+	field(block_weights, "max_block").is_some_and(|max| field(&max, "proof_size").is_none())
+}
+
+/// The run directories under `output`.
+fn run_dirs(output: &std::path::Path) -> Vec<PathBuf> {
+	std::fs::read_dir(output)
+		.map(|entries| {
+			entries
+				.filter_map(|e| e.ok().map(|e| e.path()))
+				.filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("run-")))
+				.collect()
+		})
+		.unwrap_or_default()
+}
+
+/// The longest the run stays silent: after this, a line says which phase it is in.
+const HEARTBEAT: Duration = Duration::from_secs(30);
+
+/// Prints the plugin's progress (its log) while the run goes, and a line at least every
+/// [`HEARTBEAT`] that names the phase, so that no wait is silent.
+async fn echo_progress(output: PathBuf, before: Vec<PathBuf>) {
+	let started = tokio::time::Instant::now();
+	let mut last_line = tokio::time::Instant::now();
+	let (mut dir, mut log_at, mut events_at) = (None::<PathBuf>, 0, 0);
+	let (mut phase, mut phase_since) = ("preflight".to_owned(), tokio::time::Instant::now());
+	loop {
+		tokio::time::sleep(Duration::from_secs(1)).await;
+		if dir.is_none() {
+			dir = run_dirs(&output).into_iter().find(|d| !before.contains(d));
+		}
+		if let Some(dir) = &dir {
+			for line in read_new(&dir.join("plugins/substrate/stderr.log"), &mut log_at) {
+				eprintln!("  {line}");
+				last_line = tokio::time::Instant::now();
+			}
+			for line in read_new(&dir.join("events.jsonl"), &mut events_at) {
+				let event: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
+				if event["event"] == "phase"
+					&& let Some(name) = event["phase"].as_str()
+				{
+					name.clone_into(&mut phase);
+					phase_since = tokio::time::Instant::now();
+					last_line = phase_since;
+				}
+			}
+		}
+		if last_line.elapsed() >= HEARTBEAT {
+			eprintln!(
+				"{}: still in {phase} ({} s in it, {} s in all)",
+				crate::PRODUCT_NAME,
+				phase_since.elapsed().as_secs(),
+				started.elapsed().as_secs()
+			);
+			last_line = tokio::time::Instant::now();
 		}
 	}
+}
+
+/// The whole lines of `path` after byte `at`, which moves past them.
+fn read_new(path: &std::path::Path, at: &mut u64) -> Vec<String> {
+	use std::io::{Read as _, Seek as _};
+	let Ok(mut file) = std::fs::File::open(path) else { return Vec::new() };
+	let mut text = String::new();
+	if file.seek(std::io::SeekFrom::Start(*at)).is_err() || file.read_to_string(&mut text).is_err()
+	{
+		return Vec::new();
+	}
+	let whole = text.rfind('\n').map_or(0, |i| i + 1);
+	*at += whole as u64;
+	text[..whole].lines().map(str::to_owned).collect()
 }
 
 /// `polkameter calls`.
@@ -444,10 +676,21 @@ pub async fn run(args: Args) -> Result<i32, CliError> {
 	let (manifest, installation) = Registry::describe(&plugin)
 		.await
 		.map_err(|e| CliError::invalid(format!("{e:#}")))?;
-	let block_s = block_seconds(&args.chain).await?;
+	// Nothing was sent yet: a signal stops it at once.
+	let block_s = tokio::select! {
+		checked = check_chain(&args.chain) => checked?,
+		signal = signals.recv() => {
+			eprintln!("{}: received {}; stopping before setup", crate::PRODUCT_NAME, signal.name());
+			return Ok(signal.exit_code());
+		},
+	};
 	let xml = plan_xml(&args, &manifest.version, block_s)?;
-	let plan = Plan::parse(&xml)
+	let mut plan = Plan::parse(&xml)
 		.map_err(|e| CliError::runtime(format!("the generated plan does not parse: {e:#}")))?;
+	// Measured above from new blocks: preflight need not read old ones.
+	if let Some(load) = plan.load.as_mut() {
+		load.calibrated = true;
+	}
 	let registry = Registry {
 		plugins: BTreeMap::from([("substrate".to_owned(), installation)]),
 		credentials: BTreeMap::from([(PROFILE.to_owned(), SEED_VAR.to_owned())]),
@@ -455,16 +698,13 @@ pub async fn run(args: Args) -> Result<i32, CliError> {
 		..Registry::default()
 	};
 	let grace = Duration::from_secs(shutdown::DEFAULT_GRACE.as_secs());
-	let outcome = match super::supervised_run(
-		plan,
-		registry,
-		&args.output,
-		FailOn::Error,
-		grace,
-		&mut signals,
-	)
-	.await?
-	{
+	let before = run_dirs(&args.output);
+	let progress = tokio::spawn(echo_progress(args.output.clone(), before));
+	let outcome =
+		super::supervised_run(plan, registry, &args.output, FailOn::Error, grace, &mut signals)
+			.await;
+	progress.abort();
+	let outcome = match outcome? {
 		Ok(outcome) => outcome,
 		Err(code) => return Ok(code),
 	};
@@ -473,6 +713,15 @@ pub async fn run(args: Args) -> Result<i32, CliError> {
 	let summary: Option<Summary> = std::fs::read(dir.join("summary.json"))
 		.ok()
 		.and_then(|bytes| serde_json::from_slice(&bytes).ok());
+	// Stopped by a signal: no verdict, and the signal's exit code, as `polkameter run`.
+	if matches!(outcome.state, RunState::Stopped | RunState::Stopping) {
+		eprintln!(
+			"{}: the run was stopped; no verdict (details in {})",
+			crate::PRODUCT_NAME,
+			dir.join("execution.json").display()
+		);
+		return Ok(outcome.exit_code);
+	}
 	let Some(summary) = summary else {
 		let phase = outcome.failed_phase.clone().unwrap_or_default();
 		let code = if matches!(phase.as_str(), "preflight" | "setup") { 3 } else { 1 };
@@ -488,10 +737,12 @@ pub async fn run(args: Args) -> Result<i32, CliError> {
 	let rows: Vec<serde_json::Value> =
 		ledger.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
 	let target = (args.rate * args.duration as f64).floor() as u64;
+	let load = std::fs::read_to_string(dir.join("load.jsonl")).unwrap_or_default();
+	let (in_window, delivered_rate) = delivery(&rows, &load, args.duration);
 	let Verdict { code, name, mut why, p95_at_least, p95_at_most } =
-		verdict(&rows, target, args.max_p95);
+		verdict(&rows, in_window, target, args.max_p95);
 	if let Some(engine) = summary.verdict.map(|v| v.result).filter(|r| *r != OverallStatus::Pass) {
-		why = format!("{why} (engine verdict {engine:?}, not used; see summary.md)");
+		why = format!("{why} (engine verdict {engine:?}, a diagnostic not used; see summary.md)");
 	}
 	let loss = &summary.loss;
 	let counts = categories(&ledger);
@@ -501,6 +752,9 @@ pub async fn run(args: Args) -> Result<i32, CliError> {
 		"reason": why,
 		"target": target,
 		"sent": loss.sent,
+		"sentInWindow": in_window,
+		"deliveredRate": (delivered_rate * 1000.0).round() / 1000.0,
+		"rate": args.rate,
 		"finalized": loss.included,
 		"failedInBlock": loss.failed_in_block,
 		"lost": loss.lost,
@@ -517,8 +771,13 @@ pub async fn run(args: Args) -> Result<i32, CliError> {
 	});
 	std::fs::write(dir.join("calls-verdict.json"), format!("{report:#}\n")).ok();
 	let count = |c: &str| counts[c].as_u64().unwrap_or(0);
-	write_stdout(&format!(
-		"{name}: {why}\nsent {} of {target}: finalized-ok {}, failed-in-block {}, lost {}, unresolved {}, refused {}; p95 submit to finalized {} (proven between {} and {}; limit {})\nArtifacts: {}",
+	let delivered = format!(
+		"delivered {in_window} of {target} in the load window: {delivered_rate:.3} tx/s of {} tx/s ({:.1}%)",
+		args.rate,
+		100.0 * in_window as f64 / target.max(1) as f64
+	);
+	let tally = format!(
+		"sent {} of {target}: finalized-ok {}, failed-in-block {}, lost {}, unresolved {}, refused {}; p95 submit to finalized {} (proven between {} and {}; limit {})",
 		loss.sent,
 		count("finalized-ok"),
 		count("failed-in-block"),
@@ -529,9 +788,42 @@ pub async fn run(args: Args) -> Result<i32, CliError> {
 		p95_at_least.map_or("none".into(), show_ms),
 		p95_at_most.map_or("no bound".into(), show_ms),
 		show_ms(args.max_p95),
-		dir.display()
-	));
+	);
+	lead_summary(&dir, name, &why, code, &delivered, &tally);
+	write_stdout(&format!("{name}: {why}\n{delivered}\n{tally}\nArtifacts: {}", dir.display()));
 	Ok(code)
+}
+
+/// Puts the calls verdict first in the run's `summary.md` and labels the engine's own result,
+/// which calls mode does not use, as diagnostics.
+fn lead_summary(
+	dir: &std::path::Path,
+	name: &str,
+	why: &str,
+	code: i32,
+	delivered: &str,
+	tally: &str,
+) {
+	let path = dir.join("summary.md");
+	let Ok(engine) = std::fs::read_to_string(&path) else { return };
+	std::fs::write(path, summary_md(&engine, name, why, code, delivered, tally)).ok();
+}
+
+/// `summary.md` of a calls run: the calls verdict, then the engine's report as diagnostics.
+fn summary_md(
+	engine: &str,
+	name: &str,
+	why: &str,
+	code: i32,
+	delivered: &str,
+	tally: &str,
+) -> String {
+	let engine = engine
+		.replacen("- **Verdict:**", "- **Engine verdict (diagnostic, not the calls verdict):**", 1)
+		.replacen("#### Result", "#### Engine result (diagnostics)", 1);
+	format!(
+		"### Calls verdict: {name}\n\n{why}. Exit code {code}. Decided from `transactions.jsonl` alone; the same verdict is in `calls-verdict.json`.\n\n- {delivered}\n- {tally}\n\n## Engine diagnostics\n\nWhat follows is the engine's report of the same run. Its verdict is not used by calls mode.\n\n{engine}"
+	)
 }
 
 #[cfg(test)]
@@ -550,9 +842,7 @@ mod tests {
 			accounts: 4,
 			rate: 2.0,
 			duration: 30,
-			calls: None,
-			call: Some("System.remark".into()),
-			args: Some(r#"["0x01"]"#.into()),
+			calls: PathBuf::from("Cargo.toml"),
 			max_p95: 30_000,
 			fund: Some("1000".into()),
 			mortality: None,
@@ -566,6 +856,8 @@ mod tests {
 		// Without --mortality the plugin picks it; it is not sized from the block time.
 		assert!(!xml.contains(r#"name="mortality""#), "{xml}");
 		assert!(xml.contains(r#"max-p95-latency-ms="30000""#), "{xml}");
+		// At most 4 probe accounts are funded, however many probes the run has.
+		assert!(xml.contains(r#"<input name="probe-signers" value="4"/>"#), "{xml}");
 		let args = Args { mortality: Some(1024), recovery: None, ..args };
 		let xml = plan_xml(&args, "0.4.8", 6.0).unwrap();
 		assert!(xml.contains(r#"<input name="mortality" value="1024"/>"#), "{xml}");
@@ -624,7 +916,7 @@ mod tests {
 	fn the_pilot_outage_run_cannot_tell() {
 		let mut ledger = rows(85, &row("finalized-ok", Some(47_000), Some(47_000), None));
 		ledger.extend(rows(22, &row("finalized-ok", None, Some(58_000), None)));
-		let v = verdict(&ledger, 120, 60_000);
+		let v = verdict(&ledger, ledger.len() as u64, 120, 60_000);
 		assert_eq!((v.code, v.name), (CANNOT_TELL, "CANNOT TELL"), "{v:?}");
 		assert!(v.why.contains("107 of 120"), "{}", v.why);
 	}
@@ -633,7 +925,7 @@ mod tests {
 	fn a_delivered_load_within_the_limit_passes() {
 		let mut ledger = rows(94, &row("finalized-ok", Some(5_000), Some(5_000), None));
 		ledger.extend(rows(6, &row("failed-in-block", None, Some(9_000), None)));
-		let v = verdict(&ledger, 100, 30_000);
+		let v = verdict(&ledger, ledger.len() as u64, 100, 30_000);
 		assert_eq!((v.code, v.p95_at_least, v.p95_at_most), (0, Some(5_000), Some(9_000)), "{v:?}");
 	}
 
@@ -642,7 +934,7 @@ mod tests {
 	fn a_proven_slow_chain_fails_before_under_delivery_is_considered() {
 		let mut ledger = rows(70, &row("finalized-ok", Some(5_000), Some(5_000), None));
 		ledger.extend(rows(10, &row("finalized-ok", Some(70_000), Some(70_000), None)));
-		let v = verdict(&ledger, 100, 60_000);
+		let v = verdict(&ledger, ledger.len() as u64, 100, 60_000);
 		assert_eq!(v.code, 1, "{v:?}");
 		assert!(v.why.contains("10 of 80"), "{}", v.why);
 	}
@@ -653,7 +945,7 @@ mod tests {
 	fn the_tools_own_blind_spots_cannot_tell() {
 		let mut ledger = rows(90, &row("finalized-ok", Some(5_000), Some(5_000), None));
 		ledger.extend(rows(10, &row("finalized-ok", None, Some(90_000), None)));
-		let v = verdict(&ledger, 100, 60_000);
+		let v = verdict(&ledger, ledger.len() as u64, 100, 60_000);
 		assert_eq!(
 			(v.code, v.p95_at_least, v.p95_at_most),
 			(CANNOT_TELL, Some(5_000), Some(90_000))
@@ -666,12 +958,12 @@ mod tests {
 	fn a_stall_fails_only_when_the_chain_held_the_transactions() {
 		let mut ledger = rows(90, &row("finalized-ok", Some(5_000), Some(5_000), None));
 		ledger.extend(rows(10, &row("unresolved", None, None, Some(400_000))));
-		let v = verdict(&ledger, 100, 60_000);
+		let v = verdict(&ledger, ledger.len() as u64, 100, 60_000);
 		assert_eq!(v.code, 1, "{v:?}");
 		assert!(v.why.contains("still ready in the node's pool"), "{}", v.why);
 		ledger.truncate(90);
 		ledger.extend(rows(10, &row("unresolved", None, None, None)));
-		assert_eq!(verdict(&ledger, 100, 60_000).code, CANNOT_TELL);
+		assert_eq!(verdict(&ledger, ledger.len() as u64, 100, 60_000).code, CANNOT_TELL);
 	}
 
 	#[test]
@@ -679,10 +971,80 @@ mod tests {
 		let ok = row("finalized-ok", Some(5_000), Some(5_000), None);
 		let mut ledger = rows(99, &ok);
 		ledger.push(row("lost", None, None, None));
-		assert_eq!(verdict(&ledger, 100, 60_000).code, 1);
+		assert_eq!(verdict(&ledger, ledger.len() as u64, 100, 60_000).code, 1);
 		ledger.pop();
 		ledger.push(row("refused", None, None, None));
-		assert_eq!(verdict(&ledger, 100, 60_000).code, CANNOT_TELL);
-		assert_eq!(verdict(&[], 100, 60_000).code, CANNOT_TELL);
+		assert_eq!(verdict(&ledger, ledger.len() as u64, 100, 60_000).code, CANNOT_TELL);
+		assert_eq!(verdict(&[], 0, 100, 60_000).code, CANNOT_TELL);
+	}
+
+	/// sentInWindow counts the transactions first submitted from the load's start (in
+	/// load.jsonl) to 2 s after its end; deliveredRate is that per second of the duration. Both
+	/// are in calls-verdict.json, and the verdict's delivery check uses the count.
+	#[test]
+	fn delivery_counts_the_load_window() {
+		let load = [
+			r#"{"labels":{"phase":"ramp"},"name":"polkameter_phase","t":900,"value":0.0}"#,
+			r#"{"labels":{"phase":"ramp"},"name":"polkameter_phase","t":1000,"value":1.0}"#,
+		]
+		.join("\n");
+		let at =
+			|ms: u64| json!({"category": "finalized-ok", "firstSubmitMs": ms, "finalizedMs": 1});
+		// Ten in the 10 s window (its 2 s grace included), one after it, one before.
+		let mut rows: Vec<_> = (0..10).map(|i| at(1000 + i * 1200)).collect();
+		rows.push(at(13_001));
+		rows.push(at(999));
+		assert_eq!(delivery(&rows, &load, 10), (10, 1.0));
+		// Without a recorded start, the window opens at the first submit (999 ms), so the one
+		// at 13 001 ms is past its end.
+		assert_eq!(delivery(&rows, "", 10), (11, 1.1));
+		assert_eq!(delivery(&[], "", 10), (0, 0.0));
+		// 12 sent but only 9 in the window of a 10-tx target: not delivered.
+		let v = verdict(&rows, 9, 10, 60_000);
+		assert_eq!(v.code, CANNOT_TELL, "{v:?}");
+		assert!(v.why.contains("9 of 10 transactions sent in the load window"), "{}", v.why);
+		assert_eq!(verdict(&rows, 10, 10, 60_000).code, 0);
+	}
+
+	/// summary.md leads with the calls verdict; the engine's own result follows as diagnostics.
+	#[test]
+	fn summary_md_leads_with_the_calls_verdict() {
+		let engine = "### calls\n\n#### Result\n\n- **Verdict:** FAIL\n- **Loss check:** 50 sent\n";
+		let md =
+			summary_md(engine, "CANNOT TELL", "the load was not delivered", 4, "delivered", "sent");
+		assert!(md.starts_with("### Calls verdict: CANNOT TELL\n"), "{md}");
+		assert!(!md.contains("- **Verdict:**"), "{md}");
+		assert!(
+			md.contains("- **Engine verdict (diagnostic, not the calls verdict):** FAIL"),
+			"{md}"
+		);
+		assert!(md.contains("#### Engine result (diagnostics)"), "{md}");
+		assert!(md.find("Calls verdict").unwrap() < md.find("Engine verdict").unwrap());
+	}
+
+	/// The block time comes from blocks built while PolkaMeter watched; a chain that built none
+	/// (a fork that builds blocks on demand) has no measurement, and the fallback is used.
+	#[test]
+	fn the_block_time_comes_from_new_blocks() {
+		assert_eq!(interval_s(&[(100, 60_000), (101, 66_000), (103, 78_000)]), Some(6.0));
+		assert_eq!(interval_s(&[(100, 60_000)]), None);
+		assert_eq!(interval_s(&[]), None);
+		// Timestamps that do not move tell nothing.
+		assert_eq!(interval_s(&[(100, 60_000), (102, 60_000)]), None);
+	}
+
+	/// A runtime whose weights have no proof_size is refused; a two-dimensional one is not.
+	#[test]
+	fn single_value_weights_are_detected() {
+		use subxt::dynamic::Value;
+		let weights = |max: Value| Value::named_composite([("max_block", max)]);
+		let one = weights(Value::named_composite([("ref_time", Value::u128(5))]));
+		let two = weights(Value::named_composite([
+			("ref_time", Value::u128(5)),
+			("proof_size", Value::u128(7)),
+		]));
+		assert!(single_value(&one));
+		assert!(!single_value(&two));
+		assert!(!single_value(&Value::u128(1)), "an unknown shape is not refused");
 	}
 }
