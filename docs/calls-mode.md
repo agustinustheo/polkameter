@@ -26,7 +26,7 @@ polkameter calls --chain ws://127.0.0.1:9944 --seed //Alice \
   --accounts 8 --rate 5 --duration 60s --calls ./calls.ts --max-p95 30s
 ```
 
-`examples/calls/template.calls.ts` is a complete call file for the dev chain of `scripts/dev-chain.sh`.
+`examples/dev-chain/template.calls.ts` is a complete call file for the dev chain of `scripts/dev-chain.sh`.
 
 ## The call file
 

@@ -52,6 +52,7 @@ that 0.5.0 fixes. The 0.5.0 column re-measures calls mode on the release with fr
 
 ```sh
 cd examples/<chain>
+../fork.sh <chain> 9944                                       # acala, acurast, aventus, darwinia, ewx, mythos
 npm install && npx papi add <chain> -w ws://127.0.0.1:9944   # generate the chain's types
 ./run.sh ws://127.0.0.1:9944 out                                  # 0 PASS, 1 FAIL, 4 CAN'T TELL, 3 setup failed
 ```
