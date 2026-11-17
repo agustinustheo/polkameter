@@ -11,6 +11,7 @@
 
 - [Install](install.md)
 - [Run in CI](ci.md)
+- [Load a chain with your own calls](calls-mode.md)
 - [Read the results](reading-results.md)
 - [Use PolkaMeter with an AI assistant](ai-assistants.md)
 - [Troubleshooting](troubleshooting.md)

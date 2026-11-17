@@ -111,6 +111,8 @@ pub struct Tracker<S> {
 	pub last_fetched: u32,
 	/// Last new finalized block: when, and its number.
 	pub last_finalized: (Millis, u32),
+	/// Every new finalized block: when it was seen, and its number, in order.
+	pub finalized_seen: Vec<(Millis, u32)>,
 	/// What the follower could not read.
 	pub unreadable: Vec<String>,
 	/// Times the block follower lost the node and followed it again: not observed, so not a
@@ -217,6 +219,7 @@ impl<S: Submit> Tracker<S> {
 			last_head: (now, 0),
 			last_fetched: 0,
 			last_finalized: (now, 0),
+			finalized_seen: Vec::new(),
 			unreadable: Vec::new(),
 			observation_gaps: Vec::new(),
 			node_down: None,
@@ -351,6 +354,20 @@ impl<S: Submit> Tracker<S> {
 			(true, _) => "it was reconnecting to the node",
 			(false, false) => "it was paused, and reconnecting to the node",
 		}
+	}
+
+	/// Time from sending a flood tx at `sent_at` to first seeing a finalized head at or above
+	/// `block`, its finalized block. `None` when not known: the tx is untimed, the head is not
+	/// seen yet, or PolkaMeter did not observe all of the time (paused, or the follower lost the
+	/// node, so finality may have come earlier than it was seen).
+	pub fn finality_ms(&self, sent_at: Millis, untimed: bool, block: u32) -> Option<Millis> {
+		let (seen, _) = *self.finalized_seen.iter().find(|(_, n)| *n >= block)?;
+		let read_late = self.read_late.iter().any(|(from, to)| *from < seen && seen <= *to);
+		let blind = untimed
+			|| read_late
+			|| self.paused_across(sent_at, seen)
+			|| self.unobserved_between(sent_at, seen) > 0;
+		(!blind).then(|| seen.saturating_sub(sent_at))
 	}
 
 	/// Whether PolkaMeter was paused across a time measured from `from` to `to`.

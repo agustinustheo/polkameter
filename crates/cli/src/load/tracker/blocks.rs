@@ -64,7 +64,8 @@ impl<S: Submit> Tracker<S> {
 				}
 			},
 			BlockEvent::Finalized { number, seen_at } if number > self.last_finalized.1 => {
-				self.last_finalized = (seen_at, number)
+				self.last_finalized = (seen_at, number);
+				self.finalized_seen.push((seen_at, number));
 			},
 			BlockEvent::Finalized { .. } => {},
 			BlockEvent::Unreadable(what) => self.unreadable.push(what),

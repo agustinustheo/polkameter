@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "polkadot-api": "^3.3.0"
+  }
+}

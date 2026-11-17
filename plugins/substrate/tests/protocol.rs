@@ -72,7 +72,14 @@ fn describe_lists_the_operations() {
 		manifest["operations"].as_object().unwrap().keys().map(String::as_str).collect();
 	assert_eq!(
 		operations,
-		["check-state", "fund-accounts", "preflight", "prepare-remarks", "prepare-transfers"]
+		[
+			"check-state",
+			"fund-accounts",
+			"preflight",
+			"prepare-calls",
+			"prepare-remarks",
+			"prepare-transfers"
+		]
 	);
 	assert_eq!(manifest["operations"]["preflight"]["read_only"], true);
 	assert_eq!(manifest["operations"]["prepare-remarks"]["inputs"]["seed"]["optional"], false);

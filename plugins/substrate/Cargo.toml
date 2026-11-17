@@ -29,6 +29,11 @@ serde_json.workspace = true
 sp-crypto-hashing.workspace = true
 subxt-rpcs.workspace = true
 tokio.workspace = true
+# prepare-calls: the generic signer (any address and signature type, unknown extensions).
+parity-scale-codec.workspace = true
+scale-info = { version = "2.11.6", default-features = false, features = ["std"] }
+subxt = "=0.51.1"
+subxt-signer = { version = "=0.51.1", default-features = false, features = ["sr25519", "unstable-eth", "std"] }
 
 [dev-dependencies]
 polkameter.workspace = true

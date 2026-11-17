@@ -22,6 +22,8 @@ use serde_json::{Value, json};
 
 use crate::PRODUCT_NAME;
 
+mod calls;
+
 #[derive(Debug, Parser)]
 #[command(
 	name = "polkameter",
@@ -114,6 +116,18 @@ enum Command {
 		#[arg(long, value_name = "SECONDS", default_value_t = shutdown::DEFAULT_GRACE.as_secs())]
 		shutdown_grace: u64,
 	},
+	/// Load a chain with your own calls: PolkaMeter funds and signs for the test accounts.
+	///
+	/// Give the calls as a call file (`--calls`, a .ts or .js module that exports `call`, built
+	/// with polkadot-api) or as one call with JSON arguments (`--call Pallet.call --args`).
+	/// Exits 0 on PASS, 1 on FAIL (the verdict, p95 time to finality above --max-p95, or any
+	/// proven loss), 4 when it cannot tell (the load was not delivered, or a transaction is
+	/// unresolved), 3 when setup failed, 2 on invalid input.
+	#[command(
+		after_long_help = "Example:\n  polkameter calls --chain ws://127.0.0.1:9944 --seed //Alice \
+	                   --accounts 8 --rate 5 --duration 60s --calls ./calls.ts --max-p95 30s"
+	)]
+	Calls(crate::cli::calls::Args),
 	/// Regenerate the checks, summary and samples of a run directory from its files.
 	#[command(after_long_help = "Example:\n  polkameter report runs/run-1792255021142-12303-1")]
 	Report {
@@ -291,6 +305,7 @@ async fn execute(cli: Cli) -> Result<i32, CliError> {
 			run(&path, plan, registry, &output, fail_on, grace, &mut signals).await
 		},
 		Command::Report { artifact_directory } => report(artifact_directory),
+		Command::Calls(args) => calls::run(args).await,
 	}
 }
 
@@ -399,6 +414,25 @@ async fn run(
 	grace: Duration,
 	signals: &mut Signals,
 ) -> Result<i32, CliError> {
+	match supervised_run(plan, registry, output, fail_on, grace, signals).await? {
+		Ok(outcome) => {
+			write_artifact_written(path, &outcome);
+			Ok(outcome.exit_code)
+		},
+		Err(code) => Ok(code),
+	}
+}
+
+/// Runs `plan` into `output` under the signal handlers: its outcome, or the exit code of a
+/// signal that stopped it before it wrote one.
+async fn supervised_run(
+	plan: Plan,
+	registry: Registry,
+	output: &Path,
+	fail_on: FailOn,
+	grace: Duration,
+	signals: &mut Signals,
+) -> Result<Result<Outcome, i32>, CliError> {
 	let stop = Stop::default();
 	let sink = Arc::new(move |event: Value| {
 		if event["event"] == "phase" {
@@ -431,11 +465,9 @@ async fn run(
 			"{PRODUCT_NAME}: the run did not write its outcome within {} s of a forced stop",
 			shutdown::FORCE_LIMIT.as_secs()
 		);
-		return Ok(signal.exit_code());
+		return Ok(Err(signal.exit_code()));
 	};
-	let outcome = result.map_err(|e| CliError::runtime(e.to_string()))?;
-	write_artifact_written(path, &outcome);
-	Ok(outcome.exit_code)
+	Ok(Ok(result.map_err(|e| CliError::runtime(e.to_string()))?))
 }
 
 /// Reports a finished run's artifacts. A failed run, or one that completed with failures, also

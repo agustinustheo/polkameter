@@ -160,7 +160,8 @@ where
 	// says nothing about FUTURE transactions: loss also needs a consumed finalized nonce.
 	let settled = on_chain.is_some() && loss.finalized.as_ref().is_some_and(|f| f.waited_for_it);
 	let mut nonces = HashMap::new();
-	if settled && let Ok((_, at)) = &finalized {
+	let mut expired = HashSet::new();
+	if settled && let Ok((number, at)) = &finalized {
 		let candidates: Vec<_> = run
 			.flood
 			.iter()
@@ -182,10 +183,34 @@ where
 				Ok(read) => nonces = read,
 				Err(e) => notes.push(format!("finalized account nonces could not be read: {e}")),
 			}
+			// A mortal tx absent from every finalized block up to one past its era is lost too,
+			// with or without a nonce (the last tx of a signer leaves no later nonce).
+			let current = u64::from(run.walk_from.unwrap_or(1).saturating_sub(1));
+			match live
+				.read(|c: Client| {
+					let candidates = &candidates;
+					async move { Ok(deaths_at(&c.at(*at).await?, candidates, current).await) }
+				})
+				.await
+			{
+				Ok(deaths) => {
+					expired = deaths
+						.into_iter()
+						.filter(|(_, death)| *death <= u64::from(*number))
+						.map(|(hash, _)| hash)
+						.collect();
+				},
+				Err(e) => notes.push(format!("transaction eras could not be read: {e}")),
+			}
 		}
 	}
-	let evidence =
-		Evidence { found, finalized_failed: &finalized_failed, settled, nonces: &nonces };
+	let evidence = Evidence {
+		found,
+		finalized_failed: &finalized_failed,
+		settled,
+		nonces: &nonces,
+		expired: &expired,
+	};
 	let rows = ledger(run.flood, run.included_in, &evidence, ready.as_ref(), cutoff);
 	let may_finalize = rows
 		.iter()
@@ -368,6 +393,9 @@ struct Evidence<'a> {
 	finalized_failed: &'a HashSet<TxHash>,
 	/// The walk reached the head the check needed: a tx in no finalized block is in none.
 	settled: bool,
+	/// Mortal txs whose era ended at or before the walk's finalized upper bound: no later
+	/// block can include them.
+	expired: &'a HashSet<TxHash>,
 }
 
 /// Whether a tx failed after inclusion: (failed, failed only on a fork). The finalized block's
@@ -397,11 +425,16 @@ fn ledger<'a>(
 			let finalized = evidence.found.and_then(|f| f.get(hash)).copied();
 			let ready = ready.map(|pool| pool.contains(hash));
 			let nonces = evidence.nonces.get(hash).copied();
-			let consumed = evidence.settled && nonces.is_some_and(|(tx, account)| account > tx);
+			let nonce_passed = nonces.is_some_and(|(tx, account)| account > tx);
+			let expired = evidence.expired.contains(hash);
+			let consumed = evidence.settled && (nonce_passed || expired);
 			let status = classify(tx, best, finalized, ready, consumed);
 			let reason = match status {
-				Status::Lost => Some(
+				Status::Lost if nonce_passed => Some(
 					"absent from finalized chain; finalized signer nonce has passed transaction nonce",
+				),
+				Status::Lost => Some(
+					"absent from finalized chain; its mortality ended at or before the finalized head",
 				),
 				Status::Unknown | Status::Unverified if tx.accepted || best.is_some() => {
 					Some(if nonces.is_some_and(|(tx, account)| account <= tx) {
@@ -431,6 +464,32 @@ fn ledger<'a>(
 		.collect()
 }
 
+/// The first block each mortal candidate can no longer be in: one past its era, from its
+/// `CheckMortality` extension. `current` is a block no later than the one it was signed at, or
+/// within its era: the finalized head before the first flood tx (a later one gives a later
+/// birth, so it never makes a tx expire early). Immortal or undecodable txs have none.
+async fn deaths_at(
+	at: &AtBlock,
+	candidates: &[(TxHash, Vec<u8>)],
+	current: u64,
+) -> HashMap<TxHash, u64> {
+	use parity_scale_codec::Decode as _;
+	let mut deaths = HashMap::new();
+	for (hash, bytes) in candidates {
+		let exts = at.extrinsics().from_bytes(vec![bytes.clone()]).await;
+		let Some(Ok(ext)) = exts.iter().next() else { continue };
+		let era = ext.transaction_extensions().and_then(|e| {
+			let mortality = e.iter().find(|x| x.name() == "CheckMortality")?;
+			subxt::utils::Era::decode(&mut mortality.bytes()).ok()
+		});
+		if let Some(subxt::utils::Era::Mortal { period, phase }) = era {
+			let birth = (current.max(phase) - phase) / period * period + phase;
+			deaths.insert(*hash, birth + period);
+		}
+	}
+	deaths
+}
+
 /// Decode the signed bytes using runtime metadata, not plugin-specific metadata (which may
 /// contain only a signer index). Unsupported formats stay unknown, never guessed from offsets.
 async fn nonces_at(
@@ -445,6 +504,11 @@ async fn nonces_at(
 	enum Address {
 		Id([u8; 32]),
 	}
+	#[derive(DecodeAsType)]
+	#[decode_as_type(crate_path = "subxt::ext::scale_decode")]
+	struct Info {
+		nonce: u64,
+	}
 
 	let metadata = at.metadata_ref();
 	let Ok(signature) = metadata.extrinsic_signature_info() else { return Ok(HashMap::new()) };
@@ -454,22 +518,31 @@ async fn nonces_at(
 		let exts = at.extrinsics().from_bytes(vec![bytes.clone()]).await;
 		let Some(Ok(ext)) = exts.iter().next() else { continue };
 		let Some(address) = ext.address_bytes() else { continue };
-		let account =
-			Address::decode_as_type(&mut &*address, signature.address_id, metadata.types())
-				.map(|Address::Id(id)| id)
-				.or_else(|_| {
-					<[u8; 32]>::decode_as_type(
-						&mut &*address,
-						signature.address_id,
-						metadata.types(),
-					)
-				});
+		let types = metadata.types();
+		let account = Address::decode_as_type(&mut &*address, signature.address_id, types)
+			.map(|Address::Id(id)| id.to_vec())
+			.or_else(|_| {
+				<[u8; 32]>::decode_as_type(&mut &*address, signature.address_id, types)
+					.map(|id| id.to_vec())
+			})
+			// AccountId20 (Ethereum-style) runtimes.
+			.or_else(|_| {
+				<[u8; 20]>::decode_as_type(&mut &*address, signature.address_id, types)
+					.map(|id| id.to_vec())
+			});
 		let Ok(account) = account else { continue };
 		let Some(nonce) = ext.transaction_extensions().and_then(|e| e.nonce()) else { continue };
 		let finalized = match accounts.get(&account) {
 			Some(nonce) => *nonce,
 			None => {
-				let nonce = account_at(at, account).await?.nonce;
+				let info: Option<Info> = match <[u8; 32]>::try_from(account.as_slice()) {
+					Ok(id) => Some(Info { nonce: account_at(at, id).await?.nonce }),
+					Err(_) => {
+						let id = <[u8; 20]>::try_from(account.as_slice()).expect("20 bytes");
+						polkameter_plugin_sdk::chain::fetch(at, "System", "Account", (id,)).await?
+					},
+				};
+				let nonce = info.map_or(0, |i| i.nonce);
 				accounts.insert(account, nonce);
 				nonce
 			},
@@ -627,6 +700,7 @@ mod tests {
 			finalized_failed: &failed,
 			settled: known,
 			nonces: &nonces,
+			expired: &HashSet::new(),
 		};
 		let pool = pool_listed.then_some(&ready);
 		let rows = ledger(&flood, &included_in, &evidence, pool, Some(12));
@@ -692,6 +766,7 @@ mod tests {
 			finalized_failed: &none,
 			settled: true,
 			nonces: &HashMap::new(),
+			expired: &HashSet::new(),
 		};
 		for ready in [None, Some(&none)] {
 			let rows = ledger(&flood, &HashMap::new(), &evidence, ready, Some(12));
@@ -703,6 +778,26 @@ mod tests {
 				"unknown transaction without a reason: {}",
 				rows[0].json
 			);
+		}
+	}
+
+	#[test]
+	fn an_expired_era_proves_loss_only_once_settled() {
+		let hash = [7; 32];
+		let flood = HashMap::from([(hash, FloodTx { accepted: true, ..Default::default() })]);
+		let (found, failed, ready) = (HashMap::new(), HashSet::new(), HashSet::new());
+		let expired = HashSet::from([hash]);
+		// No nonce evidence at all (the signer's last tx), but its era ended before the head.
+		for (settled, want) in [(true, Lost), (false, Unknown)] {
+			let evidence = Evidence {
+				found: Some(&found),
+				finalized_failed: &failed,
+				settled,
+				nonces: &HashMap::new(),
+				expired: &expired,
+			};
+			let rows = ledger(&flood, &HashMap::new(), &evidence, Some(&ready), Some(12));
+			assert_eq!(rows[0].status, want, "settled {settled}");
 		}
 	}
 
@@ -723,6 +818,7 @@ mod tests {
 				finalized_failed: &failed,
 				settled: true,
 				nonces: &nonces,
+				expired: &HashSet::new(),
 			};
 			let rows = ledger(&flood, &HashMap::new(), &evidence, Some(&ready), Some(12));
 			assert_eq!(rows[0].status, want, "finalized account nonce {nonce:?}");
@@ -817,6 +913,7 @@ mod tests {
 			finalized_failed: &none,
 			settled: true,
 			nonces: &HashMap::new(),
+			expired: &HashSet::new(),
 		};
 		let rows = ledger(&flood, &included_in, &evidence, Some(&HashSet::new()), Some(12));
 		assert_eq!(rows[0].status, Finalized);
@@ -830,6 +927,7 @@ mod tests {
 			finalized_failed: &failed,
 			settled: true,
 			nonces: &HashMap::new(),
+			expired: &HashSet::new(),
 		};
 		let rows = ledger(&flood, &included_in, &evidence, Some(&HashSet::new()), Some(12));
 		assert!(rows[0].failed && !rows[0].failed_on_fork);

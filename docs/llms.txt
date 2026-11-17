@@ -11,6 +11,7 @@
 
 - [Install](https://agustinustheodorus.com/polkameter/install.html): every install method, supported platforms and version pinning
 - [Run in CI](https://agustinustheodorus.com/polkameter/ci.html): the GitHub Action, GitLab CI and other CI systems
+- [Calls mode](https://agustinustheodorus.com/polkameter/calls-mode.html): `polkameter calls`, a load test from a polkadot-api call file or one call, without a plan or plugin
 - [Read the results](https://agustinustheodorus.com/polkameter/reading-results.html): verdict, failure onset, max sustained rate, loss check, recovery, stop rules
 - [Use PolkaMeter with an AI assistant](https://agustinustheodorus.com/polkameter/ai-assistants.html): the PolkaMeter skill
 - [Troubleshooting](https://agustinustheodorus.com/polkameter/troubleshooting.html): common errors and fixes
