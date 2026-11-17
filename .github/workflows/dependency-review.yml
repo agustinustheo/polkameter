@@ -14,7 +14,8 @@ jobs:
     steps:
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
-          # deepmerge-ts < 8 (stack exhaustion on recursive objects) reaches examples/*/package-lock.json only
-          # through polkadot-api's code generator (write-package pins ^7). The examples are a dated record
-          # that only build types locally; their lockfiles are kept as the agents wrote them.
-          allow-ghsas: GHSA-ggr8-5vv4-36mx
+          # Both reach examples/*/package-lock.json only through polkadot-api's code generator and bundler
+          # tooling: deepmerge-ts < 8 via write-package (pins ^7), picomatch 4.0.7 via unplugin-utils. The
+          # examples are a dated record that only build types locally; their lockfiles stay as the agents
+          # wrote them.
+          allow-ghsas: GHSA-ggr8-5vv4-36mx, GHSA-fc5q-39xc-vjpf
