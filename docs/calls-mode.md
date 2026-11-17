@@ -92,6 +92,7 @@ One rule, in this order. The first that holds decides.
    - the load was not delivered: fewer than 95% of rate × duration transactions were first submitted in the load window;
    - a transaction is `unresolved`;
    - the node `refused` a transaction;
+   - more than 5% of the transactions failed in their blocks (dispatch errors), which usually means the call is wrong for the chain;
    - the p95 is not proven within the limit, because transactions PolkaMeter could not time might be slower.
 3. **PASS** otherwise.
 
