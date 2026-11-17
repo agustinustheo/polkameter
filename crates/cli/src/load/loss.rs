@@ -111,6 +111,7 @@ where
 	// after listing it. A tx can leave the pool while we walk, but cannot disappear
 	// between a late pool snapshot and an earlier chain cutoff. The reads are awaited in
 	// this order, never joined concurrently.
+	let snapshot_ms = crate::load::now_ms();
 	let ready = live.read(|c: Client| async move { pending(&c).await }).await;
 	let ready = ready.map(|hashes| hashes.into_iter().collect::<HashSet<_>>());
 	let ready = ready.map_err(|e| notes.push(format!("the pool could not be listed: {e}"))).ok();
@@ -220,6 +221,34 @@ where
 		expired: &expired,
 	};
 	let mut rows = ledger(run.flood, run.included_in, &evidence, ready.as_ref(), cutoff);
+	// Who signed each tx, at which nonce and era, read from its own bytes, so the ledger can be
+	// audited against the chain without PolkaMeter's word for it.
+	let signed = match &finalized {
+		Ok((_, at)) => {
+			let all: Vec<_> =
+				run.flood.iter().map(|(hash, tx)| (*hash, tx.bytes.clone())).collect();
+			live.read(|c: Client| {
+				let all = &all;
+				async move { Ok(signed_at(&c.at(*at).await?, all).await) }
+			})
+			.await
+			.unwrap_or_else(|e| {
+				notes.push(format!("signers, nonces and eras could not be decoded: {e}"));
+				HashMap::new()
+			})
+		},
+		Err(_) => HashMap::new(),
+	};
+	let current = u64::from(run.walk_from.unwrap_or(1).saturating_sub(1));
+	for row in &mut rows {
+		audit_fields(
+			&mut row.json,
+			row.tx,
+			signed.get(&row.hash),
+			current,
+			ready.is_some().then_some(snapshot_ms),
+		);
+	}
 	for row in rows.iter_mut().filter(|r| expired_early.contains(&r.hash)) {
 		if matches!(row.status, Status::Unknown | Status::Unverified) {
 			row.json["statusReason"] = "expired before it was included, but it was sent with less than half its era left: the mortality it was signed with ended it, not the chain".into();
@@ -520,19 +549,26 @@ async fn deaths_at(
 			subxt::utils::Era::decode(&mut mortality.bytes()).ok()
 		});
 		if let Some(subxt::utils::Era::Mortal { period, phase }) = era {
-			let birth = (current.max(phase) - phase) / period * period + phase;
+			let birth = era_birth(period, phase, current);
 			deaths.insert(*hash, (birth + period, period));
 		}
 	}
 	deaths
 }
 
+/// What a signed tx says about itself, decoded with the runtime's metadata: its signer (32 or 20
+/// bytes), its nonce, and its era as (period, phase) when it is mortal (`None`: immortal).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Signed {
+	account: Vec<u8>,
+	nonce: Option<u64>,
+	era: Option<Option<(u64, u64)>>,
+}
+
 /// Decode the signed bytes using runtime metadata, not plugin-specific metadata (which may
 /// contain only a signer index). Unsupported formats stay unknown, never guessed from offsets.
-async fn nonces_at(
-	at: &AtBlock,
-	candidates: &[(TxHash, Vec<u8>)],
-) -> Result<HashMap<TxHash, (u64, u64)>, ChainError> {
+async fn signed_at(at: &AtBlock, txs: &[(TxHash, Vec<u8>)]) -> HashMap<TxHash, Signed> {
+	use parity_scale_codec::Decode as _;
 	use subxt::ext::{
 		frame_decode::extrinsics::ExtrinsicTypeInfo as _, scale_decode::DecodeAsType,
 	};
@@ -541,17 +577,11 @@ async fn nonces_at(
 	enum Address {
 		Id([u8; 32]),
 	}
-	#[derive(DecodeAsType)]
-	#[decode_as_type(crate_path = "subxt::ext::scale_decode")]
-	struct Info {
-		nonce: u64,
-	}
 
 	let metadata = at.metadata_ref();
-	let Ok(signature) = metadata.extrinsic_signature_info() else { return Ok(HashMap::new()) };
-	let mut accounts = HashMap::new();
-	let mut nonces = HashMap::new();
-	for (hash, bytes) in candidates {
+	let Ok(signature) = metadata.extrinsic_signature_info() else { return HashMap::new() };
+	let mut signed = HashMap::new();
+	for (hash, bytes) in txs {
 		let exts = at.extrinsics().from_bytes(vec![bytes.clone()]).await;
 		let Some(Ok(ext)) = exts.iter().next() else { continue };
 		let Some(address) = ext.address_bytes() else { continue };
@@ -568,7 +598,76 @@ async fn nonces_at(
 					.map(|id| id.to_vec())
 			});
 		let Ok(account) = account else { continue };
-		let Some(nonce) = ext.transaction_extensions().and_then(|e| e.nonce()) else { continue };
+		let extensions = ext.transaction_extensions();
+		let nonce = extensions.as_ref().and_then(|e| e.nonce());
+		let era = extensions.as_ref().and_then(|e| {
+			let mortality = e.iter().find(|x| x.name() == "CheckMortality")?;
+			match subxt::utils::Era::decode(&mut mortality.bytes()).ok()? {
+				subxt::utils::Era::Mortal { period, phase } => Some(Some((period, phase))),
+				subxt::utils::Era::Immortal => Some(None),
+			}
+		});
+		signed.insert(*hash, Signed { account, nonce, era });
+	}
+	signed
+}
+
+/// The first block of an era of `period` blocks at `phase` that is at or before `head`: the
+/// block a tx with that era was signed at, when `head` is in its era.
+fn era_birth(period: u64, phase: u64, head: u64) -> u64 {
+	(head.max(phase) - phase) / period * period + phase
+}
+
+/// Adds the fields an audit needs to a ledger row: `signer` (SS58 for 32-byte accounts, `0x` hex
+/// for 20-byte ones), `nonce` (the nonce it was signed with), `mortality` (`{birth, period}`,
+/// `"immortal"`, or null when it could not be decoded), `firstSubmitMs` (when it was first handed
+/// to a connection, the same as `sentAt`) and `poolSnapshotMs` (when the node's pool was listed
+/// for `inReadyPool`). The era's birth is counted back from the best block seen when it was
+/// sent, or from `current` (the finalized head before the load) when none was seen.
+fn audit_fields(
+	json: &mut serde_json::Value,
+	tx: &FloodTx,
+	signed: Option<&Signed>,
+	current: u64,
+	snapshot_ms: Option<u64>,
+) {
+	json["firstSubmitMs"] = tx.sent_at.into();
+	json["poolSnapshotMs"] = snapshot_ms.into();
+	json["signer"] = signed
+		.map(|s| match <[u8; 32]>::try_from(s.account.as_slice()) {
+			Ok(id) => polkameter_plugin_sdk::chain::ss58(id),
+			Err(_) => polkameter_plugin_sdk::chain::hex0x(&s.account),
+		})
+		.into();
+	if let Some(nonce) = signed.and_then(|s| s.nonce) {
+		json["nonce"] = nonce.into();
+	}
+	let head = if tx.sent_head > 0 { u64::from(tx.sent_head) } else { current };
+	json["mortality"] = match signed.and_then(|s| s.era) {
+		Some(Some((period, phase))) => {
+			serde_json::json!({"birth": era_birth(period, phase, head), "period": period})
+		},
+		Some(None) => "immortal".into(),
+		None => serde_json::Value::Null,
+	};
+}
+
+/// Each candidate's (tx nonce, its signer's nonce at the block `at`).
+async fn nonces_at(
+	at: &AtBlock,
+	candidates: &[(TxHash, Vec<u8>)],
+) -> Result<HashMap<TxHash, (u64, u64)>, ChainError> {
+	use subxt::ext::scale_decode::DecodeAsType;
+	#[derive(DecodeAsType)]
+	#[decode_as_type(crate_path = "subxt::ext::scale_decode")]
+	struct Info {
+		nonce: u64,
+	}
+
+	let mut accounts = HashMap::new();
+	let mut nonces = HashMap::new();
+	for (hash, Signed { account, nonce, .. }) in signed_at(at, candidates).await {
+		let Some(nonce) = nonce else { continue };
 		let finalized = match accounts.get(&account) {
 			Some(nonce) => *nonce,
 			None => {
@@ -584,7 +683,7 @@ async fn nonces_at(
 				nonce
 			},
 		};
-		nonces.insert(*hash, (nonce, finalized));
+		nonces.insert(hash, (nonce, finalized));
 	}
 	Ok(nonces)
 }
@@ -1065,5 +1164,30 @@ mod tests {
 				std::future::ready(Err(ChainError::Timeout("never called".into())))
 			}));
 		assert_eq!(nothing, Some(Ok(None)), "nothing finalized: nothing to check");
+	}
+
+	/// Every ledger row names its signer as the chain does, the nonce and era it was signed with,
+	/// and when it was first submitted.
+	#[test]
+	fn ledger_rows_carry_signer_nonce_mortality_and_first_submit() {
+		let tx = FloodTx { sent_at: 1_794_000_000_000, sent_head: 1_000, ..Default::default() };
+		let mut json = serde_json::json!({"nonce": null});
+		// Signed at block 990 with a 4096-block era: phase 990.
+		let signed =
+			Signed { account: vec![0xab; 20], nonce: Some(7), era: Some(Some((4096, 990))) };
+		audit_fields(&mut json, &tx, Some(&signed), 900, Some(1_794_000_005_000));
+		assert_eq!(json["signer"], format!("0x{}", "ab".repeat(20)));
+		assert_eq!(json["nonce"], 7);
+		assert_eq!(json["mortality"], serde_json::json!({"birth": 990, "period": 4096}));
+		assert_eq!(json["firstSubmitMs"], 1_794_000_000_000_u64);
+		assert_eq!(json["poolSnapshotMs"], 1_794_000_005_000_u64);
+		let signed = Signed { account: vec![0; 32], nonce: Some(0), era: Some(None) };
+		audit_fields(&mut json, &tx, Some(&signed), 900, None);
+		assert_eq!(json["signer"], "5C4hrfjw9DjXZTzV3MwzrrAr9P1MJhSrvWGWqi1eSuyUpnhM");
+		assert_eq!(json["mortality"], "immortal");
+		assert!(json["poolSnapshotMs"].is_null());
+		// An era wraps: signed at 4100 (phase 4), sent with the best head at 5000.
+		assert_eq!(era_birth(4096, 4, 5_000), 4_100);
+		assert_eq!(era_birth(64, 10, 9), 10);
 	}
 }

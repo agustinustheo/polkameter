@@ -372,6 +372,15 @@ impl<S: Submit> Tracker<S> {
 		(!blind).then(|| seen.saturating_sub(sent_at))
 	}
 
+	/// Time from sending at `sent_at` to PolkaMeter first seeing a finalized head at or above
+	/// `block`, measured or not: the tx was final by then, so this bounds its time to finality
+	/// from above even when [`Self::finality_ms`] cannot time it. `None` when no such head was
+	/// seen.
+	pub fn finality_at_most_ms(&self, sent_at: Millis, block: u32) -> Option<Millis> {
+		let (seen, _) = *self.finalized_seen.iter().find(|(_, n)| *n >= block)?;
+		Some(seen.saturating_sub(sent_at))
+	}
+
 	/// Whether PolkaMeter was paused across a time measured from `from` to `to`.
 	pub(super) fn paused_across(&self, from: Millis, to: Millis) -> bool {
 		self.pauses.iter().any(|p| across(*p, from, to))

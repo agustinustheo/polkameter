@@ -431,7 +431,9 @@ where
 }
 
 /// Adds each finalized tx's time from send to finality (`finalizedMs`) to its ledger row, and
-/// their p95 to the loss. A tx PolkaMeter could not time has `null`.
+/// their p95 to the loss. A tx PolkaMeter could not time has `null`, and every finalized tx has
+/// `finalizedMsAtMost`: the time until PolkaMeter saw it final, an upper bound that holds across
+/// its own pauses and reconnects.
 fn finality_times<S: crate::load::submit::Submit>(
 	tracker: &Tracker<S>,
 	records: &mut [serde_json::Value],
@@ -448,6 +450,7 @@ fn finality_times<S: crate::load::submit::Submit>(
 		let ms = tracker.finality_ms(sent_at, untimed, block as u32);
 		times.extend(ms);
 		record["finalizedMs"] = ms.into();
+		record["finalizedMsAtMost"] = tracker.finality_at_most_ms(sent_at, block as u32).into();
 	}
 	times.sort_unstable();
 	loss.finalized_timed = Some(times.len() as u64);

@@ -4,7 +4,7 @@
 
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
-use polkameter_plugin_sdk::observers::summary::{OverallStatus, Rule, Summary};
+use polkameter_plugin_sdk::observers::summary::{OverallStatus, Summary};
 use serde_json::json;
 
 use super::{CliError, write_stdout};
@@ -254,56 +254,146 @@ fn categories(ledger: &str) -> serde_json::Value {
 	counts.into()
 }
 
-/// The verdict of a finished run: exit code and one line why.
-fn verdict(summary: &Summary, max_p95_ms: u64) -> (i32, &'static str, String) {
-	let loss = &summary.loss;
-	let status = summary.verdict.map(|v| v.result);
-	let unresolved = loss.unknown + loss.unverified + loss.in_pool.unwrap_or(0);
-	let p95 = loss.p95_finalized_ms;
-	if status == Some(OverallStatus::Fail) {
-		let why = summary
-			.breaking_point
-			.as_ref()
-			.map(|b| b.detail.clone())
-			.or_else(|| summary.failure_modes.first().map(|f| f.what.clone()))
-			.unwrap_or_else(|| "a check failed; see summary.md".into());
-		return (1, "FAIL", why);
+/// Share of rate × duration that must be first submitted in the load window.
+const DELIVERED: f64 = 0.95;
+
+/// What a transaction's time from first submit to finality is known to be: at least the first,
+/// at most the second (`None`: no bound). A finalized tx PolkaMeter timed is exact; one it could
+/// not time (its own pauses or reconnects) is at least 0 and at most the time until it saw it
+/// final. A tx not in a block is at least as old as it was when the node's pool still held it
+/// ready, which is the chain's wait, not PolkaMeter's; otherwise at least 0.
+fn latency_bounds(row: &serde_json::Value) -> (u64, Option<u64>) {
+	match row["category"].as_str() {
+		Some("finalized-ok" | "failed-in-block") => match row["finalizedMs"].as_u64() {
+			Some(ms) => (ms, Some(ms)),
+			None => (0, row["finalizedMsAtMost"].as_u64()),
+		},
+		_ => {
+			let ready = row["inReadyPool"].as_bool() == Some(true);
+			let waited = match (row["poolSnapshotMs"].as_u64(), row["firstSubmitMs"].as_u64()) {
+				(Some(snapshot), Some(first)) if ready => snapshot.saturating_sub(first),
+				_ => 0,
+			};
+			(waited, None)
+		},
 	}
-	if loss.lost.is_some_and(|lost| lost > 0) {
-		return (1, "FAIL", format!("{} transactions proven lost", loss.lost.unwrap_or(0)));
+}
+
+/// The p95 of `times` (`None` sorts above every number: no bound).
+fn p95_of(mut times: Vec<Option<u64>>) -> Option<u64> {
+	if times.is_empty() {
+		return None;
 	}
-	if let Some(p95) = p95.filter(|p| *p > max_p95_ms) {
-		return (
+	times.sort_unstable_by_key(|t| t.map_or((1, 0), |t| (0, t)));
+	let rank = (times.len() as f64 * 0.95).ceil() as usize;
+	times[rank.clamp(1, times.len()) - 1]
+}
+
+/// A finished run's verdict.
+#[derive(Debug, PartialEq, Eq)]
+struct Verdict {
+	code: i32,
+	name: &'static str,
+	why: String,
+	/// p95 submit to finalized over every tx sent, proven at least this.
+	p95_at_least: Option<u64>,
+	/// p95 submit to finalized over every tx sent, proven at most this (`None`: no bound).
+	p95_at_most: Option<u64>,
+}
+
+/// The verdict, from the ledger (`transactions.jsonl`) alone, by one rule in this order:
+///
+/// 1. FAIL (exit 1) when the chain is proven to miss a threshold on the load it was given: a tx
+///    proven lost, or a p95 from first submit to finality proven above `--max-p95`. Proven means
+///    more than 5% of the txs sent took longer, counting only times PolkaMeter measured, or a
+///    tx the node's pool held ready (a stall that is the chain's).
+/// 2. CANNOT TELL (exit 4) when the load was not delivered (fewer than 95% of rate × duration
+///    first submitted), or anything is unresolved: a tx not resolved, a tx the node refused, or a
+///    p95 not proven within the limit (txs PolkaMeter could not time).
+/// 3. PASS (exit 0) otherwise.
+///
+/// The engine's own verdict is not an input. PolkaMeter's reconnects, pauses, under-delivery and
+/// probes, and a chain that builds no block until a tx arrives, can make it FAIL, but none of
+/// them is a chain problem on the delivered load.
+fn verdict(rows: &[serde_json::Value], target: u64, max_p95_ms: u64) -> Verdict {
+	let count = |c: &str| rows.iter().filter(|r| r["category"] == c).count();
+	let (lows, highs): (Vec<u64>, Vec<Option<u64>>) = rows.iter().map(latency_bounds).unzip();
+	let p95_at_least = p95_of(lows.iter().copied().map(Some).collect());
+	let p95_at_most = p95_of(highs);
+	let make = |code, name, why: String| Verdict { code, name, why, p95_at_least, p95_at_most };
+	let sent = rows.len() as u64;
+	if count("lost") > 0 {
+		return make(1, "FAIL", format!("{} transactions proven lost", count("lost")));
+	}
+	if let Some(p95) = p95_at_least.filter(|p| *p > max_p95_ms) {
+		let slow = lows.iter().filter(|l| **l > max_p95_ms).count();
+		let stalled = rows
+			.iter()
+			.zip(&lows)
+			.filter(|(r, l)| **l > max_p95_ms && r["inReadyPool"].as_bool() == Some(true))
+			.count();
+		let stall = if stalled > 0 {
+			format!(", {stalled} of them still ready in the node's pool (a stall)")
+		} else {
+			String::new()
+		};
+		return make(
 			1,
 			"FAIL",
-			format!("p95 submit to finalized {} > {}", show_ms(p95), show_ms(max_p95_ms)),
-		);
-	}
-	// The load was not delivered: it stopped before the rate ran its full time, such as on
-	// "generator limit". An engine INCONCLUSIVE for a check outside calls mode's criteria (such
-	// as an unmeasured drain) is reported, not a reason to withhold the verdict.
-	if summary.stop.rule != Rule::RateCap {
-		return (
-			CANNOT_TELL,
-			"CANNOT TELL",
 			format!(
-				"the load was not delivered: {} ({})",
-				summary.stop.rule.name(),
-				summary.stop.detail
+				"p95 submit to finalized at least {} > {}: {slow} of {sent} transactions took longer{stall}",
+				show_ms(p95),
+				show_ms(max_p95_ms)
 			),
 		);
 	}
-	if unresolved > 0 || loss.lost.is_none() {
-		return (
+	if (sent as f64) < DELIVERED * target as f64 {
+		return make(
 			CANNOT_TELL,
 			"CANNOT TELL",
-			format!("{unresolved} transactions unresolved, or loss not counted"),
+			format!(
+				"the load was not delivered: {sent} of {target} transactions sent ({:.1}%, {:.0}% needed)",
+				100.0 * sent as f64 / target.max(1) as f64,
+				100.0 * DELIVERED
+			),
 		);
 	}
-	if p95.is_none() {
-		return (CANNOT_TELL, "CANNOT TELL", "no finalized transaction could be timed".into());
+	if count("unresolved") > 0 {
+		return make(
+			CANNOT_TELL,
+			"CANNOT TELL",
+			format!("{} transactions unresolved", count("unresolved")),
+		);
 	}
-	(0, "PASS", "every transaction resolved, none lost, p95 within the limit".into())
+	if count("refused") > 0 {
+		return make(
+			CANNOT_TELL,
+			"CANNOT TELL",
+			format!("the node refused {} transactions at submit", count("refused")),
+		);
+	}
+	match p95_at_most {
+		Some(p95) if p95 <= max_p95_ms => make(
+			0,
+			"PASS",
+			format!(
+				"the load was delivered, every transaction resolved, none lost, p95 submit to finalized at most {}",
+				show_ms(p95)
+			),
+		),
+		Some(p95) => make(
+			CANNOT_TELL,
+			"CANNOT TELL",
+			format!(
+				"p95 submit to finalized is between {} and {}, and the limit is {}: {} transactions PolkaMeter could not time",
+				show_ms(p95_at_least.unwrap_or(0)),
+				show_ms(p95),
+				show_ms(max_p95_ms),
+				rows.iter().filter(|r| r["finalizedMs"].is_null()).count()
+			),
+		),
+		None => make(CANNOT_TELL, "CANNOT TELL", "no transaction could be timed".into()),
+	}
 }
 
 /// The chain's block interval, measured as preflight measures it (on a chain just started, it
@@ -394,17 +484,22 @@ pub async fn run(args: Args) -> Result<i32, CliError> {
 		);
 		return Ok(code);
 	};
-	let (code, name, mut why) = verdict(&summary, args.max_p95);
+	let ledger = std::fs::read_to_string(dir.join("transactions.jsonl")).unwrap_or_default();
+	let rows: Vec<serde_json::Value> =
+		ledger.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+	let target = (args.rate * args.duration as f64).floor() as u64;
+	let Verdict { code, name, mut why, p95_at_least, p95_at_most } =
+		verdict(&rows, target, args.max_p95);
 	if let Some(engine) = summary.verdict.map(|v| v.result).filter(|r| *r != OverallStatus::Pass) {
-		why = format!("{why} (engine verdict {engine:?}; see summary.md)");
+		why = format!("{why} (engine verdict {engine:?}, not used; see summary.md)");
 	}
 	let loss = &summary.loss;
-	let counts =
-		categories(&std::fs::read_to_string(dir.join("transactions.jsonl")).unwrap_or_default());
+	let counts = categories(&ledger);
 	let report = json!({
 		"verdict": name,
 		"exitCode": code,
 		"reason": why,
+		"target": target,
 		"sent": loss.sent,
 		"finalized": loss.included,
 		"failedInBlock": loss.failed_in_block,
@@ -414,6 +509,8 @@ pub async fn run(args: Args) -> Result<i32, CliError> {
 		"categories": counts,
 		"maxP95Ms": args.max_p95,
 		"p95FinalizedMs": loss.p95_finalized_ms,
+		"p95AtLeastMs": p95_at_least,
+		"p95AtMostMs": p95_at_most,
 		"finalizedTimed": loss.finalized_timed,
 		"engineVerdict": summary.verdict.map(|v| v.result),
 		"stop": summary.stop.rule.name(),
@@ -421,7 +518,7 @@ pub async fn run(args: Args) -> Result<i32, CliError> {
 	std::fs::write(dir.join("calls-verdict.json"), format!("{report:#}\n")).ok();
 	let count = |c: &str| counts[c].as_u64().unwrap_or(0);
 	write_stdout(&format!(
-		"{name}: {why}\nsent {}: finalized-ok {}, failed-in-block {}, lost {}, unresolved {}, refused {}; p95 submit to finalized {} (limit {})\nArtifacts: {}",
+		"{name}: {why}\nsent {} of {target}: finalized-ok {}, failed-in-block {}, lost {}, unresolved {}, refused {}; p95 submit to finalized {} (proven between {} and {}; limit {})\nArtifacts: {}",
 		loss.sent,
 		count("finalized-ok"),
 		count("failed-in-block"),
@@ -429,6 +526,8 @@ pub async fn run(args: Args) -> Result<i32, CliError> {
 		count("unresolved"),
 		count("refused"),
 		loss.p95_finalized_ms.map_or("none".into(), show_ms),
+		p95_at_least.map_or("none".into(), show_ms),
+		p95_at_most.map_or("no bound".into(), show_ms),
 		show_ms(args.max_p95),
 		dir.display()
 	));
@@ -498,5 +597,92 @@ mod tests {
 			counts,
 			json!({"finalized-ok": 2, "failed-in-block": 1, "lost": 1, "unresolved": 1, "refused": 1})
 		);
+	}
+
+	/// A ledger row: its category, `finalizedMs`, `finalizedMsAtMost`, and whether the node's pool
+	/// held it ready, `waited` ms after its first submit.
+	fn row(
+		category: &str,
+		ms: Option<u64>,
+		at_most: Option<u64>,
+		waited: Option<u64>,
+	) -> serde_json::Value {
+		json!({"category": category, "finalizedMs": ms, "finalizedMsAtMost": at_most,
+			"firstSubmitMs": 1_000, "poolSnapshotMs": 1_000 + waited.unwrap_or(0),
+			"inReadyPool": waited.is_some()})
+	}
+
+	fn rows(n: usize, row: &serde_json::Value) -> Vec<serde_json::Value> {
+		vec![row.clone(); n]
+	}
+
+	/// The pilot's M-mythos b2 run: an outage left 107 of 120 sent, all finalized, 22 untimed
+	/// across PolkaMeter's reconnects, p95 47 s under a 60 s limit. The engine said FAIL (a
+	/// recovery "stall" on a fork that builds no block without a tx); round 2 passed that on as
+	/// FAIL. Nothing proves a chain problem and the load was not delivered: CANNOT TELL.
+	#[test]
+	fn the_pilot_outage_run_cannot_tell() {
+		let mut ledger = rows(85, &row("finalized-ok", Some(47_000), Some(47_000), None));
+		ledger.extend(rows(22, &row("finalized-ok", None, Some(58_000), None)));
+		let v = verdict(&ledger, 120, 60_000);
+		assert_eq!((v.code, v.name), (CANNOT_TELL, "CANNOT TELL"), "{v:?}");
+		assert!(v.why.contains("107 of 120"), "{}", v.why);
+	}
+
+	#[test]
+	fn a_delivered_load_within_the_limit_passes() {
+		let mut ledger = rows(94, &row("finalized-ok", Some(5_000), Some(5_000), None));
+		ledger.extend(rows(6, &row("failed-in-block", None, Some(9_000), None)));
+		let v = verdict(&ledger, 100, 30_000);
+		assert_eq!((v.code, v.p95_at_least, v.p95_at_most), (0, Some(5_000), Some(9_000)), "{v:?}");
+	}
+
+	/// A chain proven slow on what it was given fails, even when the load fell short.
+	#[test]
+	fn a_proven_slow_chain_fails_before_under_delivery_is_considered() {
+		let mut ledger = rows(70, &row("finalized-ok", Some(5_000), Some(5_000), None));
+		ledger.extend(rows(10, &row("finalized-ok", Some(70_000), Some(70_000), None)));
+		let v = verdict(&ledger, 100, 60_000);
+		assert_eq!(v.code, 1, "{v:?}");
+		assert!(v.why.contains("10 of 80"), "{}", v.why);
+	}
+
+	/// Times PolkaMeter could not measure (its reconnects or pauses) never prove a FAIL, however
+	/// long the upper bound, and they keep a PASS from being proven.
+	#[test]
+	fn the_tools_own_blind_spots_cannot_tell() {
+		let mut ledger = rows(90, &row("finalized-ok", Some(5_000), Some(5_000), None));
+		ledger.extend(rows(10, &row("finalized-ok", None, Some(90_000), None)));
+		let v = verdict(&ledger, 100, 60_000);
+		assert_eq!(
+			(v.code, v.p95_at_least, v.p95_at_most),
+			(CANNOT_TELL, Some(5_000), Some(90_000))
+		);
+	}
+
+	/// Txs the node's pool still held ready long after they were sent are the chain's stall; txs
+	/// merely not seen in a block are unresolved.
+	#[test]
+	fn a_stall_fails_only_when_the_chain_held_the_transactions() {
+		let mut ledger = rows(90, &row("finalized-ok", Some(5_000), Some(5_000), None));
+		ledger.extend(rows(10, &row("unresolved", None, None, Some(400_000))));
+		let v = verdict(&ledger, 100, 60_000);
+		assert_eq!(v.code, 1, "{v:?}");
+		assert!(v.why.contains("still ready in the node's pool"), "{}", v.why);
+		ledger.truncate(90);
+		ledger.extend(rows(10, &row("unresolved", None, None, None)));
+		assert_eq!(verdict(&ledger, 100, 60_000).code, CANNOT_TELL);
+	}
+
+	#[test]
+	fn a_loss_fails_and_a_refusal_cannot_tell() {
+		let ok = row("finalized-ok", Some(5_000), Some(5_000), None);
+		let mut ledger = rows(99, &ok);
+		ledger.push(row("lost", None, None, None));
+		assert_eq!(verdict(&ledger, 100, 60_000).code, 1);
+		ledger.pop();
+		ledger.push(row("refused", None, None, None));
+		assert_eq!(verdict(&ledger, 100, 60_000).code, CANNOT_TELL);
+		assert_eq!(verdict(&[], 100, 60_000).code, CANNOT_TELL);
 	}
 }

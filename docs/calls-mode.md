@@ -74,7 +74,7 @@ polkameter calls --chain ws://127.0.0.1:9944 --seed //Alice --rate 5 --duration 
 - Signs each call against a finalized block, at consecutive nonces per account. It never skips or re-signs a nonce. After a dropped connection, it sends the same signed bytes again.
 - Signs with the longest mortality the chain keeps: 4096 blocks, or less when `System.BlockHashCount` is lower. It doesn't depend on the block time, which on some chains follows the load (a Chopsticks fork builds a block per transaction).
 - Opens a dropped connection again during setup, for up to 90 seconds, and repeats the read or sends the same signed bytes. Funding and setup transactions are never sent twice.
-- Sends at `--rate` for `--duration`: exactly rate × duration transactions, each at its own time from the start. If it cannot keep the rate, the verdict is CANNOT TELL, not PASS. Transactions it could not send during an outage are not sent later.
+- Sends at `--rate` for `--duration`: exactly rate × duration transactions, each at its own time from the start. If fewer than 95% of them are sent, the verdict is CANNOT TELL, not PASS. Transactions it could not send during an outage are not sent later.
 - After the load, keeps watching the chain until every transaction is in a block, for at most `--recovery` seconds.
 - Reconciles every hash against the finalized chain and gives each one category (see [Output](#output)).
 - Measures the time from submit to the first finalized head at or above each transaction's block.
@@ -85,17 +85,50 @@ It signs for `AccountId32` runtimes with sr25519 keys and for `AccountId20` runt
 
 | Code | Verdict | Meaning |
 | --- | --- | --- |
-| 0 | PASS | The load was delivered, every transaction resolved, none lost, and p95 submit to finalized is at most `--max-p95` |
-| 1 | FAIL | The run's verdict is FAIL, a transaction is proven lost, or the p95 is above `--max-p95` |
-| 4 | CANNOT TELL | The load was not delivered at the rate, a transaction is unresolved, or nothing could be timed |
+| 0 | PASS | The load was delivered, every transaction resolved, none lost, and the p95 is proven at most `--max-p95` |
+| 1 | FAIL | The chain is proven to miss a threshold on the load it was given |
+| 4 | CANNOT TELL | Not a proven FAIL, and the load was not delivered or something is unresolved |
 | 3 | | Setup failed (connection, funding, the call file), before the load |
 | 2 | | Invalid flags |
+
+### How the verdict is decided
+
+One rule, in this order. The first that holds decides.
+
+1. **FAIL** if the chain is proven to cause a problem on the load it was given:
+   - a transaction is `lost`, or
+   - the p95 submit to finalized is proven above `--max-p95`: more than 5% of the transactions sent took longer.
+
+   Only two kinds of time count as proof. The first is a time PolkaMeter measured. The second is the age of a transaction that the node's pool still held ready when the run ended, after its first submit; a chain that holds a ready transaction and builds no block for it has stalled.
+2. **CANNOT TELL** if any of these holds:
+   - the load was not delivered: fewer than 95% of rate × duration transactions were first submitted in the load window;
+   - a transaction is `unresolved`;
+   - the node `refused` a transaction;
+   - the p95 is not proven within the limit, because transactions PolkaMeter could not time might be slower.
+3. **PASS** otherwise.
+
+The verdict is computed from `transactions.jsonl` alone. PolkaMeter's own problems can't give a FAIL: its reconnects and pauses (a transaction it could not time proves nothing), a load it could not deliver, its probes, or a chain that builds no block until a transaction arrives, such as a Chopsticks fork. The engine's own verdict in `summary.md` can FAIL on these. It is reported as `engineVerdict` but not used.
 
 ## Output
 
 The run directory under `--output` (default `polkameter-runs`) holds the usual files, plus `calls-verdict.json` and the generated `plan.polkameter.xml`.
 
-`transactions.jsonl` has one line per transaction sent: its `hash`, its `category`, and `finalizedMs`, the time from submit to finality. `category` is one of:
+`transactions.jsonl` has one line per transaction sent. These fields audit it against the chain:
+
+| Field | What it is |
+| --- | --- |
+| `hash` | The transaction's hash (blake2-256 of its bytes), hex |
+| `category` | Where it ended, see below |
+| `signer` | Its signer, decoded from its bytes: SS58 (generic prefix 42, as `ctx.account`) for 32-byte accounts, `0x` hex for 20-byte ones |
+| `nonce` | The nonce it was signed with, decoded from its bytes |
+| `mortality` | `{"birth": block, "period": blocks}`: the block it was signed at and how long it is valid. `"immortal"` without mortality; `null` when it could not be decoded |
+| `firstSubmitMs` | When PolkaMeter first handed it to a connection, in Unix ms. A resend after a reconnect keeps it. It equals `sentAt` |
+| `finalizedMs` | Time from `firstSubmitMs` to the first finalized head at or above its block; `null` when PolkaMeter could not time it (its pauses or reconnects) |
+| `finalizedMsAtMost` | Time from `firstSubmitMs` until PolkaMeter saw it final: an upper bound, set even when `finalizedMs` is `null` |
+| `inReadyPool`, `poolSnapshotMs` | Whether the node's pool held it ready, and when the pool was listed (Unix ms) |
+| `finalizedBlock` | The finalized block it is in |
+
+`category` is one of:
 
 | `category` | Meaning |
 | --- | --- |
@@ -105,7 +138,7 @@ The run directory under `--output` (default `polkameter-runs`) holds the usual f
 | `refused` | The node rejected it at submit; it was never in a block |
 | `unresolved` | Anything else: it may still be included, or its end has no proof |
 
-`calls-verdict.json` counts them in `categories`, next to `verdict`, `exitCode`, `reason`, `sent` and `p95FinalizedMs`. The counts add up to `sent`.
+`calls-verdict.json` counts the categories in `categories`, which add up to `sent`. It also has `verdict`, `exitCode`, `reason`, `target` (rate × duration) and `sent`. For latency it has `p95FinalizedMs` (over the timed transactions) and the proven bounds `p95AtLeastMs` and `p95AtMostMs` (over every transaction sent; `null` means no bound).
 
 A transaction that expired after being sent with less than half its mortality left is `unresolved`, not `lost`: the mortality it was signed with ended it, not the chain.
 
