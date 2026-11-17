@@ -10,6 +10,7 @@ User-visible changes in each release. The GitHub release notes list every merged
 
 ### Fixed
 
+- Calls mode no longer passes a run where more than 5% of the transactions failed in their blocks; the verdict is CANNOT TELL and names the count.
 - `polkameter calls` default funding (no `--fund`) no longer fails with `Arithmetic(Underflow)` when the seed holds more than the chain's total issuance (a fork's storage override) on a chain with an existential deposit of 0: each test account's share is now taken from at most `Balances.TotalIssuance`. A setup or funding transaction that fails in its block now reports its dispatch error, such as `funding transaction: failed: 0x… in block 9561039: Arithmetic(Underflow)`, instead of only `funding transaction`.
 
 ## 0.4.7 (2026-11-10)

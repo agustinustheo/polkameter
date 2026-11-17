@@ -384,6 +384,18 @@ fn verdict(rows: &[serde_json::Value], in_window: u64, target: u64, max_p95_ms: 
 			format!("the node refused {} transactions at submit", count("refused")),
 		);
 	}
+	// A call that fails in its block was run, but not as the load asked for: past the delivery
+	// tolerance, the chain was not shown to carry the load (for example a call below a minimum).
+	let failed = count("failed-in-block");
+	if (failed as f64) > (1.0 - DELIVERED) * sent as f64 {
+		return make(
+			CANNOT_TELL,
+			"CANNOT TELL",
+			format!(
+				"{failed} of {sent} transactions failed in their blocks (dispatch errors): check the calls; the events are in transactions.jsonl"
+			),
+		);
+	}
 	match p95_at_most {
 		Some(p95) if p95 <= max_p95_ms => make(
 			0,
@@ -943,9 +955,19 @@ mod tests {
 	#[test]
 	fn a_delivered_load_within_the_limit_passes() {
 		let mut ledger = rows(94, &row("finalized-ok", Some(5_000), Some(5_000), None));
-		ledger.extend(rows(6, &row("failed-in-block", None, Some(9_000), None)));
-		let v = verdict(&ledger, ledger.len() as u64, 100, 30_000);
-		assert_eq!((v.code, v.p95_at_least, v.p95_at_most), (0, Some(5_000), Some(9_000)), "{v:?}");
+		ledger.extend(rows(4, &row("failed-in-block", None, Some(9_000), None)));
+		let v = verdict(&ledger, ledger.len() as u64, 98, 30_000);
+		assert_eq!((v.code, v.p95_at_least, v.p95_at_most), (0, Some(5_000), Some(5_000)), "{v:?}");
+	}
+
+	/// Calls that fail in their blocks past the delivery tolerance (a tip below the chain's
+	/// minimum failed all 50 on Myriad and passed in 0.5.0-rc.1) cannot pass.
+	#[test]
+	fn calls_failing_in_their_blocks_cannot_pass() {
+		let ledger = rows(50, &row("failed-in-block", Some(1_000), Some(1_000), None));
+		let v = verdict(&ledger, 50, 50, 60_000);
+		assert_eq!(v.code, CANNOT_TELL, "{v:?}");
+		assert!(v.why.contains("50 of 50 transactions failed in their blocks"), "{}", v.why);
 	}
 
 	/// A chain proven slow on what it was given fails, even when the load fell short.
