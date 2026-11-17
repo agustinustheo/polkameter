@@ -52,7 +52,7 @@ The call file exports:
 
 Transaction `i` is signed by test account `i % accounts`. Calls must not depend on each other's order across accounts.
 
-`call` runs once per transaction before the clock starts, and PolkaMeter reads the calls one by one, so their number and size have no limit.
+`call` runs once per transaction before the clock starts, and PolkaMeter reads the calls one by one, so their size has no limit. One run signs at most 100,000 calls (rate × duration + 5%, plus one per account); above that, `polkameter calls` refuses the flags with exit 2.
 
 ## What PolkaMeter does
 
@@ -154,6 +154,8 @@ A transaction that expired after being sent with less than half its mortality le
 - One constant rate. Use a plan for rate steps.
 - Calls are built before the clock starts, for every transaction, and signed at fixed nonces. A call that must read the chain state at send time doesn't fit.
 - A mortality above 4096 blocks isn't supported.
+- At most 100,000 calls per run, for example 1000 tx/s for 90 s.
+- Under overload a node can drop transactions from its pool. With the default long mortality they stay `unresolved`, so the verdict is CANNOT TELL, not FAIL.
 - A transaction its chain dropped stays `unresolved` until its signer's finalized nonce passes it or its mortality ends, so the last transaction of a signer can stay `unresolved` with a long mortality.
 - After a connection outage during the load, the transactions not sent then are not sent later. The verdict is CANNOT TELL when that leaves the load short.
 - Old runtimes are not supported: one without the `Metadata_metadata_versions` runtime API, or with single-value weights (no `proof_size`), exits 3 at once with an error that names the cause.
