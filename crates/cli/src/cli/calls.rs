@@ -162,9 +162,17 @@ fn plugin_path(given: Option<PathBuf>) -> Result<PathBuf, CliError> {
 /// Accounts that sign the probes, funded with the test accounts.
 const PROBE_SIGNERS: u32 = 4;
 
+/// The engine's limit on the transactions of one run.
+const MAX_CALLS: u64 = 100_000;
+
+/// The calls one run signs: the load with 5% headroom, plus one per account.
+fn call_count(args: &Args) -> u64 {
+	(args.rate * args.duration as f64 * 1.05).ceil() as u64 + u64::from(args.accounts)
+}
+
 /// The plan of the run, as XML.
 fn plan_xml(args: &Args, version: &str, block_s: f64) -> Result<String, CliError> {
-	let count = (args.rate * args.duration as f64 * 1.05).ceil() as u64 + u64::from(args.accounts);
+	let count = call_count(args);
 	let recovery = recovery_bound(args);
 	// Valid from signing through the last send and recovery (setup is before signing).
 	let expected = args.duration + u64::from(recovery) + 120;
@@ -662,6 +670,12 @@ pub async fn run(args: Args) -> Result<i32, CliError> {
 	if !(args.rate.is_finite() && args.rate > 0.0) || args.accounts == 0 {
 		return Err(CliError::invalid("--rate and --accounts must be above 0".into()));
 	}
+	if call_count(&args) > MAX_CALLS {
+		return Err(CliError::invalid(format!(
+			"{} calls (rate × duration + 5% + one per account) is above the limit of {MAX_CALLS} per run; lower --rate or --duration",
+			call_count(&args)
+		)));
+	}
 	let seed = args
 		.seed
 		.clone()
@@ -862,6 +876,11 @@ mod tests {
 		let xml = plan_xml(&args, "0.5.0-rc.1", 6.0).unwrap();
 		assert!(xml.contains(r#"<input name="mortality" value="1024"/>"#), "{xml}");
 		assert!(xml.contains(r#"recovery-seconds="300""#), "{xml}");
+		// 1000 tx/s for 120 s is 126,064 calls: above the limit, refused before any setup.
+		let big = Args { rate: 1000.0, duration: 120, accounts: 64, ..args };
+		assert!(call_count(&big) > MAX_CALLS);
+		let small = Args { duration: 90, ..big };
+		assert!(call_count(&small) <= MAX_CALLS);
 	}
 
 	#[test]
