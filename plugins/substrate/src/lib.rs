@@ -5,6 +5,7 @@
 //! changed the chain. It reads the runtime's metadata, so it needs no code for a new runtime. The
 //! operations are listed in [`manifest`].
 
+pub mod calls;
 pub mod inputs;
 
 use std::{
@@ -158,6 +159,34 @@ pub fn manifest() -> Manifest {
 				),
 			),
 			(
+				"prepare-calls".into(),
+				operation(
+					"Fund test accounts, run a call file's setup, and sign its calls for any runtime",
+					&[
+						("target", Schema::String),
+						("seed", Schema::String),
+						("count", Schema::Integer),
+						("probes", Schema::Integer),
+						("script", Schema::String),
+					],
+					&[
+						("derivation", Schema::String),
+						("flood-signers", Schema::Integer),
+						("probe-signers", Schema::Integer),
+						("mortality", Schema::Integer),
+						("expected-seconds", Schema::Integer),
+						("timeout-seconds", Schema::Integer),
+						("amount", Schema::Json),
+					],
+					&[
+						("flood", Schema::Json),
+						("probes", Schema::Json),
+						("identity", Schema::Json),
+						("summary", Schema::Json),
+					],
+				),
+			),
+			(
 				"check-state".into(),
 				Operation::new(
 					"Check that each sampled transaction's signer nonce is past it at the finalized block",
@@ -217,20 +246,21 @@ impl Plugin for Substrate {
 				let spec = Prepare::transfers(&inputs)?;
 				self.prepare(operation, &inputs, &spec, context).await
 			},
+			"prepare-calls" => calls::prepare_calls(&inputs, context).await,
 			"check-state" => self.check_state(&inputs, context).await,
 			other => bail!("unknown operation {other}"),
 		}
 	}
 }
 
-async fn connect(target: &str) -> Result<Client> {
+pub(crate) async fn connect(target: &str) -> Result<Client> {
 	Client::connect(target)
 		.await
 		.map_err(|e| anyhow::anyhow!("cannot connect to {target}: {e}"))
 }
 
 /// The chain's name, runtime identity and token, for the run's records.
-async fn identity(client: &Client) -> Result<Value> {
+pub(crate) async fn identity(client: &Client) -> Result<Value> {
 	let info = client.chain_info().await?;
 	let chain: String = client.request("system_chain", subxt_rpcs::rpc_params![]).await?;
 	let version: Value =
@@ -314,7 +344,7 @@ const ANCIENT_BIRTH_BLOCK: &str = "010005";
 
 /// A refusal of a prepared transaction, with the fix. `mortal` says whether the transaction was
 /// signed with a mortality.
-fn describe(error: &ChainError, mortal: bool) -> String {
+pub(crate) fn describe(error: &ChainError, mortal: bool) -> String {
 	// `raw` starts with the SCALE `Err(Invalid(..))` of `TransactionValidityError`.
 	match error {
 		ChainError::Invalid { raw, .. } if raw == PAYMENT => format!(
@@ -479,7 +509,7 @@ async fn settle(
 
 /// The funding transactions that failed: those in finalized blocks `from..=head` with a
 /// `System.ExtrinsicFailed` event, with the dispatch error.
-async fn failed_funding(
+pub(crate) async fn failed_funding(
 	client: &Client,
 	builder: &TxBuilder,
 	from: u64,

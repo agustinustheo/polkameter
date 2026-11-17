@@ -10,6 +10,13 @@ Needs the dev chain (scripts/dev-chain.sh start) and the substrate plugin instal
 credential profile, as in the CI dev-chain job. Run it from the repository root:
 
     tests/rpc-outage.py target/debug/polkameter target/dev-chain-runs/rpc-outage
+
+With --calls FILE, it runs `polkameter calls` with that call file instead, through the same
+outages. The outage leaves the load short, so the verdict must be CANNOT TELL (exit 4), never FAIL
+(exit 1), and summary.md must lead with the verdict of calls-verdict.json:
+
+    tests/rpc-outage.py target/debug/polkameter target/dev-chain-runs/calls-outage \
+        --calls examples/calls/template.calls.ts
 """
 
 import asyncio
@@ -74,18 +81,26 @@ async def outage(proxy, after_s):
     print("rpc-outage: proxy up", file=sys.stderr, flush=True)
 
 
-async def run(polkameter, out):
-    out.mkdir(parents=True, exist_ok=True)
+def plan_args(polkameter, out):
     plan = out / "rpc-outage.polkameter.xml"
     source = pathlib.Path("examples/substrate-remarks-ci.polkameter.xml").read_text()
     plan.write_text(source.replace("ws://%s:%d" % NODE, "ws://%s:%d" % PROXY))
+    return [polkameter, "run", str(plan), "--output", str(out), "--fail-on", "error"]
+
+
+def calls_args(polkameter, out, calls):
+    return [polkameter, "calls", "--chain", "ws://%s:%d" % PROXY, "--seed", "//Alice",
+            "--accounts", "4", "--rate", "2", "--duration", "40s", "--calls", calls,
+            "--max-p95", "30s", "--output", str(out)]
+
+
+async def run(args):
     proxy = Proxy()
     await proxy.up()
     # Sample the node's own process: the proxy is the process on the plan's port.
     chain_dir = pathlib.Path(os.environ.get("POLKAMETER_DEV_CHAIN_DIR", ".polkameter/dev-chain"))
     node_pid = (chain_dir / "node.pid").read_text().split()[0]
     env = os.environ | {"POLKAMETER_NODE_PID": node_pid}
-    args = [polkameter, "run", str(plan), "--output", str(out), "--fail-on", "error"]
     child = await asyncio.create_subprocess_exec(*args, stderr=asyncio.subprocess.PIPE, env=env)
     faults = {}
     async for line in child.stderr:
@@ -125,10 +140,38 @@ def check(out, code):
     print(f"rpc-outage: ok: {stop['rule']}: {stop['detail']}; verdict {s['verdict']['result']}")
 
 
+def check_calls(out, code):
+    (verdict,) = out.glob("run-*/calls-verdict.json")
+    v = json.loads(verdict.read_text())
+    summary = verdict.with_name("summary.md").read_text()
+    print(summary)
+    print(verdict.read_text())
+    failures = []
+    if code == 1:
+        failures.append("exit code 1: the outage was blamed on the chain")
+    elif code != 4:
+        failures.append(f"exit code {code}, not 4 (CANNOT TELL: the load was short)")
+    if v["exitCode"] != code:
+        failures.append(f"calls-verdict.json says exit {v['exitCode']}, the run exited {code}")
+    lead = summary.splitlines()[0]
+    if lead != f"### Calls verdict: {v['verdict']}":
+        failures.append(f"summary.md leads with {lead!r}, calls-verdict.json says {v['verdict']}")
+    if v["categories"]["lost"] != 0:
+        failures.append(f"transactions lost: {v['categories']}")
+    if failures:
+        sys.exit("rpc-outage: calls mode:\n  " + "\n  ".join(failures))
+    print(f"rpc-outage: ok: calls mode exit {code}: {v['verdict']}: {v['reason']}")
+
+
 def main():
     polkameter, out = sys.argv[1], pathlib.Path(sys.argv[2])
-    code = asyncio.run(run(polkameter, out))
-    check(out, code)
+    out.mkdir(parents=True, exist_ok=True)
+    if sys.argv[3:4] == ["--calls"]:
+        code = asyncio.run(run(calls_args(polkameter, out, sys.argv[4])))
+        check_calls(out, code)
+    else:
+        code = asyncio.run(run(plan_args(polkameter, out)))
+        check(out, code)
 
 
 if __name__ == "__main__":

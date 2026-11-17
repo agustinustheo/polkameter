@@ -61,11 +61,24 @@ fn setup_with(
 	restart_at: Option<u64>,
 	flood: u32,
 ) -> (Tracker<FakeSender>, Io, RunOptions) {
+	setup_with_probes(name, boot, restart_at, flood, 0)
+}
+
+/// [`setup_with`] with `probes` probe txs.
+fn setup_with_probes(
+	name: &str,
+	boot: fn() -> Option<u64>,
+	restart_at: Option<u64>,
+	flood: u32,
+	probes: u32,
+) -> (Tracker<FakeSender>, Io, RunOptions) {
 	let dir = RunDir::create(std::path::Path::new(env!("CARGO_TARGET_TMPDIR")), name).unwrap();
 	let txs: Vec<Tx> = (0..flood).map(|n| Tx::new(n.to_le_bytes().to_vec())).collect();
+	let probes: Vec<Tx> =
+		(0..probes).map(|n| Tx::new((1 << 20 | n).to_le_bytes().to_vec())).collect();
 	let (replies_tx, replies) = tokio::sync::mpsc::unbounded_channel();
 	let mut t = Tracker::new(
-		QueueSource::new(txs, vec![]),
+		QueueSource::new(txs, probes),
 		FakeSender(replies_tx),
 		dir.jsonl("load.jsonl").unwrap(),
 		dir.jsonl("blocks.jsonl").unwrap(),
@@ -140,9 +153,8 @@ async fn steps_run_on_monotonic_time() {
 	assert_eq!(elapsed.as_secs(), 40);
 	let steps: Vec<_> = t.steps.iter().map(final_step).collect();
 	assert_eq!(steps.iter().map(|f| f.seconds).collect::<Vec<_>>(), [20.0, 20.0]);
-	// 2 then 3 tx/s; the bucket starts empty, so the first step sends one fewer at most.
-	assert!((39..=40).contains(&steps[0].sent), "{}", steps[0].sent);
-	assert!((59..=60).contains(&steps[1].sent), "{}", steps[1].sent);
+	// 2 then 3 tx/s, exactly: each step sends rate × seconds.
+	assert_eq!((steps[0].sent, steps[1].sent), (40, 60));
 }
 
 /// A flood with exactly the txs the plan sends is empty after the last step: every step ran, so
@@ -154,7 +166,7 @@ async fn a_flood_sized_to_the_plan_reaches_the_rate_cap() {
 	let (t, stop, _) = run("sized-probe", boot_awake, None).await;
 	assert_eq!(stop.rule, Rule::RateCap, "{}", stop.detail);
 	let sent: u64 = t.steps.iter().map(|s| final_step(s).sent).sum();
-	assert!((99..=100).contains(&sent), "2 tx/s for 20 s, then 3 tx/s for 20 s: {sent}");
+	assert_eq!(sent, 100, "2 tx/s for 20 s, then 3 tx/s for 20 s");
 
 	let (mut t, mut io, opts) = setup_with("sized", boot_awake, None, u32::try_from(sent).unwrap());
 	let stop = load(&mut t, &mut io, &opts).await.unwrap();
@@ -185,4 +197,14 @@ async fn a_node_restart_is_node_down_in_load_and_recovery() {
 	let r = recover(&mut t, &mut io, &opts, Some(12_000)).await.unwrap();
 	assert!(started.elapsed() < std::time::Duration::from_secs(21), "{:?}", started.elapsed());
 	assert!(!r.recovered, "{}", r.detail);
+}
+
+/// A chain that builds a block only for a transaction (a Chopsticks fork) builds none after the
+/// load: recovery sends its first probe at once, not on a head that would never come.
+#[tokio::test(start_paused = true)]
+async fn recovery_probes_a_chain_that_builds_blocks_only_for_transactions() {
+	let (mut t, mut io, mut opts) = setup_with_probes("on-demand", boot_awake, None, 0, 5);
+	opts.recovery_s = 1;
+	let _ = recover(&mut t, &mut io, &opts, Some(12_000)).await.unwrap();
+	assert!(!t.probes.is_empty(), "no recovery probe was sent before the first new head");
 }

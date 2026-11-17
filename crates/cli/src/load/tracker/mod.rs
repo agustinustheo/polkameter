@@ -45,6 +45,8 @@ pub struct FloodTx {
 	pub step: usize,
 	/// When.
 	pub sent_at: Millis,
+	/// The best block number when it was sent (0 when none was seen yet).
+	pub sent_head: u32,
 	/// Its bytes, to validate it again.
 	pub bytes: Vec<u8>,
 	/// A successful RPC reply, separate from inclusion.
@@ -111,6 +113,8 @@ pub struct Tracker<S> {
 	pub last_fetched: u32,
 	/// Last new finalized block: when, and its number.
 	pub last_finalized: (Millis, u32),
+	/// Every new finalized block: when it was seen, and its number, in order.
+	pub finalized_seen: Vec<(Millis, u32)>,
 	/// What the follower could not read.
 	pub unreadable: Vec<String>,
 	/// Times the block follower lost the node and followed it again: not observed, so not a
@@ -217,6 +221,7 @@ impl<S: Submit> Tracker<S> {
 			last_head: (now, 0),
 			last_fetched: 0,
 			last_finalized: (now, 0),
+			finalized_seen: Vec::new(),
 			unreadable: Vec::new(),
 			observation_gaps: Vec::new(),
 			node_down: None,
@@ -353,6 +358,29 @@ impl<S: Submit> Tracker<S> {
 		}
 	}
 
+	/// Time from sending a flood tx at `sent_at` to first seeing a finalized head at or above
+	/// `block`, its finalized block. `None` when not known: the tx is untimed, the head is not
+	/// seen yet, or PolkaMeter did not observe all of the time (paused, or the follower lost the
+	/// node, so finality may have come earlier than it was seen).
+	pub fn finality_ms(&self, sent_at: Millis, untimed: bool, block: u32) -> Option<Millis> {
+		let (seen, _) = *self.finalized_seen.iter().find(|(_, n)| *n >= block)?;
+		let read_late = self.read_late.iter().any(|(from, to)| *from < seen && seen <= *to);
+		let blind = untimed
+			|| read_late
+			|| self.paused_across(sent_at, seen)
+			|| self.unobserved_between(sent_at, seen) > 0;
+		(!blind).then(|| seen.saturating_sub(sent_at))
+	}
+
+	/// Time from sending at `sent_at` to PolkaMeter first seeing a finalized head at or above
+	/// `block`, measured or not: the tx was final by then, so this bounds its time to finality
+	/// from above even when [`Self::finality_ms`] cannot time it. `None` when no such head was
+	/// seen.
+	pub fn finality_at_most_ms(&self, sent_at: Millis, block: u32) -> Option<Millis> {
+		let (seen, _) = *self.finalized_seen.iter().find(|(_, n)| *n >= block)?;
+		Some(seen.saturating_sub(sent_at))
+	}
+
 	/// Whether PolkaMeter was paused across a time measured from `from` to `to`.
 	pub(super) fn paused_across(&self, from: Millis, to: Millis) -> bool {
 		self.pauses.iter().any(|p| across(*p, from, to))
@@ -414,7 +442,13 @@ impl<S: Submit> Tracker<S> {
 			.insert(id, Request { hash, kind, connection, waiting_since, resent: false });
 		if let Kind::Flood { step } = kind {
 			self.walk_from.get_or_insert(self.last_finalized.1 + 1);
-			let flood = FloodTx { step, sent_at: now, bytes: bytes.to_vec(), ..Default::default() };
+			let flood = FloodTx {
+				step,
+				sent_at: now,
+				sent_head: self.last_head.1,
+				bytes: bytes.to_vec(),
+				..Default::default()
+			};
 			self.flood.insert(hash, flood);
 		}
 		self.sent.insert(hash, Sent { kind, sent_at: now });

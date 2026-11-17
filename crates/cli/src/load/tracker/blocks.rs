@@ -64,7 +64,8 @@ impl<S: Submit> Tracker<S> {
 				}
 			},
 			BlockEvent::Finalized { number, seen_at } if number > self.last_finalized.1 => {
-				self.last_finalized = (seen_at, number)
+				self.last_finalized = (seen_at, number);
+				self.finalized_seen.push((seen_at, number));
 			},
 			BlockEvent::Finalized { .. } => {},
 			BlockEvent::Unreadable(what) => self.unreadable.push(what),
@@ -146,6 +147,16 @@ impl<S: Submit> Tracker<S> {
 		}
 
 		true
+	}
+
+	/// Sends the first recovery probe now, without waiting for a new head: a chain that builds
+	/// blocks only for transactions (a Chopsticks fork, instant seal) builds none after the
+	/// load, so a probe sent on the next head would never be sent, and the run would call the
+	/// chain stalled for our own silence. Every later probe goes on the head its block makes.
+	pub fn first_recovery_probe(&mut self, now: Millis) {
+		if self.phase() == Phase::Recovery {
+			self.send_probe(now);
+		}
 	}
 
 	fn send_probe(&mut self, now: Millis) {

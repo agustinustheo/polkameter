@@ -543,6 +543,9 @@ pub struct Load {
 	pub block_interval_seconds: f64,
 	pub rates: Vec<Rate>,
 	pub ramp: Option<Ramp>,
+	/// Set by `polkameter calls`, which measured `block_interval_seconds` from blocks built after
+	/// it started: preflight then skips its own calibration. A plan file cannot set it.
+	pub calibrated: bool,
 }
 impl Serialize for Load {
 	fn serialize<S: Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
@@ -598,6 +601,7 @@ impl FromXml for Load {
 			block_interval_seconds: el.opt("block-interval-seconds")?.unwrap_or(6.0),
 			rates: el.all("rate")?,
 			ramp: el.one("ramp")?,
+			calibrated: false,
 		})
 	}
 }

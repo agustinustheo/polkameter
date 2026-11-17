@@ -38,6 +38,18 @@ A load test ends with a [verdict](https://agustinustheodorus.com/polkameter/read
 - The [substrate plugin](https://agustinustheodorus.com/polkameter/substrate-plugin.html#limits) funds accounts and sends remarks or transfers on standard runtimes, so you write no plugin code. For your own pallets, a plugin is any program that speaks JSON lines, in any language.
 - It raises the rate one rate step at a time. A rate step sends transactions at one rate for a set time. PolkaMeter records the first rate step that fails a limit, such as latency, and the load goes on. Then it checks how fast the chain recovers.
 
+## Calls mode (new in 0.5.0)
+
+`polkameter calls` loads a chain with your own calls, without a plan or a plugin. You write what to send with [polkadot-api](https://papi.how); PolkaMeter funds and signs for the test accounts, sends at a constant rate, and reconciles every transaction against the finalized chain. With Node.js 22.18 or later:
+
+```sh
+npm install polkadot-api && npx papi add dev -w ws://127.0.0.1:9944
+echo 'export const call = ({ api, i }) => api.tx.TemplatePallet.do_something({ bn: i })' > calls.ts
+polkameter calls --chain ws://127.0.0.1:9944 --seed //Alice --rate 5 --duration 60s --calls ./calls.ts --max-p95 30s
+```
+
+It exits 0 on PASS, 1 on FAIL, 4 when it cannot tell and 3 when setup failed. [Calls mode](docs/calls-mode.md) has the call file's interface, the flags and the limits.
+
 ## Install
 
 The install script puts the CLI and the substrate plugin in `~/.local/bin` and checks their checksums:

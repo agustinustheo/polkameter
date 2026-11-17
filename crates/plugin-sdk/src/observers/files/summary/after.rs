@@ -219,4 +219,12 @@ pub struct Loss {
 	/// the plan has none. The "no silent loss" check is then "no result".
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub state_error: Option<String>,
+	/// p95 time from sending a tx to PolkaMeter first seeing a finalized head at or above its
+	/// block, over the finalized txs it could time; `None` when it timed none.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub p95_finalized_ms: Option<u64>,
+	/// Finalized txs with a time to finality: the rest were sent or finalized while PolkaMeter
+	/// was paused or reconnecting, or finalized after the follower stopped.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub finalized_timed: Option<u64>,
 }

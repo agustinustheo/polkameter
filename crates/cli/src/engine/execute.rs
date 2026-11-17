@@ -574,7 +574,7 @@ async fn check_environment(plan: &Plan, registry: &Registry) -> Result<()> {
 }
 /// Calibrate during preflight, before any recognition, signing or proving in setup.
 async fn calibrate(plan: &Plan, directory: &Path) -> Result<()> {
-	let Some(load) = &plan.load else { return Ok(()) };
+	let Some(load) = plan.load.as_ref().filter(|l| !l.calibrated) else { return Ok(()) };
 	let endpoint = target_endpoint(plan, &load.target)?;
 	let measured = async {
 		let client = Client::connect(endpoint).await?;

@@ -39,6 +39,10 @@ pub struct Registry {
 	/// its errors name the flag. Not stored.
 	#[serde(skip)]
 	pub flag_profile: Option<String>,
+	/// Secrets given to this command directly (`polkameter calls --seed`), by profile. They
+	/// take the place of the profile's variable. Not stored.
+	#[serde(skip)]
+	pub inline: BTreeMap<String, String>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -287,6 +291,9 @@ impl Registry {
 	/// variable, never a value, and say how to fix it.
 	fn credential_value(&self, credential: &Credential) -> Result<String> {
 		let (id, profile) = (&credential.id, &credential.profile);
+		if let Some(value) = self.inline.get(profile).filter(|v| !v.is_empty()) {
+			return Ok(value.clone());
+		}
 		let (variable, from_flag) = self.credential_variable(credential)?;
 		let problem = match std::env::var(variable) {
 			Ok(value) if !value.is_empty() => return Ok(value),

@@ -33,7 +33,7 @@ use crate::load::{
 	submit::Submit,
 	tracker::Tracker,
 };
-pub use load::load;
+pub use load::{Schedule, load};
 use polkameter_plugin_sdk::observers::Phase;
 
 /// smoke: stop at the first problem of any part; stress: only errors of our own tools stop a run.
@@ -425,6 +425,7 @@ pub async fn recover<S: Submit>(
 	let stopped_at = t.steps.last().map_or_else(now_ms, |step| step.ended_at);
 	t.set_phase(Phase::Recovery, stopped_at)?;
 	let _ = io.events.send(RunEvent::PhaseEdge);
+	t.first_recovery_probe(now_ms());
 	crate::redact::diag!(
 		"recovery: load stopped with {} txs not yet observed included; one probe per block for up to {} s",
 		t.outstanding().len(),

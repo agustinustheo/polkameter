@@ -230,14 +230,15 @@ pub async fn run(
 		&mut live,
 		&monitors,
 		settled,
-		dir,
 		configured_rules.finality_wait_ms,
 		state_check.as_ref(),
-		redactor,
 	);
-	let ((loss, lost, canonical), reconciling) =
+	let ((mut loss, lost, mut records, canonical), reconciling) =
 		watch(&mut tracker, &mut io, &run_opts, check).await?;
 	follow.cancel();
+	// Finality times need every finalized head the follower saw, through the loss check.
+	finality_times(&tracker, &mut records, &mut loss);
+	write_ledger(dir, &records, redactor, &mut loss);
 	// Keep process evidence live with the follower through the loss check: a node stopped or
 	// dead beyond the reconnect budget fails there too, even if every tx later finalizes.
 	monitors.stop_sampling().await?;
@@ -406,11 +407,9 @@ async fn loss_check<F, Fut>(
 	live: &mut crate::load::loss::Live<Client, F>,
 	monitors: &Monitors,
 	settled: crate::load::loss::Settled<'_>,
-	dir: &RunDir,
 	finality_wait_ms: u64,
 	state: Option<&PluginState>,
-	redactor: &Redactor,
-) -> (Loss, Vec<LostTx>, crate::load::recovery::Canonical)
+) -> (Loss, Vec<LostTx>, Vec<serde_json::Value>, crate::load::recovery::Canonical)
 where
 	F: FnMut() -> Fut,
 	Fut: std::future::Future<Output = Result<Client, ChainError>>,
@@ -424,11 +423,48 @@ where
 			ready: s.sum("substrate_ready_transactions_number")? as u64,
 		})
 	};
-	let (mut loss, lost, records, canonical) =
+	let (loss, lost, records, canonical) =
 		crate::load::loss::loss_check(live, settled, node_pool, state, finality_wait_ms).await;
+	diag!("{}", loss_line(&loss));
+	diag!("loss check {}", crate::engine::checks::report::on_chain_text(&loss.on_chain));
+	(loss, lost, records, canonical)
+}
+
+/// Adds each finalized tx's time from send to finality (`finalizedMs`) to its ledger row, and
+/// their p95 to the loss. A tx PolkaMeter could not time has `null`, and every finalized tx has
+/// `finalizedMsAtMost`: the time until PolkaMeter saw it final, an upper bound that holds across
+/// its own pauses and reconnects.
+fn finality_times<S: crate::load::submit::Submit>(
+	tracker: &Tracker<S>,
+	records: &mut [serde_json::Value],
+	loss: &mut Loss,
+) {
+	let mut times = Vec::new();
+	for record in records.iter_mut() {
+		let (Some(block), Some(sent_at)) =
+			(record["finalizedBlock"].as_u64(), record["sentAt"].as_u64())
+		else {
+			continue;
+		};
+		let untimed = record["untimed"].as_bool().unwrap_or(false);
+		let ms = tracker.finality_ms(sent_at, untimed, block as u32);
+		times.extend(ms);
+		record["finalizedMs"] = ms.into();
+		record["finalizedMsAtMost"] = tracker.finality_at_most_ms(sent_at, block as u32).into();
+	}
+	times.sort_unstable();
+	loss.finalized_timed = Some(times.len() as u64);
+	loss.p95_finalized_ms = (!times.is_empty()).then(|| {
+		let rank = (times.len() as f64 * 0.95).ceil() as usize;
+		times[rank.clamp(1, times.len()) - 1]
+	});
+}
+
+/// Writes transactions.jsonl; a failure is noted on the loss.
+fn write_ledger(dir: &RunDir, records: &[serde_json::Value], redactor: &Redactor, loss: &mut Loss) {
 	if let Err(error) = (|| -> Result<()> {
 		let mut out = crate::redact::records(dir.jsonl("transactions.jsonl")?, redactor);
-		for record in &records {
+		for record in records {
 			out.write(record)?;
 		}
 		out.finish()?;
@@ -436,12 +472,9 @@ where
 	})() {
 		loss.note = Some(format!(
 			"{}; transaction ledger could not be written: {error}",
-			loss.note.unwrap_or_default()
+			loss.note.clone().unwrap_or_default()
 		));
 	}
-	diag!("{}", loss_line(&loss));
-	diag!("loss check {}", crate::engine::checks::report::on_chain_text(&loss.on_chain));
-	(loss, lost, canonical)
 }
 
 /// The loss check's line on standard error. A count that was not counted (`None`) reads
