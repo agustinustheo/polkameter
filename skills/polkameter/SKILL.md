@@ -1,11 +1,11 @@
 ---
 name: polkameter
-description: Sets up and runs PolkaMeter load tests (stress tests) for Polkadot SDK (Substrate) chains, parachains and runtimes. Installs the CLI and the ready-made substrate plugin or scaffolds a custom plugin, generates and validates an XML plan for the user's chain, runs it against a local dev chain, reads the verdict, and adds a GitHub Actions or GitLab CI job. Use when the user wants to load-test, stress-test or benchmark transaction throughput of a Polkadot SDK chain, or mentions PolkaMeter or .polkameter.xml plans.
+description: Sets up and runs PolkaMeter load tests (stress tests) for Polkadot SDK (Substrate) chains, parachains and runtimes. Loads the user's own pallet calls with calls mode (a polkadot-api call file), or installs the CLI and the ready-made substrate plugin or scaffolds a custom plugin, generates and validates an XML plan for the user's chain, runs it against a local dev chain, reads the verdict, and adds a GitHub Actions or GitLab CI job. Use when the user wants to load-test, stress-test or benchmark transaction throughput of a Polkadot SDK chain, or mentions PolkaMeter or .polkameter.xml plans.
 ---
 
 # PolkaMeter
 
-PolkaMeter sends prepared transactions to a Polkadot SDK chain at controlled rates and writes a verdict: `PASS`, `WARN`, `FAIL` or `INCONCLUSIVE`. A plugin prepares the transactions. Use the substrate plugin when the runtime meets its [compatibility requirements](https://agustinustheodorus.com/polkameter/substrate-plugin.html#limits). The install script and release archives install it.
+PolkaMeter sends transactions to a Polkadot SDK chain at controlled rates and writes a verdict. In calls mode, a polkadot-api call file says what to send. With a plan, a plugin prepares the transactions and the verdict is `PASS`, `WARN`, `FAIL` or `INCONCLUSIVE`. Use the substrate plugin when the runtime meets its [compatibility requirements](https://agustinustheodorus.com/polkameter/substrate-plugin.html#limits). The install script and release archives install it.
 
 Docs: https://agustinustheodorus.com/polkameter/ (LLM index: https://agustinustheodorus.com/polkameter/llms.txt).
 
@@ -14,7 +14,7 @@ Docs: https://agustinustheodorus.com/polkameter/ (LLM index: https://agustinusth
 1. Install. Check what is there:
 
    ```sh
-   polkameter --version                  # needs 0.4.0 or newer
+   polkameter --version                  # needs 0.5.0 or newer
    command -v polkameter-substrate-plugin
    ```
 
@@ -40,7 +40,9 @@ Docs: https://agustinustheodorus.com/polkameter/ (LLM index: https://agustinusth
 
    Set `POLKAMETER_DEV_RUNTIME=<path>.wasm` to start the user's own runtime. Add `.polkameter/` to `.gitignore`. Never load a public network or a node the user does not control.
 
-3. Pick the plugin. Run `polkameter init --rpc <ws-endpoint> --output plans/load.polkameter.xml`. It checks the runtime's calls, measures the block time and uses the credential profile `substrate-dev`.
+3. Pick the mode. To load a call of the user's own pallet, use calls mode. Follow https://agustinustheodorus.com/polkameter/calls-mode.html and start from [template.calls.ts](https://github.com/agustinustheo/polkameter/blob/main/examples/dev-chain/template.calls.ts). Write only `call` and, if the call needs state first, `setup`. Don't write signing, nonce, retry or reconciliation code: PolkaMeter does it. Pass the seed with `$POLKAMETER_SEED`, never in a file. Run `polkameter calls` with `--max-p95`, then read `summary.md`: exit `0` is PASS, `1` FAIL, `4` CANNOT TELL and `3` a setup failure. Calls mode refuses old runtimes and can't send transactions that a proof authorizes instead of a signature. For CI, follow https://agustinustheodorus.com/polkameter/ci.html#run-calls-mode-in-ci and skip the rest of this list.
+
+   For remarks or transfers, or a ramp that finds the chain's limit, use a plan. Run `polkameter init --rpc <ws-endpoint> --output plans/load.polkameter.xml`. It checks the runtime's calls, measures the block time and uses the credential profile `substrate-dev`.
    - If it succeeds, use the substrate plugin. Add `--kind transfers` to load `Balances` instead of remarks.
    - If it fails with `has no System.remark`, or preflight fails with `cannot sign transactions for this runtime`, the runtime needs its own plugin. Follow https://agustinustheodorus.com/polkameter/writing-a-plugin.html and start from [templates/custom-plugin.rs](templates/custom-plugin.rs).
 

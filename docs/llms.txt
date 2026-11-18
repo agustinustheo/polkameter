@@ -1,6 +1,6 @@
 # PolkaMeter
 
-> PolkaMeter is a Rust CLI for load and stress tests on Polkadot SDK chains. XML plans set the rates, plugins prepare transactions, and a load test ends with a verdict (PASS, WARN, FAIL or INCONCLUSIVE). Results include samples in JMeter's CSV format. The substrate plugin loads chains with the standard System and Balances pallets and compatible signing types without custom code.
+> PolkaMeter is a Rust CLI for load and stress tests on Polkadot SDK chains. XML plans set the rates, plugins prepare transactions, and a load test ends with a verdict (PASS, WARN, FAIL or INCONCLUSIVE). Results include samples in JMeter's CSV format. The substrate plugin loads chains with the standard System and Balances pallets and compatible signing types without custom code. Calls mode (`polkameter calls`) loads a chain with calls from a polkadot-api call file, with no plan or plugin, and ends PASS, FAIL or CANNOT TELL.
 
 ## Tutorials
 
@@ -27,5 +27,6 @@
 ## Optional
 
 - [Source repository](https://github.com/agustinustheo/polkameter): the code and example plans in `examples/`
+- [Examples](https://github.com/agustinustheo/polkameter/tree/main/examples): calls-mode tests of nine real chains next to the plain polkadot-api tests they replace (median 43 lines against 309)
 - [PolkaMeter skill](https://github.com/agustinustheo/polkameter/tree/main/skills/polkameter): SKILL.md, plan and CI templates
 - [AGENTS.md](https://github.com/agustinustheo/polkameter/blob/main/AGENTS.md): build and test commands for contributors

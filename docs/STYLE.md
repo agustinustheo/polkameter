@@ -40,6 +40,8 @@ Each fact has one owner page. Other pages link to it in one sentence.
 | Plugin protocol, SDK, 0.2 to 0.3 migration | `plugins.md` |
 | Substrate operations, signers, limits | `substrate-plugin.md` |
 | The skill, marketplace install, `llms.txt` | `ai-assistants.md` |
+| Calls mode: call file, verdict, exit codes, limits | `calls-mode.md` |
+| The calls mode against plain polkadot-api comparison | `examples/README.md` |
 
 The install script block also appears in `README.md` and `getting-started.md`. The skill's `SKILL.md` keeps its own workflow and links to Troubleshooting for fixes.
 

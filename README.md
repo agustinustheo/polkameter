@@ -26,9 +26,9 @@
 
 ---
 
-PolkaMeter sends signed transactions to a Polkadot SDK chain at rising rates and finds where it stops keeping up. You write the test as an XML plan (`*.polkameter.xml`). A plugin builds the transactions for your runtime.
+PolkaMeter sends signed transactions to a Polkadot SDK chain at rising rates and finds where it stops keeping up. You write the test as an XML plan (`*.polkameter.xml`), and a plugin builds the transactions for your runtime. Or you write only the calls, in [calls mode](#calls-mode-new-in-050).
 
-A load test ends with a [verdict](https://agustinustheodorus.com/polkameter/reading-results.html#did-it-pass): `PASS`, `WARN`, `FAIL` or `INCONCLUSIVE`. The run also writes a summary, JSON results, JUnit and a record of every transaction. PASS means the chain met your limits at the rates you tested.
+A plan run ends with a [verdict](https://agustinustheodorus.com/polkameter/reading-results.html#did-it-pass): `PASS`, `WARN`, `FAIL` or `INCONCLUSIVE`. The run also writes a summary, JSON results, JUnit and a record of every transaction. PASS means the chain met your limits at the rates you tested.
 
 ## Highlights
 

@@ -2,6 +2,14 @@
 
 Calls mode loads a chain with your own calls, without a plan or a plugin. You say what to send. PolkaMeter does the rest: it funds the test accounts, signs every call, sends at a constant rate and reconciles each transaction against the finalized chain.
 
+## What it saves you
+
+A correct load test signs against a finalized block, keeps each account's nonces in order, resends the same bytes after a dropped connection and checks every transaction on the finalized chain. Calls mode does all of that. Your test is the call and the setup it needs.
+
+In November 2026, AI agents wrote a stress test for each of nine real chains twice: once with calls mode and once with plain polkadot-api. Independent scorers reran every test on the chain, once with an RPC outage, and audited every transaction. Both kinds were correct. The calls-mode tests had a median of 43 lines, against 309 for the plain tests. [examples/](https://github.com/agustinustheo/polkameter/tree/main/examples) has every test side by side, how they were checked and what the comparison does not show.
+
+Calls mode can't send every chain's transactions. See [Limits](#limits).
+
 ## Run a call file
 
 A call file is a JavaScript or TypeScript module. It builds calls with [polkadot-api](https://papi.how) (PAPI) and its generated types. You need Node.js 22.18 or later; Node.js runs `.ts` files without a build step.
@@ -26,7 +34,7 @@ polkameter calls --chain ws://127.0.0.1:9944 --seed //Alice \
   --accounts 8 --rate 5 --duration 60s --calls ./calls.ts --max-p95 30s
 ```
 
-`examples/dev-chain/template.calls.ts` is a complete call file for the dev chain of `scripts/dev-chain.sh`. [examples/](https://github.com/agustinustheo/polkameter/tree/main/examples) has calls-mode tests of nine real chains, each next to the plain polkadot-api test it replaces.
+`examples/dev-chain/template.calls.ts` is a complete call file for the dev chain of `scripts/dev-chain.sh`. [examples/](https://github.com/agustinustheo/polkameter/tree/main/examples) has calls-mode tests of nine real chains.
 
 ## The call file
 
