@@ -35,8 +35,8 @@ use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
 use crate::inputs;
 
-/// The call file runner, written next to the call file so that its imports resolve from the
-/// user's `node_modules`.
+/// The call file runner. node runs it from memory in the call file's directory, so that its
+/// imports resolve from the user's `node_modules`.
 const RUNNER: &str = include_str!("calls-runner.mjs");
 
 /// A key that signs: sr25519, or Ethereum-style secp256k1.
