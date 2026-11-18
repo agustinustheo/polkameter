@@ -191,4 +191,4 @@ A load plan calls your plugin's operations that prepare the transactions. Replac
 
 The [substrate plugin](https://github.com/agustinustheo/polkameter/tree/main/plugins/substrate) is a complete load plugin. The [example plugin](https://github.com/agustinustheo/polkameter/blob/main/plugins/example/src/main.rs) is smaller.
 
-Install your plugin and run the plan as in [Getting started](getting-started.md), against a dev chain with your runtime.
+Install your plugin and run the plan as in [Your first load test](getting-started.md), against a dev chain with your runtime.

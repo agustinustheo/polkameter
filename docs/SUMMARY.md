@@ -1,29 +1,29 @@
 # Summary
 
-[Introduction](README.md)
+[What is PolkaMeter?](README.md)
+[Less code, same correctness](less-code.md)
 
-# Tutorials
-
-- [Getting started](getting-started.md)
-- [Writing a plugin](writing-a-plugin.md)
-
-# How-to guides
+# Get started
 
 - [Install](install.md)
-- [Run in CI](ci.md)
-- [Load a chain with your own calls](calls-mode.md)
+- [Your first load test](getting-started.md)
+- [Test your own calls](calls-mode.md)
+
+# Use it
+
 - [Read the results](reading-results.md)
-- [Use PolkaMeter with an AI assistant](ai-assistants.md)
+- [Run in CI](ci.md)
 - [Troubleshooting](troubleshooting.md)
+- [Use with an AI assistant](ai-assistants.md)
 
-# Explanation
+# Extend it
 
-- [Less code, same correctness](less-code.md)
+- [Write a plugin](writing-a-plugin.md)
+- [Plugin reference](plugins.md)
 
-# Reference
+# Look it up
 
-- [Plan](plans.md)
+- [Plan file](plans.md)
 - [CLI](cli.md)
 - [Run directory](results.md)
-- [Plugin reference](plugins.md)
 - [The substrate plugin](substrate-plugin.md)

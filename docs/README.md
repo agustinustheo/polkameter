@@ -38,4 +38,4 @@ PolkaMeter does that part, so your test says only what to send. On nine real cha
 | It answers | Did the chain keep up at this rate? | At what rate did the chain stop keeping up? |
 | Verdicts | PASS, FAIL, CANNOT TELL | PASS, WARN, FAIL, INCONCLUSIVE |
 
-New here? [Install](install.md) and start the [dev chain](getting-started.md#2-start-a-dev-chain). To test your own calls at one rate, go to [Calls mode](calls-mode.md). To find the rate where the chain stops keeping up, follow [Getting started](getting-started.md). Then [run it in CI](ci.md).
+New here? [Install](install.md) and start the [dev chain](getting-started.md#2-start-a-dev-chain). To test your own calls at one rate, go to [Calls mode](calls-mode.md). To find the rate where the chain stops keeping up, follow [Your first load test](getting-started.md). Then [run it in CI](ci.md).

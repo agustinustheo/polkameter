@@ -1,4 +1,4 @@
-# Getting started
+# Your first load test
 
 Let's start a local dev chain and raise the transaction rate until the chain fails one of the test's limits. We'll use the [substrate plugin](substrate-plugin.md), so you don't write any plugin code.
 

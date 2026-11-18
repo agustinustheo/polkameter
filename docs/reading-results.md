@@ -2,7 +2,7 @@
 
 This page covers plan runs. A `polkameter calls` run ends PASS, FAIL or CANNOT TELL, as [Calls mode](calls-mode.md#how-the-verdict-is-decided) explains.
 
-A load test writes its results to `summary.md`, in the `run-*` directory that the `Run …` line names. The examples here come from the remarks run in [Getting started](getting-started.md#4-run-a-load-test). It ramps from 100 to 600 transactions per second (tx/s), 30 seconds per rate step.
+A load test writes its results to `summary.md`, in the `run-*` directory that the `Run …` line names. The examples here come from the remarks run in [Your first load test](getting-started.md#4-run-a-load-test). It ramps from 100 to 600 transactions per second (tx/s), 30 seconds per rate step.
 
 ## Did it pass?
 

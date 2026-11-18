@@ -1,4 +1,4 @@
-# Plan reference
+# Plan file
 
 A plan is an XML file that lists the test's steps and settings. It never holds a secret or a file path. Those stay on the machine that runs the plan. You set them with [`polkameter plugin`](cli.md#plugin).
 
