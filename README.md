@@ -64,7 +64,7 @@ polkameter --version
 
 ## Next steps
 
-- [Getting started](https://agustinustheodorus.com/polkameter/getting-started.html) starts a local dev chain and loads it past a limit.
+- [Your first load test](https://agustinustheodorus.com/polkameter/getting-started.html) starts a local dev chain and loads it past a limit.
 - [Run in CI](https://agustinustheodorus.com/polkameter/ci.html) runs a short load test on every pull request.
 - [Use PolkaMeter with an AI assistant](https://agustinustheodorus.com/polkameter/ai-assistants.html) sets it up for you.
 - [Writing a plugin](https://agustinustheodorus.com/polkameter/writing-a-plugin.html) covers runtimes the substrate plugin doesn't fit.

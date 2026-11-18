@@ -4,7 +4,7 @@ The PolkaMeter action runs a plan in a GitHub Actions job on a Linux or macOS ru
 
 ## Test a dev chain on every pull request
 
-This job starts the [dev chain](getting-started.md#2-start-a-dev-chain) and runs the short CI plan, a low-rate version of the Getting started plan. Commit these files to your repository:
+This job starts the [dev chain](getting-started.md#2-start-a-dev-chain) and runs the short CI plan, a low-rate version of the plan in [Your first load test](getting-started.md). Commit these files to your repository:
 
 - the job as `.github/workflows/load-test.yml`
 - `dev-chain.sh` at the repository root

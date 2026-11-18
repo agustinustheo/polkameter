@@ -2,7 +2,7 @@
 
 The substrate plugin signs `System.remark` calls, which only carry a note, or `Balances.transfer_keep_alive` calls. Its accounts all come from one seed. It funds those accounts and checks the chain's state after the run. It reads the runtime's metadata, so you need no plugin code. Its version is the PolkaMeter version it ships with, and the plan's `<plugin version>` must match it.
 
-The runtime needs the standard `System` and `Balances` pallets. [Limits](#limits) lists what else it needs. [Getting started](getting-started.md) runs the plugin end to end.
+The runtime needs the standard `System` and `Balances` pallets. [Limits](#limits) lists what else it needs. [Your first load test](getting-started.md) runs the plugin end to end.
 
 ## Example
 
@@ -110,7 +110,7 @@ It returns `checked`, `missing` and `detail`. `detail` names up to five missing 
 - `mortality` is twice the blocks the run spans, rounded up to a power of two. If that's above 65,536, it's `0`, so the transactions never expire.
 - `expected-seconds` is the run's length after the prepare step. If you lengthen the ramp or the recovery, raise it.
 
-[Getting started](getting-started.md) walks through it.
+[Your first load test](getting-started.md) walks through it.
 
 ## Limits
 
