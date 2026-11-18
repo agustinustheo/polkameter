@@ -43,7 +43,7 @@ export POLKAMETER_SUBSTRATE_SEED='//Alice'
 ```
 
 ```text
-Installed plugin substrate 0.5.0 (5 operations) from ~/.local/bin/polkameter-substrate-plugin
+Installed plugin substrate 0.5.0 (6 operations) from ~/.local/bin/polkameter-substrate-plugin
 Credential profile substrate-dev reads POLKAMETER_SUBSTRATE_SEED.
 ```
 

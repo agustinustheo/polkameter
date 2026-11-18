@@ -1,18 +1,12 @@
 # Calls mode
 
-Calls mode loads a chain with your own calls, without a plan or a plugin. You say what to send. PolkaMeter does the rest: it funds the test accounts, signs every call, sends at a constant rate and reconciles each transaction against the finalized chain.
-
-## What it saves you
-
-A correct load test signs against a finalized block, keeps each account's nonces in order, resends the same bytes after a dropped connection and checks every transaction on the finalized chain. Calls mode does all of that. Your test is the call and the setup it needs.
-
-In November 2026, AI agents wrote a stress test for each of nine real chains twice: once with calls mode and once with plain polkadot-api. Independent scorers reran every test on the chain, once with an RPC outage, and audited every transaction. Both kinds were correct. The calls-mode tests had a median of 43 lines, against 309 for the plain tests. [examples/](https://github.com/agustinustheo/polkameter/tree/main/examples) has every test side by side, how they were checked and what the comparison does not show.
-
-Calls mode can't send every chain's transactions. See [Limits](#limits).
+Calls mode loads a chain with your own calls. You write no plan and no plugin: you say what to send. PolkaMeter funds the test accounts, signs every call, sends at a constant rate and reconciles each transaction against the finalized chain. It uses the substrate plugin that the install script puts next to `polkameter`, without registering it.
 
 ## Run a call file
 
 A call file is a JavaScript or TypeScript module. It builds calls with [polkadot-api](https://papi.how) (PAPI) and its generated types. You need Node.js 22.18 or later; Node.js runs `.ts` files without a build step.
+
+First [install PolkaMeter](install.md) and start the [dev chain](getting-started.md#2-start-a-dev-chain), or use another node you control. The example uses the dev chain's `TemplatePallet` and its funded `//Alice`.
 
 In the directory of the call file, install PAPI and generate the types for your chain:
 
@@ -60,17 +54,22 @@ The call file exports:
 
 Transaction `i` is signed by test account `i % accounts`. Calls must not depend on each other's order across accounts.
 
-`call` runs once per transaction before the clock starts, and PolkaMeter reads the calls one by one, so their size has no limit. One run signs at most 100,000 calls (rate × duration + 5%, plus one per account); above that, `polkameter calls` refuses the flags with exit 2.
+`call` runs once per transaction before the clock starts. One run signs at most 100,000 calls (rate × duration + 5%, plus one per account); above that, `polkameter calls` refuses the flags with exit 2.
 
 ## What PolkaMeter does
+
+```mermaid
+flowchart LR
+  A[check the runtime,<br/>measure block time] --> F[fund test accounts,<br/>run setup] --> S[build and sign<br/>every call] --> L[send at the rate<br/>for the duration] --> W[wait for blocks,<br/>up to --recovery] --> R[reconcile each<br/>transaction, verdict]
+```
 
 - Checks the runtime and measures the block time from blocks built after it starts, watching for up to 30 seconds. A chain that builds no block in that time, such as a Chopsticks fork that builds blocks only on demand, gets the runtime's slot duration (or 6 seconds), and PolkaMeter prints that it did.
 - Derives `--accounts` test accounts from `--seed` (`//polkameter//0`, `//polkameter//1`, and so on), plus at most 4 probe accounts, and tops each up from the seed.
 - Signs each call against a finalized block, at consecutive nonces per account. It never skips or re-signs a nonce. After a dropped connection, it sends the same signed bytes again.
 - Signs with the longest mortality the chain keeps: 4096 blocks, or less when `System.BlockHashCount` is lower. It doesn't depend on the block time, which on some chains follows the load (a Chopsticks fork builds a block per transaction).
-- Opens a dropped connection again before and during setup, for up to 90 seconds, and repeats the read or sends the same signed bytes. Funding and setup transactions are never sent twice. When the connection doesn't come back, it exits 3 and names the cause.
+- Opens a dropped connection again before and during setup, for up to 90 seconds, and repeats the read or sends the same signed bytes. Funding and setup transactions are signed once; after a reconnect, PolkaMeter sends only their same bytes again. When the connection doesn't come back, it exits 3 and names the cause.
 - Prints progress at least every 30 seconds, including the substrate plugin's progress during setup, so that no wait is silent.
-- Sends at `--rate` for `--duration`: exactly rate × duration transactions, each at its own time from the start. If fewer than 95% of them are sent, the verdict is CANNOT TELL, not PASS. Transactions it could not send during an outage are not sent later.
+- Sends at `--rate` for `--duration`: exactly rate × duration transactions, each at its own time from the start. If fewer than 95% of them are sent, the verdict is CANNOT TELL, not PASS.
 - After the load, keeps watching the chain until every transaction is in a block, for at most `--recovery` seconds.
 - Reconciles every hash against the finalized chain and gives each one category (see [Output](#output)).
 - Measures the time from submit to the first finalized head at or above each transaction's block.
@@ -132,10 +131,10 @@ The run directory under `--output` (default `polkameter-runs`) holds the usual f
 ```mermaid
 flowchart LR
   S[signed and sent] -- node rejects it --> R[refused]
-  S --> B[in a finalized block]
+  S -- included --> B[in a finalized block]
   B -- dispatch succeeds --> OK[finalized-ok]
   B -- dispatch fails --> F[failed-in-block]
-  S -- nonce passed or mortality ended --> L[lost]
+  S -- "accepted, not finalized,<br/>and nonce passed or mortality ended" --> L[lost]
   S -- no proof either way --> U[unresolved]
 ```
 
@@ -143,7 +142,7 @@ flowchart LR
 | --- | --- |
 | `finalized-ok` | In a finalized block, and its dispatch succeeded |
 | `failed-in-block` | In a finalized block, and its dispatch failed there |
-| `lost` | Proven lost: no finalized block has it, and none can. Its signer's finalized nonce passed it, or its mortality ended after the chain had at least half of it to include it |
+| `lost` | Proven lost: the node accepted it or a best block had it, no finalized block has it, and none can. Its signer's finalized nonce passed it, or its mortality ended after the chain had at least half of it to include it |
 | `refused` | The node rejected it at submit; it was never in a block |
 | `unresolved` | Anything else: it may still be included, or its end has no proof |
 
@@ -153,29 +152,14 @@ A transaction that expired after being sent with less than half its mortality le
 
 ## Flags
 
-| Flag | Default | What it does |
-| --- | --- | --- |
-| `--chain` | | WebSocket endpoint |
-| `--seed` | `$POLKAMETER_SEED` | Funds the test accounts |
-| `--accounts` | 8 | Test accounts that sign the calls |
-| `--rate` | | Transactions per second |
-| `--duration` | | How long to send, such as `60s` or `2m` |
-| `--calls` | | The call file |
-| `--max-p95` | `60s` | Limit on p95 submit to finalized, such as `30s`, `29.5s` or `29500ms`. PASS needs the p95 at most this; for p95 < 60 s, pass `59999ms` |
-| `--fund` | a share of the seed's balance, at most a million existential deposits (no cap when the existential deposit is 0) | Spendable amount each test account is topped up to |
-| `--mortality` | the longest the chain keeps, up to 4096 | Blocks each transaction stays valid, a power of two up to 4096; 0 for immortal |
-| `--recovery` | the longer of 300 and the duration | At most this many seconds to watch the chain after the load, until every transaction is in a block |
-| `--output` | `polkameter-runs` | Where the run directory goes |
-| `--plugin` | next to `polkameter` | The substrate plugin executable |
+`polkameter calls --help` lists the flags and their defaults. `--max-p95` defaults to `60s`, and PASS needs the p95 at most that.
 
 ## Limits
 
 - One constant rate. Use a plan for rate steps.
 - Calls are built before the clock starts, for every transaction, and signed at fixed nonces. A call that must read the chain state at send time doesn't fit.
-- A mortality above 4096 blocks isn't supported.
-- At most 100,000 calls per run, for example 1000 tx/s for 90 s.
 - Under overload a node can drop transactions from its pool. With the default long mortality they stay `unresolved`, so the verdict is CANNOT TELL, not FAIL.
 - A transaction its chain dropped stays `unresolved` until its signer's finalized nonce passes it or its mortality ends, so the last transaction of a signer can stay `unresolved` with a long mortality.
-- After a connection outage during the load, the transactions not sent then are not sent later. The verdict is CANNOT TELL when that leaves the load short.
+- After a connection outage during the load, the transactions not sent then are not sent later. The verdict is CANNOT TELL when that leaves the load short. An outage longer than about 15 s ends the load.
 - Old runtimes are not supported: one without the `Metadata_metadata_versions` runtime API, or with single-value weights (no `proof_size`), exits 3 at once with an error that names the cause.
-- Signers are sr25519 on `AccountId32` or Ethereum ECDSA on `AccountId20`. A runtime with another signature, or an extension whose value must be computed (not a default), needs a plugin.
+- A runtime with another signature, a transaction authorized by a proof instead of a signature (such as the People chain's), or an extension whose value must be computed (not a default) needs a [plugin](writing-a-plugin.md).

@@ -76,6 +76,11 @@ The action runs plans only. For [calls mode](calls-mode.md), install PolkaMeter 
           (cd calls && npm install --no-audit --no-fund polkadot-api && npx papi add dev -w ws://127.0.0.1:9944)
           polkameter calls --chain ws://127.0.0.1:9944 --seed //Alice --accounts 4 \
             --rate 2 --duration 40s --calls calls/calls.ts --max-p95 30s --output runs
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: calls-results
+          path: runs/
 ```
 
 The step fails on every exit code but `0`, so CANNOT TELL fails the job too. [Exit codes](calls-mode.md#exit-codes) lists them.

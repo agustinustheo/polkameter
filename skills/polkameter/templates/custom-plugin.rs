@@ -4,7 +4,7 @@
 //! ```toml
 //! [dependencies]
 //! anyhow = "1"
-//! polkameter-plugin-sdk = { version = "0.3", features = ["chain"] }
+//! polkameter-plugin-sdk = { version = "0.5", features = ["chain"] }
 //! serde_json = "1"
 //! tokio = { version = "1", features = ["full"] }
 //! ```

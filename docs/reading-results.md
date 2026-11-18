@@ -48,7 +48,7 @@ A plan's load test runs in this order. The failure onset is recorded, and the lo
 
 ```mermaid
 flowchart LR
-  B[baseline probes] --> S1[100 tx/s] --> S2[...] --> S5[500 tx/s] --> S6["600 tx/s<br/>failure onset"] --> R[recovery] --> C["reconciliation<br/>and verdict"]
+  B[baseline probes] --> S1["100 to 500 tx/s<br/>one rate step each"] --> S6["600 tx/s<br/>failure onset"] --> R[recovery] --> C["reconciliation<br/>and verdict"]
 ```
 
 The `Load steps` table has one row per rate step. This excerpt shows the last three of six:
@@ -90,7 +90,7 @@ After the load, PolkaMeter gives each sent flood transaction the first status in
 | `finalized` | In a finalized block. Its call can still have failed. |
 | `in_pool` | Reported by the node's ready-pool RPC. FUTURE transactions behind nonce gaps may be absent. |
 | `refused` | The node rejected the submission. |
-| `lost` | Accepted or seen in a best block, absent from the finalized chain, and its signer's finalized account nonce has passed its nonce. |
+| `lost` | Accepted or seen in a best block, absent from the finalized chain, and proven unable to finalize: its signer's finalized account nonce has passed its nonce, or it expired after being sent with at least half its mortality left. |
 | `unverified` | Seen in a best block, but neither finalization nor loss is proven. |
 | `unknown` | Not enough evidence for another status. |
 
@@ -149,14 +149,4 @@ What one place can't show:
 - Latency and reply times are measured from PolkaMeter's side. They include the network between PolkaMeter and the node, and PolkaMeter can't see a delay on an open connection. Run PolkaMeter close to the node.
 - PolkaMeter detects its own pauses longer than about 1 s, and leaves out every time measured across one. A shorter pause goes unseen and can add up to that much to a time.
 
-In a run, this means:
-
-1. A disconnection shorter than 15 s is never node down, in the load or the loss check. A reconnect completing after that budget is too late. Resuming the node does not erase evidence that its process was stopped. A connection that keeps dropping, while the node doesn't restart, ends the load on `generator limit: connection unstable`.
-2. The node's identity after a reconnect tells a restart: the same peer ID with a new sync starting block. A restarted proxy changes neither. A new peer ID is another node behind a load balancer, and only a warning.
-3. A transaction, reply or probe timed across a pause of PolkaMeter, or read late after a reconnect, counts but has no time. Latency, reply time, the baseline and the exports leave it out, and the `Warnings:` line counts it. A pause of more than 5 s ends the load on `generator limit`.
-4. A baseline with no timed probe has no result. A recovery PolkaMeter didn't observe until the chain was back is `not measured`, with no drain rate.
-5. Time with no connection open is never pool intake or latency. A transaction sent again after its connection dropped has no latency.
-
 The default `fail-on` policy, `verdict-or-inconclusive`, fails on INCONCLUSIVE too. So a node or network that was unreachable still fails a CI job, without a FAIL verdict.
-
-Tests guard each rule. `AGENTS.md` in the repository names them.

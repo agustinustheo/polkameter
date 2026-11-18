@@ -39,8 +39,6 @@ To load a call of your own pallet, name it:
 Stress-test Payroll.batch_pay on my chain at ws://127.0.0.1:9944 with PolkaMeter calls mode, at 5 tx/s for a minute.
 ```
 
-The [examples](https://github.com/agustinustheo/polkameter/tree/main/examples) are calls-mode tests that AI agents wrote for nine real chains.
-
 The skill tells the assistant to copy numbers from `summary.md`, keep secrets out of plans, and load only nodes you control.
 
 ## Point an assistant at the docs

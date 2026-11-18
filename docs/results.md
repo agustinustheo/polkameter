@@ -156,6 +156,8 @@ Each event has a `timestamp` in milliseconds and `version` `2`. PolkaMeter redac
 
 ## Rebuilding a report
 
+For a calls-mode run, read `calls-verdict.json`. `summary.json`, `execution.json` and `junit.xml` describe the engine run, and their verdict can differ. `report` replaces the calls verdict at the top of `summary.md` with the engine report and leaves `calls-verdict.json` as it is.
+
 `polkameter report <run directory>` rebuilds the reports from the recorded data and prints `summary.md`. It needs `execution.json` and `summary.md`.
 
 It rewrites `junit.xml` and `samples.jtl`, and in a load test also the checks, `summary.json` and `summary.md`.

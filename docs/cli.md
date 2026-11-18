@@ -1,6 +1,6 @@
 # CLI reference
 
-`polkameter` checks and runs plans, rebuilds reports and manages plugins. Use `polkameter COMMAND --help` for a command's options and examples. `polkameter --version` prints the installed version. For error messages, see [Troubleshooting](troubleshooting.md).
+`polkameter` checks and runs plans, runs call files, rebuilds reports and manages plugins. Use `polkameter COMMAND --help` for a command's options and examples. `polkameter --version` prints the installed version. For error messages, see [Troubleshooting](troubleshooting.md).
 
 ## init
 
@@ -93,7 +93,7 @@ polkameter report runs/run-1792255021142-12303-1
 
 ## calls
 
-Loads a chain with the calls of a polkadot-api call file, without a plan or a plugin. [Calls mode](calls-mode.md) has the call file, the verdict and the limits. `polkameter calls --help` lists the flags.
+Loads a chain with the calls of a polkadot-api call file. You write no plan and no plugin. [Calls mode](calls-mode.md) has the call file, the verdict and the limits. `polkameter calls --help` lists the flags.
 
 ## plugin
 

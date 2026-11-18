@@ -4,7 +4,7 @@ PolkaMeter load-tests Polkadot SDK chains. It sends signed transactions to your 
 
 ```mermaid
 flowchart LR
-  T["Your test<br/>call file or plan"] --> P["PolkaMeter<br/>funds, signs, sends,<br/>checks each transaction"]
+  T["Your test<br/>call file or plan"] --> P["PolkaMeter<br/>sends at your rate,<br/>checks each transaction"]
   P -- signed transactions --> N["Your node<br/>dev chain, fork or testnet"]
   N -- blocks and finality --> P
   P --> R["Verdict and records<br/>summary.md, transactions.jsonl"]
@@ -15,7 +15,7 @@ flowchart LR
 
 - A pull request changes a runtime, a pallet or the node. Run a short load test in CI on every pull request.
 - Before a runtime upgrade or a launch. Raise the rate step by step to find where the chain stops keeping up.
-- You need evidence, not a guess. Each transaction gets one outcome, checked against the finalized chain. PolkaMeter fails the chain only for a fault it can prove.
+- You need evidence, not a guess. Each transaction gets one outcome, checked against the finalized chain, and counts as lost only with proof.
 
 Not for:
 
@@ -38,4 +38,4 @@ PolkaMeter does that part, so your test says only what to send. On nine real cha
 | It answers | Did the chain keep up at this rate? | At what rate did the chain stop keeping up? |
 | Verdicts | PASS, FAIL, CANNOT TELL | PASS, WARN, FAIL, INCONCLUSIVE |
 
-Start with [Getting started](getting-started.md) for a plan, or [Calls mode](calls-mode.md) for your own calls. Then [run it in CI](ci.md).
+New here? [Install](install.md) and start the [dev chain](getting-started.md#2-start-a-dev-chain). To test your own calls at one rate, go to [Calls mode](calls-mode.md). To find the rate where the chain stops keeping up, follow [Getting started](getting-started.md). Then [run it in CI](ci.md).

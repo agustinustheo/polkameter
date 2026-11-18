@@ -2,7 +2,7 @@
 
 PolkaMeter runs on Linux (x86-64 or ARM64) and macOS (Apple silicon or Intel). On Windows, use WSL.
 
-A load test on a standard runtime needs the CLI, `polkameter`, and the [substrate plugin](substrate-plugin.md), `polkameter-substrate-plugin`. The install script and the release archives install both. Cargo needs a second command for the plugin. Whichever you use, finish with [Register the plugin](#register-the-plugin).
+A load test on a standard runtime needs the CLI, `polkameter`, and the [substrate plugin](substrate-plugin.md), `polkameter-substrate-plugin`. The install script and the release archives install both. Cargo needs a second command for the plugin. For plans, finish with [Register the plugin](#register-the-plugin). Calls mode finds the plugin next to `polkameter` and needs no registration.
 
 ## Use the install script
 

@@ -37,7 +37,7 @@ Each fact has one owner page. Other pages link to it in one sentence.
 | Run directory files, redaction, outcome checks, `report` | `results.md` |
 | Reconnects; node CPU and memory | `troubleshooting.md` entries `blocks: RPC connection lost` and `node: … no CPU or memory recorded` |
 | The action, `fail-on`, CI jobs, CI secrets | `ci.md` |
-| Plugin protocol, SDK, 0.2 to 0.3 migration | `plugins.md` |
+| Plugin protocol, SDK | `plugins.md` (the 0.2 to 0.3 migration is in `CHANGELOG.md`) |
 | Substrate operations, signers, limits | `substrate-plugin.md` |
 | The skill, marketplace install, `llms.txt` | `ai-assistants.md` |
 | Calls mode: call file, verdict, exit codes, limits | `calls-mode.md` |
@@ -55,31 +55,6 @@ One entry per cause. The heading is the start of the message as the CLI prints i
 
 Document released behavior. Keep unreleased changes in CHANGELOG. A page has at most one pre-release note, marked `<!-- vX.Y.Z: remove after release -->`.
 
-## Page budgets
+## Length
 
-Replace or remove prose before you add more. A page over budget needs a cut elsewhere or a reason in the PR.
-
-| Page | Budget (words) |
-| --- | ---: |
-| `docs/README.md` | 110 |
-| `docs/getting-started.md` | 1,000 |
-| `docs/writing-a-plugin.md` | 900 |
-| `docs/install.md` | 380 |
-| `docs/ci.md` | 1,150 |
-| `docs/reading-results.md` | 1,550 |
-| `docs/ai-assistants.md` | 280 |
-| `docs/troubleshooting.md` | 1,700 |
-| `docs/plans.md` | 2,500 |
-| `docs/cli.md` | 1,150 |
-| `docs/results.md` | 1,800 |
-| `docs/plugins.md` | 1,300 |
-| `docs/substrate-plugin.md` | 1,550 |
-| `docs/STYLE.md` | 700 |
-| `docs/SUMMARY.md` | 60 |
-| `docs/llms.txt` | 230 |
-| `README.md` | 380 |
-| `crates/plugin-sdk/README.md` | 110 |
-| `skills/polkameter/SKILL.md` | 700 |
-| `AGENTS.md` | 600 |
-| `CHANGELOG.md` | 880 |
-| `RELEASING.md` | 620 |
+Replace or remove prose before you add more. A page that grows needs a cut elsewhere or a reason in the PR.
