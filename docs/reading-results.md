@@ -44,6 +44,13 @@ In CI, if you can't fix the cause yet, set [`fail-on: verdict`](ci.md#what-fails
 
 ## How much load did the chain take?
 
+A plan's load test runs in this order. The failure onset is recorded, and the load goes on:
+
+```mermaid
+flowchart LR
+  B[baseline probes] --> S1[100 tx/s] --> S2[...] --> S5[500 tx/s] --> S6["600 tx/s<br/>failure onset"] --> R[recovery] --> C["reconciliation<br/>and verdict"]
+```
+
 The `Load steps` table has one row per rate step. This excerpt shows the last three of six:
 
 ```markdown

@@ -129,6 +129,16 @@ The run directory under `--output` (default `polkameter-runs`) holds the usual f
 
 `category` is one of:
 
+```mermaid
+flowchart LR
+  S[signed and sent] -- node rejects it --> R[refused]
+  S --> B[in a finalized block]
+  B -- dispatch succeeds --> OK[finalized-ok]
+  B -- dispatch fails --> F[failed-in-block]
+  S -- nonce passed or mortality ended --> L[lost]
+  S -- no proof either way --> U[unresolved]
+```
+
 | `category` | Meaning |
 | --- | --- |
 | `finalized-ok` | In a finalized block, and its dispatch succeeded |
