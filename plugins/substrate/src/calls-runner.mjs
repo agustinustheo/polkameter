@@ -1,19 +1,15 @@
-// Runs a PolkaMeter call file. The substrate plugin writes this next to the call file, so imports
-// resolve from the user's node_modules, and runs: node <this> <call file> <ws url>.
+// Runs a PolkaMeter call file. The substrate plugin runs it from memory in the call file's
+// directory, so imports resolve from the user's node_modules:
+// node --input-type=module --eval <this> -- <call file> <ws url>.
 // Protocol, one JSON object per line. In: {accounts, seedAccount, count}, then replies
 // {id, ok, hash} or {id, error}. Out: {id, submit: <hex call>, from: null | <account index>} for
 // setup transactions, then one {call: <hex call>} per transaction in order, then {done: <count>};
 // or {error}. Calls are streamed one per line, so there is no limit on their total size.
-import { unlinkSync } from "node:fs";
 import { createInterface } from "node:readline";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 
-// Loaded: this file is not needed any more, and a plugin killed by a signal can't remove it.
-try {
-	unlinkSync(fileURLToPath(import.meta.url));
-} catch {}
-
-const [file, url] = process.argv.slice(2);
+// With --eval, process.argv has no script path: [node, call file, ws url].
+const [file, url] = process.argv.slice(1);
 // Waits until the line is handed to the pipe: on macOS a pipe is asynchronous, and exiting with
 // output still buffered would cut it.
 const out = (message) =>

@@ -14,7 +14,7 @@
 
 use std::{
 	collections::{HashMap, HashSet},
-	path::{Path, PathBuf},
+	path::Path,
 	time::Duration,
 };
 
@@ -842,14 +842,6 @@ async fn fund(
 	Ok(topped)
 }
 
-/// Removes the runner file when dropped.
-struct Remove(PathBuf);
-impl Drop for Remove {
-	fn drop(&mut self) {
-		let _ = std::fs::remove_file(&self.0);
-	}
-}
-
 /// One line of the call file's runner.
 #[derive(Debug, PartialEq, Eq)]
 enum FromRunner {
@@ -888,11 +880,11 @@ fn from_runner(line: &str) -> Result<FromRunner> {
 	})
 }
 
-/// The call file's runner, started by node next to the call file, and its init line sent.
+/// The call file's runner, run by node from memory in the call file's directory, and its init
+/// line sent. It writes no file, so a run killed at any moment leaves nothing behind.
 struct Runner {
 	child: tokio::process::Child,
 	stdin: tokio::process::ChildStdin,
-	_remove: Remove,
 }
 
 /// What the runner writes, line by line.
@@ -912,12 +904,10 @@ impl Runner {
 			.canonicalize()
 			.with_context(|| format!("call file {}", script.display()))?;
 		let dir = script.parent().context("call file has no directory")?;
-		let runner = dir.join(format!(".polkameter-calls-{}.mjs", std::process::id()));
-		std::fs::write(&runner, RUNNER)
-			.with_context(|| format!("cannot write {}", runner.display()))?;
-		let remove = Remove(runner.clone());
+		// An ES module from --eval resolves imports from the working directory: the call file's,
+		// so polkadot-api comes from the user's node_modules.
 		let mut child = tokio::process::Command::new("node")
-			.arg(&runner)
+			.args(["--input-type=module", "--eval", RUNNER, "--"])
 			.arg(&script)
 			.arg(target)
 			.current_dir(dir)
@@ -930,7 +920,7 @@ impl Runner {
 		let lines =
 			tokio::io::BufReader::new(child.stdout.take().context("runner stdout")?).lines();
 		stdin.write_all(format!("{init}\n").as_bytes()).await?;
-		Ok((Self { child, stdin, _remove: remove }, lines))
+		Ok((Self { child, stdin }, lines))
 	}
 
 	async fn reply(&mut self, reply: &Value) -> Result<()> {
@@ -1188,6 +1178,7 @@ pub async fn prepare_calls(inputs: &Value, context: &Context) -> Result<Value> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use std::path::PathBuf;
 
 	#[test]
 	fn ethereum_keys_sign_for_their_address() {
