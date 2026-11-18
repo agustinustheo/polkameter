@@ -16,6 +16,10 @@
 - [Use PolkaMeter with an AI assistant](https://agustinustheodorus.com/polkameter/ai-assistants.html): the PolkaMeter skill
 - [Troubleshooting](https://agustinustheodorus.com/polkameter/troubleshooting.html): common errors and fixes
 
+## Explanation
+
+- [Less code, same correctness](https://agustinustheodorus.com/polkameter/less-code.html): calls mode against plain polkadot-api on nine real chains, median 43 lines against 309, both audited correct
+
 ## Reference
 
 - [Plan](https://agustinustheodorus.com/polkameter/plans.html): every plan element and attribute

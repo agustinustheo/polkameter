@@ -8,7 +8,7 @@ Counts non-blank, non-comment lines of code and config. Skips node_modules, .pap
 descriptors, lockfiles, package.json, markdown, data and output files, and plain-papi/ when it
 counts a calls-mode test.
 """
-import os, re, sys
+import os, re, statistics, sys
 
 CODE = {".ts", ".mts", ".js", ".mjs", ".cjs", ".py", ".sh", ".toml", ".yaml", ".yml", ".xml", ".rs"}
 SKIPD = {"node_modules", ".papi", "descriptors", "out", "results", "logs", "evidence", ".git", "target"}
@@ -44,17 +44,30 @@ def count(top, skip=()):
 
 
 def check(readme):
-    here, bad = os.path.dirname(os.path.abspath(readme)), 0
-    for row in open(readme):
-        m = re.match(r"\| \[[^]]+\]\(([^)/]+)/\) \|[^|]*\| (\d+) \| \d+ \| (\d+) \|", row)
+    here, bad, table = os.path.dirname(os.path.abspath(readme)), 0, []
+    text = open(readme).read()
+    for row in text.splitlines():
+        m = re.match(r"\| \[[^]]+\]\((?:[^)]*/)?([a-z-]+)/?\) \|[^|]*\| (\d+) \| \d+ \| (\d+) \|", row)
         if not m:
             continue
         name, plain, calls = m.group(1), int(m.group(2)), int(m.group(3))
+        table.append((plain, calls))
         got_plain = sum(n for n, _ in count(os.path.join(here, name, "plain-papi")))
         got_calls = sum(n for n, _ in count(os.path.join(here, name), skip={"plain-papi"}))
         ok = (got_plain, got_calls) == (plain, calls)
         bad += not ok
         print(f"{'ok ' if ok else 'BAD'} {name}: plain-papi {got_plain} (table {plain}), calls mode {got_calls} (table {calls})")
+    # The chart's two bar series and the Median row must agree with the rows above.
+    bars = [[int(n) for n in b.split(",")] for b in re.findall(r"^\s*bar \[([\d, ]+)\]", text, re.M)]
+    want = [[p for p, _ in table], [c for _, c in table]]
+    ok = bars == want
+    bad += not ok
+    print(f"{'ok ' if ok else 'BAD'} chart: {bars} (table {want})")
+    med = re.search(r"^\| \*\*Median\*\* \| \| \*\*(\d+)\*\* \| \*\*\d+\*\* \| \*\*(\d+)\*\* \|", text, re.M)
+    got = [int(statistics.median(col)) for col in want]
+    ok = bool(med) and [int(med.group(1)), int(med.group(2))] == got
+    bad += not ok
+    print(f"{'ok ' if ok else 'BAD'} median: {med.groups() if med else None} (computed {got})")
     return 1 if bad else 0
 
 

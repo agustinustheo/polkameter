@@ -1,6 +1,6 @@
 # Calls mode
 
-Calls mode loads a chain with your own calls. You write no plan and no plugin: you say what to send. PolkaMeter funds the test accounts, signs every call, sends at a constant rate and reconciles each transaction against the finalized chain. It uses the substrate plugin installed next to `polkameter`, without registering it.
+Calls mode loads a chain with your own calls. You write no plan and no plugin: you say what to send. PolkaMeter funds the test accounts, signs every call, sends at a constant rate and reconciles each transaction against the finalized chain. It uses the substrate plugin installed next to `polkameter`, without registering it. On nine real chains this cut the median stress test from 309 lines to 43: see [Less code, same correctness](less-code.md).
 
 ## Run a call file
 

@@ -27,7 +27,7 @@ Not for:
 
 A script that sends transactions is quick to write. A correct one is not. It must sign against a finalized block, keep each account's nonces in order, send the same bytes again after a dropped connection, and prove a transaction lost before it counts it. Miss one and the test blames the chain for the script's mistake.
 
-PolkaMeter does that part, so your test says only what to send. On nine real chains, a test with PolkaMeter had a median of 43 lines, against 309 for a plain polkadot-api script that did the same job ([examples](https://github.com/agustinustheo/polkameter/tree/main/examples)).
+PolkaMeter does that part, so your test says only what to send. On nine real chains, a test with PolkaMeter had a median of 43 lines, against 309 for a plain polkadot-api script that did the same job. Both were correct in audited reruns. [Less code, same correctness](less-code.md) has the numbers for each chain.
 
 ## Two ways to write a test
 

@@ -16,6 +16,10 @@
 - [Use PolkaMeter with an AI assistant](ai-assistants.md)
 - [Troubleshooting](troubleshooting.md)
 
+# Explanation
+
+- [Less code, same correctness](less-code.md)
+
 # Reference
 
 - [Plan](plans.md)
