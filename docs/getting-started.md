@@ -135,7 +135,7 @@ POLKAMETER_DEV_RUNTIME=<path-to-your-runtime>.compact.compressed.wasm bash dev-c
 
 The runtime must be a parachain runtime with Aura, like the parachain template, so that `polkadot-omni-node` can run it. Its genesis preset, the starting state, must fund `//Alice`. Name the preset `development`, or set `POLKAMETER_DEV_PRESET` to its name. Then generate and run a plan for it as in step 5.
 
-To send your own pallets' calls, you don't need a plugin. Use [calls mode](calls-mode.md) on the same dev chain.
+To send your own pallets' calls, you don't need to write or register a plugin. Use [calls mode](calls-mode.md) on the same dev chain.
 
 ## 7. Stop the chain
 

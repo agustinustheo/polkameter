@@ -1,6 +1,6 @@
 # PolkaMeter
 
-PolkaMeter load-tests Polkadot SDK chains. It sends signed transactions to your node at a set rate, follows each one to the finalized chain and says whether the chain kept up: PASS, FAIL, or that it can't tell.
+PolkaMeter load-tests Polkadot SDK chains. It sends signed transactions to your node at a set rate, follows each one to the finalized chain and says whether the chain kept up.
 
 ```mermaid
 flowchart LR

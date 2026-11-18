@@ -138,7 +138,7 @@ User-visible changes in each release. The GitHub release notes list every merged
 - `plugin list` prints the whole registry: `plugins`, `credentials`, `topologies` and `capabilities`. Read `.plugins` for the old output.
 - With `--format json`, every line has `event` and `schemaVersion`, and a failed command prints an `error` line on standard output.
 - Messages now start with `PolkaMeter:` and most plan, plugin and credential errors were reworded. Update scripts that match message text.
-- The plugin SDK's crates are merged into `polkameter-plugin-sdk`, with the `chain` and `observers` features. `NodeSample`, `Loss` and `OnChain` are `#[non_exhaustive]`. See [Migrating from 0.2](docs/plugins.md#migrating-from-02).
+- The plugin SDK's crates are merged into `polkameter-plugin-sdk`, with the `chain` and `observers` features. `NodeSample`, `Loss` and `OnChain` are `#[non_exhaustive]`. See [Migrating plugins from 0.2](#migrating-plugins-from-02).
 
 ### New
 

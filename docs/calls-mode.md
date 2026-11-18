@@ -1,6 +1,6 @@
 # Calls mode
 
-Calls mode loads a chain with your own calls. You write no plan and no plugin: you say what to send. PolkaMeter funds the test accounts, signs every call, sends at a constant rate and reconciles each transaction against the finalized chain. It uses the substrate plugin that the install script puts next to `polkameter`, without registering it.
+Calls mode loads a chain with your own calls. You write no plan and no plugin: you say what to send. PolkaMeter funds the test accounts, signs every call, sends at a constant rate and reconciles each transaction against the finalized chain. It uses the substrate plugin installed next to `polkameter`, without registering it.
 
 ## Run a call file
 
@@ -134,7 +134,7 @@ flowchart LR
   S -- included --> B[in a finalized block]
   B -- dispatch succeeds --> OK[finalized-ok]
   B -- dispatch fails --> F[failed-in-block]
-  S -- "accepted, not finalized,<br/>and nonce passed or mortality ended" --> L[lost]
+  S -- "accepted or in a best block, never finalized:<br/>nonce passed, or expired with half its mortality left at send" --> L[lost]
   S -- no proof either way --> U[unresolved]
 ```
 
