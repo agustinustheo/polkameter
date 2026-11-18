@@ -19,7 +19,7 @@ Every command on this page uses release 0.5.0, as [Versions](install.md#versions
 ## 2. Start a dev chain
 
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/agustinustheo/polkameter/v0.4.6/scripts/dev-chain.sh
+curl -fsSLO https://raw.githubusercontent.com/agustinustheo/polkameter/v0.5.0/scripts/dev-chain.sh
 bash dev-chain.sh start
 ```
 
@@ -43,7 +43,7 @@ export POLKAMETER_SUBSTRATE_SEED='//Alice'
 ```
 
 ```text
-Installed plugin substrate 0.5.0 (5 operations) from ~/.local/bin/polkameter-substrate-plugin
+Installed plugin substrate 0.5.0 (6 operations) from ~/.local/bin/polkameter-substrate-plugin
 Credential profile substrate-dev reads POLKAMETER_SUBSTRATE_SEED.
 ```
 
@@ -53,11 +53,11 @@ A plan never holds a secret. It names a [credential profile](cli.md#plugin), her
 
 A load test sends two kinds of [transactions](plans.md#load). The flood is the main load. PolkaMeter sends it at the target rate. A probe is a single transaction that measures how long it takes to get into a block. Probes go before and after the flood.
 
-[`examples/substrate-remarks.polkameter.xml`](https://github.com/agustinustheo/polkameter/blob/v0.4.6/examples/substrate-remarks.polkameter.xml) funds 16 flood accounts and one account per probe. It signs 65,000 `System.remark` transactions. Then it sends about 63,000 of them in six [rate steps](plans.md#rate) of 30 seconds, from 100 to 600 transactions per second (tx/s). The rest are spare:
+[`examples/substrate-remarks.polkameter.xml`](https://github.com/agustinustheo/polkameter/blob/v0.5.0/examples/substrate-remarks.polkameter.xml) funds 16 flood accounts and one account per probe. It signs 65,000 `System.remark` transactions. Then it sends about 63,000 of them in six [rate steps](plans.md#rate) of 30 seconds, from 100 to 600 transactions per second (tx/s). The rest are spare:
 
 ```sh
 mkdir -p plans
-curl -fsSL -o plans/substrate-remarks.polkameter.xml https://raw.githubusercontent.com/agustinustheo/polkameter/v0.4.6/examples/substrate-remarks.polkameter.xml
+curl -fsSL -o plans/substrate-remarks.polkameter.xml https://raw.githubusercontent.com/agustinustheo/polkameter/v0.5.0/examples/substrate-remarks.polkameter.xml
 polkameter run plans/substrate-remarks.polkameter.xml --output runs
 echo $?
 ```
@@ -134,6 +134,8 @@ POLKAMETER_DEV_RUNTIME=<path-to-your-runtime>.compact.compressed.wasm bash dev-c
 ```
 
 The runtime must be a parachain runtime with Aura, like the parachain template, so that `polkadot-omni-node` can run it. Its genesis preset, the starting state, must fund `//Alice`. Name the preset `development`, or set `POLKAMETER_DEV_PRESET` to its name. Then generate and run a plan for it as in step 5.
+
+To send your own pallets' calls, you don't need to write or register a plugin. Use [calls mode](calls-mode.md) on the same dev chain.
 
 ## 7. Stop the chain
 

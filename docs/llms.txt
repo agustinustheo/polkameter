@@ -1,6 +1,6 @@
 # PolkaMeter
 
-> PolkaMeter is a Rust CLI for load and stress tests on Polkadot SDK chains. XML plans set the rates, plugins prepare transactions, and a load test ends with a verdict (PASS, WARN, FAIL or INCONCLUSIVE). Results include samples in JMeter's CSV format. The substrate plugin loads chains with the standard System and Balances pallets and compatible signing types without custom code.
+> PolkaMeter is a Rust CLI for load and stress tests on Polkadot SDK chains. XML plans set the rates, plugins prepare transactions, and a load test ends with a verdict (PASS, WARN, FAIL or INCONCLUSIVE). Results include samples in JMeter's CSV format. The substrate plugin loads chains with the standard System and Balances pallets and compatible signing types without custom code. Calls mode (`polkameter calls`) loads a chain with calls from a polkadot-api call file, without writing a plan or plugin, and ends PASS, FAIL or CANNOT TELL.
 
 ## Tutorials
 
@@ -11,7 +11,7 @@
 
 - [Install](https://agustinustheodorus.com/polkameter/install.html): every install method, supported platforms and version pinning
 - [Run in CI](https://agustinustheodorus.com/polkameter/ci.html): the GitHub Action, GitLab CI and other CI systems
-- [Calls mode](https://agustinustheodorus.com/polkameter/calls-mode.html): `polkameter calls`, a load test from a polkadot-api call file or one call, without a plan or plugin
+- [Calls mode](https://agustinustheodorus.com/polkameter/calls-mode.html): `polkameter calls`, a load test from a polkadot-api call file, without writing a plan or plugin
 - [Read the results](https://agustinustheodorus.com/polkameter/reading-results.html): verdict, failure onset, max sustained rate, loss check, recovery, stop rules
 - [Use PolkaMeter with an AI assistant](https://agustinustheodorus.com/polkameter/ai-assistants.html): the PolkaMeter skill
 - [Troubleshooting](https://agustinustheodorus.com/polkameter/troubleshooting.html): common errors and fixes
@@ -27,5 +27,6 @@
 ## Optional
 
 - [Source repository](https://github.com/agustinustheo/polkameter): the code and example plans in `examples/`
+- [Examples](https://github.com/agustinustheo/polkameter/tree/main/examples): calls-mode tests of nine real chains next to the plain polkadot-api tests they replace
 - [PolkaMeter skill](https://github.com/agustinustheo/polkameter/tree/main/skills/polkameter): SKILL.md, plan and CI templates
 - [AGENTS.md](https://github.com/agustinustheo/polkameter/blob/main/AGENTS.md): build and test commands for contributors

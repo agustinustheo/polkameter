@@ -11,6 +11,7 @@ build-dir = "book"
 [output.html]
 git-repository-url = "https://github.com/agustinustheo/polkameter"
 edit-url-template = "https://github.com/agustinustheo/polkameter/edit/main/{path}"
+additional-js = ["docs/mermaid.js"]
 
 [output.html.redirect]
 "/custom-plugins.html" = "writing-a-plugin.html"

@@ -1,6 +1,6 @@
 # Use PolkaMeter with an AI assistant
 
-A skill is a set of instructions an AI assistant loads for a task. Install the PolkaMeter skill, then ask your assistant to create a load test for your chain. It installs PolkaMeter, then picks the substrate plugin or starts a plugin of your own. Then it writes a plan, runs it on a [dev chain](getting-started.md#2-start-a-dev-chain) and adds a CI job.
+A skill is a set of instructions an AI assistant loads for a task. Install the PolkaMeter skill, then ask your assistant to create a load test for your chain. It installs PolkaMeter and picks how to load your chain: [calls mode](calls-mode.md) for your own pallets' calls, or a plan with the substrate plugin. Then it runs the test on a [dev chain](getting-started.md#2-start-a-dev-chain) and adds a CI job.
 
 ## Install the skill in Claude Code
 
@@ -31,6 +31,12 @@ The assistant loads the skill when you ask for a load test, a stress test or Pol
 
 ```text
 Stress-test the chain my node serves at ws://127.0.0.1:9944 with PolkaMeter, and add a CI job that runs a short check on every pull request.
+```
+
+To load a call of your own pallet, name it:
+
+```text
+Stress-test Payroll.batch_pay on my chain at ws://127.0.0.1:9944 with PolkaMeter calls mode, at 5 tx/s for a minute.
 ```
 
 The skill tells the assistant to copy numbers from `summary.md`, keep secrets out of plans, and load only nodes you control.

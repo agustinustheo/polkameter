@@ -20,6 +20,8 @@ Give the `fund-accounts` step and the prepare step the same `seed`, `derivation`
 
 ## Operations
 
+A sixth operation, `prepare-calls`, serves [calls mode](calls-mode.md) and is not for plans.
+
 Every operation takes `target`, the chain's `ws://` or `wss://` endpoint. Amounts are in the chain's smallest unit, such as planck on Polkadot. Write them as a whole number. From 2^64 up, write them as a string of digits.
 
 ### preflight

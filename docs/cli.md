@@ -1,6 +1,6 @@
 # CLI reference
 
-`polkameter` checks and runs plans, rebuilds reports and manages plugins. Use `polkameter COMMAND --help` for a command's options and examples. `polkameter --version` prints the installed version. For error messages, see [Troubleshooting](troubleshooting.md).
+`polkameter` checks and runs plans, runs call files, rebuilds reports and manages plugins. Use `polkameter COMMAND --help` for a command's options and examples. `polkameter --version` prints the installed version. For error messages, see [Troubleshooting](troubleshooting.md).
 
 ## init
 
@@ -91,6 +91,10 @@ polkameter report runs/run-1792255021142-12303-1
 
 `report` exits `0` when the rebuild succeeds, even if the run failed. `state` in `execution.json` says how the run ended. If `summary.json` has no `schemaVersion`, or one other than `1`, `report` changes no file and exits `2`.
 
+## calls
+
+Loads a chain with the calls of a polkadot-api call file. You write no plan and no plugin. [Calls mode](calls-mode.md) has the call file, the verdict and the limits. `polkameter calls --help` lists the flags.
+
 ## plugin
 
 Installs plugins and records this host's credential profiles and topologies. A plan refers to them by name. This host's registry, a JSON file, says what each name points to. [Environment variables](#environment-variables) gives its path. A failed `plugin` subcommand exits `2`. `plugin list` and `plugin inspect` print JSON.
@@ -117,7 +121,7 @@ A credential profile maps a plan's credential name to an environment variable on
 
 ## Exit codes
 
-[Did it pass?](reading-results.md#did-it-pass) says how the verdict relates to the exit code.
+[Did it pass?](reading-results.md#did-it-pass) says how the verdict relates to the exit code. `calls` has its own codes, in [Calls mode](calls-mode.md#exit-codes).
 
 | Code | Meaning |
 | --- | --- |

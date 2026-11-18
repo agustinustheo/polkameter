@@ -11,9 +11,9 @@ This job starts the [dev chain](getting-started.md#2-start-a-dev-chain) and runs
 - the CI plan as `plans/substrate-remarks-ci.polkameter.xml`
 
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/agustinustheo/polkameter/v0.4.6/scripts/dev-chain.sh
+curl -fsSLO https://raw.githubusercontent.com/agustinustheo/polkameter/v0.5.0/scripts/dev-chain.sh
 mkdir -p plans
-curl -fsSL -o plans/substrate-remarks-ci.polkameter.xml https://raw.githubusercontent.com/agustinustheo/polkameter/v0.4.6/examples/substrate-remarks-ci.polkameter.xml
+curl -fsSL -o plans/substrate-remarks-ci.polkameter.xml https://raw.githubusercontent.com/agustinustheo/polkameter/v0.5.0/examples/substrate-remarks-ci.polkameter.xml
 ```
 
 `@v0` always points at the newest 0.x action. The `version` input pins the CLI, so keep it on the same release as the files above. [Versions](install.md#versions) gives the rule.
@@ -60,6 +60,30 @@ jobs:
 ```
 
 `plugins: polkameter-substrate-plugin` names the plugin that the action installed with the CLI. `fail-on: verdict` fails the job on a FAIL verdict. [What fails the job](#what-fails-the-job) has the other policies.
+
+## Run calls mode in CI
+
+The action runs plans only. For [calls mode](calls-mode.md), install PolkaMeter and run `polkameter calls` in a step. In the job above, put these steps in place of the `load` step. `calls/` holds your call file:
+
+```yaml
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Calls mode
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/agustinustheo/polkameter/main/install.sh | sh -s -- 0.5.0
+          export PATH="$HOME/.local/bin:$PATH"
+          (cd calls && npm install --no-audit --no-fund polkadot-api && npx papi add dev -w ws://127.0.0.1:9944)
+          polkameter calls --chain ws://127.0.0.1:9944 --seed //Alice --accounts 4 \
+            --rate 2 --duration 40s --calls calls/calls.ts --max-p95 30s --output runs
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: calls-results
+          path: runs/
+```
+
+The step fails on every exit code but `0`, so CANNOT TELL fails the job too. [Exit codes](calls-mode.md#exit-codes) lists them.
 
 ## Load your own node
 

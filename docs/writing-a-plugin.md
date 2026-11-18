@@ -26,7 +26,7 @@ rust-version = "1.93"
 
 [dependencies]
 anyhow = "1"
-polkameter-plugin-sdk = "0.4"
+polkameter-plugin-sdk = "0.5"
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 ```

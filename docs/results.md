@@ -161,3 +161,5 @@ Each event has a `timestamp` in milliseconds and `version` `2`. PolkaMeter redac
 It rewrites `junit.xml` and `samples.jtl`, and in a load test also the checks, `summary.json` and `summary.md`.
 
 `report` reads only the run directory, so you can copy it to another machine and run `report` there.
+
+For a calls-mode run, the verdict is in `calls-verdict.json`. `summary.json`, `execution.json` and `junit.xml` describe the engine run, and their verdict can differ. `report` replaces the calls verdict at the top of `summary.md` with the engine report and leaves `calls-verdict.json` as it is.

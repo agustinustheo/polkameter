@@ -66,6 +66,15 @@ jobs:
           python3 tests/validate-plans.py
       - name: Examples table matches the code
         run: python3 examples/count-lines.py --check examples/README.md
+      - name: Docs and the skill pin the current release
+        run: |
+          v=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          stale=$( (grep -rnoE 'polkameter/(blob/|tree/)?v[0-9]+\.[0-9]+\.[0-9]+' README.md docs skills | grep -v "/v$v\$"
+            grep -rnE '^ *version: [0-9]+\.[0-9]+\.[0-9]+' docs skills | grep -v "version: $v\$"
+            grep -rnoE 'sh -s -- [0-9]+\.[0-9]+\.[0-9]+' docs skills | grep -v "sh -s -- $v\$"
+            grep -rnE 'POLKAMETER_VERSION: "[0-9.]+"' docs skills | grep -v "POLKAMETER_VERSION: \"$v\""
+            m=${v%.*}; grep -rnoE 'polkameter-plugin-sdk = (\{ version = )?"[0-9.]+"|docs\.rs/polkameter-plugin-sdk/[0-9.]+' docs skills crates/plugin-sdk/README.md | grep -vE "\"$m\"|/$m\$") || true)
+          if [ -n "$stale" ]; then echo "pinned to another release than $v:"; echo "$stale"; exit 1; fi
       - name: Distribution tests
         run: |
           shellcheck install.sh

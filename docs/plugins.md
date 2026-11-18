@@ -102,11 +102,11 @@ Checks read the observer's series with the labels `job="plugin"` and `instance=<
 
 ## The plugin SDK crate
 
-A plugin depends on one crate, `polkameter-plugin-sdk` ([crates.io](https://crates.io/crates/polkameter-plugin-sdk), [API documentation](https://docs.rs/polkameter-plugin-sdk/0.4)).
+A plugin depends on one crate, `polkameter-plugin-sdk` ([crates.io](https://crates.io/crates/polkameter-plugin-sdk), [API documentation](https://docs.rs/polkameter-plugin-sdk/0.5)).
 
 ```toml
 [dependencies]
-polkameter-plugin-sdk = { version = "0.4", features = ["observers"] }
+polkameter-plugin-sdk = { version = "0.5", features = ["observers"] }
 ```
 
 The default features give the plugin protocol: `Plugin`, `serve`, the manifest types, `Artifact` and `PreparedTx`. The default build does not depend on subxt, so it builds faster.
@@ -118,23 +118,3 @@ The `observers` feature records series, reads run data and builds check results.
 Items hidden from the API documentation can change in any release. The `polkameter` crate is the CLI, not a library for plugins.
 
 The chain, monitor, check and file code derives from the stress tool in [paritytech/polkadot-pop-e2e](https://github.com/paritytech/polkadot-pop-e2e), under Apache-2.0.
-
-### Migrating from 0.2
-
-Version 0.3 merges the old plugin crates into `polkameter-plugin-sdk`. Replace the old dependencies with the line above. Use `features = ["chain"]` if the plugin does not use `polkameter-files`, `polkameter-checks` or `polkameter-monitors`. Then change the import paths:
-
-| 0.2 | 0.3 |
-| --- | --- |
-| `polkameter_plugin_sdk::*` | `polkameter_plugin_sdk::*` (unchanged) |
-| `polkameter_chain::*` | `polkameter_plugin_sdk::chain::*` |
-| `polkameter_chain::value::*` | `polkameter_plugin_sdk::chain::value::*` |
-| `#[decode_as_type(crate_path = "polkameter_chain::scale_decode_reexport")]` | `#[decode_as_type(crate_path = "polkameter_plugin_sdk::chain::scale_decode_reexport")]` |
-| `polkameter_files::*` | `polkameter_plugin_sdk::observers::*` |
-| `polkameter_files::registry::*`, `polkameter_files::summary::*` | `polkameter_plugin_sdk::observers::registry::*`, `polkameter_plugin_sdk::observers::summary::*` |
-| `polkameter_checks::*` | `polkameter_plugin_sdk::observers::*` |
-| `polkameter_monitors::{ChainSeries, MonitorError}` | `polkameter_plugin_sdk::observers::{ChainSeries, MonitorError}` |
-| `polkameter_monitors::walker::*`, `polkameter_monitors::chain_series::*` | `polkameter_plugin_sdk::observers::walker::*`, `polkameter_plugin_sdk::observers::chain_series::*` |
-
-`polkameter-engine` and `polkameter-load` have no replacement. They are part of the `polkameter` CLI.
-
-`CheckResult` has a new field, `source`. PolkaMeter fills it with the evaluate step's ID, so a plugin sets `source: None`.
