@@ -3,11 +3,7 @@
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/agustinustheo/polkameter/main/docs/logo-dark.png">
     <img src="https://raw.githubusercontent.com/agustinustheo/polkameter/main/docs/logo-light.png" alt="PolkaMeter" width="380">
   </picture>
-</p>
-
-# PolkaMeter
-
-<p align="center">
+  
   <b>Load and stress tests for Polkadot SDK chains, with verdicts and reports for CI.</b>
 </p>
 
